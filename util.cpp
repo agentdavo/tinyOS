@@ -17,13 +17,15 @@
 
 #include "util.hpp"
 #include <cstring> // For std::memcpy, std::memset, std::strlen, std::strcmp, std::strncpy
-#include <cctype>  // For std::isspace, std::isdigit
-#include <cstdio>  // For std::sscanf (used in ipv4_to_uint32)
+#include <cctype>  // For std::isspace, std::isdigit for get_next_token
+#include <cstdio>  // For std::sscanf (used in ipv4_to_uint32), std::snprintf
 #include <cstdlib> // For std::strtol, std::strtoul, std::strtof
 #include <cerrno>  // For errno and ERANGE
 #include <limits>  // For std::numeric_limits
+#include <algorithm> // For std::min
 
-namespace kernel::util {
+namespace kernel { // <<<<< WRAP IN NAMESPACE KERNEL
+namespace util {
 
 void* memcpy(void* dest, const void* src, size_t count) noexcept {
     return std::memcpy(dest, src, count);
@@ -40,7 +42,7 @@ size_t strlen(const char* str) noexcept {
 
 int strcmp(const char* lhs, const char* rhs) noexcept {
     if (!lhs && !rhs) return 0;
-    if (!lhs) return -1; // or some other convention for null vs non-null
+    if (!lhs) return -1; 
     if (!rhs) return 1;
     return std::strcmp(lhs, rhs);
 }
@@ -50,36 +52,35 @@ bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept {
         return false;
     }
     std::strncpy(dest, src, dest_size - 1);
-    dest[dest_size - 1] = '\0'; // Ensure null termination
-    return std::strlen(src) < dest_size; // True if no truncation occurred
+    dest[dest_size - 1] = '\0'; 
+    return std::strlen(src) < dest_size; 
 }
-
-
-// Enhanced string to number conversions using <cstdlib> functions for better error handling.
 
 bool str_to_int32(std::string_view input, int32_t& out_val) noexcept {
     if (input.empty()) {
         return false;
     }
-    // strtol needs a null-terminated string. Create one temporarily.
-    char buffer[24]; // Sufficient for int32_t string + null terminator
+    char buffer[24]; 
     size_t len_to_copy = std::min(input.length(), sizeof(buffer) - 1);
     std::memcpy(buffer, input.data(), len_to_copy);
     buffer[len_to_copy] = '\0';
 
     char* endptr;
-    errno = 0; // Reset errno before the call
+    errno = 0; 
     long result = std::strtol(buffer, &endptr, 10);
 
-    // Check for conversion errors
     if (endptr == buffer) {
-        return false; // No digits were found
+        return false; 
     }
     if (*endptr != '\0') {
-        return false; // Additional characters after the number
+        // Allow trailing whitespace
+        while (std::isspace(static_cast<unsigned char>(*endptr))) {
+            endptr++;
+        }
+        if (*endptr != '\0') return false; // Still has non-whitespace chars
     }
     if (errno == ERANGE || result < std::numeric_limits<int32_t>::min() || result > std::numeric_limits<int32_t>::max()) {
-        return false; // Out of range
+        return false; 
     }
 
     out_val = static_cast<int32_t>(result);
@@ -87,20 +88,31 @@ bool str_to_int32(std::string_view input, int32_t& out_val) noexcept {
 }
 
 bool str_to_uint32(std::string_view input, uint32_t& out_val) noexcept {
-    if (input.empty() || input[0] == '-') { // strtoul can handle leading whitespace but not negative sign for unsigned.
+    if (input.empty()) return false;
+    
+    // Skip leading whitespace for strtoul
+    size_t start_pos = input.find_first_not_of(" \t\r\n");
+    if (start_pos == std::string_view::npos) return false; // All whitespace
+    std::string_view relevant_input = input.substr(start_pos);
+
+    if (relevant_input.empty() || relevant_input[0] == '-') { 
         return false;
     }
     char buffer[24];
-    size_t len_to_copy = std::min(input.length(), sizeof(buffer) - 1);
-    std::memcpy(buffer, input.data(), len_to_copy);
+    size_t len_to_copy = std::min(relevant_input.length(), sizeof(buffer) - 1);
+    std::memcpy(buffer, relevant_input.data(), len_to_copy);
     buffer[len_to_copy] = '\0';
 
     char* endptr;
     errno = 0;
     unsigned long result = std::strtoul(buffer, &endptr, 10);
 
-    if (endptr == buffer || *endptr != '\0') {
-        return false;
+    if (endptr == buffer) return false;
+    if (*endptr != '\0') {
+        while (std::isspace(static_cast<unsigned char>(*endptr))) {
+            endptr++;
+        }
+        if (*endptr != '\0') return false;
     }
     if (errno == ERANGE || result > std::numeric_limits<uint32_t>::max()) {
         return false;
@@ -114,7 +126,7 @@ bool str_to_float(std::string_view input, float& out_val) noexcept {
     if (input.empty()) {
         return false;
     }
-    char buffer[64]; // Sufficient for most float strings
+    char buffer[64]; 
     size_t len_to_copy = std::min(input.length(), sizeof(buffer) - 1);
     std::memcpy(buffer, input.data(), len_to_copy);
     buffer[len_to_copy] = '\0';
@@ -123,14 +135,16 @@ bool str_to_float(std::string_view input, float& out_val) noexcept {
     errno = 0;
     out_val = std::strtof(buffer, &endptr);
 
-    if (endptr == buffer || *endptr != '\0') {
-        return false; // No conversion or extra chars
+    if (endptr == buffer) return false; 
+    if (*endptr != '\0') {
+         while (std::isspace(static_cast<unsigned char>(*endptr))) {
+            endptr++;
+        }
+        if (*endptr != '\0') return false;
     }
     if (errno == ERANGE) {
-        return false; // Out of range
+        return false; 
     }
-    // Note: strtof can return +/-HUGE_VALF on overflow, +/-0.0 on underflow.
-    // errno == ERANGE is the primary check for range errors.
     return true;
 }
 
@@ -138,8 +152,8 @@ bool str_to_float(std::string_view input, float& out_val) noexcept {
 bool ipv4_to_uint32(std::string_view ip_str, uint32_t& ip_addr) noexcept {
     unsigned int b1 = 0, b2 = 0, b3 = 0, b4 = 0;
     
-    char buffer[17]; // Max "255.255.255.255\0"
-    if (ip_str.length() > 15 || ip_str.length() < 7) return false; // Basic length check
+    char buffer[17]; 
+    if (ip_str.length() > 15 || ip_str.length() < 7) return false; 
     std::memcpy(buffer, ip_str.data(), ip_str.length());
     buffer[ip_str.length()] = '\0';
 
@@ -153,10 +167,11 @@ bool ipv4_to_uint32(std::string_view ip_str, uint32_t& ip_addr) noexcept {
 }
 
 void uint32_to_ipv4_str(uint32_t ip_addr, std::span<char> out_buffer) noexcept {
-    if (out_buffer.size() < 16) { // Minimum "x.x.x.x\0" up to "xxx.xxx.xxx.xxx\0"
+    if (out_buffer.size() < 16) { 
         if (!out_buffer.empty()) out_buffer[0] = '\0';
         return;
     }
+    // Use snprintf for safety.
     std::snprintf(out_buffer.data(), out_buffer.size(), "%u.%u.%u.%u",
                   (ip_addr >> 24) & 0xFF,
                   (ip_addr >> 16) & 0xFF,
@@ -164,24 +179,29 @@ void uint32_to_ipv4_str(uint32_t ip_addr, std::span<char> out_buffer) noexcept {
                   ip_addr & 0xFF);
 }
 
-
-// Helper to find the next token in a string_view, separated by a delimiter
 std::string_view get_next_token(std::string_view& input, char delimiter) noexcept {
+    size_t start = input.find_first_not_of(" \t\r\n");
+    if (start == std::string_view::npos) {
+        input.remove_prefix(input.size()); // Consume all whitespace
+        return {};
+    }
+    input.remove_prefix(start);
+
     size_t pos = input.find(delimiter);
     std::string_view token;
     if (pos == std::string_view::npos) {
         token = input;
-        input.remove_prefix(input.size()); // Consume the rest
+        input.remove_prefix(input.size()); 
     } else {
         token = input.substr(0, pos);
-        input.remove_prefix(pos + 1); // Consume token and delimiter
+        input.remove_prefix(pos + 1); 
     }
-    // Trim whitespace from token (optional, but good for robustness)
-    size_t start = token.find_first_not_of(" \t\r\n");
-    if (start == std::string_view::npos) return ""; // Token is all whitespace
-    size_t end = token.find_last_not_of(" \t\r\n");
-    return token.substr(start, end - start + 1);
+    
+    size_t token_end = token.find_last_not_of(" \t\r\n");
+    if (token_end == std::string_view::npos) return {}; // Token was all whitespace after initial trim
+    
+    return token.substr(0, token_end + 1);
 }
 
-
-} // namespace kernel::util
+} // namespace util
+} // namespace kernel

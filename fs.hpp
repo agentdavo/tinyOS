@@ -29,6 +29,7 @@
 #include <optional>
 #include <algorithm>   // For std::find_if in delete_file
 
+
 namespace fs {
 
 constexpr size_t MAX_FILES = 64;
@@ -50,7 +51,7 @@ enum class Permissions : uint8_t {
 };
 
 /**
- * @brief Represents a file or directory entry in the RAMFS.
+ * @brief File system entry (file or directory).
  */
 struct FileEntry {
     std::array<char, MAX_PATH_LENGTH> path; ///< Null-terminated absolute path.

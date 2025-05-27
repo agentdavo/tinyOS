@@ -90,7 +90,16 @@ public:
     AudioBuffer* get_filled_buffer_from_dsp_rx();
     void release_buffer_to_pool(AudioBuffer* buffer);
 
+    /**
+     * @brief Provides access to the DSP graph for configuration.
+     * @return A reference to the internal DSPGraph object.
+     */
     kernel::dsp::DSPGraph& get_dsp_graph() { return dsp_graph_; }
+
+    /**
+     * @brief Provides const access to the DSP graph.
+     * @return A const reference to the internal DSPGraph object.
+     */
     const kernel::dsp::DSPGraph& get_dsp_graph() const { return dsp_graph_; }
 
 private:
@@ -117,13 +126,6 @@ private:
     kernel::TCB* dsp_thread_tcb_ = nullptr; 
 
     kernel::hal::i2s::I2SDriverOps* i2s_ops_ = nullptr; 
-    
-    // Lock for critical sections in AudioSystem methods if needed (e.g. init/stop)
-    // If init/stop are only called from one context, this might not be strictly necessary here,
-    // but internal operations like queue access or pool access might need finer-grained locking
-    // if accessed from multiple threads (DSP thread and app thread).
-    // SPSCQueues are lock-free for single producer/consumer. FixedMemoryPool has its own internal lock.
-    // kernel::Spinlock audio_system_lock_; // Example, if needed for protecting shared AudioSystem state
 };
 
 } // namespace audio

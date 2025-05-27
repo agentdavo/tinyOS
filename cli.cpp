@@ -279,8 +279,8 @@ static int cli_history_command(const char* args, kernel::hal::UARTDriverOps* uar
     if (!uart_ops) return -1;
     uart_ops->puts("Command History:\n");
     for (size_t i = 0; i < CLI::history_count_; ++i) {
-        char num_buf[8];
-        std::snprintf(num_buf, sizeof(num_buf), "%2zu: ", i + 1);
+        char num_buf[12]; // Increased size for safety with %zu
+        std::snprintf(num_buf, sizeof(num_buf), "%3zu: ", i + 1);
         uart_ops->puts(num_buf);
         uart_ops->puts(CLI::command_history_[i].data()); 
         uart_ops->putc('\n');
@@ -293,7 +293,7 @@ static int cli_fs_ls_command(const char* args, kernel::hal::UARTDriverOps* uart_
     if (!uart_ops) return -1;
     const char* path_to_list = (args && ::kernel::util::strlen(args) > 0) ? args : "/";
     if (!kernel::g_file_system.list_files(path_to_list, uart_ops)) {
-        // list_files prints its own errors usually
+        // list_files typically prints its own errors
     }
     return 0;
 }
@@ -562,9 +562,9 @@ static int cli_dsp_config(const char* args, kernel::hal::UARTDriverOps* uart_ops
     std::string name_to_config_cstr(name_to_config_sv); 
 
     if (kernel::g_audio_system.get_dsp_graph().configure_node(name_to_config_cstr.c_str(), config_args_for_node_ptr, uart_ops)) {
-        // Silence, configure_node should provide feedback.
+        // Silence
     } else {
-        // Silence, configure_node should provide feedback.
+        // Silence
     }
     return 0;
 }
@@ -586,7 +586,7 @@ static int cli_reboot_command(const char* args, kernel::hal::UARTDriverOps* uart
     (void)args;
     if (uart_ops) uart_ops->puts("Rebooting system...\n");
     if (kernel::g_platform) {
-        // kernel::g_platform->reboot(); // Placeholder for actual reboot
+        kernel::g_platform->reboot_system(); 
     }
     return 0;
 }
@@ -652,15 +652,15 @@ static int cli_net_send_udp_command(const char* args, kernel::hal::UARTDriverOps
         uint32_t ip_val;
         if(::kernel::util::ipv4_to_uint32(ip_str, ip_val) && port > 0 && port <= 65535) {
             net::IPv4Addr dst_ip{ip_val};
-            net::Packet p{}; // Initialize with default values
+            net::Packet p{}; 
             p.dst_ip = dst_ip;
             p.dst_port = static_cast<uint16_t>(port);
             p.data_len = ::kernel::util::strlen(data_str);
-            if (p.data_len >= p.data.size()) { // Prevent overflow (p.data.size() is MAX_PAYLOAD)
+            if (p.data_len >= p.data.size()) { 
                  p.data_len = p.data.size() -1; 
             }
             ::kernel::util::memcpy(p.data.data(), data_str, p.data_len);
-            p.data[p.data_len] = '\0'; // Null-terminate if it's string data, though not strictly for packet
+            // p.data[p.data_len] = '\0'; // Null-terminate if needed for string data. Packets don't require it.
             
             int sock_idx = kernel::g_net_manager.create_udp_socket(net::IPv4Addr{0}, 0); 
             if (sock_idx >= 0) {

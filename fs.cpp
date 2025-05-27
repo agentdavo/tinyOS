@@ -24,9 +24,6 @@
 #include <algorithm> // For std::min, std::remove_if, std::move
 
 // Global file system instance definition is in miniOS.cpp (kernel::g_file_system)
-// namespace fs {
-// FileSystem g_file_system; // This would be a definition if not externed and defined elsewhere
-// }
 
 namespace fs {
 
@@ -34,18 +31,15 @@ FileSystem::FileSystem() : entry_count_(0) {
     // Initialize with a root directory. This should be the first entry.
     if (entry_count_ < MAX_FILES) {
         FileEntry& root = entries_[entry_count_]; // entry_count_ is 0
-        // Ensure path is null-terminated
         kernel::util::safe_strcpy(root.path.data(), "/", MAX_PATH_LENGTH);
         root.is_directory = true;
         root.permissions = Permissions::READ_WRITE_EXECUTE; 
         root.size = 0;
-        entry_count_++; // Now entry_count_ is 1
+        entry_count_++; 
     }
-    // Else: MAX_FILES is too small, which is a critical configuration error.
 }
 
 std::string_view FileSystem::normalize_path(std::string_view path) const {
-    // Remove trailing slashes, unless it's the root "/"
     while (path.length() > 1 && path.back() == '/') {
         path.remove_suffix(1);
     }
@@ -57,12 +51,12 @@ bool FileSystem::is_valid_path_format(std::string_view path) const {
         return false;
     }
     for (size_t i = 0; i < path.length() -1; ++i) {
-        if (path[i] == '/' && path[i+1] == '/') { // Check for "//"
+        if (path[i] == '/' && path[i+1] == '/') { 
             return false;
         }
     }
-    // Allow a null terminator if present at path.length(), but not within.
-    if (path.find('\0') != std::string_view::npos && path.find('\0') < path.length()) {
+    size_t null_pos = path.find('\0');
+    if (null_pos != std::string_view::npos && null_pos < path.length()) { // null byte within, not just as terminator from C-str
          return false;
     }
     return true;
@@ -72,15 +66,15 @@ std::optional<size_t> FileSystem::find_entry_index(std::string_view path) const 
     kernel::ScopedLock lock(const_cast<kernel::Spinlock&>(fs_lock_)); 
     std::string_view normalized_path_sv = normalize_path(path);
 
-    // is_valid_path_format checks length too, but re-check normalized path for safety
-    if (!is_valid_path_format(normalized_path_sv) || normalized_path_sv.length() >= MAX_PATH_LENGTH) {
+    if (!is_valid_path_format(normalized_path_sv)) { 
         return std::nullopt;
     }
     
-    // Compare string_view with char array content
     for (size_t i = 0; i < entry_count_; ++i) {
-        // entries_[i].path is null-terminated. Create string_view from it for safe compare.
-        std::string_view entry_path_sv(entries_[i].path.data()); 
+        // Create string_view from the fixed-size char array, respecting its actual length.
+        // Find the null terminator to determine the actual length of the stored path.
+        const char* entry_c_path = entries_[i].path.data();
+        std::string_view entry_path_sv(entry_c_path, kernel::util::strlen(entry_c_path));
         if (entry_path_sv == normalized_path_sv) {
             return i;
         }
@@ -89,7 +83,7 @@ std::optional<size_t> FileSystem::find_entry_index(std::string_view path) const 
 }
 
 FileEntry* FileSystem::find_entry(std::string_view path) {
-    std::optional<size_t> index = find_entry_index(path); // find_entry_index handles locking
+    std::optional<size_t> index = find_entry_index(path); 
     if (index) {
         return &entries_[*index];
     }
@@ -97,7 +91,7 @@ FileEntry* FileSystem::find_entry(std::string_view path) {
 }
 
 const FileEntry* FileSystem::find_entry(std::string_view path) const {
-    std::optional<size_t> index = find_entry_index(path); // find_entry_index handles locking
+    std::optional<size_t> index = find_entry_index(path); 
     if (index) {
         return &entries_[*index];
     }
@@ -108,13 +102,13 @@ const FileEntry* FileSystem::find_entry(std::string_view path) const {
 std::string_view FileSystem::get_parent_path(std::string_view path) const {
     std::string_view norm_path = normalize_path(path);
     if (norm_path.empty() || norm_path == "/") {
-        return {}; // Root's parent is undefined or represented by empty string_view
+        return {}; 
     }
     size_t last_slash = norm_path.rfind('/');
     if (last_slash == std::string_view::npos) { 
-        return {}; // Should not happen for valid absolute paths not being root
+        return {}; 
     }
-    if (last_slash == 0) { // Parent is root "/"
+    if (last_slash == 0) { 
         return "/";
     }
     return norm_path.substr(0, last_slash);
@@ -130,33 +124,39 @@ bool FileSystem::create_file(std::string_view path, bool is_directory) {
     }
     
     // Check if entry already exists by comparing normalized paths
+    // find_entry_index already normalizes, so we can use it directly if we handle its lock properly
+    // For create, we hold the lock for the whole operation.
+    std::string temp_path_str(normalized_path); // For strcmp if needed by find_entry_index's internal logic
     for(size_t i=0; i < entry_count_; ++i) {
         if (std::string_view(entries_[i].path.data()) == normalized_path) {
             return false; // Entry already exists
         }
     }
 
+
     if (normalized_path != "/") { 
         std::string_view parent_sv = get_parent_path(normalized_path);
-        if (parent_sv.empty() && normalized_path != "/") return false; // Invalid parent path derived
+        if (parent_sv.empty() && normalized_path != "/") return false; 
 
         bool parent_found = false;
-        if (!parent_sv.empty()) {
+        if (!parent_sv.empty()) { // Only check parent if not creating in root (parent_sv would be "/" for /file)
+            std::string temp_parent_str(parent_sv);
             for(size_t i=0; i < entry_count_; ++i) {
                  if (std::string_view(entries_[i].path.data()) == parent_sv) {
-                    if (!entries_[i].is_directory) return false; // Parent is not a directory
+                    if (!entries_[i].is_directory) return false; 
                     parent_found = true;
                     break;
                  }
             }
-            if (!parent_found) return false; // Parent directory does not exist
+            if (!parent_found && parent_sv != "/") return false; // Parent (not root) must exist
         }
     }
 
     FileEntry& new_entry = entries_[entry_count_];
-    // Use safe_strcpy for char array
     std::string path_str(normalized_path); 
-    kernel::util::safe_strcpy(new_entry.path.data(), path_str.c_str(), MAX_PATH_LENGTH);
+    if (!kernel::util::safe_strcpy(new_entry.path.data(), path_str.c_str(), MAX_PATH_LENGTH)) {
+        return false; 
+    }
     
     new_entry.is_directory = is_directory;
     new_entry.permissions = Permissions::READ_WRITE_EXECUTE; 
@@ -168,12 +168,12 @@ bool FileSystem::create_file(std::string_view path, bool is_directory) {
 }
 
 bool FileSystem::write_file(std::string_view path, const void* data, size_t size) {
-    if (!data && size > 0) return false; // Writing non-zero size from null data
+    if (!data && size > 0) return false; 
     if (size > MAX_FILE_SIZE) { 
         return false;
     }
     kernel::ScopedLock lock(fs_lock_);
-    FileEntry* entry_ptr = find_entry(path); // find_entry uses find_entry_index which locks
+    FileEntry* entry_ptr = find_entry(path); 
 
     if (!entry_ptr) {
         return false; 
@@ -187,10 +187,7 @@ bool FileSystem::write_file(std::string_view path, const void* data, size_t size
     }
 
     try {
-        entry_ptr->data.resize(size); 
-        if (size > 0) {
-            kernel::util::memcpy(entry_ptr->data.data(), data, size);
-        }
+        entry_ptr->data.assign(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size); 
         entry_ptr->size = size;
     } catch (const std::bad_alloc&) {
         return false;
@@ -202,7 +199,6 @@ size_t FileSystem::read_file(std::string_view path, void* buffer, size_t max_siz
     if (!buffer || max_size == 0) {
         return 0;
     }
-    // find_entry locks internally
     const FileEntry* entry_ptr = find_entry(path);
 
     if (!entry_ptr) {
@@ -224,7 +220,6 @@ size_t FileSystem::read_file(std::string_view path, void* buffer, size_t max_siz
 }
 
 bool FileSystem::read_file(std::string_view path, std::string& content) const {
-    // find_entry locks internally
     const FileEntry* entry_ptr = find_entry(path);
     content.clear();
 
@@ -258,7 +253,8 @@ bool FileSystem::delete_file(std::string_view path) {
 
     auto it = std::find_if(entries_.begin(), entries_.begin() + entry_count_,
                            [&normalized_path](const FileEntry& entry) {
-                               return std::string_view(entry.path.data()) == normalized_path;
+                               const char* entry_c_path = entry.path.data();
+                               return std::string_view(entry_c_path, kernel::util::strlen(entry_c_path)) == normalized_path;
                            });
 
     if (it == entries_.begin() + entry_count_) {
@@ -268,22 +264,18 @@ bool FileSystem::delete_file(std::string_view path) {
     if (it->is_directory) {
         for (size_t i = 0; i < entry_count_; ++i) {
             if (std::distance(entries_.begin(), it) == static_cast<ptrdiff_t>(i)) continue; 
-            if (get_parent_path(entries_[i].path.data()) == normalized_path) {
+            std::string_view current_entry_path(entries_[i].path.data(), kernel::util::strlen(entries_[i].path.data()));
+            if (get_parent_path(current_entry_path) == normalized_path) {
                 return false; 
             }
         }
     }
 
-    // Efficiently "remove" by moving the last valid element into the spot of the one being deleted
-    // Only if it's not the last element itself.
     if (std::distance(entries_.begin(), it) < static_cast<ptrdiff_t>(entry_count_ -1) ) {
          *it = std::move(entries_[entry_count_ - 1]);
     }
-    // Else, if it was the last element, just decrementing entry_count_ effectively removes it.
     
     entry_count_--;
-    // Optionally clear the (now unused) last slot:
-    // if (entry_count_ < MAX_FILES) entries_[entry_count_] = FileEntry{}; 
     return true;
 }
 
@@ -294,40 +286,42 @@ bool FileSystem::file_exists(std::string_view path) const {
 
 bool FileSystem::list_files(std::string_view path, kernel::hal::UARTDriverOps* uart_ops) const {
     if (!uart_ops) return false;
-    // find_entry_index locks internally
-    std::optional<size_t> dir_idx_opt = find_entry_index(path); 
-    std::string_view normalized_path = normalize_path(path); // Normalize for consistent parent check
+    
+    std::string_view normalized_path_to_list = normalize_path(path);
+    std::optional<size_t> dir_idx_opt = find_entry_index(normalized_path_to_list); 
 
     if (!dir_idx_opt || !entries_[*dir_idx_opt].is_directory) {
         uart_ops->puts("Error: Not a directory or path not found: ");
-        std::string path_str(path); uart_ops->puts(path_str.c_str()); 
+        std::string path_str_temp(path); uart_ops->puts(path_str_temp.c_str()); 
         uart_ops->putc('\n');
         return false;
     }
 
     uart_ops->puts("Contents of ");
-    std::string path_str(normalized_path); uart_ops->puts(path_str.c_str());
+    std::string path_str_temp(normalized_path_to_list); uart_ops->puts(path_str_temp.c_str());
     uart_ops->puts(":\n");
 
     bool found_children = false;
-    // ScopedLock for iterating entries_
     kernel::ScopedLock lock(const_cast<kernel::Spinlock&>(fs_lock_));
     for (size_t i = 0; i < entry_count_; ++i) {
-        std::string_view entry_full_path(entries_[i].path.data());
-        std::string_view parent_of_entry = get_parent_path(entry_full_path);
+        const char* current_entry_c_path = entries_[i].path.data();
+        std::string_view current_entry_path_sv(current_entry_c_path, kernel::util::strlen(current_entry_c_path));
+        std::string_view parent_of_current_entry = get_parent_path(current_entry_path_sv);
 
-        if (parent_of_entry == normalized_path) {
+        if (parent_of_current_entry == normalized_path_to_list) {
             found_children = true;
             uart_ops->puts("  ");
             
-            std::string_view name_part = entry_full_path;
-            if (normalized_path == "/") { // Child of root
-                if (entry_full_path.length() > 1) name_part = entry_full_path.substr(1);
-            } else { // Child of a non-root directory
-                 if (entry_full_path.length() > normalized_path.length() + 1) { // Ensure there's something after parent/
-                    name_part = entry_full_path.substr(normalized_path.length() + 1);
-                 }
+            std::string_view name_part = current_entry_path_sv;
+            // Get only the last component of the path for display
+            size_t last_slash_in_entry = current_entry_path_sv.rfind('/');
+            if (last_slash_in_entry != std::string_view::npos && last_slash_in_entry + 1 < current_entry_path_sv.length()) {
+                name_part = current_entry_path_sv.substr(last_slash_in_entry + 1);
+            } else if (last_slash_in_entry == 0 && current_entry_path_sv.length() > 1) { // e.g. /file
+                 name_part = current_entry_path_sv.substr(1);
             }
+            // else name_part remains the full path if it's just "/" or malformed
+
             std::string name_part_str(name_part); uart_ops->puts(name_part_str.c_str());
 
             if (entries_[i].is_directory) {
@@ -358,7 +352,7 @@ bool FileSystem::list_files(std::string_view path, kernel::hal::UARTDriverOps* u
 
 bool FileSystem::set_permissions(std::string_view path, Permissions perms) {
     kernel::ScopedLock lock(fs_lock_);
-    FileEntry* entry_ptr = find_entry(path); // find_entry uses find_entry_index which locks
+    FileEntry* entry_ptr = find_entry(path); 
     if (!entry_ptr) {
         return false; 
     }
