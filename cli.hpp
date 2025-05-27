@@ -92,20 +92,14 @@ public:
      */
     static void cli_thread_entry(void* uart_ops_ptr);
 
-
-private:
-    // Non-static methods would be used if CLI was instantiated.
-    // For now, keeping these actions within the static cli_thread_entry or called by it.
-    // If we had an instance:
-    // void handle_char(char c, kernel::hal::UARTDriverOps* uart_ops);
-    // void complete_command(kernel::hal::UARTDriverOps* uart_ops); // Tab completion (future)
-    // void navigate_history(bool up, kernel::hal::UARTDriverOps* uart_ops); // Arrow key history
-
+// Make these public static so free functions like cli_help_command and cli_history_command can access them.
+// Alternatively, those commands could become static methods of CLI.
+public:
     // Static members for command registration and global CLI state
     static std::array<Command, MAX_COMMANDS> g_commands; ///< Registered commands
     static std::atomic<size_t> g_num_commands;           ///< Number of registered commands
     
-    // Made these static to be accessible from static cli_thread_entry
+    // Made these static to be accessible from static cli_thread_entry and cli_history_command
     static std::array<char, MAX_COMMAND_LENGTH> cmd_buffer_; 
     static size_t cmd_buffer_idx_; 
     static std::array<std::array<char, MAX_COMMAND_LENGTH>, MAX_HISTORY> command_history_; 

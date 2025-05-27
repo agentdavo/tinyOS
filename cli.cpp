@@ -16,8 +16,10 @@
  * @see cli.hpp, miniOS.hpp, util.hpp
  */
 
-#include "cli.hpp"
+#include "miniOS.hpp" // Include the core kernel header first (defines GPIO_BANKS, MAX_NAME_LENGTH etc. globally)
 #include "util.hpp"   // For kernel::util functions
+
+#include "cli.hpp"    // Then its own header
 #include "fs.hpp"     // For FileSystem commands
 #include "net.hpp"    // For Network commands and net::MAX_JITTER_BUFFER
 #include "gpio.hpp"   // For GPIO commands
@@ -28,12 +30,12 @@
 #include <cstdio>     // For std::snprintf, std::sscanf
 #include <memory>     // For std::unique_ptr
 
-// kernel::g_platform, kernel::g_scheduler_ptr etc are available via miniOS.hpp (included by cli.hpp)
+// kernel::g_platform, kernel::g_scheduler_ptr etc are available via miniOS.hpp
 
 namespace cli {
 
 // Static member definitions
-std::array<Command, MAX_COMMANDS> CLI::g_commands;
+std::array<Command, MAX_COMMANDS> CLI::g_commands; // Command and MAX_COMMANDS are in 'cli' namespace
 std::atomic<size_t> CLI::g_num_commands{0};
 
 // Definitions for the static CLI state members
@@ -67,8 +69,8 @@ static int cli_net_listen_udp_command(const char* args, kernel::hal::UARTDriverO
 static int cli_net_send_udp_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 static int cli_net_close_socket_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 static int cli_net_sockets_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
-static int cli_net_audio_stream(const char* args, kernel::hal::UARTDriverOps* uart_ops); // Example for net audio
-static int cli_net_jitter(const char* args, kernel::hal::UARTDriverOps* uart_ops);       // Jitter buffer config
+static int cli_net_audio_stream(const char* args, kernel::hal::UARTDriverOps* uart_ops);
+static int cli_net_jitter(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 
 
 // GPIO Commands
@@ -136,8 +138,6 @@ bool CLI::register_command(const char* name, CommandHandler handler, const char*
     if (current_num >= MAX_COMMANDS) {
         return false; // Max commands reached
     }
-    // This part needs to be thread-safe if commands can be registered concurrently
-    // For typical embedded CLI, registration is at init time, so direct array access is okay.
     g_commands[current_num] = {name, handler, help_text};
     g_num_commands.store(current_num + 1, std::memory_order_release);
     return true;
@@ -148,42 +148,32 @@ bool CLI::process_line(std::string_view line, kernel::hal::UARTDriverOps* uart_o
         return false;
     }
 
-    // Trim leading/trailing whitespace (optional, but good for robustness)
     size_t first = line.find_first_not_of(" \t\r\n");
-    if (first == std::string_view::npos) return false; // Line is all whitespace
+    if (first == std::string_view::npos) return false; 
     size_t last = line.find_last_not_of(" \t\r\n");
     line = line.substr(first, (last - first + 1));
 
     if (line.empty()) return false;
 
-    // Find the first space to separate command name from arguments
     size_t space_pos = line.find(' ');
     std::string_view command_name_sv;
-    const char* args_ptr = nullptr; // Null if no arguments
+    const char* args_ptr = nullptr; 
 
-    if (space_pos == std::string_view::npos) { // No arguments
+    if (space_pos == std::string_view::npos) { 
         command_name_sv = line;
     } else {
         command_name_sv = line.substr(0, space_pos);
-        // Arguments start after the space. Ensure args_ptr points to valid memory.
-        // string_view's data() is not guaranteed null-terminated if it's a substring.
-        // For passing to C-style functions, we might need to copy or be careful.
-        // Most command handlers will parse args themselves. We pass the start of args.
         if (space_pos + 1 < line.length()) {
-             // This is safe if line is from cmd_buffer_ which is null terminated after idx
              args_ptr = line.data() + space_pos + 1;
         }
     }
     
-    // Convert command_name_sv to a C-string for strcmp if needed, or iterate and compare
-    // Assuming command names in g_commands are short and comparison is efficient.
-    // For safety with string_view, can copy to a temp buffer for strcmp if names are complex.
-    std::string command_name_str(command_name_sv); // Temporary C++ string for safe comparison
+    std::string command_name_str(command_name_sv); 
 
     size_t current_num_cmds = g_num_commands.load(std::memory_order_relaxed);
     for (size_t i = 0; i < current_num_cmds; ++i) {
         if (g_commands[i].name && command_name_str == g_commands[i].name) {
-            g_commands[i].handler(args_ptr, uart_ops); // Pass potentially null args_ptr
+            g_commands[i].handler(args_ptr, uart_ops); 
             return true;
         }
     }
@@ -191,63 +181,59 @@ bool CLI::process_line(std::string_view line, kernel::hal::UARTDriverOps* uart_o
     uart_ops->puts("Unknown command: ");
     uart_ops->puts(command_name_str.c_str());
     uart_ops->puts("\n");
-    return true; // Command processed (even if unknown)
+    return true; 
 }
 
-// cli_thread_entry is static, so it accesses static members of CLI
 void CLI::cli_thread_entry(void* uart_ops_ptr) {
-    if (!uart_ops_ptr) return; // Critical error, cannot operate
+    if (!uart_ops_ptr) return; 
     kernel::hal::UARTDriverOps* uart_ops = static_cast<kernel::hal::UARTDriverOps*>(uart_ops_ptr);
 
-    CLI::init(uart_ops); // Initialize commands if not done elsewhere globally
+    CLI::init(uart_ops); 
 
     uart_ops->puts("\n[miniOS CLI v1.7]\nType 'help' for available commands.\n");
     
-    cmd_buffer_idx_ = 0; // Reset buffer index for this session/thread
-    cmd_buffer_.fill('\0'); // Clear buffer
+    cmd_buffer_idx_ = 0; 
+    cmd_buffer_.fill('\0'); 
 
     while (true) {
         uart_ops->puts("mOS> ");
-        char c = uart_ops->getc_blocking(); // Blocking read
+        char c = uart_ops->getc_blocking(); 
 
-        if (c == '\r' || c == '\n') { // Enter key
-            uart_ops->putc('\n'); // Echo newline
+        if (c == '\r' || c == '\n') { 
+            uart_ops->putc('\n'); 
             if (cmd_buffer_idx_ > 0) {
-                cmd_buffer_[cmd_buffer_idx_] = '\0'; // Null-terminate command
+                cmd_buffer_[cmd_buffer_idx_] = '\0'; 
 
-                // Add to history
                 if (history_count_ < MAX_HISTORY) {
                     kernel::util::memcpy(command_history_[history_count_].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
                     history_count_++;
-                } else { // History full, shift old entries
+                } else { 
                     for (size_t i = 1; i < MAX_HISTORY; ++i) {
                         command_history_[i - 1] = command_history_[i];
                     }
                     kernel::util::memcpy(command_history_[MAX_HISTORY - 1].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
                 }
-                history_idx_ = history_count_; // Reset history navigation index to newest entry
+                history_idx_ = history_count_; 
 
                 std::string_view cmd_line_sv(cmd_buffer_.data(), cmd_buffer_idx_);
                 process_line(cmd_line_sv, uart_ops);
-                cmd_buffer_idx_ = 0; // Reset for next command
+                cmd_buffer_idx_ = 0; 
                 cmd_buffer_.fill('\0');
             }
-        } else if (c == '\b' || c == 127) { // Backspace or DEL
+        } else if (c == '\b' || c == 127) { 
             if (cmd_buffer_idx_ > 0) {
                 cmd_buffer_idx_--;
-                cmd_buffer_[cmd_buffer_idx_] = '\0'; // Erase character from buffer
-                uart_ops->puts("\b \b"); // Erase on console (back, space, back)
+                cmd_buffer_[cmd_buffer_idx_] = '\0'; 
+                uart_ops->puts("\b \b"); 
             }
-        } else if (c == '\t') { // Tab for completion (placeholder)
-            // Implement tab completion logic here
+        } else if (c == '\t') { 
             // uart_ops->puts("[TAB COMPLETION TODO]");
-        } else if (c >= ' ' && c <= '~') { // Printable characters
+        } else if (c >= ' ' && c <= '~') { 
             if (cmd_buffer_idx_ < MAX_COMMAND_LENGTH - 1) {
                 cmd_buffer_[cmd_buffer_idx_++] = c;
-                uart_ops->putc(c); // Echo character
+                uart_ops->putc(c); 
             }
         }
-        // Arrow keys for history (platform-dependent escape sequences) would be handled here too.
     }
 }
 
@@ -256,10 +242,9 @@ void CLI::cli_thread_entry(void* uart_ops_ptr) {
 static int cli_help_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     if (!uart_ops) return -1;
     if (args && kernel::util::strlen(args) > 0) {
-        // Search for specific command help
         for (size_t i = 0; i < CLI::g_num_commands.load(std::memory_order_relaxed); ++i) {
             if (CLI::g_commands[i].name && kernel::util::strcmp(CLI::g_commands[i].name, args) == 0) {
-                uart_ops->puts(args); // Command name
+                uart_ops->puts(args); 
                 if (CLI::g_commands[i].help_text) {
                     uart_ops->puts(": ");
                     uart_ops->puts(CLI::g_commands[i].help_text);
@@ -294,21 +279,21 @@ static int cli_echo_command(const char* args, kernel::hal::UARTDriverOps* uart_o
 }
 
 static int cli_clear_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    (void)args; // Unused
+    (void)args; 
     if (!uart_ops) return -1;
-    uart_ops->puts("\033[2J\033[H"); // ANSI escape code to clear screen and home cursor
+    uart_ops->puts("\033[2J\033[H"); 
     return 0;
 }
 
 static int cli_history_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    (void)args; // Unused
+    (void)args; 
     if (!uart_ops) return -1;
     uart_ops->puts("Command History:\n");
     for (size_t i = 0; i < CLI::history_count_; ++i) {
         char num_buf[8];
         std::snprintf(num_buf, sizeof(num_buf), "%2zu: ", i + 1);
         uart_ops->puts(num_buf);
-        uart_ops->puts(CLI::command_history_[i].data()); // command_history_ is array of arrays of char
+        uart_ops->puts(CLI::command_history_[i].data()); 
         uart_ops->putc('\n');
     }
     return 0;
@@ -367,7 +352,7 @@ static int cli_gpio_read(const char* args, kernel::hal::UARTDriverOps* uart_ops)
             return -1;
         }
         kernel::hal::gpio::PinState state = kernel::g_gpio_manager.read_pin(static_cast<uint32_t>(bank), static_cast<uint32_t>(pin));
-        uart_ops->puts("GPIO["); uart_ops->puts(args); uart_ops->puts("] state: "); // Re-print args for context
+        uart_ops->puts("GPIO["); uart_ops->puts(args); uart_ops->puts("] state: "); 
         uart_ops->puts(state == kernel::hal::gpio::PinState::HIGH ? "HIGH\n" : "LOW\n");
     } else {
         if (uart_ops) uart_ops->puts("Usage: gpioread <bank> <pin>\n");
@@ -410,9 +395,9 @@ static int cli_gpio_write(const char* args, kernel::hal::UARTDriverOps* uart_ops
 
 // --- Network Command Implementations ---
 static int cli_net_ifconfig_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    (void)args; // Unused for now, could specify interface in future
+    (void)args; 
     if (!uart_ops) return -1;
-    kernel::g_net_manager.print_if_config(0, uart_ops); // Assuming interface 0
+    kernel::g_net_manager.print_if_config(0, uart_ops); 
     return 0;
 }
 
@@ -424,7 +409,7 @@ static int cli_net_ping_command(const char* args, kernel::hal::UARTDriverOps* ua
     uint32_t ip_addr_val;
     if (kernel::util::ipv4_to_uint32(args, ip_addr_val)) {
         net::IPv4Addr target_ip{ip_addr_val};
-        kernel::g_net_manager.ping(target_ip, 3, uart_ops); // 3 pings
+        kernel::g_net_manager.ping(target_ip, 3, uart_ops); 
     } else {
         uart_ops->puts("Invalid IP address format.\n");
     }
@@ -436,27 +421,20 @@ static int cli_net_audio_stream(const char* args, kernel::hal::UARTDriverOps* ua
         if(uart_ops) uart_ops->puts("Usage: netaudio <sink|source> <ip> <port> <channels>\n");
         return -1;
     }
-    // This command would typically configure a DSP node like NetworkAudioSinkSource
-    // For now, let's assume it just prints info or sets up a simple test stream.
-    // Example: "netaudio sink 192.168.1.100 12345 2"
     char mode[10], ip_str[16];
     int port, channels;
     if (std::sscanf(args, "%9s %15s %d %d", mode, ip_str, &port, &channels) == 4) {
-        // Further validation and setup
         uart_ops->puts("Network audio streaming configured (simulated): Mode=");
         uart_ops->puts(mode); uart_ops->puts(", IP="); uart_ops->puts(ip_str);
         // ... print port and channels
         uart_ops->puts("\nTo use, add and configure 'netaudio' DSP node.\n");
 
-        // If we wanted to directly test sending a packet:
         if (kernel::util::strcmp(mode, "sink") == 0 && kernel::g_net_manager.is_initialized()) {
             uint32_t ip_val;
             if (kernel::util::ipv4_to_uint32(ip_str, ip_val) && port > 0 && port <= 65535 && channels > 0) {
                 net::IPv4Addr ip{ip_val};
-                // Create a dummy packet
-                net::Packet packet{.dst_ip = ip, .dst_port = static_cast<uint16_t>(port), .data_len = 0, .audio_channels = static_cast<uint8_t>(channels)};
+                net::Packet packet{.dst_ip = ip, .dst_port = static_cast<uint16_t>(port), .src_ip={}, .src_port=0, .timestamp_us=0, .data={}, .data_len = 0, .priority=0, .audio_channels = static_cast<uint8_t>(channels)};
                 packet.data_len = snprintf(reinterpret_cast<char*>(packet.data.data()), packet.data.size(), "TestNetAudio");
-                // kernel::g_net_manager.send_udp_packet(some_socket_id, packet); // Need a socket
                 uart_ops->puts("Simulated packet prepared. Use dsp node for actual streaming.\n");
             }
         }
@@ -470,17 +448,17 @@ static int cli_net_audio_stream(const char* args, kernel::hal::UARTDriverOps* ua
 static int cli_net_jitter(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     if (!uart_ops || !args) return -1;
     int socket_idx = -1;
-    unsigned int size = 0; // Jitter buffer size in packets
+    unsigned int size = 0; 
 
     if (args && std::sscanf(args, "%d %u", &socket_idx, &size) == 2 &&
-        socket_idx >= 0 && size > 0 && size <= net::MAX_JITTER_BUFFER) {
+        socket_idx >= 0 && size <= net::MAX_JITTER_BUFFER) { // Allow size 0 to disable
         if (kernel::g_net_manager.set_jitter_buffer_size(socket_idx, size)) {
             if (uart_ops) uart_ops->puts("Jitter buffer size set.\n");
         } else {
             if (uart_ops) uart_ops->puts("Error setting jitter buffer (invalid socket or manager not init).\n");
         }
     } else {
-        if (uart_ops) uart_ops->puts("Usage: jitter <socket_idx> <size_packets (1-8)>\n");
+        if (uart_ops) uart_ops->puts("Usage: jitter <socket_idx> <size_packets (0-8)>\n");
     }
     return 0;
 }
@@ -493,7 +471,7 @@ static int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
         return -1;
     }
     char type_str[32] = {0};
-    char name_str[kernel::MAX_NAME_LENGTH] = {0};
+    char name_str[MAX_NAME_LENGTH] = {0}; // Use global MAX_NAME_LENGTH
 
     if (std::sscanf(args, "%31s %31s", type_str, name_str) == 2) {
         std::string_view type_sv(type_str);
@@ -533,7 +511,7 @@ static int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
         }
 
         if (node_ptr) {
-            if (kernel::g_audio_system.dsp_graph.add_node(std::move(node_ptr))) {
+            if (kernel::g_audio_system.get_dsp_graph().add_node(std::move(node_ptr))) {
                 if (uart_ops) {
                     uart_ops->puts("DSP node added: ");
                     uart_ops->puts(name_str);
@@ -541,7 +519,6 @@ static int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
                 }
             } else {
                 if (uart_ops) uart_ops->puts("Failed to add DSP node (already exists or error).\n");
-                // unique_ptr will auto-delete if add_node didn't take ownership
             }
         }
     } else {
@@ -557,7 +534,7 @@ static int cli_dsp_remove(const char* args, kernel::hal::UARTDriverOps* uart_ops
         return -1;
     }
     std::string_view name_sv(args);
-    if (kernel::g_audio_system.dsp_graph.remove_node(name_sv)) {
+    if (kernel::g_audio_system.get_dsp_graph().remove_node(name_sv)) {
         if (uart_ops) {
             uart_ops->puts("DSP node removed: ");
             uart_ops->puts(args);
@@ -583,39 +560,33 @@ static int cli_dsp_config(const char* args, kernel::hal::UARTDriverOps* uart_ops
     size_t first_space = args_sv.find(' ');
     
     std::string_view name_to_config_sv;
-    const char* config_args_for_node_ptr = nullptr; // Pointer to C-string for node args
+    const char* config_args_for_node_ptr = nullptr; 
 
-    if (first_space == std::string_view::npos) { // Only name provided
+    if (first_space == std::string_view::npos) { 
         name_to_config_sv = args_sv;
-        // config_args_for_node_ptr remains nullptr, node's configure should handle this (e.g. print usage)
     } else {
         name_to_config_sv = args_sv.substr(0, first_space);
         if (first_space + 1 < args_sv.length()) {
-            // Node arguments start after the first space.
-            // The node's configure function will parse from this pointer.
-            // args is already a const char*, so we can get a pointer into it.
             config_args_for_node_ptr = args + first_space + 1;
         }
     }
     
-    std::string name_to_config_cstr(name_to_config_sv); // Create C-string for node name lookup
+    std::string name_to_config_cstr(name_to_config_sv); 
 
-    if (kernel::g_audio_system.dsp_graph.configure_node(name_to_config_cstr.c_str(), config_args_for_node_ptr, uart_ops)) {
-        // configure_node should provide feedback via uart_ops.
-        // No explicit success message here unless configure_node doesn't.
+    if (kernel::g_audio_system.get_dsp_graph().configure_node(name_to_config_cstr.c_str(), config_args_for_node_ptr, uart_ops)) {
+        // Silence, configure_node should provide feedback.
     } else {
-        // configure_node in DSPGraph already prints "Node not found" if applicable.
-        // Or, it might print a config error from the node itself.
+        // Silence, configure_node should provide feedback.
     }
     return 0;
 }
 
 static int cli_dsp_reset(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    (void)args; // Unused
+    (void)args; 
     if (!uart_ops) {
         return -1;
     }
-    kernel::g_audio_system.dsp_graph.reset();
+    kernel::g_audio_system.get_dsp_graph().reset();
     if (uart_ops) {
         uart_ops->puts("DSP graph reset.\n");
     }
@@ -626,25 +597,29 @@ static int cli_dsp_reset(const char* args, kernel::hal::UARTDriverOps* uart_ops)
 static int cli_reboot_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     (void)args;
     if (uart_ops) uart_ops->puts("Rebooting system...\n");
-    // kernel::g_platform->reboot(); // Or similar platform-specific call
+    if (kernel::g_platform) {
+        // kernel::g_platform->reboot(); // Assuming a reboot method exists in Platform HAL
+    }
     return 0;
 }
 static int cli_kernel_stats_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     (void)args;
-    kernel::get_kernel_stats(uart_ops); // Call the kernel function
+    kernel::get_kernel_stats(uart_ops); 
     return 0;
 }
 static int cli_trace_dump_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     (void)args;
-    kernel::dump_trace_buffer(uart_ops); // Call the kernel function
+    kernel::dump_trace_buffer(uart_ops); 
     return 0;
 }
 
 static int cli_fs_cat_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     if (!uart_ops || !args || kernel::util::strlen(args) == 0) {
-        if(uart_ops) uart_ops->puts("Usage: cat <filepath>\n"); return -1;
+        if(uart_ops) { uart_ops->puts("Usage: cat <filepath>\n"); }
+        return -1;
     }
     std::string content;
+    // Assuming FileSystem::read_file(std::string_view, std::string&) overload exists
     if (kernel::g_file_system.read_file(args, content)) {
         uart_ops->puts(content.c_str());
         uart_ops->putc('\n');
@@ -654,21 +629,20 @@ static int cli_fs_cat_command(const char* args, kernel::hal::UARTDriverOps* uart
     return 0;
 }
 
-// Add stubs or implementations for other declared static cli functions
 static int cli_fs_mkfile_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if(!uart_ops || !args || kernel::util::strlen(args) == 0) { if(uart_ops) uart_ops->puts("Usage: mkfile <filepath>\n"); return -1; }
+    if(!uart_ops || !args || kernel::util::strlen(args) == 0) { if(uart_ops) { uart_ops->puts("Usage: mkfile <filepath>\n"); } return -1; }
     if(kernel::g_file_system.create_file(args, false)) uart_ops->puts("File created.\n");
     else uart_ops->puts("Error creating file.\n");
     return 0;
 }
 static int cli_fs_mkdir_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if(!uart_ops || !args || kernel::util::strlen(args) == 0) { if(uart_ops) uart_ops->puts("Usage: mkdir <path>\n"); return -1; }
-    if(kernel::g_file_system.create_file(args, true)) uart_ops->puts("Directory created.\n"); // create_file with is_dir=true
+    if(!uart_ops || !args || kernel::util::strlen(args) == 0) { if(uart_ops) { uart_ops->puts("Usage: mkdir <path>\n"); } return -1; }
+    if(kernel::g_file_system.create_file(args, true)) uart_ops->puts("Directory created.\n"); 
     else uart_ops->puts("Error creating directory.\n");
     return 0;
 }
 static int cli_fs_rm_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if(!uart_ops || !args || kernel::util::strlen(args) == 0) { if(uart_ops) uart_ops->puts("Usage: rm <path>\n"); return -1; }
+    if(!uart_ops || !args || kernel::util::strlen(args) == 0) { if(uart_ops) { uart_ops->puts("Usage: rm <path>\n"); } return -1; }
     if(kernel::g_file_system.delete_file(args)) uart_ops->puts("File/directory removed.\n");
     else uart_ops->puts("Error removing file/directory.\n");
     return 0;
@@ -678,16 +652,16 @@ static int cli_net_listen_udp_command(const char* args, kernel::hal::UARTDriverO
     if(!uart_ops || !args) { if(uart_ops) uart_ops->puts("Usage: listen_udp <port>\n"); return -1; }
     int port;
     if(std::sscanf(args, "%d", &port) == 1 && port > 0 && port <= 65535) {
-        int sock_idx = kernel::g_net_manager.create_udp_socket(net::IPv4Addr{0}, static_cast<uint16_t>(port)); // Listen on all interfaces
-        if(sock_idx >= 0) { char b[32]; std::snprintf(b,sizeof(b),"Listening on UDP port %d, socket %d\n", port, sock_idx); uart_ops->puts(b); }
+        int sock_idx = kernel::g_net_manager.create_udp_socket(net::IPv4Addr{0}, static_cast<uint16_t>(port)); 
+        if(sock_idx >= 0) { char b[64]; std::snprintf(b,sizeof(b),"Listening on UDP port %d, socket %d\n", port, sock_idx); uart_ops->puts(b); }
         else uart_ops->puts("Error creating UDP socket.\n");
     } else uart_ops->puts("Invalid port.\n");
     return 0;
 }
 static int cli_net_send_udp_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if(!uart_ops || !args) { /* Usage */ return -1;}
-    char ip_str[16]; int port; char data_str[64]; // Limited data for CLI send
-    if(std::sscanf(args, "%15s %d %63s", ip_str, &port, data_str) == 3) {
+    if(!uart_ops || !args) { if(uart_ops) uart_ops->puts("Usage: send_udp <ip> <port> <data>\n"); return -1;}
+    char ip_str[16]; int port; char data_str[128]; 
+    if(std::sscanf(args, "%15s %d %127s", ip_str, &port, data_str) == 3) {
         uint32_t ip_val;
         if(kernel::util::ipv4_to_uint32(ip_str, ip_val) && port > 0 && port <= 65535) {
             net::IPv4Addr dst_ip{ip_val};
@@ -695,10 +669,10 @@ static int cli_net_send_udp_command(const char* args, kernel::hal::UARTDriverOps
             p.dst_ip = dst_ip;
             p.dst_port = static_cast<uint16_t>(port);
             p.data_len = kernel::util::strlen(data_str);
+            if (p.data_len > p.data.size()) p.data_len = p.data.size(); // Prevent overflow
             kernel::util::memcpy(p.data.data(), data_str, p.data_len);
-            // Need a source socket to send from. Use a dynamic one or pre-configured.
-            // For simplicity, let's assume a default send socket or create temp one.
-            int sock_idx = kernel::g_net_manager.create_udp_socket(net::IPv4Addr{0}, 0); // Ephemeral port
+            
+            int sock_idx = kernel::g_net_manager.create_udp_socket(net::IPv4Addr{0}, 0); 
             if (sock_idx >= 0) {
                 if(kernel::g_net_manager.send(sock_idx, p, true)) uart_ops->puts("UDP packet sent.\n");
                 else uart_ops->puts("Error sending UDP packet.\n");
@@ -709,7 +683,7 @@ static int cli_net_send_udp_command(const char* args, kernel::hal::UARTDriverOps
     return 0;
 }
 static int cli_net_close_socket_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if(!uart_ops || !args) { /* Usage */ return -1; }
+    if(!uart_ops || !args) { if(uart_ops) uart_ops->puts("Usage: close_sock <socket_idx>\n"); return -1; }
     int sock_idx;
     if(std::sscanf(args, "%d", &sock_idx) == 1 && sock_idx >= 0) {
         if(kernel::g_net_manager.close_socket(sock_idx)) uart_ops->puts("Socket closed.\n");
@@ -725,7 +699,6 @@ static int cli_net_sockets_command(const char* args, kernel::hal::UARTDriverOps*
 }
 
 
-// Ensure all other static command handlers declared above are defined, even if as stubs.
 bool CLI::process_script(const char* filename, kernel::hal::UARTDriverOps* uart_ops) {
     if (!filename || !uart_ops || !kernel::g_platform) return false;
     
@@ -746,31 +719,33 @@ bool CLI::process_script(const char* filename, kernel::hal::UARTDriverOps* uart_
         std::string_view line_sv;
         if (line_end == std::string_view::npos) {
             line_sv = content_sv.substr(line_start);
-            line_start = content_sv.length(); // End of script
+            line_start = content_sv.length(); 
         } else {
             line_sv = content_sv.substr(line_start, line_end - line_start);
             line_start = line_end + 1;
         }
 
-        // Trim whitespace and skip comments (e.g., lines starting with '#')
         size_t first_char = line_sv.find_first_not_of(" \t\r");
         if (first_char == std::string_view::npos || line_sv[first_char] == '#') {
-            continue; // Skip empty or comment line
+            continue; 
         }
         line_sv = line_sv.substr(first_char);
-        // Could also trim trailing whitespace here.
+        
+        size_t last_char = line_sv.find_last_not_of(" \t\r");
+         if (last_char != std::string_view::npos) {
+            line_sv = line_sv.substr(0, last_char + 1);
+        } else { // line was all whitespace after first_char
+            continue;
+        }
+
 
         if (!line_sv.empty()) {
-            // Echo command from script
             uart_ops->puts("scr> ");
-            // For string_view, need to print carefully if not null-terminated
-            std::string temp_line(line_sv); // Make temp C-string
+            std::string temp_line(line_sv); 
             uart_ops->puts(temp_line.c_str());
             uart_ops->putc('\n');
             
             process_line(line_sv, uart_ops);
-            // Add a small delay or yield if script commands are very rapid
-            // kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id()); // Example
         }
     }
     uart_ops->puts("Script execution finished.\n");
