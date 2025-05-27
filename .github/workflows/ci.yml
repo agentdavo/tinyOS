@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# .github/workflows/ci.yml - CI pipeline for miniOS v1.6
+# Builds, tests, and analyzes miniOS on ARM64 and RISC-V in QEMU
+# @version 1.6
+
+name: miniOS CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [ arm64, riscv64 ]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu \
+            qemu-system-arm qemu-system-riscv64 clang-tidy doxygen
+      - name: Run static analysis
+        run: |
+          clang-tidy --quiet -p . *.cpp *.hpp -- -I. -std=c++20 \
+            -march=${{ matrix.arch == 'arm64' && 'armv8-a+simd' || 'rv64imafdv' }}
+      - name: Build miniOS (${{ matrix.arch }})
+        run: |
+          make clean
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            make
+          else
+            sed -i 's/# CC = riscv64-linux-gnu-g++/CC = riscv64-linux-gnu-g++/' Makefile
+            sed -i 's/# AS = riscv64-linux-gnu-gcc/AS = riscv64-linux-gnu-gcc/' Makefile
+            sed -i 's/# LD = riscv64-linux-gnu-ld/LD = riscv64-linux-gnu-ld/' Makefile
+            sed -i 's/# OBJCOPY = riscv64-linux-gnu-objcopy/OBJCOPY = riscv64-linux-gnu-objcopy/' Makefile
+            sed -i 's/# CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -march=rv64imafdv -mabi=lp64 -std=c++20 -I./CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -march=rv64imaf -mabi=lp64 -std=c++20 -I./' Makefile
+            sed -i 's/# ASFLAGS = -march=rv64imaf -mabi=lp64/ASFLAGS = -march=rv64imaf -mabi=lp64/' Makefile
+            sed -i 's/# LDFLAGS = -T linker_rv64.ld/LDFLAGS = -T linker_rv64.ld/' Makefile
+            sed -i 's/# OBJ =.*$/OBJ = miniOS.o util_cpp20.o cli.o dsp.o audio.o demo_cli_dsp.o trace.o fs.o net.o test_framework.o hal_qemu_rv64ima.o cpu_rv64.o gpio.o/' Makefile
+            make
+          fi
+      - name: Run tests in QEMU (${{ matrix.arch }})
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            echo -e "test\n" | qemu-system-aarch64 -M virt -cpu cortex-a53 -smp 4 -m 128M -nographic -kernel miniOS.bin
+          else
+            echo -e "test\n" | qemu-system-riscv64 -M virt -cpu rv64 -smp 4 -m 128M -nographic -kernel miniOS.bin
+          fi
+      - name: Generate documentation
+        run: |
+          doxygen Doxyfile
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: miniOS-${{ matrix.arch }}
+          path: |
+            miniOS.bin
+            docs/html/
+            docs/latex/refman.pdf
