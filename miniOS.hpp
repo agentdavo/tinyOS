@@ -47,8 +47,9 @@ constexpr size_t GPIO_BANKS = 4;
 constexpr size_t GPIO_PINS_PER_BANK = 64;
 
 // Forward declarations for types used by HAL from other namespaces
-namespace audio { class AudioBuffer; } // Used by hal::i2s
-namespace kernel { namespace dsp { class DSPGraph; } } // Used by audio::AudioSystem, which is used by kernel::g_audio_system
+// and for types used between subsystems if include order is tricky.
+namespace audio { class AudioBuffer; } // Used by hal::i2s and SPSCQueue_AudioBuffer
+namespace kernel { namespace dsp { class DSPGraph; } } // Used by audio::AudioSystem
 
 namespace kernel {
 
@@ -142,7 +143,7 @@ struct TCB {
     uint64_t regs[31]; 
     uint64_t sp; 
     uint64_t pc; 
-    uint64_t pstate; 
+    uint64_t pstate; // Renamed from 'status'
     void (*entry_point)(void*); 
     void* arg_ptr; 
     uint8_t* stack_base; 
@@ -317,7 +318,7 @@ namespace hal {
         
         virtual bool submit_filled_buffer_to_hw_tx(uint32_t instance_id, audio::AudioBuffer* buffer_to_send) = 0;
         
-        virtual void convert_hw_format_to_dsp_format(audio::AudioBuffer* buffer, const i2s::Format& format) = 0; // Made non-const AudioBuffer*
+        virtual void convert_hw_format_to_dsp_format(audio::AudioBuffer* buffer, const i2s::Format& format) = 0; 
         virtual void convert_dsp_format_to_hw_format(audio::AudioBuffer* buffer, const i2s::Format& format) = 0;
     };
 
@@ -337,7 +338,7 @@ namespace hal {
     struct TimerDriverOps {
         virtual ~TimerDriverOps() = default;
         virtual void init_system_timer_properties(uint64_t freq_hz_override = 0) = 0; 
-        virtual void init_core_timer_interrupt(uint32_t core_id) = 0; 
+        virtual void init_core_timer_interrupt(uint32_t core_id) = 0; // Takes core_id
         virtual void ack_core_timer_interrupt(uint32_t core_id) = 0;
         virtual bool add_software_timer(timer::SoftwareTimer* timer) = 0;
         virtual bool remove_software_timer(timer::SoftwareTimer* timer) = 0;
@@ -397,8 +398,8 @@ namespace hal {
         virtual gpio::GPIODriverOps* get_gpio_ops() = 0; 
         virtual WatchdogOps* get_watchdog_ops() = 0; 
 
-        virtual void early_init_platform() = 0; 
-        virtual void early_init_core(uint32_t core_id) = 0;   
+        virtual void early_init_platform() = 0; // Renamed
+        virtual void early_init_core(uint32_t core_id) = 0; // Renamed and takes core_id  
 
         virtual void panic(const char* msg, const char* file, int line) = 0; 
         virtual void reboot_system() = 0; 
@@ -418,14 +419,17 @@ void set_power_mode(bool enter_low_power);
 void configure_memory_protection(TCB* tcb, bool enable_for_task); 
 void get_kernel_stats(hal::UARTDriverOps* uart_ops);
 
-extern Spinlock g_audio_system_lock; // Example global lock
+extern Spinlock g_audio_system_lock; 
 
 } // namespace kernel
 
 // Subsystem includes (after kernel namespace and HAL are defined)
+// Corrected order: dsp.hpp needs audio.hpp for MAX_AUDIO_CHANNELS,
+// but audio.hpp needs dsp.hpp for kernel::dsp::DSPGraph.
+// This circular dependency is resolved by forward declaring kernel::dsp::DSPGraph globally.
 #include "util.hpp"    // General utilities
-#include "dsp.hpp"     // DSPNode uses kernel::hal::UARTDriverOps, net::IPv4Addr (via #include "net.hpp")
 #include "audio.hpp"   // AudioSystem uses kernel::dsp::DSPGraph, kernel::hal::i2s, kernel::FixedMemoryPool
+#include "dsp.hpp"     // DSPNode uses kernel::hal::UARTDriverOps, net::IPv4Addr (via #include "net.hpp"), audio::MAX_AUDIO_CHANNELS
 #include "cli.hpp"     // CLI uses kernel::hal::UARTDriverOps
 #include "fs.hpp"      // FileSystem uses kernel::hal::UARTDriverOps
 #include "gpio.hpp"    // GPIOManager uses kernel::hal::gpio::GPIODriverOps, kernel::Spinlock, kernel::TCB

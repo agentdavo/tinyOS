@@ -18,8 +18,8 @@
  * @see miniOS.hpp, util.hpp, cli.hpp, dsp.hpp, audio.hpp, trace.hpp, fs.hpp, net.hpp, gpio.hpp
  */
 
-#include "miniOS.hpp" // Should be first for precompiled headers, and defines kernel types
-#include "util.hpp"   // Now included after kernel types are known via miniOS.hpp
+#include "miniOS.hpp" 
+#include "util.hpp"   
 #include "cli.hpp"
 #include "dsp.hpp"
 #include "audio.hpp"
@@ -27,10 +27,10 @@
 #include "fs.hpp"
 #include "net.hpp"
 #include "gpio.hpp"
-#include <cstring>    // For std::memcpy, std::memset, std::strlen, std::strcmp etc.
-#include <cstdio>     // For std::sscanf, std::snprintf (used in get_kernel_stats)
-#include <cassert>    // For assert (if used)
-#include <algorithm>  // For std::max in FixedMemoryPool
+#include <cstring>    
+#include <cstdio>     
+#include <cassert>    
+#include <algorithm>  // For std::max
 
 // Declare demo and test registration functions
 namespace demo { void register_demo_commands(); }
@@ -40,7 +40,7 @@ namespace kernel {
 
 hal::Platform* g_platform = nullptr; 
 Scheduler* g_scheduler_ptr = nullptr; 
-volatile bool g_bss_cleared_smp_flag = false; // Flag for SMP core synchronization
+volatile bool g_bss_cleared_smp_flag = false; 
 alignas(64) uint8_t g_audio_pool_mem[64 * 1024]; 
 FixedMemoryPool g_audio_pool; 
 alignas(64) uint8_t g_software_timer_obj_pool_mem[MAX_SOFTWARE_TIMERS * sizeof(kernel::hal::timer::SoftwareTimer)]; 
@@ -50,17 +50,15 @@ trace::TraceManager g_trace_manager;
 fs::FileSystem g_file_system; 
 net::NetManager g_net_manager; 
 gpio::GPIOManager g_gpio_manager; 
-Spinlock g_irq_handler_lock; // Lock for the main IRQ handler
-Spinlock g_trace_lock; // Lock for trace buffer dumping
-Spinlock g_audio_system_lock; // Global lock for AudioSystem init/critical sections
+Spinlock g_irq_handler_lock; 
+Spinlock g_trace_lock; 
+Spinlock g_audio_system_lock; 
 
-// Define global trace buffer and related atomics (these were missing definitions)
 std::array<TraceEntry, TRACE_BUFFER_SIZE> g_trace_buffer;
 std::atomic<size_t> g_trace_buffer_next_idx{0};
-std::array<std::atomic<size_t>, MAX_CORES> g_trace_overflow_count{}; // Initialize to zeros
+std::array<std::atomic<size_t>, MAX_CORES> g_trace_overflow_count{}; 
 
 
-// Task stacks and TCBs
 alignas(16) std::array<std::array<uint8_t, DEFAULT_STACK_SIZE>, MAX_THREADS> g_task_stacks;
 std::array<TCB, MAX_THREADS> g_task_tcbs;
 alignas(64) std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
@@ -68,15 +66,16 @@ alignas(64) std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
 uint32_t Spinlock::next_lock_id_ = 0;
 
 Spinlock::Spinlock() : lock_id_(next_lock_id_++) {
-    if (next_lock_id_ >= MAX_LOCKS && g_platform) { // MAX_LOCKS defined in miniOS.hpp
+    // MAX_LOCKS is global, g_platform might not be set here yet.
+    // This check should ideally be done after platform is up or MAX_LOCKS handled differently.
+    // For now, assuming it's okay or g_platform check will prevent panic if it's null.
+    if (next_lock_id_ >= MAX_LOCKS && g_platform) { 
         g_platform->panic("Exceeded maximum number of spinlocks", __FILE__, __LINE__);
     }
 }
 
 void Spinlock::acquire_isr_safe() {
     if (!g_platform || !g_platform->get_irq_ops()) {
-        // Cannot safely disable IRQs or panic, system is in a bad state
-        // Loop forever as a last resort if IRQs can't be disabled
         while(true) {} 
         return;
     }
@@ -84,9 +83,6 @@ void Spinlock::acquire_isr_safe() {
     bool expected = false;
     while (!lock_flag_.compare_exchange_strong(expected, true, std::memory_order_acquire)) {
         expected = false;
-        // In an ISR, we should not spin for long. If this happens often, it's a design issue.
-        // A short pause or specific CPU instruction (like ARM's YIELD) could be used if absolutely necessary,
-        // but generally, spinlocks held by ISRs should be very short-lived.
     }
 }
 
@@ -101,16 +97,10 @@ void Spinlock::release_isr_safe() {
 
 void Spinlock::acquire_general() {
     bool expected = false;
-    // Basic spin with CPU pause, good for user-level locks or short critical sections.
     while (!lock_flag_.compare_exchange_strong(expected, true, std::memory_order_acquire)) {
         expected = false;
-        // On ARM, WFE (Wait For Event) can be used to reduce power while spinning.
-        // Requires SEV (Send Event) on release.
         #if defined(__aarch64__) || defined(__arm__)
         asm volatile("wfe" ::: "memory");
-        #else
-        // For other architectures, a simple CPU relax or yield might be appropriate.
-        // Or just spin. std::this_thread::yield() if available and suitable.
         #endif
     }
 }
@@ -125,33 +115,27 @@ void Spinlock::release_general() {
 bool FixedMemoryPool::init(void* base, size_t num_blocks, size_t block_size_user, size_t alignment_user_data) {
     if (!base || num_blocks == 0 || block_size_user == 0) return false;
     
-    // Ensure alignment is at least sizeof(void*) for the Block header's next pointer.
     size_t actual_alignment = std::max(alignment_user_data, sizeof(Block*));
     if (actual_alignment == 0 || (actual_alignment & (actual_alignment - 1)) != 0) {
-        // Alignment must be a power of 2. Default to sizeof(Block*) if invalid.
         actual_alignment = sizeof(Block*);
     }
 
     ScopedLock lock(pool_lock_); 
-    // Calculate the size of the header, aligned.
     header_actual_size_ = (sizeof(Block) + actual_alignment - 1) & ~(actual_alignment - 1);
     
-    // Calculate total storage size per block: aligned header + user data size, then align the whole block.
-    // The user data itself will start at an aligned offset from the block start.
-    // The start of user data will be: block_start_ptr + header_actual_size_
-    // This address must be aligned to 'alignment_user_data'.
-    // The block_start_ptr itself must be aligned to 'actual_alignment' for the Block struct.
-    // The simplest is to ensure block_storage_size_ makes (block_start + header_actual_size_) aligned.
-    // This is complex. A common approach is to align the start of the user data section within the block.
-    // Total size for one block (header + padding for user data alignment + user data)
-    block_storage_size_ = header_actual_size_ + block_size_user;
-    // Align the entire block_storage_size_ up to ensure subsequent blocks start aligned.
-    block_storage_size_ = (block_storage_size_ + actual_alignment - 1) & ~(actual_alignment - 1);
+    // User data starts after header. Ensure user data start is aligned.
+    // The total block must accommodate this aligned user data.
+    size_t user_data_start_offset = header_actual_size_;
+    if (alignment_user_data > 0) { // Only adjust if specific user alignment is requested
+        user_data_start_offset = (header_actual_size_ + alignment_user_data - 1) & ~(alignment_user_data - 1);
+    }
+    
+    block_storage_size_ = user_data_start_offset + block_size_user;
+    block_storage_size_ = (block_storage_size_ + actual_alignment - 1) & ~(actual_alignment - 1); // Align whole block
 
+    // Update header_actual_size_ to reflect the true offset to user data if it changed due to user_data_start_offset
+    header_actual_size_ = user_data_start_offset;
 
-    // Check if the memory provided for the pool is itself aligned. The 'base' pointer.
-    // If 'base' is not aligned to 'actual_alignment', the first block might be misaligned.
-    // This init assumes 'base' is suitably aligned by the caller.
 
     pool_memory_start_ = static_cast<uint8_t*>(base);
     num_total_blocks_ = num_free_blocks_ = num_blocks;
@@ -159,26 +143,14 @@ bool FixedMemoryPool::init(void* base, size_t num_blocks, size_t block_size_user
 
     uint8_t* current_block_ptr = pool_memory_start_;
     for (size_t i = 0; i < num_total_blocks_; ++i) {
-        // Ensure current_block_ptr is aligned for Block struct
-        void* aligned_block_base = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(current_block_ptr) + actual_alignment - 1) & ~(actual_alignment -1));
-        
-        // Calculate where user data would start if this block was used
-        void* user_data_start_check = static_cast<uint8_t*>(aligned_block_base) + header_actual_size_;
-        if((reinterpret_cast<uintptr_t>(user_data_start_check) % alignment_user_data) != 0) {
-            // This indicates a flaw in block_storage_size calculation or initial base alignment.
-            // For simplicity, this example assumes block_storage_size handles this by its own alignment.
-            // A more robust way:
-            // uintptr_t aligned_user_data_offset = (header_actual_size_ + alignment_user_data -1) & ~(alignment_user_data -1);
-            // block_storage_size_ = aligned_user_data_offset + block_size_user;
-            // block_storage_size_ = (block_storage_size_ + actual_alignment -1) & ~(actual_alignment-1);
-            // And header_actual_size_ would be aligned_user_data_offset.
-        }
-
-
-        Block* block = reinterpret_cast<Block*>(aligned_block_base);
+        // This loop assumes 'base' itself is aligned enough that current_block_ptr will be.
+        // If not, each block might need individual alignment from current_block_ptr.
+        // However, with block_storage_size_ being aligned, subsequent blocks should be aligned
+        // if the first one is.
+        Block* block = reinterpret_cast<Block*>(current_block_ptr);
         block->next = free_head_;
         free_head_ = block;
-        current_block_ptr += block_storage_size_; // Move to the start of the next potential block
+        current_block_ptr += block_storage_size_; 
     }
     return true;
 }
@@ -192,25 +164,14 @@ void* FixedMemoryPool::allocate() {
     Block* block_header = free_head_;
     free_head_ = block_header->next;
     num_free_blocks_--;
-    // User data starts after the Block header
     return static_cast<uint8_t*>(static_cast<void*>(block_header)) + header_actual_size_;
 }
 
 void FixedMemoryPool::free_block(void* user_data_ptr) {
     if (!user_data_ptr) return;
-    // User data pointer is past the header. Calculate header start.
     Block* block_header = reinterpret_cast<Block*>(static_cast<uint8_t*>(user_data_ptr) - header_actual_size_);
     
     ScopedLock lock(pool_lock_);
-    // Basic check: ensure the block is within the pool bounds (optional for performance)
-    // uintptr_t block_addr = reinterpret_cast<uintptr_t>(block_header);
-    // uintptr_t pool_start_addr = reinterpret_cast<uintptr_t>(pool_memory_start_);
-    // if (block_addr < pool_start_addr || block_addr >= pool_start_addr + num_total_blocks_ * block_storage_size_) {
-    //     if (g_platform) g_platform->panic("Freeing block outside pool bounds", __FILE__, __LINE__);
-    //     return;
-    // }
-    // TODO: Could add check for double free by iterating free_head_, but costly.
-
     block_header->next = free_head_;
     free_head_ = block_header;
     num_free_blocks_++;
@@ -219,9 +180,9 @@ void FixedMemoryPool::free_block(void* user_data_ptr) {
 template<typename T, size_t Capacity>
 bool SPSCQueue<T, Capacity>::enqueue(T* item) noexcept {
     size_t current_tail = tail_.load(std::memory_order_acquire);
-    size_t next_tail = (current_tail + 1) & (Capacity - 1); // Capacity is a power of 2
+    size_t next_tail = (current_tail + 1) & (Capacity - 1); 
     if (next_tail == head_.load(std::memory_order_acquire)) {
-        return false; // Queue full
+        return false; 
     }
     items_[current_tail] = item;
     tail_.store(next_tail, std::memory_order_release);
@@ -232,7 +193,7 @@ template<typename T, size_t Capacity>
 T* SPSCQueue<T, Capacity>::dequeue() noexcept {
     size_t current_head = head_.load(std::memory_order_acquire);
     if (current_head == tail_.load(std::memory_order_acquire)) {
-        return nullptr; // Queue empty
+        return nullptr; 
     }
     T* item = items_[current_head];
     head_.store((current_head + 1) & (Capacity - 1), std::memory_order_release);
@@ -241,7 +202,7 @@ T* SPSCQueue<T, Capacity>::dequeue() noexcept {
 
 template class SPSCQueue<audio::AudioBuffer, 16>; 
 
-TCB* EDFPolicy::select_next_task(uint32_t core_id, TCB* /*current_task*/) { // Marked current_task as unused
+TCB* EDFPolicy::select_next_task(uint32_t core_id, TCB* /*current_task*/) { 
     if (core_id >= MAX_CORES || !g_scheduler_ptr) {
         if(g_platform) g_platform->panic("EDFPolicy: Invalid args or scheduler missing", __FILE__, __LINE__);
         return nullptr;
@@ -249,46 +210,41 @@ TCB* EDFPolicy::select_next_task(uint32_t core_id, TCB* /*current_task*/) { // M
 
     TCB* earliest_task = nullptr;
     uint64_t earliest_deadline = UINT64_MAX;
-    TCB* prev_in_list = nullptr;
     TCB* chosen_prev_in_list = nullptr;
     int chosen_priority = -1;
 
-    // This lock needs to be taken carefully. If g_scheduler_ptr->per_core_locks_ is an array of Spinlock, this is fine.
     ScopedLock lock(g_scheduler_ptr->per_core_locks_[core_id]);
 
-    // Iterate through all priority levels for the current core
     for (int p = MAX_PRIORITY_LEVELS - 1; p >= 0; --p) {
         TCB* task_iter = g_scheduler_ptr->ready_qs_[core_id][p];
         TCB* current_prev = nullptr; 
         while (task_iter) {
-            if (task_iter->state == TCB::State::READY && // Ensure task is actually ready
+            if (task_iter->state == TCB::State::READY && 
                 task_iter->deadline_us > 0 && task_iter->deadline_us < earliest_deadline &&
                 (task_iter->core_affinity == -1 || task_iter->core_affinity == static_cast<int>(core_id))) {
                 
                 earliest_deadline = task_iter->deadline_us;
                 earliest_task = task_iter;
-                chosen_prev_in_list = current_prev; // Record previous task in this list
-                chosen_priority = p; // Record priority queue of chosen task
+                chosen_prev_in_list = current_prev; 
+                chosen_priority = p; 
             }
             current_prev = task_iter;
             task_iter = task_iter->next_in_q;
         }
     }
 
-    // If an EDF task was found, extract it from its ready queue
     if (earliest_task) {
         if (chosen_prev_in_list) {
             chosen_prev_in_list->next_in_q = earliest_task->next_in_q;
         } else {
             g_scheduler_ptr->ready_qs_[core_id][chosen_priority] = earliest_task->next_in_q;
         }
-        earliest_task->next_in_q = nullptr; // Detach
+        earliest_task->next_in_q = nullptr; 
         trace_event("SCHED:PopEDF", reinterpret_cast<uintptr_t>(earliest_task), core_id);
-        return earliest_task;
+        return earliest_task; 
     }
 
-    // If no deadline-based task found, fall back to priority scheduler's method
-    return g_scheduler_ptr->pop_highest_priority_ready_task(core_id); // This method needs to be careful about locking
+    return g_scheduler_ptr->pop_highest_priority_ready_task(core_id); 
 }
 
 void EDFPolicy::add_to_ready_queue(TCB* tcb, uint32_t core_id) {
@@ -306,18 +262,15 @@ void EDFPolicy::add_to_ready_queue(TCB* tcb, uint32_t core_id) {
 }
 
 Scheduler::Scheduler() : policy_(nullptr) {
-    // Policy must be created first
-    policy_ = new (std::nothrow) EDFPolicy(); // Use nothrow version
+    policy_ = new (std::nothrow) EDFPolicy(); 
     if (!policy_) {
         if (g_platform) g_platform->panic("Failed to allocate scheduler policy", __FILE__, __LINE__);
-        else { while(1); } // Cannot proceed
+        else { while(1); } 
     }
 
     for (uint32_t i = 0; i < MAX_CORES; ++i) {
         char idle_name[MAX_NAME_LENGTH];
-        // Using snprintf is safer
         std::snprintf(idle_name, MAX_NAME_LENGTH, "IdleCore%u", i);
-        // Pass core_id as argument to idle_thread_func
         auto* tcb = create_thread(idle_thread_func, reinterpret_cast<void*>(static_cast<uintptr_t>(i)), 
                                   0, static_cast<int>(i), idle_name, true);
         if (!tcb) {
@@ -329,22 +282,36 @@ Scheduler::Scheduler() : policy_(nullptr) {
 }
 
 Scheduler::~Scheduler() {
-    delete policy_; // Clean up allocated policy
+    delete policy_; 
 }
-
 
 TCB* Scheduler::create_thread(void (*fn)(void*), const void* arg, int prio, int affinity, const char* name, bool is_idle, uint64_t deadline_us) {
     if (!fn || !name) return nullptr;
-    ScopedLock lock(scheduler_global_lock_); // Protect task_tcbs, task_stacks, num_active_tasks_
+    ScopedLock lock(scheduler_global_lock_); 
     
     if (num_active_tasks_.load(std::memory_order_relaxed) >= MAX_THREADS) return nullptr;
 
     for (size_t i = 0; i < MAX_THREADS; ++i) {
-        if (g_task_tcbs[i].state == TCB::State::INACTIVE) {
+        if (g_task_tcbs[i].state == TCB::State::INACTIVE || g_task_tcbs[i].state == TCB::State::ZOMBIE) { // Reuse ZOMBIE too
             TCB& tcb = g_task_tcbs[i];
             
-            // Clear relevant parts of TCB before reuse
-            tcb = {}; // Zero-initialize if TCB is simple enough, or memset, or member-wise
+            // Manual reset of TCB members
+            for (int j=0; j<31; ++j) tcb.regs[j] = 0;
+            tcb.sp = 0;
+            tcb.pc = 0;
+            tcb.pstate = 0; // Corrected from status
+            tcb.entry_point = nullptr;
+            tcb.arg_ptr = nullptr;
+            tcb.stack_base = nullptr;
+            tcb.stack_size = 0;
+            tcb.priority = 0;
+            tcb.core_affinity = -1;
+            tcb.cpu_id_running_on = static_cast<uint32_t>(-1);
+            tcb.name[0] = '\0';
+            tcb.next_in_q = nullptr;
+            tcb.event_flag.store(false, std::memory_order_relaxed); 
+            tcb.deadline_us = 0;
+            // State will be set below
             
             tcb.entry_point = fn;
             tcb.arg_ptr = const_cast<void*>(arg); 
@@ -352,54 +319,45 @@ TCB* Scheduler::create_thread(void (*fn)(void*), const void* arg, int prio, int 
             tcb.core_affinity = (affinity >= -1 && affinity < static_cast<int>(MAX_CORES)) ? affinity : -1;
             
             if (!kernel::util::safe_strcpy(tcb.name, name, MAX_NAME_LENGTH)) {
-                 // Name too long, or other strcpy error.
-                 // Should ideally log or handle this. For now, might proceed with truncated name.
-                 // Or return nullptr if strict.
                 return nullptr;
             }
             
             tcb.stack_base = g_task_stacks[i].data();
             tcb.stack_size = DEFAULT_STACK_SIZE;
             
-            // Initialize stack pointer to the top of the stack (stack grows downwards)
-            // Ensure stack pointer is aligned (e.g., 16-byte for AArch64 AAPCS)
             tcb.sp = reinterpret_cast<uint64_t>(tcb.stack_base + tcb.stack_size);
-            tcb.sp &= ~0xFUL; // Align to 16 bytes (adjust if different ABI)
+            tcb.sp &= ~0xFUL; 
 
             tcb.pc = reinterpret_cast<uint64_t>(thread_bootstrap); 
-            tcb.pstate = 0; // Initialize pstate (e.g., default mode, IRQs enabled for user threads)
+            // tcb.pstate = 0; // Initial PSTATE (e.g. EL1h, IRQs unmasked for user threads) - platform specific. 0 might be fine for simple cases.
             
             tcb.deadline_us = deadline_us;
-            tcb.event_flag.store(false, std::memory_order_relaxed);
-
-            // Set to READY and add to queue if not idle. Idle threads are handled specially.
+            
             if (!is_idle) {
                 tcb.state = TCB::State::READY;
                 g_trace_manager.record_event(&tcb, trace::EventType::THREAD_CREATE, tcb.name); 
-                // Determine target core for initial queueing
                 uint32_t target_core = (tcb.core_affinity != -1 && static_cast<size_t>(tcb.core_affinity) < MAX_CORES) 
                                      ? static_cast<uint32_t>(tcb.core_affinity) 
-                                     : (g_platform ? g_platform->get_core_id() : 0); // Or round-robin if no affinity
+                                     : (g_platform ? g_platform->get_core_id() : 0); 
                 policy_->add_to_ready_queue(&tcb, target_core);
                 num_active_tasks_.fetch_add(1, std::memory_order_relaxed);
             } else {
-                tcb.state = TCB::State::READY; // Idle threads start as ready but aren't in general queues initially
+                tcb.state = TCB::State::READY; 
             }
             return &tcb;
         }
     }
-    return nullptr; // No free TCB slots
+    return nullptr; 
 }
 
 void Scheduler::start_core_scheduler(uint32_t core_id) {
     if (!g_platform || core_id >= MAX_CORES || !g_platform->get_irq_ops() || !g_platform->get_timer_ops()) {
-         // Cannot panic safely if platform isn't fully up for this core
         while(true) {}
         return;
     }
-    g_platform->get_irq_ops()->init_cpu_interface(core_id); // Init GIC CPU interface for this core
+    g_platform->get_irq_ops()->init_cpu_interface(core_id); 
     g_platform->get_irq_ops()->enable_core_irqs(core_id, 0); 
-    g_platform->get_timer_ops()->init_core_timer_interrupt(core_id); 
+    g_platform->get_timer_ops()->init_core_timer_interrupt(core_id); // Pass core_id
 
     auto* idle_tcb = g_per_cpu_data[core_id].idle_thread;
     if (!idle_tcb) { 
@@ -410,60 +368,43 @@ void Scheduler::start_core_scheduler(uint32_t core_id) {
     idle_tcb->state = TCB::State::RUNNING;
     idle_tcb->cpu_id_running_on = core_id;
     
-    extern void context_switch_to(TCB* next_tcb); // Assumes a function that only loads next, no save
+    extern void context_switch_to(TCB* next_tcb); 
     context_switch_to(idle_tcb); 
 }
 
 void Scheduler::preemptive_tick(uint32_t core_id) {
     if (core_id >= MAX_CORES) return;
-    // Acknowledge timer interrupt first
     if (g_platform && g_platform->get_timer_ops()) {
         g_platform->get_timer_ops()->ack_core_timer_interrupt(core_id);
     }
-    schedule(core_id, true); // is_preemption = true
+    schedule(core_id, true); 
 }
 
 void Scheduler::yield(uint32_t core_id) {
     if (core_id >= MAX_CORES) return;
-    // A yield is a voluntary reschedule request.
-    // The current thread's state will be set to READY by schedule().
-    if(g_per_cpu_data[core_id].current_thread) { // Check if current_thread is valid
+    if(g_per_cpu_data[core_id].current_thread) { 
          g_trace_manager.record_event(g_per_cpu_data[core_id].current_thread, trace::EventType::THREAD_YIELD, "yield");
     }
-    schedule(core_id, false); // is_preemption = false
+    schedule(core_id, false); 
 }
 
 void Scheduler::signal_event_isr(TCB* tcb) {
     if (!tcb) return;
     tcb->event_flag.store(true, std::memory_order_release);
-    // Optional: If the task was BLOCKED on this event, move it to READY queue.
-    // This requires knowing its state and potentially taking scheduler locks.
-    // For simplicity, wait_for_event polls and yields.
-    // A more advanced version would:
-    // ScopedISRLock lock(scheduler_global_lock_ or per_core_lock for tcb's affinity);
-    // if (tcb->state == TCB::State::BLOCKED_ON_EVENT) {
-    //    tcb->state = TCB::State::READY;
-    //    policy_->add_to_ready_queue(tcb, tcb->core_affinity_or_target_core);
-    //    // Potentially trigger IPI if task is on another core to force reschedule
-    // }
 }
 
 void Scheduler::wait_for_event(TCB* tcb) {
     if (!tcb || !g_platform) return;
-    // Interrupts should be enabled for yield to work.
-    // This is a spin-yield loop.
     while (!tcb->event_flag.load(std::memory_order_acquire)) { 
         yield(g_platform->get_core_id()); 
     }
-    tcb->event_flag.store(false, std::memory_order_relaxed); // Consume the event
+    tcb->event_flag.store(false, std::memory_order_relaxed); 
 }
 
 TCB* Scheduler::pop_highest_priority_ready_task(uint32_t current_core_id) {
     if (current_core_id >= MAX_CORES) return nullptr;
 
-    // Try local queue first - Lock is already held by schedule() or EDFPolicy
-    // ScopedLock lock(per_core_locks_[current_core_id]); // This lock is problematic if called from EDFPolicy which already holds it.
-    // Assume caller (schedule or policy) holds the necessary lock for current_core_id's queue.
+    // Caller (schedule() or policy) must hold per_core_locks_[current_core_id]
     for (int p = MAX_PRIORITY_LEVELS - 1; p >= 0; --p) {
         if (ready_qs_[current_core_id][p]) {
             TCB* task = ready_qs_[current_core_id][p];
@@ -474,14 +415,16 @@ TCB* Scheduler::pop_highest_priority_ready_task(uint32_t current_core_id) {
         }
     }
 
-    // Try work stealing (only if not using an EDF policy that always picks local)
-    // This part is complex with locking. Simplified: try_lock or be careful.
-    // For now, EDFPolicy handles its own selection; this is fallback if EDF found nothing.
-    // If pop_highest_priority_ready_task is only called as a fallback by EDFPolicy,
-    // then EDFPolicy has already determined no local deadline task.
-    // This function would then represent the priority-based part of a hybrid scheduler.
+    // Work stealing attempt - needs careful locking if enabled
+    // For now, simplified: EDFPolicy handles complex choices, this is a basic fallback.
+    // If work stealing is implemented, it must acquire locks for other cores' queues.
+    // Example (conceptual, needs proper locking strategy for production):
+    // for (uint32_t i = 1; i < MAX_CORES; ++i) {
+    //     uint32_t target_core = (current_core_id + i) % MAX_CORES;
+    //     ScopedLock steal_lock(per_core_locks_[target_core]); 
+    //     // ... logic to find and steal task ...
+    // }
 
-    // Return idle thread if nothing else is found.
     trace_event("SCHED:PopIdleAff", current_core_id);
     return g_per_cpu_data[current_core_id].idle_thread;
 }
@@ -492,48 +435,47 @@ void Scheduler::schedule(uint32_t core_id, bool is_preemption) {
         return;
     }
 
-    ScopedLock core_lock(per_core_locks_[core_id]); // Lock this core's scheduling data
+    ScopedLock core_lock(per_core_locks_[core_id]); 
 
     TCB* current = g_per_cpu_data[core_id].current_thread;
 
     if (current && current->state == TCB::State::RUNNING) { 
-        // Don't mark idle thread as READY unless it's being preempted by a higher priority task.
-        // If current is idle and no other task is ready, it will be selected again.
         if (current != g_per_cpu_data[core_id].idle_thread || is_preemption) {
             current->state = TCB::State::READY;
         }
     }
     
-    TCB* next = policy_->select_next_task(core_id, current); // Policy selects, may use pop_highest_priority_ready_task
+    TCB* next = policy_->select_next_task(core_id, current); 
 
     if (!next) { 
         if (g_platform) g_platform->panic("Scheduler selected null task", __FILE__, __LINE__);
         return; 
     }
 
-    if (next == current) { // Same task selected
-        if (current) current->state = TCB::State::RUNNING; // Ensure it's marked running
-        return; // No context switch needed
+    if (next == current) { 
+        if (current) current->state = TCB::State::RUNNING; 
+        return; 
     }
     
-    // A new task is being scheduled
     next->state = TCB::State::RUNNING;
     next->cpu_id_running_on = core_id;
     g_per_cpu_data[core_id].current_thread = next;
 
-    if (current && current != g_per_cpu_data[core_id].idle_thread && current->state == TCB::State::READY) {
-        // Add the old (non-idle) task back to the ready queue if it's still ready
-        // The policy's select_next_task might have already removed it from a queue.
-        // If select_next_task doesn't re-queue 'current', then we must do it here.
-        // This depends on policy implementation. For simplicity, assume policy handles it or it's added here.
-        // If current was preempted and is still READY, it needs to go back.
-        policy_->add_to_ready_queue(current, core_id); 
+    if (current && current != next && current->state == TCB::State::READY) {
+        if (current != g_per_cpu_data[core_id].idle_thread) {
+             // If the policy didn't re-queue 'current' (e.g. it was preempted and is still highest EDF),
+             // then it needs to be added back. EDFPolicy's select_next_task extracts the chosen task.
+             // So, 'current' if still READY, needs to be added back by policy.
+             policy_->add_to_ready_queue(current, core_id); 
+        }
     }
     
     g_trace_manager.record_event(next, trace::EventType::THREAD_SCHEDULE, next->name);
     
-    extern void context_switch(TCB* current_tcb, TCB* next_tcb); // Assumes TCB* args
-    context_switch(current, next);
+    if (current != next) { 
+        extern void context_switch(TCB* current_tcb, TCB* next_tcb); 
+        context_switch(current, next);
+    }
 }
 
 void Scheduler::idle_thread_func(void* arg) {
@@ -543,8 +485,7 @@ void Scheduler::idle_thread_func(void* arg) {
         #if defined(__aarch64__) || defined(__arm__)
         asm volatile("wfi" ::: "memory");
         #else
-        // For other arch, busy loop or platform specific idle
-        for(volatile int i=0; i<10000; ++i); // Placeholder
+        for(volatile int i=0; i<100000; ++i); // Generic placeholder
         #endif
     }
 }
@@ -556,35 +497,19 @@ void Scheduler::thread_bootstrap(TCB* self) {
         return; 
     }
 
-    // Per-thread setup (e.g., enabling interrupts if scheduler disabled them for context switch)
-    // This depends on the context_switch implementation.
-    // For ARM, if interrupts were globally disabled by scheduler, they'd be re-enabled by eret from exception context.
-    // If threads run in user mode, supervisor call might switch context.
-
     configure_memory_protection(self, true); 
 
     self->entry_point(self->arg_ptr); 
 
-    // Thread function has returned: clean up.
-    // This section runs in the context of the exiting thread.
-    // It MUST call yield or schedule and not return, as its stack will be reclaimed.
-
-    // Acquire lock to modify shared scheduler state (num_active_tasks, TCB state)
-    // Which lock? Global scheduler lock or per-core lock of the core it ran on?
-    // Let's use global lock for num_active_tasks and TCB state change to INACTIVE/ZOMBIE.
     {
         ScopedLock lock(g_scheduler_ptr->scheduler_global_lock_);
         g_trace_manager.record_event(self, trace::EventType::THREAD_EXIT, self->name);
-        self->state = TCB::State::ZOMBIE; // Or INACTIVE if no separate ZOMBIE state for reclamation
+        self->state = TCB::State::ZOMBIE; 
         g_scheduler_ptr->num_active_tasks_.fetch_sub(1, std::memory_order_relaxed);
-        // The TCB and stack can be marked for reclamation by a reaper task or when create_thread looks for INACTIVE.
     }
     
-    // Trigger a reschedule. This thread should not run again.
-    // The core_id should be the one this thread just ran on.
-    g_scheduler_ptr->schedule(self->cpu_id_running_on, false); // Not a preemption tick
+    g_scheduler_ptr->schedule(self->cpu_id_running_on, false); 
 
-    // Should NOT be reached if schedule() context switches correctly.
     if (g_platform) g_platform->panic("Thread exited bootstrap unexpectedly", __FILE__, __LINE__);
     else { while(1); } 
 }
@@ -597,15 +522,13 @@ void set_power_mode(bool enter_low_power) {
     if (enter_low_power) {
         power_ops->enter_idle_state(g_platform->get_core_id());
     } else {
-        // Example: Set to full performance frequency (0 might mean default/max)
-        // power_ops->set_cpu_frequency(g_platform->get_core_id(), 0);
+        // power_ops->set_cpu_frequency(g_platform->get_core_id(), 0); // Example: restore normal frequency
     }
 }
 
 void configure_memory_protection(TCB* tcb, bool enable_for_task) {
     if (!g_platform || !tcb) return;
     trace_event("MEM:Protection", reinterpret_cast<uintptr_t>(tcb), enable_for_task);
-    // Actual MPU/MMU configuration would go here, via g_platform->get_mem_ops() or similar
 }
 
 void get_kernel_stats(hal::UARTDriverOps* uart_ops) { 
@@ -619,8 +542,7 @@ void get_kernel_stats(hal::UARTDriverOps* uart_ops) {
     std::snprintf(buffer, sizeof(buffer), "  Active Threads: %zu\n", g_scheduler_ptr->get_num_active_tasks());
     uart_ops->puts(buffer);
 
-    for (uint32_t core = 0; core < MAX_CORES; ++core) { // Use MAX_CORES
-        // Check if per_cpu_data for this core is valid, especially current_thread
+    for (uint32_t core = 0; core < MAX_CORES; ++core) { 
         if (core < g_per_cpu_data.size() && g_per_cpu_data[core].current_thread) {
              std::snprintf(buffer, sizeof(buffer), "  Core %u: Running '%s' (prio %d)\n", 
                            core, 
@@ -637,7 +559,7 @@ void trace_event(const char* event_str, uintptr_t arg1, uintptr_t arg2) {
     if (!g_platform || !event_str) return; 
     
     uint32_t core_id = g_platform->get_core_id();
-    if (core_id >= MAX_CORES) { // Safety, should be configured by platform
+    if (core_id >= MAX_CORES) { 
         core_id = 0; 
     }
 
@@ -683,9 +605,9 @@ void dump_trace_buffer(hal::UARTDriverOps* uart_ops) {
     }
 
     if (current_next_idx >= TRACE_BUFFER_SIZE || has_overflowed_any_core) { 
-        start_idx_read = current_next_idx % TRACE_BUFFER_SIZE; // Start from the oldest overwritten entry
+        start_idx_read = current_next_idx % TRACE_BUFFER_SIZE; 
     } else { 
-        num_entries_to_dump = current_next_idx; // Dump only valid entries if no wrap around
+        num_entries_to_dump = current_next_idx; 
     }
 
     size_t count_valid_entries = 0;
@@ -722,24 +644,20 @@ void dump_trace_buffer(hal::UARTDriverOps* uart_ops) {
 }
 
 extern "C" void kernel_main() {
-    // g_platform must be initialized by the platform-specific entry point BEFORE kernel_main is called.
     if (!g_platform) { 
-        // Minimal panic if UART isn't even up. Maybe blink LED or halt.
-        // This is a catastrophic failure.
         volatile int i = 1; while(i) {} return; 
     }
     
     uint32_t core_id = g_platform->get_core_id();
 
     if (core_id == 0) { 
-        g_platform->early_init_platform(); 
+        g_platform->early_init_platform(); // Corrected call
     }
-    // Ensure memory barrier if needed for g_bss_cleared_smp_flag visibility
     #if defined(__aarch64__) || defined(__arm__)
     asm volatile("dmb sy" ::: "memory");
     #endif
 
-    g_platform->early_init_core(core_id);   
+    g_platform->early_init_core(core_id);   // Corrected call
 
     static Scheduler scheduler; 
     
@@ -750,17 +668,18 @@ extern "C" void kernel_main() {
                                            sizeof(kernel::hal::timer::SoftwareTimer), alignof(kernel::hal::timer::SoftwareTimer))) {
             g_platform->panic("Timer obj pool init failed", __FILE__, __LINE__);
         }
-        // Initialize audio pool (g_audio_pool) if it's separate from AudioSystem's internal one
-        if (!g_audio_pool.init(g_audio_pool_mem, 64, 1024, alignof(float))) { // Example: 64 buffers of 1KB
+        if (!g_audio_pool.init(g_audio_pool_mem, 64, 1024, alignof(float))) { 
              g_platform->panic("Global audio pool init failed", __FILE__, __LINE__);
         }
 
-
-        audio::AudioConfig audio_cfg{}; // Use default constructor then set members
+        audio::AudioConfig audio_cfg{};
         audio_cfg.sample_rate_hz = 48000;
         audio_cfg.samples_per_block = 256;
+        audio_cfg.num_channels = 2; 
         audio_cfg.num_i2s_dma_buffers = 4; // Corrected member name
-        audio_cfg.num_audio_pool_buffers = 8; // Number of AudioBuffer objects AudioSystem will pool
+        audio_cfg.num_audio_pool_buffers = 8; 
+        audio_cfg.i2s_rx_instance_id = 0;
+        audio_cfg.i2s_tx_instance_id = 1;
         
         if (!g_audio_system.init(audio_cfg) || !g_audio_system.start()) {
             g_platform->panic("Audio system init/start failed", __FILE__, __LINE__);
@@ -797,19 +716,17 @@ extern "C" void kernel_main() {
         g_bss_cleared_smp_flag = true; 
         #if defined(__aarch64__) || defined(__arm__)
         asm volatile("sev" ::: "memory"); 
-        asm volatile("dmb sy" ::: "memory"); // Ensure flag change is visible
+        asm volatile("dmb sy" ::: "memory"); 
         #endif
 
     } else { 
         while (!g_bss_cleared_smp_flag) { 
              #if defined(__aarch64__) || defined(__arm__)
              asm volatile("wfe" ::: "memory");
-             #else
-             // Busy wait or yield for other archs
              #endif
         }
         #if defined(__aarch64__) || defined(__arm__)
-        asm volatile("dmb sy" ::: "memory"); // Ensure we see the updated g_scheduler_ptr
+        asm volatile("dmb sy" ::: "memory"); 
         #endif
         if (g_platform->get_uart_ops()) {
             char msg_buf[64];
@@ -824,52 +741,36 @@ extern "C" void kernel_main() {
     g_platform->panic("Scheduler returned unexpectedly", __FILE__, __LINE__);
 }
 
-extern "C" void hal_irq_handler(uint32_t irq_id_from_vector) {
-    // This is the top-level C IRQ handler. It should be brief and efficient.
-    // It needs to figure out the actual source (if irq_id_from_vector is just an index)
-    // and call the appropriate driver's ISR or a generic handler.
-
-    // It's crucial that this function can run without g_platform fully up if very early IRQs happen.
-    // However, most useful IRQs (timers, peripherals) will occur after g_platform is set.
+extern "C" void hal_irq_handler(uint32_t /*irq_id_from_vector*/) { // Marked unused
     if (!g_platform || !g_platform->get_irq_ops()) {
-        // Cannot do much, maybe a specific panic or loop.
-        // This indicates a severe boot sequence or platform driver issue.
         while(true) {}
         return;
     }
     uint32_t core_id = g_platform->get_core_id();
     auto* irq_ops = g_platform->get_irq_ops();
 
-    // Acknowledge the IRQ at the controller level to get the actual IRQ ID.
-    // The irq_id_from_vector might just be a generic "IRQ" or "FIQ" signal.
-    // The specific IRQ ID is usually read from an GIC_IAR register or similar.
-    uint32_t actual_irq_id = irq_ops->ack_irq(core_id); // This should return the true source ID
+    uint32_t actual_irq_id = irq_ops->ack_irq(core_id); 
 
-    // Now handle based on actual_irq_id
     ScopedISRLock lock(g_irq_handler_lock); 
 
     auto* timer_ops = g_platform->get_timer_ops();
     auto* watchdog_ops = g_platform->get_watchdog_ops(); 
 
-    // Example IRQ IDs (these are platform-specific and need to match hardware)
-    // Generic Timer IRQ for ARM is often PPI 27 (secure), 29 (non-secure physical), 30 (virtual)
-    // Check your platform's GIC mapping.
-    constexpr uint32_t GENERIC_TIMER_IRQ_S = 27; // Example for Secure Physical Timer
-    constexpr uint32_t GENERIC_TIMER_IRQ_NS_PHYS = 29; // Example for Non-Secure Physical Timer
-    constexpr uint32_t GENERIC_TIMER_IRQ_VIRT = 30;  // Example for Virtual Timer
+    constexpr uint32_t GENERIC_TIMER_IRQ_S = 27; 
+    constexpr uint32_t GENERIC_TIMER_IRQ_NS_PHYS = 29; 
+    constexpr uint32_t GENERIC_TIMER_IRQ_VIRT = 30;  
 
     if (timer_ops && (actual_irq_id == GENERIC_TIMER_IRQ_S || actual_irq_id == GENERIC_TIMER_IRQ_NS_PHYS || actual_irq_id == GENERIC_TIMER_IRQ_VIRT)) {
-        // hardware_timer_irq_fired should ideally call ack_core_timer_interrupt itself or timer_ops handles ack.
         timer_ops->hardware_timer_irq_fired(core_id); 
         if (watchdog_ops) watchdog_ops->reset_watchdog();
         if (g_scheduler_ptr) g_scheduler_ptr->preemptive_tick(core_id); 
-    } else if (actual_irq_id == 31 ) { // Example specific network IRQ ID (platform specific)
+    } else if (actual_irq_id == 31 ) { 
         trace_event("NET:IRQ", actual_irq_id, core_id);
         if (kernel::g_net_manager.is_initialized()) {
-            // kernel::g_net_manager.tick(); // Or a specific handle_irq() method
+            kernel::g_net_manager.tick(); // Or a specific handle_irq() method
         }
-    } // Add more else if for other peripheral IRQs (UART, I2S, DMA etc.)
-    else if (actual_irq_id < 1022 && actual_irq_id >= 16) { // Range for SPIs or unhandled PPIs
+    } 
+    else if (actual_irq_id < 1022 && actual_irq_id >= 16) { 
         trace_event("IRQ:Unhandled", actual_irq_id, core_id);
         if (g_platform->get_uart_ops()) {
             char buffer[64];
@@ -877,9 +778,8 @@ extern "C" void hal_irq_handler(uint32_t irq_id_from_vector) {
             g_platform->get_uart_ops()->puts(buffer);
         }
     }
-    // Else (ID 1022/1023 spurious) - GIC handles spurious IRQs by returning these IDs.
 
-    irq_ops->end_irq(core_id, actual_irq_id); // Signal End Of Interrupt to controller
+    irq_ops->end_irq(core_id, actual_irq_id); 
 }
 
 } // namespace kernel

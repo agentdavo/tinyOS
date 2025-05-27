@@ -22,7 +22,7 @@
 #define AUDIO_HPP
 
 #include "miniOS.hpp" // Includes kernel types, SPSCQueue, FixedMemoryPool, hal::i2s
-#include "dsp.hpp"    // Includes kernel::dsp::DSPGraph
+
 #include <span>
 #include <vector>
 #include <memory>   // For std::unique_ptr
@@ -31,46 +31,31 @@
 
 // Forward declaration for robustness, though miniOS.hpp should provide it.
 namespace kernel { namespace hal { namespace i2s { struct I2SDriverOps; } } }
+// kernel::dsp::DSPGraph is forward declared in miniOS.hpp
 
 namespace audio {
 
-// Max audio buffer size based on common DSP block sizes and sample rates
-constexpr size_t MAX_AUDIO_SAMPLES_PER_BLOCK = 1024; // Samples per channel
-constexpr size_t MAX_AUDIO_CHANNELS = 2; // Stereo default
+constexpr size_t MAX_AUDIO_SAMPLES_PER_BLOCK = 1024; 
+constexpr size_t MAX_AUDIO_CHANNELS = 2; 
 
-/**
- * @brief Represents a block of audio data.
- * @details This structure holds interleaved audio samples in floating-point format,
- * along with metadata about the audio data.
- */
 struct AudioBuffer {
-    /**
-     * @brief Buffer for interleaved audio samples (LRLRLR...).
-     * Uses float for canonical DSP processing format.
-     */
     std::array<float, MAX_AUDIO_SAMPLES_PER_BLOCK * MAX_AUDIO_CHANNELS> data;
-    size_t num_samples = 0;    ///< Number of samples *per channel* in this buffer.
-    uint8_t channels = 0;      ///< Number of active audio channels in this buffer.
-    uint32_t sample_rate_hz = 0; ///< Sample rate of the audio data in Hz.
-    uint64_t timestamp_us = 0; ///< Timestamp of the first sample in the buffer (microseconds).
+    size_t num_samples = 0;    
+    uint8_t channels = 0;      
+    uint32_t sample_rate_hz = 0; 
+    uint64_t timestamp_us = 0; 
 };
 
-/**
- * @brief Configuration for the audio system.
- */
 struct AudioConfig {
-    uint32_t sample_rate_hz = 48000;        ///< Desired sample rate in Hz.
-    size_t samples_per_block = 256;         ///< Number of samples per channel in each processing block.
-    uint8_t num_channels = 2;               ///< Number of audio channels (e.g., 1 for mono, 2 for stereo).
-    uint8_t num_i2s_dma_buffers = 4;        ///< Number of DMA buffers for the I2S hardware (per direction if applicable).
-    size_t num_audio_pool_buffers = 8;      ///< Number of AudioBuffer structures to pool for DSP/application use.
-    uint32_t i2s_rx_instance_id = 0;        ///< Platform-specific I2S instance ID for reception.
-    uint32_t i2s_tx_instance_id = 1;        ///< Platform-specific I2S instance ID for transmission.
+    uint32_t sample_rate_hz = 48000;        
+    size_t samples_per_block = 256;         
+    uint8_t num_channels = 2;               
+    uint8_t num_i2s_dma_buffers = 4;        
+    size_t num_audio_pool_buffers = 8;      
+    uint32_t i2s_rx_instance_id = 0;        
+    uint32_t i2s_tx_instance_id = 1;        
 };
 
-/**
- * @brief Manages the audio processing pipeline.
- */
 class AudioSystem {
 public:
     AudioSystem();
@@ -90,16 +75,7 @@ public:
     AudioBuffer* get_filled_buffer_from_dsp_rx();
     void release_buffer_to_pool(AudioBuffer* buffer);
 
-    /**
-     * @brief Provides access to the DSP graph for configuration.
-     * @return A reference to the internal DSPGraph object.
-     */
     kernel::dsp::DSPGraph& get_dsp_graph() { return dsp_graph_; }
-
-    /**
-     * @brief Provides const access to the DSP graph.
-     * @return A const reference to the internal DSPGraph object.
-     */
     const kernel::dsp::DSPGraph& get_dsp_graph() const { return dsp_graph_; }
 
 private:
