@@ -281,14 +281,14 @@ public:
     void ramp_params() override;
     void reset() override;
 private:
-    static constexpr size_t NUM_COMB_FILTERS = 4; // Reduced for simplicity example
+    static constexpr size_t NUM_COMB_FILTERS = 4; 
     static constexpr size_t NUM_ALLPASS_FILTERS = 2;
     struct CombFilter {
         std::vector<float> buffer;
         size_t index = 0;
         float feedback = 0.0f;
         float damping_mix = 0.0f; 
-        float last_filtered_out = 0.0f; // For damping calculation
+        float last_filtered_out = 0.0f; 
         void init(size_t delay_samples, float sr);
         float process_sample(float input_sample);
     };
@@ -363,7 +363,6 @@ private:
     std::array<float, PITCH_WINDOW_SIZE> analysis_window_; 
     size_t input_write_ptr_ = 0;
     float phase_accumulator_ = 0.0f;
-    // Use the constant from audio.hpp
     std::array<float, audio::MAX_AUDIO_CHANNELS> last_input_phase_ = {0.0f}; 
     std::array<float, audio::MAX_AUDIO_CHANNELS> last_output_phase_ = {0.0f};
 };
@@ -399,10 +398,10 @@ public:
     struct BandSplitPoint {
         ParamRamp cutoff_hz; 
         CrossoverFilterType filter_type = CrossoverFilterType::LINKWITZ_RILEY;
-        int order = 2; 
+        int order = 4; // Default to LR4 (24dB/oct)
         
-        std::vector<FilterStage> lp_stages; // Renamed from lp_b_coeffs, lp_a_coeffs, lp_z_state
-        std::vector<FilterStage> hp_stages; // Renamed
+        std::vector<FilterStage> lp_stages; 
+        std::vector<FilterStage> hp_stages; 
     };
 
     CrossoverDSP(std::string_view name, uint8_t num_ways = 2);
@@ -432,7 +431,7 @@ private:
     float allpass_coeff_a1_ = 0.0f; 
     float z_xn1_ = 0.0f; 
     float z_yn1_ = 0.0f; 
-    void update_filter_coeffs(); // Renamed from update_coeff
+    void update_filter_coeffs(); 
 };
 
 class SRCDSP : public DSPNode { 
@@ -449,7 +448,7 @@ private:
     float fractional_time_step_ = 0.0f; 
     std::vector<float> history_buffer_;  
     std::vector<float> fir_filter_coeffs_; 
-    void regenerate_fir_filter(); // Renamed from generate_filter
+    void regenerate_fir_filter(); 
 };
 
 class FIRFilterDSP : public DSPNode {
@@ -461,9 +460,9 @@ public:
     void reset() override;
 private:
     std::array<float, MAX_FIR_TAPS> fir_taps_;
-    size_t num_fir_taps_ = 0; // Renamed from tap_count_
+    size_t num_fir_taps_ = 0; 
     std::array<float, MAX_FIR_TAPS> input_history_;
-    size_t history_write_index_ = 0; // Renamed from history_index_
+    size_t history_write_index_ = 0; 
 };
 
 class IIRFilterDSP : public DSPNode { 
@@ -473,9 +472,9 @@ public:
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override; 
     void reset() override;
 private:
-    std::array<float, 3> b_coeffs_ = {1.0f, 0.0f, 0.0f}; // Renamed from b_
-    std::array<float, 3> a_coeffs_ = {1.0f, 0.0f, 0.0f}; // Renamed from a_
-    std::array<float, 2> z_state_ = {0.0f, 0.0f};      // Renamed from z_
+    std::array<float, 3> b_coeffs_ = {1.0f, 0.0f, 0.0f}; 
+    std::array<float, 3> a_coeffs_ = {1.0f, 0.0f, 0.0f}; 
+    std::array<float, 2> z_state_ = {0.0f, 0.0f};      
 };
 
 class FFTEqualizerDSP : public DSPNode { 
@@ -487,8 +486,8 @@ public:
     void ramp_params() override;
     void reset() override;
 private:
-    std::array<ParamRamp, MAX_FFT_EQ_BANDS> band_gains_db_; // Renamed from band_gains_
-    size_t num_active_bands_ = 0; // Renamed from band_count_
+    std::array<ParamRamp, MAX_FFT_EQ_BANDS> band_gains_db_; 
+    size_t num_active_bands_ = 0; 
 };
 
 class NetworkAudioSinkSource : public DSPNode {
@@ -497,12 +496,12 @@ public:
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
 private:
-    int udp_socket_idx_ = -1; // Renamed from socket_idx_
-    bool is_socket_valid_ = false; // Renamed from socket_idx_valid_
-    bool is_configured_as_sink_ = false; // Renamed from is_sink_
-    net::IPv4Addr remote_target_ip_; // Renamed from remote_ip_
-    uint16_t remote_target_port_ = 0; // Renamed from remote_port_
-    uint8_t num_audio_channels_ = 2; // Renamed from channels_
+    int udp_socket_idx_ = -1; 
+    bool is_socket_valid_ = false; 
+    bool is_configured_as_sink_ = false; 
+    net::IPv4Addr remote_target_ip_; 
+    uint16_t remote_target_port_ = 0; 
+    uint8_t num_audio_channels_ = 2; 
 };
 
 

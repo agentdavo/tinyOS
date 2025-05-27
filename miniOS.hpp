@@ -424,26 +424,11 @@ extern Spinlock g_audio_system_lock;
 } // namespace kernel
 
 // Subsystem includes (after kernel namespace and HAL are defined)
-// Corrected order: dsp.hpp defines kernel::dsp::DSPGraph, which audio.hpp uses as a member.
-// audio.hpp defines audio::MAX_AUDIO_CHANNELS, which dsp.hpp uses.
-// This circular dependency is best resolved by dsp.hpp including audio.hpp if it needs MAX_AUDIO_CHANNELS.
-// OR, MAX_AUDIO_CHANNELS can be defined more globally, or passed to DSP nodes that need it.
-// For now, the forward declaration of DSPGraph in miniOS.hpp helps audio.hpp.
-// dsp.hpp will include audio.hpp for MAX_AUDIO_CHANNELS.
-
 #include "util.hpp"    // General utilities
-// dsp.hpp needs to be included before audio.hpp if audio.hpp contains `kernel::dsp::DSPGraph dsp_graph_` member
-// audio.hpp needs audio::MAX_AUDIO_CHANNELS for dsp.hpp
-// This is tricky. Let's assume dsp.hpp includes audio.hpp for the constant.
-// And miniOS.hpp forward declares kernel::dsp::DSPGraph for audio.hpp's benefit.
-// The safest is:
-// 1. Forward declare DSPGraph in miniOS.hpp (done)
-// 2. dsp.hpp includes audio.hpp (for MAX_AUDIO_CHANNELS)
-// 3. miniOS.hpp includes dsp.hpp, then audio.hpp (or vice-versa if audio.hpp doesn't *define* DSPGraph members)
-
-// New recommended order for miniOS.hpp includes:
-#include "dsp.hpp"     // Defines kernel::dsp::DSPGraph. It should include audio.hpp if it needs MAX_AUDIO_CHANNELS.
-#include "audio.hpp"   // Uses kernel::dsp::DSPGraph. Defines audio::MAX_AUDIO_CHANNELS.
+// Corrected include order: dsp.hpp needs audio.hpp for MAX_AUDIO_CHANNELS.
+// audio.hpp needs dsp.hpp for kernel::dsp::DSPGraph (but will use forward decl + unique_ptr).
+#include "audio.hpp"   // Defines audio types including MAX_AUDIO_CHANNELS. Uses forward decl of DSPGraph.
+#include "dsp.hpp"     // Defines kernel::dsp::DSPGraph. Includes audio.hpp for MAX_AUDIO_CHANNELS.
 #include "cli.hpp"     // CLI uses kernel::hal::UARTDriverOps
 #include "fs.hpp"      // FileSystem uses kernel::hal::UARTDriverOps
 #include "gpio.hpp"    // GPIOManager uses kernel::hal::gpio::GPIODriverOps, kernel::Spinlock, kernel::TCB
