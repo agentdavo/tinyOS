@@ -53,7 +53,6 @@ struct AudioBuffer {
     uint8_t channels = 0;      ///< Number of active audio channels in this buffer.
     uint32_t sample_rate_hz = 0; ///< Sample rate of the audio data in Hz.
     uint64_t timestamp_us = 0; ///< Timestamp of the first sample in the buffer (microseconds).
-    // void* hw_buffer_handle = nullptr; // Optional: handle to an underlying hardware/HAL buffer if separate
 };
 
 /**
@@ -71,19 +70,10 @@ struct AudioConfig {
 
 /**
  * @brief Manages the audio processing pipeline.
- * @details Handles I2S input/output, buffer management using memory pools,
- * and routing audio data through a DSP graph. It operates its own thread
- * for DSP processing to decouple it from audio hardware interrupts.
  */
 class AudioSystem {
 public:
-    /**
-     * @brief Default constructor.
-     */
     AudioSystem();
-    /**
-     * @brief Destructor. Stops the audio system and cleans up resources.
-     */
     ~AudioSystem();
 
     AudioSystem(const AudioSystem&) = delete;
@@ -91,134 +81,50 @@ public:
     AudioSystem(AudioSystem&&) = delete;
     AudioSystem& operator=(AudioSystem&&) = delete;
 
-    /**
-     * @brief Initializes the audio system with the given configuration.
-     * @param config The audio configuration parameters.
-     * @return True if initialization was successful, false otherwise.
-     */
     bool init(const AudioConfig& config);
-
-    /**
-     * @brief Starts the audio processing pipeline.
-     * @details Starts I2S hardware, DSP processing thread, and enables data flow.
-     * @return True if successfully started, false otherwise.
-     */
     bool start();
-
-    /**
-     * @brief Stops the audio processing pipeline.
-     * @details Stops I2S hardware, DSP thread, and flushes queues.
-     */
     void stop();
 
-    /**
-     * @brief Gets an empty audio buffer for an application to fill for transmission (playback).
-     * @details The application should fill this buffer and then submit it using `submit_filled_buffer_to_dsp_tx`.
-     * @return Pointer to an AudioBuffer, or nullptr if no buffers are available. The caller does NOT own the buffer.
-     */
     AudioBuffer* get_buffer_for_app_tx();
-
-    /**
-     * @brief Submits an audio buffer filled by the application to the DSP graph for transmission.
-     * @param buffer Pointer to the AudioBuffer filled by the application. Must be a buffer obtained from `get_buffer_for_app_tx`.
-     * @return True if the buffer was successfully enqueued for DSP processing, false otherwise.
-     */
     bool submit_filled_buffer_to_dsp_tx(AudioBuffer* buffer);
-
-    /**
-     * @brief Gets a filled audio buffer that has been processed by the DSP graph from the input (recording).
-     * @details The application can process this data (e.g., save to file, analyze).
-     * After processing, the buffer must be released using `release_buffer_to_pool`.
-     * @return Pointer to an AudioBuffer, or nullptr if no processed buffers are available. The caller does NOT own the buffer.
-     */
     AudioBuffer* get_filled_buffer_from_dsp_rx();
-    
-    /**
-     * @brief Releases a processed audio buffer back to the system's pool.
-     * @details This should be called after the application is done with a buffer obtained from
-     * `get_filled_buffer_from_dsp_rx` or if it decides not to use a buffer from `get_buffer_for_app_tx`.
-     * @param buffer Pointer to the AudioBuffer to release.
-     */
     void release_buffer_to_pool(AudioBuffer* buffer);
 
-    /**
-     * @brief Provides access to the DSP graph for configuration.
-     * @return A reference to the internal DSPGraph object.
-     */
     kernel::dsp::DSPGraph& get_dsp_graph() { return dsp_graph_; }
-
-    /**
-     * @brief Provides const access to the DSP graph.
-     * @return A const reference to the internal DSPGraph object.
-     */
     const kernel::dsp::DSPGraph& get_dsp_graph() const { return dsp_graph_; }
 
 private:
-    /**
-     * @brief Main function for the DSP processing thread.
-     * @details Dequeues buffers from I2S RX and application TX, processes them through dsp_graph_,
-     * and enqueues them for I2S TX or application RX.
-     */
     void dsp_thread_entry();
-
-    /**
-     * @brief Static trampoline function for I2S HAL callbacks.
-     * @details Forwards the callback to the appropriate AudioSystem instance method.
-     * @param instance_id The I2S instance ID that triggered the callback.
-     * @param buffer Pointer to the AudioBuffer involved in the I2S operation (HAL might provide its own buffer type to be mapped).
-     * @param mode Indicates if the operation was RX or TX.
-     * @param user_data Pointer to the AudioSystem instance.
-     */
     static void i2s_hal_callback_wrapper(uint32_t instance_id, 
-                                         audio::AudioBuffer* buffer, // Assuming HAL can use our AudioBuffer directly or we map it
+                                         audio::AudioBuffer* buffer,
                                          kernel::hal::i2s::Mode mode, 
                                          void* user_data);
-
-    /**
-     * @brief Internal handler for I2S callbacks.
-     * @details Called by `i2s_hal_callback_wrapper`. Handles buffer swapping and queueing.
-     */
     void i2s_callback_internal(uint32_t instance_id, audio::AudioBuffer* buffer, kernel::hal::i2s::Mode mode);
 
-    AudioConfig config_;                        ///< Current audio system configuration.
-    std::atomic<bool> running_{false};          ///< True if the audio system is running.
-    std::atomic<bool> initialized_{false};      ///< True if init() has been successfully called.
+    AudioConfig config_;                        
+    std::atomic<bool> running_{false};          
+    std::atomic<bool> initialized_{false};      
 
-    // Memory pools for AudioBuffer objects themselves (not their internal data array, which is std::array)
-    // Or, if AudioBuffer::data was dynamically allocated, pools for that.
-    // Given AudioBuffer::data is std::array, we pool AudioBuffer objects.
     std::unique_ptr<kernel::FixedMemoryPool> audio_buffer_pool_; 
-    // Memory for the pool of AudioBuffer objects
     std::vector<uint8_t> pool_storage_for_audio_buffers_;
 
-
-    // Queues for data transfer between I2S, DSP, and application
-    // These queues will hold pointers to AudioBuffer objects obtained from audio_buffer_pool_
     std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> i2s_rx_to_dsp_queue_;
     std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> dsp_to_app_rx_queue_;
     std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> app_tx_to_dsp_queue_;
     std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> dsp_to_i2s_tx_queue_;
 
-    kernel::dsp::DSPGraph dsp_graph_;        ///< The DSP processing graph.
-    std::thread dsp_thread_handle_;             ///< Handle for the DSP processing thread.
+    kernel::dsp::DSPGraph dsp_graph_;        
+    kernel::TCB* dsp_thread_tcb_ = nullptr; 
 
-    kernel::hal::i2s::I2SDriverOps* i2s_ops_ = nullptr; ///< Pointer to I2S HAL operations.
+    kernel::hal::i2s::I2SDriverOps* i2s_ops_ = nullptr; 
     
-    // Buffers pre-allocated by HAL for I2S driver (if HAL manages them)
-    // Or, AudioSystem allocates AudioBuffers and gives their data pointers to HAL.
-    // The current audio.hpp AudioBuffer has its own std::array.
-    // We will need to manage a set of these for the I2S driver.
-    std::vector<AudioBuffer> i2s_dma_buffers_rx_;
-    std::vector<AudioBuffer> i2s_dma_buffers_tx_;
-    // To track which DMA buffers are free for HAL
-    std::vector<bool> i2s_dma_buffer_free_rx_;
-    std::vector<bool> i2s_dma_buffer_free_tx_;
-    kernel::Spinlock i2s_rx_lock_; // If needed for callback buffer management
-    kernel::Spinlock i2s_tx_lock_; // If needed for callback buffer management
+    // Lock for critical sections in AudioSystem methods if needed (e.g. init/stop)
+    // If init/stop are only called from one context, this might not be strictly necessary here,
+    // but internal operations like queue access or pool access might need finer-grained locking
+    // if accessed from multiple threads (DSP thread and app thread).
+    // SPSCQueues are lock-free for single producer/consumer. FixedMemoryPool has its own internal lock.
+    // kernel::Spinlock audio_system_lock_; // Example, if needed for protecting shared AudioSystem state
 };
-
-// The global instance is declared in miniOS.hpp as extern, and defined in miniOS.cpp
-// extern AudioSystem g_audio_system;
 
 } // namespace audio
 

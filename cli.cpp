@@ -16,29 +16,31 @@
  * @see cli.hpp, miniOS.hpp, util.hpp
  */
 
-#include "miniOS.hpp" // Include the core kernel header first (defines GPIO_BANKS, MAX_NAME_LENGTH etc. globally)
-#include "util.hpp"   // For kernel::util functions
+// Ensure core definitions are seen first.
+#include "miniOS.hpp" // Defines GPIO_BANKS, MAX_NAME_LENGTH etc. globally, and kernel namespace
+#include "util.hpp"   // Defines kernel::util
 
-#include "cli.hpp"    // Then its own header
-#include "fs.hpp"     // For FileSystem commands
-#include "net.hpp"    // For Network commands and net::MAX_JITTER_BUFFER
-#include "gpio.hpp"   // For GPIO commands
+#include "cli.hpp"    // Its own header
+#include "fs.hpp"     // For FileSystem commands and kernel::g_file_system
+#include "net.hpp"    // For Network commands, net::MAX_JITTER_BUFFER and kernel::g_net_manager
+#include "gpio.hpp"   // For GPIO commands and kernel::g_gpio_manager
 #include "dsp.hpp"    // For DSP Node types (kernel::dsp::)
 #include "audio.hpp"  // For kernel::g_audio_system
-#include "trace.hpp"  // For trace commands
-#include <cstring>    // For std::sscanf, std::strlen, etc. (often brought by util.hpp)
+#include "trace.hpp"  // For trace commands and kernel::g_trace_manager
+
+#include <cstring>    // For std::sscanf, std::strlen, etc.
 #include <cstdio>     // For std::snprintf, std::sscanf
 #include <memory>     // For std::unique_ptr
 
-// kernel::g_platform, kernel::g_scheduler_ptr etc are available via miniOS.hpp
+// Global constants like GPIO_BANKS are directly accessible.
+// Kernel globals like kernel::g_file_system are accessed with kernel:: prefix.
 
 namespace cli {
 
 // Static member definitions
-std::array<Command, MAX_COMMANDS> CLI::g_commands; // Command and MAX_COMMANDS are in 'cli' namespace
+std::array<Command, MAX_COMMANDS> CLI::g_commands;
 std::atomic<size_t> CLI::g_num_commands{0};
 
-// Definitions for the static CLI state members
 std::array<char, MAX_COMMAND_LENGTH> CLI::cmd_buffer_;
 size_t CLI::cmd_buffer_idx_ = 0;
 std::array<std::array<char, MAX_COMMAND_LENGTH>, MAX_HISTORY> CLI::command_history_;
@@ -46,7 +48,7 @@ size_t CLI::history_idx_ = 0;
 size_t CLI::history_count_ = 0;
 
 
-// Built-in command handlers (declarations moved to be static within the file)
+// Built-in command handlers
 static int cli_help_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 static int cli_echo_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 static int cli_clear_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
@@ -86,13 +88,12 @@ static int cli_dsp_reset(const char* args, kernel::hal::UARTDriverOps* uart_ops)
 
 
 void CLI::init(kernel::hal::UARTDriverOps* uart_ops) {
-    (void)uart_ops; // uart_ops might be used for initial greeting or error reporting
+    (void)uart_ops; 
     cmd_buffer_idx_ = 0;
     history_idx_ = 0;
     history_count_ = 0;
-    g_num_commands.store(0, std::memory_order_relaxed); // Initialize atomic
+    g_num_commands.store(0, std::memory_order_relaxed); 
 
-    // Register built-in commands
     register_command("help", cli_help_command, "Show this help message or command details. Usage: help [command]");
     register_command("echo", cli_echo_command, "Print arguments back to the console. Usage: echo <text>");
     register_command("clear", cli_clear_command, "Clear the console screen.");
@@ -100,15 +101,11 @@ void CLI::init(kernel::hal::UARTDriverOps* uart_ops) {
     register_command("reboot", cli_reboot_command, "Reboot the system (platform dependent).");
     register_command("kstats", cli_kernel_stats_command, "Show kernel statistics.");
     register_command("trace", cli_trace_dump_command, "Dump trace buffer.");
-
-    // FS commands
     register_command("ls", cli_fs_ls_command, "List files in a directory. Usage: ls [path]");
     register_command("cat", cli_fs_cat_command, "Display file content. Usage: cat <filepath>");
     register_command("mkfile", cli_fs_mkfile_command, "Create an empty file. Usage: mkfile <filepath>");
     register_command("mkdir", cli_fs_mkdir_command, "Create a directory. Usage: mkdir <path>");
     register_command("rm", cli_fs_rm_command, "Remove a file or directory. Usage: rm <path>");
-
-    // Network commands
     register_command("ifconfig", cli_net_ifconfig_command, "Show network interface configuration.");
     register_command("ping", cli_net_ping_command, "Send ICMP echo request. Usage: ping <ip_address>");
     register_command("listen_udp", cli_net_listen_udp_command, "Listen on a UDP port. Usage: listen_udp <port>");
@@ -117,26 +114,19 @@ void CLI::init(kernel::hal::UARTDriverOps* uart_ops) {
     register_command("sockets", cli_net_sockets_command, "List active network sockets.");
     register_command("netaudio", cli_net_audio_stream, "Stream audio over network. Usage: netaudio <sink|source> <ip> <port> <channels>");
     register_command("jitter", cli_net_jitter, "Configure jitter buffer. Usage: jitter <socket_idx> <size_pkts>");
-
-
-    // GPIO commands
     register_command("gpiocfg", cli_gpio_config, "Configure GPIO pin. Usage: gpiocfg <bank> <pin> <input|output>");
     register_command("gpioread", cli_gpio_read, "Read GPIO pin state. Usage: gpioread <bank> <pin>");
     register_command("gpiowrite", cli_gpio_write, "Write GPIO pin state. Usage: gpiowrite <bank> <pin> <high|low>");
-
-    // DSP commands
     register_command("dspadd", cli_dsp_add, "Add DSP node. Usage: dspadd <type> <name>");
     register_command("dsprm", cli_dsp_remove, "Remove DSP node. Usage: dsprm <name>");
     register_command("dspcfg", cli_dsp_config, "Configure DSP node. Usage: dspcfg <name> <args...>");
     register_command("dspreset", cli_dsp_reset, "Reset DSP graph.");
-
-    // Add more commands for other subsystems (Audio, Trace, etc.) as needed
 }
 
 bool CLI::register_command(const char* name, CommandHandler handler, const char* help_text) {
     size_t current_num = g_num_commands.load(std::memory_order_relaxed);
     if (current_num >= MAX_COMMANDS) {
-        return false; // Max commands reached
+        return false; 
     }
     g_commands[current_num] = {name, handler, help_text};
     g_num_commands.store(current_num + 1, std::memory_order_release);
@@ -205,13 +195,13 @@ void CLI::cli_thread_entry(void* uart_ops_ptr) {
                 cmd_buffer_[cmd_buffer_idx_] = '\0'; 
 
                 if (history_count_ < MAX_HISTORY) {
-                    kernel::util::memcpy(command_history_[history_count_].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
+                    ::kernel::util::memcpy(command_history_[history_count_].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
                     history_count_++;
                 } else { 
                     for (size_t i = 1; i < MAX_HISTORY; ++i) {
                         command_history_[i - 1] = command_history_[i];
                     }
-                    kernel::util::memcpy(command_history_[MAX_HISTORY - 1].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
+                    ::kernel::util::memcpy(command_history_[MAX_HISTORY - 1].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
                 }
                 history_idx_ = history_count_; 
 
@@ -237,13 +227,12 @@ void CLI::cli_thread_entry(void* uart_ops_ptr) {
     }
 }
 
-
 // --- Built-in Command Implementations ---
 static int cli_help_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     if (!uart_ops) return -1;
-    if (args && kernel::util::strlen(args) > 0) {
+    if (args && ::kernel::util::strlen(args) > 0) {
         for (size_t i = 0; i < CLI::g_num_commands.load(std::memory_order_relaxed); ++i) {
-            if (CLI::g_commands[i].name && kernel::util::strcmp(CLI::g_commands[i].name, args) == 0) {
+            if (CLI::g_commands[i].name && ::kernel::util::strcmp(CLI::g_commands[i].name, args) == 0) {
                 uart_ops->puts(args); 
                 if (CLI::g_commands[i].help_text) {
                     uart_ops->puts(": ");
@@ -302,17 +291,16 @@ static int cli_history_command(const char* args, kernel::hal::UARTDriverOps* uar
 // --- Filesystem Command Implementations ---
 static int cli_fs_ls_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     if (!uart_ops) return -1;
-    const char* path_to_list = (args && kernel::util::strlen(args) > 0) ? args : "/";
+    const char* path_to_list = (args && ::kernel::util::strlen(args) > 0) ? args : "/";
     if (!kernel::g_file_system.list_files(path_to_list, uart_ops)) {
-        uart_ops->puts("Error listing directory.\n");
-        return -1;
+        // list_files prints its own errors usually
     }
     return 0;
 }
 
 // --- GPIO Command Implementations ---
 static int cli_gpio_config(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if (!uart_ops || !args) return -1;
+    if (!uart_ops || !args) { if (uart_ops) uart_ops->puts("Usage: gpiocfg <bank> <pin> <input|output>\n"); return -1; }
     int bank = -1, pin = -1;
     char mode_str[10] = {0};
     kernel::hal::gpio::PinMode mode_val;
@@ -344,7 +332,7 @@ static int cli_gpio_config(const char* args, kernel::hal::UARTDriverOps* uart_op
 }
 
 static int cli_gpio_read(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if (!uart_ops || !args) return -1;
+    if (!uart_ops || !args) { if (uart_ops) uart_ops->puts("Usage: gpioread <bank> <pin>\n"); return -1;}
     int bank = -1, pin = -1;
     if (std::sscanf(args, "%d %d", &bank, &pin) == 2) {
         if (bank < 0 || static_cast<size_t>(bank) >= GPIO_BANKS || pin < 0 || static_cast<size_t>(pin) >= GPIO_PINS_PER_BANK) {
@@ -352,8 +340,9 @@ static int cli_gpio_read(const char* args, kernel::hal::UARTDriverOps* uart_ops)
             return -1;
         }
         kernel::hal::gpio::PinState state = kernel::g_gpio_manager.read_pin(static_cast<uint32_t>(bank), static_cast<uint32_t>(pin));
-        uart_ops->puts("GPIO["); uart_ops->puts(args); uart_ops->puts("] state: "); 
-        uart_ops->puts(state == kernel::hal::gpio::PinState::HIGH ? "HIGH\n" : "LOW\n");
+        char buffer[64];
+        std::snprintf(buffer, sizeof(buffer), "GPIO[%d][%d] state: %s\n", bank, pin, (state == kernel::hal::gpio::PinState::HIGH ? "HIGH" : "LOW"));
+        uart_ops->puts(buffer);
     } else {
         if (uart_ops) uart_ops->puts("Usage: gpioread <bank> <pin>\n");
         return -1;
@@ -362,7 +351,7 @@ static int cli_gpio_read(const char* args, kernel::hal::UARTDriverOps* uart_ops)
 }
 
 static int cli_gpio_write(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if (!uart_ops || !args) return -1;
+    if (!uart_ops || !args) { if (uart_ops) uart_ops->puts("Usage: gpiowrite <bank> <pin> <high|low>\n"); return -1;}
     int bank = -1, pin = -1;
     char state_str[5] = {0};
     kernel::hal::gpio::PinState state_val;
@@ -407,7 +396,7 @@ static int cli_net_ping_command(const char* args, kernel::hal::UARTDriverOps* ua
         return -1;
     }
     uint32_t ip_addr_val;
-    if (kernel::util::ipv4_to_uint32(args, ip_addr_val)) {
+    if (::kernel::util::ipv4_to_uint32(args, ip_addr_val)) {
         net::IPv4Addr target_ip{ip_addr_val};
         kernel::g_net_manager.ping(target_ip, 3, uart_ops); 
     } else {
@@ -424,21 +413,18 @@ static int cli_net_audio_stream(const char* args, kernel::hal::UARTDriverOps* ua
     char mode[10], ip_str[16];
     int port, channels;
     if (std::sscanf(args, "%9s %15s %d %d", mode, ip_str, &port, &channels) == 4) {
-        uart_ops->puts("Network audio streaming configured (simulated): Mode=");
-        uart_ops->puts(mode); uart_ops->puts(", IP="); uart_ops->puts(ip_str);
-        // ... print port and channels
-        uart_ops->puts("\nTo use, add and configure 'netaudio' DSP node.\n");
+        char buffer[128];
+        std::snprintf(buffer, sizeof(buffer), "Network audio (simulated): Mode=%s, IP=%s, Port=%d, Ch=%d\n", mode, ip_str, port, channels);
+        uart_ops->puts(buffer);
+        uart_ops->puts("To use, add and configure 'netaudio' DSP node.\n");
 
-        if (kernel::util::strcmp(mode, "sink") == 0 && kernel::g_net_manager.is_initialized()) {
+        if (::kernel::util::strcmp(mode, "sink") == 0 && kernel::g_net_manager.is_initialized()) {
             uint32_t ip_val;
-            if (kernel::util::ipv4_to_uint32(ip_str, ip_val) && port > 0 && port <= 65535 && channels > 0) {
-                net::IPv4Addr ip{ip_val};
-                net::Packet packet{.dst_ip = ip, .dst_port = static_cast<uint16_t>(port), .src_ip={}, .src_port=0, .timestamp_us=0, .data={}, .data_len = 0, .priority=0, .audio_channels = static_cast<uint8_t>(channels)};
-                packet.data_len = snprintf(reinterpret_cast<char*>(packet.data.data()), packet.data.size(), "TestNetAudio");
-                uart_ops->puts("Simulated packet prepared. Use dsp node for actual streaming.\n");
+            if (::kernel::util::ipv4_to_uint32(ip_str, ip_val) && port > 0 && port <= 65535 && channels > 0) {
+                // This part is just a placeholder for a real action
+                uart_ops->puts("Simulated sink configuration acknowledged.\n");
             }
         }
-
     } else {
         uart_ops->puts("Invalid arguments for netaudio.\n");
     }
@@ -446,19 +432,21 @@ static int cli_net_audio_stream(const char* args, kernel::hal::UARTDriverOps* ua
 }
 
 static int cli_net_jitter(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if (!uart_ops || !args) return -1;
+    if (!uart_ops || !args) { if(uart_ops) uart_ops->puts("Usage: jitter <socket_idx> <size_pkts (0-MAX_JITTER_BUFFER)>\n"); return -1;}
     int socket_idx = -1;
     unsigned int size = 0; 
 
-    if (args && std::sscanf(args, "%d %u", &socket_idx, &size) == 2 &&
-        socket_idx >= 0 && size <= net::MAX_JITTER_BUFFER) { // Allow size 0 to disable
+    if (std::sscanf(args, "%d %u", &socket_idx, &size) == 2 &&
+        socket_idx >= 0 && size <= net::MAX_JITTER_BUFFER) { 
         if (kernel::g_net_manager.set_jitter_buffer_size(socket_idx, size)) {
             if (uart_ops) uart_ops->puts("Jitter buffer size set.\n");
         } else {
             if (uart_ops) uart_ops->puts("Error setting jitter buffer (invalid socket or manager not init).\n");
         }
     } else {
-        if (uart_ops) uart_ops->puts("Usage: jitter <socket_idx> <size_packets (0-8)>\n");
+        char usage_buf[128];
+        std::snprintf(usage_buf, sizeof(usage_buf), "Usage: jitter <socket_idx> <size_packets (0-%zu)>\n", net::MAX_JITTER_BUFFER);
+        if (uart_ops) uart_ops->puts(usage_buf);
     }
     return 0;
 }
@@ -471,7 +459,7 @@ static int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
         return -1;
     }
     char type_str[32] = {0};
-    char name_str[MAX_NAME_LENGTH] = {0}; // Use global MAX_NAME_LENGTH
+    char name_str[MAX_NAME_LENGTH] = {0}; 
 
     if (std::sscanf(args, "%31s %31s", type_str, name_str) == 2) {
         std::string_view type_sv(type_str);
@@ -529,7 +517,7 @@ static int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
 }
 
 static int cli_dsp_remove(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if (!uart_ops || !args || kernel::util::strlen(args) == 0) {
+    if (!uart_ops || !args || ::kernel::util::strlen(args) == 0) {
         if (uart_ops) uart_ops->puts("Usage: dsprm <name>\n");
         return -1;
     }
@@ -598,7 +586,7 @@ static int cli_reboot_command(const char* args, kernel::hal::UARTDriverOps* uart
     (void)args;
     if (uart_ops) uart_ops->puts("Rebooting system...\n");
     if (kernel::g_platform) {
-        // kernel::g_platform->reboot(); // Assuming a reboot method exists in Platform HAL
+        // kernel::g_platform->reboot(); // Placeholder for actual reboot
     }
     return 0;
 }
@@ -614,12 +602,11 @@ static int cli_trace_dump_command(const char* args, kernel::hal::UARTDriverOps* 
 }
 
 static int cli_fs_cat_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if (!uart_ops || !args || kernel::util::strlen(args) == 0) {
+    if (!uart_ops || !args || ::kernel::util::strlen(args) == 0) {
         if(uart_ops) { uart_ops->puts("Usage: cat <filepath>\n"); }
         return -1;
     }
     std::string content;
-    // Assuming FileSystem::read_file(std::string_view, std::string&) overload exists
     if (kernel::g_file_system.read_file(args, content)) {
         uart_ops->puts(content.c_str());
         uart_ops->putc('\n');
@@ -630,19 +617,19 @@ static int cli_fs_cat_command(const char* args, kernel::hal::UARTDriverOps* uart
 }
 
 static int cli_fs_mkfile_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if(!uart_ops || !args || kernel::util::strlen(args) == 0) { if(uart_ops) { uart_ops->puts("Usage: mkfile <filepath>\n"); } return -1; }
+    if(!uart_ops || !args || ::kernel::util::strlen(args) == 0) { if(uart_ops) { uart_ops->puts("Usage: mkfile <filepath>\n"); } return -1; }
     if(kernel::g_file_system.create_file(args, false)) uart_ops->puts("File created.\n");
     else uart_ops->puts("Error creating file.\n");
     return 0;
 }
 static int cli_fs_mkdir_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if(!uart_ops || !args || kernel::util::strlen(args) == 0) { if(uart_ops) { uart_ops->puts("Usage: mkdir <path>\n"); } return -1; }
+    if(!uart_ops || !args || ::kernel::util::strlen(args) == 0) { if(uart_ops) { uart_ops->puts("Usage: mkdir <path>\n"); } return -1; }
     if(kernel::g_file_system.create_file(args, true)) uart_ops->puts("Directory created.\n"); 
     else uart_ops->puts("Error creating directory.\n");
     return 0;
 }
 static int cli_fs_rm_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if(!uart_ops || !args || kernel::util::strlen(args) == 0) { if(uart_ops) { uart_ops->puts("Usage: rm <path>\n"); } return -1; }
+    if(!uart_ops || !args || ::kernel::util::strlen(args) == 0) { if(uart_ops) { uart_ops->puts("Usage: rm <path>\n"); } return -1; }
     if(kernel::g_file_system.delete_file(args)) uart_ops->puts("File/directory removed.\n");
     else uart_ops->puts("Error removing file/directory.\n");
     return 0;
@@ -663,14 +650,17 @@ static int cli_net_send_udp_command(const char* args, kernel::hal::UARTDriverOps
     char ip_str[16]; int port; char data_str[128]; 
     if(std::sscanf(args, "%15s %d %127s", ip_str, &port, data_str) == 3) {
         uint32_t ip_val;
-        if(kernel::util::ipv4_to_uint32(ip_str, ip_val) && port > 0 && port <= 65535) {
+        if(::kernel::util::ipv4_to_uint32(ip_str, ip_val) && port > 0 && port <= 65535) {
             net::IPv4Addr dst_ip{ip_val};
-            net::Packet p;
+            net::Packet p{}; // Initialize with default values
             p.dst_ip = dst_ip;
             p.dst_port = static_cast<uint16_t>(port);
-            p.data_len = kernel::util::strlen(data_str);
-            if (p.data_len > p.data.size()) p.data_len = p.data.size(); // Prevent overflow
-            kernel::util::memcpy(p.data.data(), data_str, p.data_len);
+            p.data_len = ::kernel::util::strlen(data_str);
+            if (p.data_len >= p.data.size()) { // Prevent overflow (p.data.size() is MAX_PAYLOAD)
+                 p.data_len = p.data.size() -1; 
+            }
+            ::kernel::util::memcpy(p.data.data(), data_str, p.data_len);
+            p.data[p.data_len] = '\0'; // Null-terminate if it's string data, though not strictly for packet
             
             int sock_idx = kernel::g_net_manager.create_udp_socket(net::IPv4Addr{0}, 0); 
             if (sock_idx >= 0) {
@@ -697,7 +687,6 @@ static int cli_net_sockets_command(const char* args, kernel::hal::UARTDriverOps*
     kernel::g_net_manager.list_sockets(uart_ops);
     return 0;
 }
-
 
 bool CLI::process_script(const char* filename, kernel::hal::UARTDriverOps* uart_ops) {
     if (!filename || !uart_ops || !kernel::g_platform) return false;
@@ -734,10 +723,9 @@ bool CLI::process_script(const char* filename, kernel::hal::UARTDriverOps* uart_
         size_t last_char = line_sv.find_last_not_of(" \t\r");
          if (last_char != std::string_view::npos) {
             line_sv = line_sv.substr(0, last_char + 1);
-        } else { // line was all whitespace after first_char
+        } else { 
             continue;
         }
-
 
         if (!line_sv.empty()) {
             uart_ops->puts("scr> ");
@@ -751,6 +739,5 @@ bool CLI::process_script(const char* filename, kernel::hal::UARTDriverOps* uart_
     uart_ops->puts("Script execution finished.\n");
     return true;
 }
-
 
 } // namespace cli
