@@ -279,7 +279,7 @@ static int cli_history_command(const char* args, kernel::hal::UARTDriverOps* uar
     if (!uart_ops) return -1;
     uart_ops->puts("Command History:\n");
     for (size_t i = 0; i < CLI::history_count_; ++i) {
-        char num_buf[12]; // Increased size for safety with %zu
+        char num_buf[12]; 
         std::snprintf(num_buf, sizeof(num_buf), "%3zu: ", i + 1);
         uart_ops->puts(num_buf);
         uart_ops->puts(CLI::command_history_[i].data()); 
@@ -293,7 +293,7 @@ static int cli_fs_ls_command(const char* args, kernel::hal::UARTDriverOps* uart_
     if (!uart_ops) return -1;
     const char* path_to_list = (args && ::kernel::util::strlen(args) > 0) ? args : "/";
     if (!kernel::g_file_system.list_files(path_to_list, uart_ops)) {
-        // list_files typically prints its own errors
+        // list_files prints its own errors usually
     }
     return 0;
 }
@@ -459,7 +459,7 @@ static int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
         return -1;
     }
     char type_str[32] = {0};
-    char name_str[MAX_NAME_LENGTH] = {0}; 
+    char name_str[MAX_NAME_LENGTH] = {0}; // Use global MAX_NAME_LENGTH
 
     if (std::sscanf(args, "%31s %31s", type_str, name_str) == 2) {
         std::string_view type_sv(type_str);
