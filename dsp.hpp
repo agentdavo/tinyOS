@@ -361,10 +361,9 @@ private:
     ParamRamp pitch_shift_factor_; 
     std::array<float, PITCH_WINDOW_SIZE * 2> input_ring_buffer_; 
     std::array<float, PITCH_WINDOW_SIZE> analysis_window_; 
-    // std::array<float, PITCH_WINDOW_SIZE> synthesis_window_; // Often same as analysis
     size_t input_write_ptr_ = 0;
-    float output_read_pos_ = 0.0f; 
-    // Corrected: these need to be arrays for multi-channel if pitch shifting is per channel
+    float phase_accumulator_ = 0.0f;
+    // Use the constant from audio.hpp
     std::array<float, audio::MAX_AUDIO_CHANNELS> last_input_phase_ = {0.0f}; 
     std::array<float, audio::MAX_AUDIO_CHANNELS> last_output_phase_ = {0.0f};
 };
