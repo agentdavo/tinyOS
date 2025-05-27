@@ -27,6 +27,8 @@
 #include "fs.hpp"
 #include "net.hpp"
 #include "gpio.hpp"
+#include "demo_cli_dsp.hpp"
+#include "test_framework.hpp"
 #include <cstring>
 #include <cassert>
 
@@ -36,9 +38,9 @@ namespace kernel {
 Platform* g_platform = nullptr;
 Scheduler* g_scheduler_ptr = nullptr;
 volatile bool g_bss_cleared_smp_flag = false;
-uint8_t g_audio_pool_mem[64 * 1024] __attribute__((aligned(64)));
+alignas(64) uint8_t g_audio_pool_mem[64 * 1024];
 FixedMemoryPool g_audio_pool;
-uint8_t g_software_timer_obj_pool_mem[MAX_SOFTWARE_TIMERS * sizeof(timer::SoftwareTimer)] __attribute__((aligned(64)));
+alignas(64) uint8_t g_software_timer_obj_pool_mem[MAX_SOFTWARE_TIMERS * sizeof(timer::SoftwareTimer)];
 FixedMemoryPool g_software_timer_obj_pool;
 audio::AudioSystem g_audio_system;
 trace::TraceManager g_trace_manager;
@@ -50,9 +52,9 @@ std::array<TraceEntry, TRACE_BUFFER_SIZE> g_trace_buffer;
 std::atomic<size_t> g_trace_buffer_next_idx{0};
 std::array<std::atomic<size_t>, MAX_CORES> g_trace_overflow_count = {};
 Spinlock g_trace_lock;
-std::array<std::array<uint8_t, DEFAULT_STACK_SIZE>, MAX_THREADS> g_task_stacks __attribute__((aligned(16)));
+alignas(16) std::array<std::array<uint8_t, DEFAULT_STACK_SIZE>, MAX_THREADS> g_task_stacks;
 std::array<TCB, MAX_THREADS> g_task_tcbs;
-std::array<PerCPUData, MAX_CORES> g_per_cpu_data __attribute__((aligned(64)));
+alignas(64) std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
 
 // --- Spinlock ---
 uint32_t Spinlock::next_lock_id_ = 0;
@@ -61,7 +63,7 @@ Spinlock::Spinlock() : lock_id_(next_lock_id_++) {}
 
 void Spinlock::acquire_isr_safe() {
     if (!g_platform) return;
-    g_platform->get_irq_ops()->disable_core_irqs();
+    g_platform->get_irq_ops()->disable_core_irqs(g_platform->get_core_id());
     bool expected = false;
     while (!lock_flag_.compare_exchange_strong(expected, true, std::memory_order_acquire)) {
         expected = false;
@@ -71,7 +73,7 @@ void Spinlock::acquire_isr_safe() {
 void Spinlock::release_isr_safe() {
     if (!g_platform) return;
     lock_flag_.store(false, std::memory_order_release);
-    g_platform->get_irq_ops()->enable_core_irqs();
+    g_platform->get_irq_ops()->enable_core_irqs(g_platform->get_core_id(), 0);
 }
 
 void Spinlock::acquire_general() {
@@ -454,6 +456,8 @@ extern "C" void kernel_main() {
         if (!g_scheduler_ptr->create_thread(cli::CLI::cli_thread_entry, g_platform->get_uart_ops(), 3, 0, "CLI", false, 10000)) {
             g_platform->panic("CLI thread creation failed", __FILE__, __LINE__);
         }
+        demo::register_demo_commands();
+        test::register_tests();
         if (g_platform->get_uart_ops()) {
             g_platform->get_uart_ops()->puts("[miniOS v1.7] System Initialized\n");
         }

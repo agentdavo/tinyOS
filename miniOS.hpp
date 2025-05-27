@@ -22,6 +22,7 @@
 #ifndef MINIOS_HPP
 #define MINIOS_HPP
 
+// Standard includes (global scope, no project namespaces)
 #include <cstdint>
 #include <cstddef>
 #include <span>
@@ -31,13 +32,14 @@
 #include <array>
 #include <concepts>
 
-namespace util { bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept; }
-namespace cli { class CLI; }
-namespace audio { class AudioSystem; struct AudioBuffer; struct AudioConfig; }
-namespace trace { class TraceManager; }
-namespace fs { class FileSystem; }
-namespace net { class NetManager; struct IPv4Addr; struct Packet; }
-namespace gpio { class GPIOManager; }
+// Subsystem includes (after standard headers, no cyclic dependencies)
+#include "audio.hpp"
+#include "cli.hpp"
+#include "fs.hpp"
+#include "gpio.hpp"
+#include "net.hpp"
+#include "trace.hpp"
+#include "util.hpp"
 
 namespace kernel {
 
@@ -108,7 +110,7 @@ class FixedMemoryPool {
 public:
     bool init(void* base, size_t num, size_t blk_sz_user, size_t align_user_data);
     void* allocate();
-    void free_block(void* user_data_ptr);
+    void free_block(void* ptr);
     size_t get_free_count() const noexcept { return num_free_blocks_; }
 };
 
@@ -312,6 +314,8 @@ struct I2SDriverOps {
  * @brief Timer driver operations.
  */
 namespace timer {
+    struct SoftwareTimer; // Forward declaration
+    using software_timer_callback_t = void (*)(SoftwareTimer*, void*);
     struct SoftwareTimer {
         uint64_t expiry_time_us;
         uint64_t period_us;
@@ -320,7 +324,6 @@ namespace timer {
         bool active;
         SoftwareTimer* next;
     };
-    using software_timer_callback_t = void (*)(SoftwareTimer*, void*);
 }
 struct TimerDriverOps {
     virtual void init_system_timer_properties(uint64_t freq_hz_override = 0) = 0;
@@ -337,11 +340,7 @@ struct TimerDriverOps {
  * @brief Network driver operations.
  */
 namespace net {
-    struct NetworkDriverOps {
-        virtual bool send_packet(std::span<const uint8_t> data) = 0;
-        virtual bool receive_packet(std::span<uint8_t> buffer, size_t& len) = 0;
-        virtual ~NetworkDriverOps() = default;
-    };
+    struct NetworkDriverOps; // Forward declaration in net.hpp
 }
 
 /**
@@ -350,13 +349,7 @@ namespace net {
 namespace gpio {
     enum class PinMode { INPUT, OUTPUT };
     enum class PinState { LOW, HIGH };
-    struct GPIODriverOps {
-        virtual bool configure_pin(uint32_t bank, uint32_t pin, PinMode mode) = 0;
-        virtual bool set_pin(uint32_t bank, uint32_t pin, PinState state) = 0;
-        virtual PinState read_pin(uint32_t bank, uint32_t pin) = 0;
-        virtual void enable_interrupt(uint32_t bank, uint32_t pin, bool rising_edge) = 0;
-        virtual ~GPIODriverOps() = default;
-    };
+    struct GPIODriverOps; // Forward declaration in gpio.hpp
 }
 
 /**
@@ -388,8 +381,8 @@ public:
     virtual TimerDriverOps* get_timer_ops() = 0;
     virtual DMAControllerOps* get_dma_ops() = 0;
     virtual I2SDriverOps* get_i2s_ops() = 0;
-    virtual MemoryOps* get_memory_ops() = 0;
-    virtual net::NetworkDriverOps* get_network_ops() = 0;
+    virtual MemoryOps* get_mem_ops() = 0;
+    virtual net::NetworkDriverOps* get_net_ops() = 0;
     virtual PowerOps* get_power_ops() = 0;
     virtual gpio::GPIODriverOps* get_gpio_ops() = 0;
     virtual WatchdogOps* get_watchdog_ops() = 0;
@@ -399,17 +392,18 @@ public:
     virtual ~Platform() = default;
 };
 
-extern Platform* g_platform; ///< Global platform instance
-extern Scheduler* g_scheduler_ptr; ///< Global scheduler instance
-extern audio::AudioSystem g_audio_system; ///< Global audio system
-extern FixedMemoryPool g_audio_pool; ///< Audio buffer pool
-extern uint8_t g_audio_pool_mem[64 * 1024]; ///< Audio pool memory
-extern FixedMemoryPool g_software_timer_obj_pool; ///< Timer object pool
-extern uint8_t g_software_timer_obj_pool_mem[MAX_SOFTWARE_TIMERS * sizeof(timer::SoftwareTimer)]; ///< Timer pool memory
-extern trace::TraceManager g_trace_manager; ///< Global trace manager
-extern fs::FileSystem g_file_system; ///< Global file system
-extern net::NetManager g_net_manager; ///< Global network manager
-extern gpio::GPIOManager g_gpio_manager; ///< Global GPIO manager
+// Global instances
+extern Platform* g_platform;
+extern Scheduler* g_scheduler_ptr;
+extern audio::AudioSystem g_audio_system;
+extern FixedMemoryPool g_audio_pool;
+extern uint8_t g_audio_pool_mem[64 * 1024];
+extern FixedMemoryPool g_software_timer_obj_pool;
+extern uint8_t g_software_timer_obj_pool_mem[MAX_SOFTWARE_TIMERS * sizeof(timer::SoftwareTimer)];
+extern trace::TraceManager g_trace_manager;
+extern fs::FileSystem g_file_system;
+extern net::NetManager g_net_manager;
+extern gpio::GPIOManager g_gpio_manager;
 
 void trace_event(const char* event, uintptr_t a1, uintptr_t a2 = 0);
 void dump_trace_buffer(hal::UARTDriverOps* uart_ops);

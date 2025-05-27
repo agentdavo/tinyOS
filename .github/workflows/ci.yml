@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# .github/workflows/ci.yml - CI pipeline for miniOS v1.6
+# .github/workflows/ci.yml - CI pipeline for miniOS v1.7
 # Builds, tests, and analyzes miniOS on ARM64 and RISC-V in QEMU
-# @version 1.6
+# @version 1.7
 
 name: miniOS CI
 
@@ -10,57 +10,47 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:  # Allow manual triggering
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # Pin to Ubuntu 22.04 for stability
     strategy:
       matrix:
         arch: [ arm64, riscv64 ]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4  # Upgrade to v4
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/apt
+          key: ${{ runner.os }}-apt-${{ hashFiles('**/ci.yml') }}
+          restore-keys: ${{ runner.os }}-apt-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential \
+          sudo apt-get install -y --allow-downgrades \
+            build-essential \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu \
-            qemu-system-arm qemu-system-riscv64 clang-tidy doxygen
+            qemu-system-arm qemu-system-riscv64 clang-tidy bear doxygen
+      - name: Generate compilation database
+        run: bear -- make clean TARGET=${{ matrix.arch }}
       - name: Run static analysis
         run: |
-          clang-tidy --quiet -p . *.cpp *.hpp -- -I. -std=c++20 \
-            -march=${{ matrix.arch == 'arm64' && 'armv8-a+simd' || 'rv64imafdv' }}
+          find . -type f \( -name "*.cpp" -o -name "*.hpp" \) -exec clang-tidy --quiet -p compile_commands.json {} \;
       - name: Build miniOS (${{ matrix.arch }})
-        run: |
-          make clean
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            make
-          else
-            sed -i 's/# CC = riscv64-linux-gnu-g++/CC = riscv64-linux-gnu-g++/' Makefile
-            sed -i 's/# AS = riscv64-linux-gnu-gcc/AS = riscv64-linux-gnu-gcc/' Makefile
-            sed -i 's/# LD = riscv64-linux-gnu-ld/LD = riscv64-linux-gnu-ld/' Makefile
-            sed -i 's/# OBJCOPY = riscv64-linux-gnu-objcopy/OBJCOPY = riscv64-linux-gnu-objcopy/' Makefile
-            sed -i 's/# CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -march=rv64imafdv -mabi=lp64 -std=c++20 -I./CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -march=rv64imaf -mabi=lp64 -std=c++20 -I./' Makefile
-            sed -i 's/# ASFLAGS = -march=rv64imaf -mabi=lp64/ASFLAGS = -march=rv64imaf -mabi=lp64/' Makefile
-            sed -i 's/# LDFLAGS = -T linker_rv64.ld/LDFLAGS = -T linker_rv64.ld/' Makefile
-            sed -i 's/# OBJ =.*$/OBJ = miniOS.o util_cpp20.o cli.o dsp.o audio.o demo_cli_dsp.o trace.o fs.o net.o test_framework.o hal_qemu_rv64ima.o cpu_rv64.o gpio.o/' Makefile
-            make
-          fi
+        run: make TARGET=${{ matrix.arch }}
       - name: Run tests in QEMU (${{ matrix.arch }})
         run: |
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            echo -e "test\n" | qemu-system-aarch64 -M virt -cpu cortex-a53 -smp 4 -m 128M -nographic -kernel miniOS.bin
-          else
-            echo -e "test\n" | qemu-system-riscv64 -M virt -cpu rv64 -smp 4 -m 128M -nographic -kernel miniOS.bin
-          fi
+          timeout 30s sh -c 'echo -e "test\n" | ${{ matrix.arch == "arm64" && "qemu-system-aarch64 -M virt -cpu cortex-a53 -smp 4 -m 128M -nographic -kernel miniOS.bin" || "qemu-system-riscv64 -M virt -cpu rv64 -smp 4 -m 128M -nographic -kernel miniOS.bin" }}' > test_output.txt
+          grep "Tests completed:.*0 failed" test_output.txt
       - name: Generate documentation
-        run: |
-          doxygen Doxyfile
+        run: doxygen Doxyfile
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4  # Upgrade to v4
         with:
           name: miniOS-${{ matrix.arch }}
           path: |
             miniOS.bin
             docs/html/
-            docs/latex/refman.pdf
