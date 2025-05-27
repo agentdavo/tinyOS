@@ -3,117 +3,114 @@
  * @file cli.hpp
  * @brief Command Line Interface (CLI) subsystem header for miniOS v1.7.
  * @details
- * Defines an interactive CLI for debugging and controlling miniOS, supporting thread-safe command
- * execution, tab completion, command history, and dynamic command registration from subsystems
- * (kernel, DSP, audio, trace, RAMFS, networking, GPIO). Enhanced in v1.7 with improved error
- * handling, clearer documentation, and modern C++20 practices, retaining all v1.6 functionality
- * including script execution and extensive command set.
+ * Defines a simple, extensible CLI framework for interacting with miniOS. Supports command
+ * registration, argument parsing, command history, and basic line editing. Integrates with
+ * various subsystems (FS, Net, GPIO, DSP, Audio, Trace) through specific commands.
+ * Updated in v1.7 with improved error handling, clearer documentation, and modern C++20 features.
  *
  * C++20 features:
  * - std::string_view for efficient string handling
- * - std::span for buffer operations
- * - std::atomic for thread safety
+ * - std::array for fixed-size buffers
  *
  * @version 1.7
- * @see cli.cpp, miniOS.hpp, util.hpp, dsp.hpp, audio.hpp, trace.hpp, fs.hpp, net.hpp, gpio.hpp
+ * @see cli.cpp, miniOS.hpp, util.hpp
  */
 
 #ifndef CLI_HPP
 #define CLI_HPP
 
-#include "miniOS.hpp"
+#include "miniOS.hpp" // For kernel::hal::UARTDriverOps and other kernel types
 #include <string_view>
-#include <span>
 #include <array>
-#include <atomic>
+#include <atomic> // For std::atomic with g_num_commands
+
+// Forward declare kernel::hal::UARTDriverOps if miniOS.hpp isn't guaranteed to be included first by all users
+// However, cli.cpp includes this, which includes miniOS.hpp.
+// And miniOS.hpp includes cli.hpp (after kernel defs with the fix).
 
 namespace cli {
 
-constexpr size_t MAX_COMMANDS = 32;
+// Constants for CLI behavior
 constexpr size_t MAX_COMMAND_LENGTH = 128;
-constexpr size_t MAX_HISTORY = 10;
+constexpr size_t MAX_COMMANDS = 32;       // Max number of registered commands
+constexpr size_t MAX_HISTORY = 16;        // Max number of commands in history
 
-/**
- * @brief CLI command handler function signature.
- * @param args Command arguments
- * @param uart_ops UART driver for output
- * @return 0 on success, non-zero on failure
- */
+// Type alias for command handler functions
+// Takes raw arguments string and UART operations pointer for output
 using CommandHandler = int (*)(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 
 /**
- * @brief CLI command structure.
+ * @brief Structure to define a CLI command.
  */
 struct Command {
-    const char* name; ///< Command name
-    CommandHandler handler; ///< Command handler function
-    const char* help; ///< Help text
+    const char* name;        ///< Command name (e.g., "help", "ls")
+    CommandHandler handler;  ///< Function pointer to the command handler
+    const char* help_text;   ///< Brief description of the command
 };
 
 /**
- * @brief CLI subsystem class.
+ * @brief Manages the Command Line Interface.
+ * @details This class is designed to be mostly static as there's typically one system-wide CLI.
  */
 class CLI {
 public:
-    CLI();
+    /**
+     * @brief Initializes the CLI subsystem.
+     * @details Registers built-in commands.
+     * @param uart_ops Pointer to the UART driver operations for I/O.
+     */
+    static void init(kernel::hal::UARTDriverOps* uart_ops);
 
     /**
-     * @brief Registers a new CLI command.
-     * @param name Command name (must be unique)
-     * @param handler Command handler function
-     * @param help Help text for the command
-     * @return True if registered, false if command limit reached or duplicate
+     * @brief Registers a new command with the CLI.
+     * @param name Name of the command.
+     * @param handler Function pointer to the command's handler.
+     * @param help_text Help string for the command.
+     * @return True if registration was successful, false otherwise (e.g., max commands reached).
      */
-    bool register_command(const char* name, CommandHandler handler, const char* help);
+    static bool register_command(const char* name, CommandHandler handler, const char* help_text);
 
     /**
-     * @brief Processes a single command line.
-     * @param line Command line to process
-     * @param uart_ops UART driver for output
-     * @return True if command was recognized, false otherwise
+     * @brief Processes a single line of input from the CLI.
+     * @param line The input line to process.
+     * @param uart_ops Pointer to the UART driver operations for output.
+     * @return True if the line was processed (command found or error handled), false for empty line.
      */
-    bool process_line(std::string_view line, kernel::hal::UARTDriverOps* uart_ops);
+    static bool process_line(std::string_view line, kernel::hal::UARTDriverOps* uart_ops);
 
     /**
-     * @brief Processes a script file from RAMFS.
-     * @param filename Script file path
-     * @param uart_ops UART driver for output
-     * @return True if script executed successfully, false otherwise
+     * @brief Executes commands from a script file.
+     * @param filename Path to the script file.
+     * @param uart_ops Pointer to the UART driver operations.
+     * @return True if script processed successfully, false on error (e.g., file not found).
      */
-    bool process_script(const char* filename, kernel::hal::UARTDriverOps* uart_ops);
+    static bool process_script(const char* filename, kernel::hal::UARTDriverOps* uart_ops);
 
     /**
-     * @brief Performs tab completion for the current input.
-     * @param uart_ops UART driver for output
+     * @brief Entry point for the CLI thread.
+     * @param uart_ops_ptr Pointer to UARTDriverOps, passed as void* from thread creation.
      */
-    void complete_command(kernel::hal::UARTDriverOps* uart_ops);
+    static void cli_thread_entry(void* uart_ops_ptr);
 
-    /**
-     * @brief Navigates command history (up/down).
-     * @param up True for up (previous), false for down (next)
-     * @param uart_ops UART driver for output
-     */
-    void navigate_history(bool up, kernel::hal::UARTDriverOps* uart_ops);
-
-    /**
-     * @brief CLI thread entry point.
-     * @param arg UART driver operations (kernel::hal::UARTDriverOps*)
-     */
-    static void cli_thread_entry(void* arg);
-
-    /**
-     * @brief Registers core CLI commands (help, script, etc.).
-     */
-    void register_core_commands();
 
 private:
+    // Non-static methods would be used if CLI was instantiated.
+    // For now, keeping these actions within the static cli_thread_entry or called by it.
+    // If we had an instance:
+    // void handle_char(char c, kernel::hal::UARTDriverOps* uart_ops);
+    // void complete_command(kernel::hal::UARTDriverOps* uart_ops); // Tab completion (future)
+    // void navigate_history(bool up, kernel::hal::UARTDriverOps* uart_ops); // Arrow key history
+
+    // Static members for command registration and global CLI state
     static std::array<Command, MAX_COMMANDS> g_commands; ///< Registered commands
-    static std::atomic<size_t> g_num_commands; ///< Number of registered commands
-    std::array<char, MAX_COMMAND_LENGTH> cmd_buffer_; ///< Current command buffer
-    size_t cmd_buffer_idx_ = 0; ///< Current buffer index
-    std::array<std::array<char, MAX_COMMAND_LENGTH>, MAX_HISTORY> command_history_; ///< Command history
-    size_t history_idx_ = 0; ///< Current history index
-    size_t history_count_ = 0; ///< Number of history entries
+    static std::atomic<size_t> g_num_commands;           ///< Number of registered commands
+    
+    // Made these static to be accessible from static cli_thread_entry
+    static std::array<char, MAX_COMMAND_LENGTH> cmd_buffer_; 
+    static size_t cmd_buffer_idx_; 
+    static std::array<std::array<char, MAX_COMMAND_LENGTH>, MAX_HISTORY> command_history_; 
+    static size_t history_idx_; 
+    static size_t history_count_; 
 };
 
 } // namespace cli

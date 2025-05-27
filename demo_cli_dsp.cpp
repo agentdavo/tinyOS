@@ -24,7 +24,6 @@
 #include "cli.hpp"
 #include "util.hpp"
 #include <cstring>
-#include <optional>
 
 namespace demo {
 
@@ -32,17 +31,9 @@ class DSPDemo {
 public:
     DSPDemo() = default;
 
-    /**
-     * @brief Initializes the DSP demo pipeline.
-     * @param uart_ops UART driver for output
-     * @return True if successful, false otherwise
-     */
-    bool init(kernel::hal::UARTDriverOps* uart_ops) {
-        if (!uart_ops) {
-            return false;
-        }
+    bool init(kernel::UARTDriverOps* uart_ops) {
+        if (!uart_ops) return false;
 
-        // Initialize audio system
         audio::AudioConfig audio_cfg = {
             .sample_rate_hz = 48000,
             .samples_per_block = 256,
@@ -53,19 +44,14 @@ public:
             return false;
         }
 
-        // Add DSP nodes
-        if (!setup_dsp_pipeline(uart_ops)) {
-            return false;
-        }
+        if (!setup_dsp_pipeline(uart_ops)) return false;
 
-        // Create network audio socket
-        socket_idx_ = net::g_net_manager.create_udp_socket({0x0A000001}, 1234); // 10.0.0.1:1234
+        socket_idx_ = net::g_net_manager.create_udp_socket({0x0A000001}, 1234);
         if (socket_idx_ < 0) {
             uart_ops->puts("Failed to create network socket\n");
             return false;
         }
 
-        // Set high priority and jitter buffer
         if (!net::g_net_manager.set_socket_priority(socket_idx_, 10) ||
             !net::g_net_manager.set_jitter_buffer_size(socket_idx_, 4)) {
             uart_ops->puts("Failed to configure network socket\n");
@@ -76,13 +62,7 @@ public:
         return true;
     }
 
-    /**
-     * @brief CLI command handler for DSP demo.
-     * @param args Command arguments
-     * @param uart_ops UART driver for output
-     * @return 0 on success, non-zero on failure
-     */
-    static int cli_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
+    static int cli_command(const char* args, kernel::UARTDriverOps* uart_ops) {
         if (!args || !*args || !uart_ops) {
             uart_ops->puts("Usage: dspdemo <start|stop|addnode <type> <name>|confignet <ip> <port> <channels>)\n");
             return 1;
@@ -110,8 +90,7 @@ private:
     static DSPDemo dsp_demo_;
     int socket_idx_ = -1;
 
-    bool setup_dsp_pipeline(kernel::hal::UARTDriverOps* uart_ops) {
-        // Add 4-way crossover
+    bool setup_dsp_pipeline(kernel::UARTDriverOps* uart_ops) {
         auto* crossover = new kernel::CrossoverDSP("crossover");
         if (!audio::g_audio_system.dsp_graph.add_node(crossover)) {
             uart_ops->puts("Failed to add crossover node\n");
@@ -126,7 +105,6 @@ private:
             return false;
         }
 
-        // Add gain
         auto* gain = new kernel::GainDSP(1.0f, "gain");
         if (!audio::g_audio_system.dsp_graph.add_node(gain)) {
             uart_ops->puts("Failed to add gain node\n");
@@ -134,28 +112,26 @@ private:
             return false;
         }
 
-        // Add compressor
         auto* comp = new kernel::CompressorDSP("comp");
         if (!audio::g_audio_system.dsp_graph.add_node(comp)) {
             uart_ops->puts("Failed to add compressor node\n");
             delete comp;
             return false;
         }
-        audio::g_audio_system.dsp_graph.configure_node("comp", "compressor -15 4 10 100 2", comp);
+        audio::g_audio_system.dsp_graph.configure_node("comp", "compressor -15 4 10 100 2", uart_ops);
 
-        // Add reverb
         auto* reverb = new kernel::ReverbDSP("reverb");
         if (!audio::g_audio_system.dsp_graph.add_node(reverb)) {
             uart_ops->puts("Failed to add reverb node\n");
             delete reverb;
             return false;
         }
-        audio::g_audio_system.dsp_graph.configure_node("reverb", "reverb 10 0.5 0.5 0.3", reverb);
+        audio::g_audio_system.dsp_graph.configure_node("reverb", "reverb 10 0.5 0.5 0.3", uart_ops);
 
         return true;
     }
 
-    static int add_node(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
+    static int add_node(const char* args, kernel::UARTDriverOps* uart_ops) {
         char type[16], name[32];
         if (std::sscanf(args, "%15s %31s", type, name) != 2) {
             uart_ops->puts("Usage: addnode <type> <name>\n");
@@ -184,7 +160,7 @@ private:
         return 1;
     }
 
-    static int configure_network(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
+    static int configure_network(const char* args, kernel::UARTDriverOps* uart_ops) {
         char ip_str[16];
         int port, channels;
         if (std::sscanf(args, "%15s %d %d", ip_str, &port, &channels) != 3 || port <= 0 || port > 65535 || channels < 1 || channels > 8) {
@@ -213,16 +189,9 @@ private:
 
 DSPDemo DSPDemo::dsp_demo_;
 
-/**
- * @brief Registers the DSP demo CLI command.
- */
 void register_demo_commands() {
     cli::g_cli.register_command("dspdemo", DSPDemo::cli_command,
                                 "Run DSP demo (start, stop, addnode, confignet)");
 }
 
 } // namespace demo
-
-extern "C" void init_demo() {
-    demo::register_demo_commands();
-}

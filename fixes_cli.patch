@@ -1,0 +1,292 @@
+diff --git a/cli.cpp b/cli.cpp
+index 9f299fc..29c3932 100644
+--- a/cli.cpp
++++ b/cli.cpp
+@@ -23,6 +23,7 @@
+ #include "fs.hpp"     // For FileSystem commands
+ #include "net.hpp"    // For Network commands
+ #include "gpio.hpp"   // For GPIO commands
++#include "dsp.hpp"    // For DSP Node types (kernel::dsp::)
+ #include <cstring>    // For std::sscanf, std::strlen, etc. (brought by util.hpp usually)
+ #include <cstdio>     // For std::snprintf
+ 
+@@ -31,11 +32,19 @@
+ namespace cli {
+ 
+ // Static member definitions
+-std::array<CLI::Command, CLI::MAX_COMMANDS> CLI::g_commands;
+-std::atomic<size_t> CLI::g_num_commands{0};
++std::array<Command, MAX_COMMANDS> CLI::g_commands; // Command and MAX_COMMANDS are in 'cli' namespace
++std::atomic<size_t> CLI::g_num_commands{0}; // This is correct
++
++// Definitions for the newly static CLI state members
++std::array<char, MAX_COMMAND_LENGTH> CLI::cmd_buffer_;
++size_t CLI::cmd_buffer_idx_ = 0;
++std::array<std::array<char, MAX_COMMAND_LENGTH>, MAX_HISTORY> CLI::command_history_;
++size_t CLI::history_idx_ = 0;
++size_t CLI::history_count_ = 0;
++
+ 
+ // Built-in command handlers
+-int cli_help_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
++static int cli_help_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
+ static int cli_echo_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
+ static int cli_clear_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
+ static int cli_history_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
+@@ -52,7 +61,7 @@
+ // GPIO Commands
+ static int cli_gpio_config(const char* args, kernel::hal::UARTDriverOps* uart_ops);
+ static int cli_gpio_read(const char* args, kernel::hal::UARTDriverOps* uart_ops);
+-static int cli_gpio_write(const char* args, kernel::hal::UARTDriverOps* uart_ops);
++static int cli_gpio_write(const char* args, kernel::hal::UARTDriverOps* uart_ops); // Declaration was missing static
+ 
+ // DSP Commands
+ static int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops);
+@@ -233,10 +242,10 @@
+     if (!uart_ops) return -1;
+     if (args && kernel::util::strlen(args) > 0) {
+         // Search for specific command help
+-        for (size_t i = 0; i < g_num_commands.load(std::memory_order_relaxed); ++i) {
+-            if (kernel::util::strcmp(g_commands[i].name, args) == 0) {
++        for (size_t i = 0; i < CLI::g_num_commands.load(std::memory_order_relaxed); ++i) {
++            if (kernel::util::strcmp(CLI::g_commands[i].name, args) == 0) {
+                 uart_ops->puts(args); // Command name
+-                if (g_commands[i].help_text) {
++                if (CLI::g_commands[i].help_text) {
+                     uart_ops->puts(": ");
+                     uart_ops->puts(CLI::g_commands[i].help_text);
+                 }
+@@ -247,10 +256,10 @@
+         uart_ops->puts("Command not found: "); uart_ops->puts(args); uart_ops->puts("\n");
+     } else {
+         uart_ops->puts("Available commands:\n");
+-        for (size_t i = 0; i < g_num_commands.load(std::memory_order_relaxed); ++i) {
++        for (size_t i = 0; i < CLI::g_num_commands.load(std::memory_order_relaxed); ++i) {
+             uart_ops->puts("  ");
+-            uart_ops->puts(g_commands[i].name);
+-            if (g_commands[i].help_text) {
++            uart_ops->puts(CLI::g_commands[i].name);
++            if (CLI::g_commands[i].help_text) {
+                 uart_ops->puts(" - ");
+                 uart_ops->puts(CLI::g_commands[i].help_text);
+             }
+@@ -278,7 +287,7 @@
+     kernel::hal::gpio::PinMode mode_val;
+ 
+     if (std::sscanf(args, "%d %d %9s", &bank, &pin, mode_str) == 3) {
+-        if (bank < 0 || static_cast<size_t>(bank) >= kernel::GPIO_BANKS || pin < 0 || static_cast<size_t>(pin) >= kernel::GPIO_PINS_PER_BANK) {
++        if (bank < 0 || static_cast<size_t>(bank) >= GPIO_BANKS || pin < 0 || static_cast<size_t>(pin) >= GPIO_PINS_PER_BANK) {
+             if (uart_ops) uart_ops->puts("Error: Invalid bank or pin number.\n");
+             return -1;
+         }
+@@ -288,7 +297,7 @@
+         } else {
+             if (uart_ops) uart_ops->puts("Error: Invalid mode. Use 'input' or 'output'.\n");
+             return -1;
+-        }
++        } // Added missing brace
+ 
+         if (kernel::g_gpio_manager.configure_pin(static_cast<uint32_t>(bank), static_cast<uint32_t>(pin), mode_val)) {
+             if (uart_ops) uart_ops->puts("GPIO pin configured.\n");
+@@ -303,7 +312,7 @@
+     int bank = -1, pin = -1;
+ 
+     if (std::sscanf(args, "%d %d", &bank, &pin) == 2) {
+-        if (bank < 0 || static_cast<size_t>(bank) >= kernel::GPIO_BANKS || pin < 0 || static_cast<size_t>(pin) >= kernel::GPIO_PINS_PER_BANK) {
++        if (bank < 0 || static_cast<size_t>(bank) >= GPIO_BANKS || pin < 0 || static_cast<size_t>(pin) >= GPIO_PINS_PER_BANK) {
+             if (uart_ops) uart_ops->puts("Error: Invalid bank or pin number.\n");
+             return -1;
+         }
+@@ -326,7 +335,7 @@
+     kernel::hal::gpio::PinState state_val;
+ 
+     if (std::sscanf(args, "%d %d %9s", &bank, &pin, state_str) == 3) {
+-        if (bank < 0 || static_cast<size_t>(bank) >= kernel::GPIO_BANKS || pin < 0 || static_cast<size_t>(pin) >= kernel::GPIO_PINS_PER_BANK) {
++        if (bank < 0 || static_cast<size_t>(bank) >= GPIO_BANKS || pin < 0 || static_cast<size_t>(pin) >= GPIO_PINS_PER_BANK) {
+             if (uart_ops) uart_ops->puts("Error: Invalid bank or pin number.\n");
+             return -1;
+         }
+@@ -336,7 +345,7 @@
+         } else {
+             if (uart_ops) uart_ops->puts("Error: Invalid state. Use 'high' or 'low'.\n");
+             return -1;
+-        }
++        } // Added missing brace
+ 
+         if (kernel::g_gpio_manager.set_pin(static_cast<uint32_t>(bank), static_cast<uint32_t>(pin), state_val)) {
+             if (uart_ops) uart_ops->puts("GPIO pin set.\n");
+@@ -427,7 +436,7 @@
+     unsigned int size = 0; // Jitter buffer size in packets
+ 
+     if (args && std::sscanf(args, "%d %u", &socket_idx, &size) == 2 &&
+-        socket_idx >= 0 && size > 0 && size <= MAX_JITTER_BUFFER) {
++        socket_idx >= 0 && size > 0 && size <= net::MAX_JITTER_BUFFER) {
+         if (kernel::g_net_manager.set_jitter_buffer_size(socket_idx, size)) {
+             if (uart_ops) uart_ops->puts("Jitter buffer size set.\n");
+         } else {
+@@ -449,63 +458,66 @@
+     char type_str[32] = {0};
+     char name_str[kernel::MAX_NAME_LENGTH] = {0};
+ 
+-    if (std::sscanf(args, "%31s %31s", type_str, name_str) == 2) {
+-        std::string_view type_sv(type_str);
+-        std::string_view name_sv(name_str);
+-        kernel::DSPNode* node = nullptr;
+-
+-        if (type_sv == "gain") node = new kernel::GainDSP(1.0f, name_sv);
+-        else if (type_sv == "mixer") node = new kernel::MixerDSP(name_sv, 2);
+-        else if (type_sv == "eq") node = new kernel::ParametricEQDSP(name_sv);
+-        else if (type_sv == "limiter") node = new kernel::LimiterDSP(name_sv);
+-        else if (type_sv == "gate") node = new kernel::NoiseGateDSP(name_sv);
+-        else if (type_sv == "stereo") node = new kernel::StereoWidthDSP(name_sv);
+-        else if (type_sv == "shaper") node = new kernel::WaveshaperDSP(name_sv);
+-        else if (type_sv == "envfollower") node = new kernel::EnvelopeFollowerDSP(name_sv);
+-        else if (type_sv == "compressor") node = new kernel::CompressorDSP(name_sv);
+-        else if (type_sv == "delay") node = new kernel::DelayDSP(name_sv);
+-        else if (type_sv == "reverb") node = new kernel::ReverbDSP(name_sv);
+-        else if (type_sv == "chorus") node = new kernel::ChorusDSP(name_sv);
+-        else if (type_sv == "flanger") node = new kernel::FlangerDSP(name_sv);
+-        else if (type_sv == "pitchshift") node = new kernel::PitchShifterDSP(name_sv);
+-        else if (type_sv == "convreverb") node = new kernel::ConvolutionReverbDSP(name_sv);
+-        else if (type_sv == "crossover") node = new kernel::CrossoverDSP(name_sv);
+-        else if (type_sv == "phasecorr") node = new kernel::PhaseCorrectionDSP(name_sv);
+-        else if (type_sv == "src") node = new kernel::SRCDSP(name_sv);
+-        else if (type_sv == "fir") node = new kernel::FIRFilterDSP(name_sv);
+-        else if (type_sv == "iir") node = new kernel::IIRFilterDSP(name_sv);
+-        else if (type_sv == "ffteq") node = new kernel::FFTEqualizerDSP(name_sv);
+-        else if (type_sv == "netaudio") node = new kernel::NetworkAudioSinkSource(name_sv);
++    if (std::sscanf(args, "%31s %31s", type_str, name_str) == 2) { // Limit read size
++        std::string_view type_sv(type_str); // Use string_view for comparison
++        std::string_view name_sv(name_str); // Use string_view for node name
++        
++        std::unique_ptr<kernel::dsp::DSPNode> node_ptr = nullptr;
++
++        if (type_sv == "gain") node_ptr = std::make_unique<kernel::dsp::GainDSP>(1.0f, name_sv);
++        else if (type_sv == "mixer") node_ptr = std::make_unique<kernel::dsp::MixerDSP>(name_sv, 2);
++        else if (type_sv == "eq") node_ptr = std::make_unique<kernel::dsp::ParametricEQDSP>(name_sv);
++        else if (type_sv == "limiter") node_ptr = std::make_unique<kernel::dsp::LimiterDSP>(name_sv);
++        else if (type_sv == "gate") node_ptr = std::make_unique<kernel::dsp::NoiseGateDSP>(name_sv);
++        else if (type_sv == "stereo") node_ptr = std::make_unique<kernel::dsp::StereoWidthDSP>(name_sv);
++        else if (type_sv == "shaper") node_ptr = std::make_unique<kernel::dsp::WaveshaperDSP>(name_sv);
++        else if (type_sv == "envfollower") node_ptr = std::make_unique<kernel::dsp::EnvelopeFollowerDSP>(name_sv);
++        else if (type_sv == "compressor") node_ptr = std::make_unique<kernel::dsp::CompressorDSP>(name_sv);
++        else if (type_sv == "delay") node_ptr = std::make_unique<kernel::dsp::DelayDSP>(name_sv);
++        else if (type_sv == "reverb") node_ptr = std::make_unique<kernel::dsp::ReverbDSP>(name_sv);
++        else if (type_sv == "chorus") node_ptr = std::make_unique<kernel::dsp::ChorusDSP>(name_sv);
++        else if (type_sv == "flanger") node_ptr = std::make_unique<kernel::dsp::FlangerDSP>(name_sv);
++        else if (type_sv == "pitchshift") node_ptr = std::make_unique<kernel::dsp::PitchShifterDSP>(name_sv);
++        else if (type_sv == "convreverb") node_ptr = std::make_unique<kernel::dsp::ConvolutionReverbDSP>(name_sv);
++        else if (type_sv == "crossover") node_ptr = std::make_unique<kernel::dsp::CrossoverDSP>(name_sv);
++        else if (type_sv == "phasecorr") node_ptr = std::make_unique<kernel::dsp::PhaseCorrectionDSP>(name_sv);
++        else if (type_sv == "src") node_ptr = std::make_unique<kernel::dsp::SRCDSP>(name_sv);
++        else if (type_sv == "fir") node_ptr = std::make_unique<kernel::dsp::FIRFilterDSP>(name_sv);
++        else if (type_sv == "iir") node_ptr = std::make_unique<kernel::dsp::IIRFilterDSP>(name_sv);
++        else if (type_sv == "ffteq") node_ptr = std::make_unique<kernel::dsp::FFTEqualizerDSP>(name_sv);
++        else if (type_sv == "netaudio") node_ptr = std::make_unique<kernel::dsp::NetworkAudioSinkSource>(name_sv);
+         else {
+             if (uart_ops) {
+                 uart_ops->puts("Unknown DSP node type: ");
+-                uart_ops->puts(type_sv.data()); // Be careful if type_sv is not null-terminated
++                uart_ops->puts(type_str); // Use the null-terminated C-string for puts
+                 uart_ops->puts("\n");
+             }
+             return -1;
+         }
+ 
+-        if (node) {
+-            if (audio::g_audio_system.dsp_graph.add_node(node)) {
++        if (node_ptr) {
++            // kernel::g_audio_system is the correct way to access it
++            if (kernel::g_audio_system.dsp_graph.add_node(std::move(node_ptr))) {
+                 if (uart_ops) {
+                     uart_ops->puts("DSP node added: ");
+-                    uart_ops->puts(name_sv.data());
++                    uart_ops->puts(name_str); // Use null-terminated C-string
+                     uart_ops->puts("\n");
+                 }
+             } else {
+                 if (uart_ops) uart_ops->puts("Failed to add DSP node (already exists or error).\n");
+-                delete node; // Clean up if add_node failed and didn't take ownership
++                // node_ptr goes out of scope and cleans up if add_node failed.
+             }
+         }
+     } else {
+         if (uart_ops) uart_ops->puts("Usage: dsp_add <type> <name>\n");
+         return -1;
+     }
+-    return 0;
++    return 0; // Added missing return
+ }
+ 
+ static int cli_dsp_remove(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
+@@ -516,7 +528,7 @@
+         return -1;
+     }
+     std::string_view name_sv(args);
+-    if (audio::g_audio_system.dsp_graph.remove_node(name_sv)) {
++    if (kernel::g_audio_system.dsp_graph.remove_node(name_sv)) {
+         if (uart_ops) {
+             uart_ops->puts("DSP node removed: ");
+             uart_ops->puts(args);
+@@ -543,7 +555,7 @@
+     size_t first_space = name_sv.find(' ');
+     if (first_space == std::string_view::npos) { // No arguments for the node
+         name_to_config = name_sv;
+-        config_args_for_node = ""; // Empty string if no args
++        // config_args_for_node remains nullptr or empty string
+     } else {
+         name_to_config = name_sv.substr(0, first_space);
+         // The rest of the string_view is the arguments.
+@@ -553,7 +565,8 @@
+     // Need to ensure name_to_config_cstr is valid for its lifetime.
+     std::string name_to_config_cstr(name_to_config);
+ 
+-    if (audio::g_audio_system.dsp_graph.configure_node(name_to_config_cstr.c_str(), config_args_for_node, uart_ops)) {
++    // Pass config_args_for_node (which could be nullptr if no args)
++    if (kernel::g_audio_system.dsp_graph.configure_node(name_to_config_cstr.c_str(), config_args_for_node, uart_ops)) {
+         if (uart_ops) {
+             uart_ops->puts("DSP node '");
+             uart_ops->puts(name_to_config_cstr.c_str());
+@@ -561,7 +574,7 @@
+         }
+     } else {
+         // configure_node should print specific error if node not found
+-        if (uart_ops) uart_ops->puts("Failed to configure DSP node or node not found.\n"); // Generic fallback
++        // configure_node in DSPGraph already prints "Node not found" if applicable
+     }
+     return 0;
+ }
+@@ -572,7 +585,7 @@
+         return -1;
+     }
+     // Reset all nodes in the main graph
+-    audio::g_audio_system.dsp_graph.reset();
++    kernel::g_audio_system.dsp_graph.reset();
+     if (uart_ops) {
+         uart_ops->puts("DSP graph reset.\n");
+     }
+diff --git a/cli.hpp b/cli.hpp
+index ccd0d7d..a05e599 100644
+--- a/cli.hpp
++++ b/cli.hpp
+@@ -107,12 +107,12 @@
+     // Static members for command registration and global CLI state
+     static std::array<Command, MAX_COMMANDS> g_commands; ///< Registered commands
+     static std::atomic<size_t> g_num_commands;           ///< Number of registered commands
+-
+-private:
+-    std::array<char, MAX_COMMAND_LENGTH> cmd_buffer_; ///< Current command buffer
+-    size_t cmd_buffer_idx_ = 0; ///< Current buffer index
+-    std::array<std::array<char, MAX_COMMAND_LENGTH>, MAX_HISTORY> command_history_; ///< Command history
+-    size_t history_idx_ = 0; ///< Current history index
+-    size_t history_count_ = 0; ///< Number of history entries
++    
++    // Made these static to be accessible from static cli_thread_entry
++    static std::array<char, MAX_COMMAND_LENGTH> cmd_buffer_; 
++    static size_t cmd_buffer_idx_; 
++    static std::array<std::array<char, MAX_COMMAND_LENGTH>, MAX_HISTORY> command_history_; 
++    static size_t history_idx_; 
++    static size_t history_count_; 
+ };
+ } // namespace cli
+ #endif // CLI_HPP

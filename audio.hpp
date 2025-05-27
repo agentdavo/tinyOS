@@ -3,14 +3,16 @@
  * @file audio.hpp
  * @brief Audio subsystem header for miniOS v1.7.
  * @details
- * Defines a lock-free audio processing pipeline interfacing with I2S hardware via HAL, supporting
- * mono/stereo, 16/24-bit depths, and sample rates up to 192kHz. Integrates with DSP graph for
- * real-time audio processing and network streaming. Updated in v1.7 with improved error handling,
- * clearer documentation, and modern C++20 practices, retaining all v1.6 functionality.
+ * Defines the audio processing pipeline including I2S hardware interface, DMA buffer management,
+ * DSP graph integration, and memory pools for audio data. Supports real-time audio input/output
+ * with configurable parameters like sample rate, block size, and buffer count. Integrates with
+ * the DSP subsystem for effects processing and the HAL for hardware abstraction.
  *
- * C++20 features:
- * - std::span for buffer handling
- * - std::atomic for thread-safe state
+ * New in v1.7:
+ * - Renamed from audio_v1.6.hpp
+ * - Enhanced error handling and diagnostics
+ * - Improved Doxygen comments and code clarity
+ * - Consistent use of std::span for buffer handling
  *
  * @version 1.7
  * @see audio.cpp, miniOS.hpp, dsp.hpp, util.hpp
@@ -19,114 +21,100 @@
 #ifndef AUDIO_HPP
 #define AUDIO_HPP
 
-#include "miniOS.hpp"
-#include "dsp.hpp"
+#include "miniOS.hpp" // Includes kernel types, SPSCQueue, FixedMemoryPool, hal::i2s
+#include "dsp.hpp"    // Includes kernel::dsp::DSPGraph
 #include <span>
-#include <atomic>
-#include <memory>
+#include <vector>
+#include <memory>   // For std::unique_ptr
+#include <thread>   // For std::thread
+
+namespace kernel { namespace hal { namespace i2s { struct I2SDriverOps; } } }
 
 namespace audio {
 
-constexpr size_t MAX_SAMPLES_PER_BLOCK = 1024;
-constexpr size_t MAX_I2S_BUFFERS = 8;
+// Max audio buffer size based on common DSP block sizes and sample rates
+constexpr size_t MAX_AUDIO_SAMPLES_PER_BLOCK = 1024;
+constexpr size_t MAX_AUDIO_CHANNELS = 2; // Stereo default
 
 /**
- * @brief Audio format configuration.
- */
-struct Format {
-    enum class BitDepth { BITS_16, BITS_24 };
-    uint32_t sample_rate_hz = 48000;
-    uint8_t channels = 2; ///< Mono (1) or stereo (2)
-    BitDepth bit_depth = BitDepth::BITS_16;
-    size_t get_bytes_per_frame() const noexcept {
-        return channels * (bit_depth == BitDepth::BITS_16 ? 2 : 3);
-    }
-};
-
-/**
- * @brief Audio buffer for I2S and DSP processing.
+ * @brief Represents a block of audio data.
  */
 struct AudioBuffer {
-    void* data_raw_i2s = nullptr; ///< Raw I2S data (hardware format)
-    float* data_dsp_canonical = nullptr; ///< DSP data (floating-point, [-1.0, 1.0])
-    size_t size_bytes_raw_buffer = 0; ///< Size of raw I2S buffer
-    size_t samples_per_channel = 0; ///< Samples per channel
-    bool pool_allocated_raw = false; ///< True if raw buffer is pool-allocated
-    bool pool_allocated_dsp = false; ///< True if DSP buffer is pool-allocated
+    std::array<float, MAX_AUDIO_SAMPLES_PER_BLOCK * MAX_AUDIO_CHANNELS> data;
+    size_t num_samples = 0;
+    uint8_t channels = 0;
+    uint32_t sample_rate_hz = 0;
+    uint64_t timestamp_us = 0; // Timestamp of the first sample in the buffer
+    // Add any other relevant metadata, e.g., buffer ID, status flags
 };
 
 /**
- * @brief Audio subsystem configuration.
+ * @brief Configuration for the audio system.
  */
 struct AudioConfig {
-    uint32_t sample_rate_hz = 48000; ///< Sample rate (Hz)
-    size_t samples_per_block = 256; ///< Samples per block
-    uint8_t num_i2s_bufs = 4; ///< Number of I2S buffers
+    uint32_t sample_rate_hz = 48000;
+    size_t samples_per_block = 256; // Samples per channel per block
+    uint8_t num_channels = 2;
+    uint8_t num_i2s_bufs = 4; // Number of I2S DMA buffers
+    size_t num_raw_pool_bufs = 8; // Buffers for raw I2S data before DSP
+    size_t num_dsp_pool_bufs = 8; // Buffers for DSP processed data before TX
 };
 
 /**
- * @brief Audio subsystem class.
+ * @brief Manages the audio processing pipeline.
  */
 class AudioSystem {
 public:
-    AudioSystem() : initialized_(false) {}
-    ~AudioSystem() = default;
+    AudioSystem();
+    ~AudioSystem();
 
-    /**
-     * @brief Initializes the audio subsystem.
-     * @param cfg Audio configuration
-     * @return True if initialized, false otherwise
-     */
-    bool init(const AudioConfig& cfg);
-
-    /**
-     * @brief Starts audio processing.
-     * @return True if started, false otherwise
-     */
+    bool init(const AudioConfig& config);
     bool start();
+    void stop();
 
-    /**
-     * @brief Stops audio processing.
-     * @return True if stopped, false otherwise
-     */
-    bool stop();
+    // For application to send audio data (e.g., from a file or generator)
+    AudioBuffer* get_buffer_for_app_tx();
+    bool submit_filled_buffer_to_dsp_tx(AudioBuffer* buffer);
 
-    /**
-     * @brief Gets a transmit buffer for an I2S instance.
-     * @param instance_id I2S instance ID (0 for RX, 1 for TX)
-     * @return Audio buffer pointer, or nullptr if unavailable
-     */
-    AudioBuffer* get_tx_buffer(uint32_t instance_id);
-
-    /**
-     * @brief Submits a filled transmit buffer to hardware.
-     * @param instance_id I2S instance ID
-     * @param buffer Audio buffer to submit
-     * @return True if submitted, false otherwise
-     */
-    bool submit_tx_buffer(uint32_t instance_id, AudioBuffer* buffer);
-
-    /**
-     * @brief Releases a processed receive buffer.
-     * @param instance_id I2S instance ID
-     * @param buffer Audio buffer to release
-     */
-    void release_rx_buffer(uint32_t instance_id, AudioBuffer* buffer);
-
-    dsp::DSPGraph dsp_graph{"main_graph"}; ///< DSP processing graph
+    // For application to receive audio data (e.g., for recording or analysis)
+    AudioBuffer* get_filled_buffer_from_dsp_rx();
+    void release_processed_buffer_to_raw_rx(AudioBuffer* buffer);
 
 private:
-    AudioConfig config_;
-    std::atomic<bool> initialized_;
-    kernel::hal::i2s::I2SDriverOps* i2s_ops_ = nullptr;
-    std::unique_ptr<kernel::FixedMemoryPool> raw_pool_;
-    std::unique_ptr<kernel::FixedMemoryPool> dsp_pool_;
-    void i2s_callback(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode);
-    static void i2s_callback_trampoline(uint32_t instance_id, AudioBuffer* buffer,
-                                       kernel::hal::i2s::Mode mode, void* user_data);
-};
+    void i2s_thread_entry(); // For managing I2S data flow (if needed beyond callbacks)
+    void dsp_thread_entry(); // For processing audio through the DSP graph
 
-extern AudioSystem g_audio_system; ///< Global audio system instance
+    void i2s_rx_callback_static(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode);
+    void i2s_tx_callback_static(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode);
+    
+    // Static wrapper for I2S callback to pass to HAL
+    static void i2s_hal_callback_wrapper(uint32_t instance_id, AudioBuffer* buffer,
+                                         kernel::hal::i2s::Mode mode, void* user_data);
+
+
+    AudioConfig config_;
+    std::atomic<bool> running_{false};
+    std::atomic<bool> i2s_initialized_{false};
+
+    // Queues for data transfer between I2S, DSP, and application
+    kernel::SPSCQueue_AudioBuffer* i2s_to_dsp_queue_ = nullptr;   // From I2S RX to DSP
+    kernel::SPSCQueue_AudioBuffer* dsp_to_app_queue_ = nullptr;   // From DSP to App RX (recording)
+    kernel::SPSCQueue_AudioBuffer* app_to_dsp_queue_ = nullptr;   // From App TX to DSP (playback)
+    kernel::SPSCQueue_AudioBuffer* dsp_to_i2s_queue_ = nullptr;   // From DSP to I2S TX
+
+    kernel::dsp::DSPGraph dsp_graph{"main_graph"}; ///< DSP processing graph
+    std::thread dsp_thread_handle_;
+    // std::thread i2s_thread_handle_; // If a dedicated I2S management thread is used
+
+    kernel::hal::i2s::I2SDriverOps* i2s_ops_ = nullptr;
+    std::unique_ptr<kernel::FixedMemoryPool> raw_pool_; // Pool for I2S hardware buffers
+    std::unique_ptr<kernel::FixedMemoryPool> dsp_pool_; // Pool for buffers used by DSP graph and app
+    uint32_t i2s_instance_id_ = 0; // Assuming one I2S instance for now
+
+    // Helper to manage I2S callback logic
+    void i2s_callback_internal(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode);
+
+};
 
 } // namespace audio
 

@@ -32,28 +32,24 @@
 #include <array>
 #include <concepts>
 
-// Subsystem includes (after standard headers, no cyclic dependencies)
-#include "audio.hpp"
-#include "cli.hpp"
-#include "fs.hpp"
-#include "gpio.hpp"
-#include "net.hpp"
-#include "trace.hpp"
-#include "util.hpp"
+
+// Global constants needed by subsystem headers before kernel namespace
+constexpr size_t MAX_THREADS = 16;             // Used by miniOS.cpp, potentially others
+constexpr size_t MAX_NAME_LENGTH = 32;         // Used by TCB
+constexpr size_t MAX_CORES = 4;                // Used by miniOS.cpp, Scheduler
+constexpr size_t MAX_PRIORITY_LEVELS = 16;     // Used by Scheduler
+constexpr size_t TRACE_BUFFER_SIZE = 1024;     // Used by miniOS.cpp
+constexpr size_t DEFAULT_STACK_SIZE = 4096;    // Used by miniOS.cpp
+constexpr size_t MAX_SOFTWARE_TIMERS = 64;     // Used by miniOS.cpp
+constexpr size_t MAX_LOCKS = 32;               // Not directly used by externals?
+constexpr size_t NET_MAX_PACKET_SIZE = 1500;   // Used by net.hpp
+constexpr size_t GPIO_BANKS = 4;               // Used by gpio.hpp
+constexpr size_t GPIO_PINS_PER_BANK = 64;      // Used by gpio.hpp
+
+// Forward declarations for types used by HAL from other namespaces
+namespace audio { class AudioBuffer; } // Used by hal::i2s
 
 namespace kernel {
-
-constexpr size_t MAX_THREADS = 16;
-constexpr size_t MAX_NAME_LENGTH = 32;
-constexpr size_t MAX_CORES = 4;
-constexpr size_t MAX_PRIORITY_LEVELS = 16;
-constexpr size_t TRACE_BUFFER_SIZE = 1024;
-constexpr size_t DEFAULT_STACK_SIZE = 4096;
-constexpr size_t MAX_SOFTWARE_TIMERS = 64;
-constexpr size_t MAX_LOCKS = 32;
-constexpr size_t NET_MAX_PACKET_SIZE = 1500;
-constexpr size_t GPIO_BANKS = 4;
-constexpr size_t GPIO_PINS_PER_BANK = 64;
 
 /**
  * @brief Synchronization spinlock.
@@ -145,7 +141,7 @@ struct TCB {
     enum class State { INACTIVE, READY, RUNNING, BLOCKED } state = State::INACTIVE;
     int priority; ///< Priority (0 to MAX_PRIORITY_LEVELS-1)
     int core_affinity = -1; ///< Core affinity (-1 for any)
-    uint32_t cpu_id_running_on = -1; ///< Current CPU ID
+    uint32_t cpu_id_running_on = static_cast<uint32_t>(-1); ///< Current CPU ID
     char name[MAX_NAME_LENGTH]; ///< Thread name
     TCB* next_in_q = nullptr; ///< Next TCB in queue
     bool event_flag = false; ///< Event flag
@@ -198,15 +194,22 @@ class Scheduler {
     Spinlock scheduler_global_lock_;
     std::array<Spinlock, MAX_CORES> per_core_locks_;
     SchedulerPolicy* policy_ = nullptr;
+	
 public:
     Scheduler();
     void set_policy(SchedulerPolicy* p) noexcept { policy_ = p; }
-    TCB* create_thread(void (*fn)(void*), void* arg, int prio, int affinity, const char* name, bool is_idle = false, uint64_t deadline_us = 0);
+    TCB* create_thread(void (*fn)(void*), const void* arg, int prio, int affinity, const char* name, bool is_idle = false, uint64_t deadline_us = 0);
     void start_core_scheduler(uint32_t core_id);
     void preemptive_tick(uint32_t core_id);
     void yield(uint32_t core_id);
     void signal_event_isr(TCB* tcb);
     void wait_for_event(TCB* tcb);
+	size_t get_num_active_tasks() const { return num_active_tasks_; }
+    Spinlock& get_global_scheduler_lock() { return scheduler_global_lock_; } // Non-const reference
+	
+// Expose for EDFPolicy, or make EDFPolicy a friend, or pass ready_qs_ by reference
+friend class EDFPolicy;
+
 private:
     TCB* pop_highest_priority_ready_task(uint32_t current_core_id);
     void schedule(uint32_t core_id, bool is_preemption);
@@ -218,15 +221,15 @@ private:
  * @brief HAL synchronization utilities.
  */
 namespace hal {
-namespace sync {
-    void barrier_dmb();
-    void barrier_dsb();
-    void barrier_isb();
-    template<typename T> T atomic_load_acquire(const std::atomic<T>* addr);
-    template<typename T> void atomic_store_release(std::atomic<T>* addr, T val);
-    template<typename T> bool atomic_compare_exchange_strong(std::atomic<T>* addr, T& expected, T desired);
-    template<typename T> T atomic_fetch_add(std::atomic<T>* addr, T val);
-}
+    namespace sync {
+        void barrier_dmb();
+        void barrier_dsb();
+        void barrier_isb();
+        template<typename T> T atomic_load_acquire(const std::atomic<T>* addr);
+        template<typename T> void atomic_store_release(std::atomic<T>* addr, T val);
+        template<typename T> bool atomic_compare_exchange_strong(std::atomic<T>* addr, T& expected, T desired);
+        template<typename T> T atomic_fetch_add(std::atomic<T>* addr, T val);
+    }
 
 /**
  * @brief Memory operations.
@@ -340,16 +343,16 @@ struct TimerDriverOps {
  * @brief Network driver operations.
  */
 namespace net {
-    struct NetworkDriverOps; // Forward declaration in net.hpp
+    struct NetworkDriverOps; // Forward declaration, actual definition in net.hpp
 }
 
 /**
  * @brief GPIO driver operations.
  */
 namespace gpio {
-    enum class PinMode { INPUT, OUTPUT };
-    enum class PinState { LOW, HIGH };
-    struct GPIODriverOps; // Forward declaration in gpio.hpp
+    enum class PinMode { INPUT, OUTPUT }; // Defined here for Platform visibility
+    enum class PinState { LOW, HIGH };   // Defined here for Platform visibility
+    struct GPIODriverOps; // Forward declaration, actual definition in gpio.hpp
 }
 
 /**
@@ -391,26 +394,40 @@ public:
     virtual void panic(const char* msg, const char* file, int line) = 0;
     virtual ~Platform() = default;
 };
+} // namespace hal
 
 // Global instances
-extern Platform* g_platform;
+extern hal::Platform* g_platform; // Changed to kernel::hal::Platform
 extern Scheduler* g_scheduler_ptr;
-extern audio::AudioSystem g_audio_system;
 extern FixedMemoryPool g_audio_pool;
 extern uint8_t g_audio_pool_mem[64 * 1024];
 extern FixedMemoryPool g_software_timer_obj_pool;
-extern uint8_t g_software_timer_obj_pool_mem[MAX_SOFTWARE_TIMERS * sizeof(timer::SoftwareTimer)];
-extern trace::TraceManager g_trace_manager;
-extern fs::FileSystem g_file_system;
-extern net::NetManager g_net_manager;
-extern gpio::GPIOManager g_gpio_manager;
+extern uint8_t g_software_timer_obj_pool_mem[MAX_SOFTWARE_TIMERS * sizeof(hal::timer::SoftwareTimer)]; // Qualified SoftwareTimer
 
 void trace_event(const char* event, uintptr_t a1, uintptr_t a2 = 0);
 void dump_trace_buffer(hal::UARTDriverOps* uart_ops);
 void set_power_mode(bool low_power);
 void configure_memory_protection(TCB* tcb, bool enable);
 void get_kernel_stats(hal::UARTDriverOps* uart_ops);
+} // namespace kernel
 
+// Subsystem includes (after kernel namespace and HAL are defined)
+#include "util.hpp"
+#include "audio.hpp"   // AudioSystem uses dsp::DSPGraph, kernel::hal::i2s, kernel::FixedMemoryPool
+#include "cli.hpp"     // CLI uses kernel::hal::UARTDriverOps
+#include "dsp.hpp"     // DSPNode uses kernel::hal::UARTDriverOps, net::IPv4Addr
+#include "fs.hpp"      // FileSystem uses kernel::hal::UARTDriverOps
+#include "gpio.hpp"    // GPIOManager uses kernel::hal::gpio::GPIODriverOps, kernel::Spinlock, kernel::TCB
+#include "net.hpp"     // NetManager uses kernel::hal::net::NetworkDriverOps, kernel::hal::UARTDriverOps
+#include "trace.hpp"   // TraceManager uses kernel::TCB, kernel::hal::UARTDriverOps
+
+namespace kernel {
+    // Extern declarations for subsystem managers, now that their types are defined
+    extern audio::AudioSystem g_audio_system;
+    extern trace::TraceManager g_trace_manager;
+    extern fs::FileSystem g_file_system;
+    extern net::NetManager g_net_manager;
+    extern gpio::GPIOManager g_gpio_manager;
 } // namespace kernel
 
 #endif // MINIOS_HPP
