@@ -16,10 +16,8 @@
  * @see cli.hpp, miniOS.hpp, util.hpp
  */
 
-// Ensure core definitions are seen first.
 #include "miniOS.hpp" // Defines GPIO_BANKS, MAX_NAME_LENGTH etc. globally, and kernel namespace
 #include "util.hpp"   // Defines kernel::util
-
 #include "cli.hpp"    // Its own header
 #include "fs.hpp"     // For FileSystem commands and kernel::g_file_system
 #include "net.hpp"    // For Network commands, net::MAX_JITTER_BUFFER and kernel::g_net_manager
@@ -27,13 +25,9 @@
 #include "dsp.hpp"    // For DSP Node types (kernel::dsp::)
 #include "audio.hpp"  // For kernel::g_audio_system
 #include "trace.hpp"  // For trace commands and kernel::g_trace_manager
-
 #include <cstring>    // For std::sscanf, std::strlen, etc.
 #include <cstdio>     // For std::snprintf, std::sscanf
 #include <memory>     // For std::unique_ptr
-
-// Global constants like GPIO_BANKS are directly accessible.
-// Kernel globals like kernel::g_file_system are accessed with kernel:: prefix.
 
 namespace cli {
 
@@ -46,7 +40,6 @@ size_t CLI::cmd_buffer_idx_ = 0;
 std::array<std::array<char, MAX_COMMAND_LENGTH>, MAX_HISTORY> CLI::command_history_;
 size_t CLI::history_idx_ = 0;
 size_t CLI::history_count_ = 0;
-
 
 // Built-in command handlers
 static int cli_help_command(const char* args, kernel::hal::UARTDriverOps* uart_ops);
@@ -74,7 +67,6 @@ static int cli_net_sockets_command(const char* args, kernel::hal::UARTDriverOps*
 static int cli_net_audio_stream(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 static int cli_net_jitter(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 
-
 // GPIO Commands
 static int cli_gpio_config(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 static int cli_gpio_read(const char* args, kernel::hal::UARTDriverOps* uart_ops);
@@ -85,7 +77,6 @@ static int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 static int cli_dsp_remove(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 static int cli_dsp_config(const char* args, kernel::hal::UARTDriverOps* uart_ops);
 static int cli_dsp_reset(const char* args, kernel::hal::UARTDriverOps* uart_ops);
-
 
 void CLI::init(kernel::hal::UARTDriverOps* uart_ops) {
     (void)uart_ops; 
@@ -280,7 +271,11 @@ static int cli_history_command(const char* args, kernel::hal::UARTDriverOps* uar
     uart_ops->puts("Command History:\n");
     for (size_t i = 0; i < CLI::history_count_; ++i) {
         char num_buf[12]; 
-        std::snprintf(num_buf, sizeof(num_buf), "%3zu: ", i + 1);
+        if (i + 1 > 999) {
+            std::snprintf(num_buf, sizeof(num_buf), "999+: ");
+        } else {
+            std::snprintf(num_buf, sizeof(num_buf), "%3zu: ", i + 1);
+        }
         uart_ops->puts(num_buf);
         uart_ops->puts(CLI::command_history_[i].data()); 
         uart_ops->putc('\n');
@@ -381,7 +376,6 @@ static int cli_gpio_write(const char* args, kernel::hal::UARTDriverOps* uart_ops
     return 0;
 }
 
-
 // --- Network Command Implementations ---
 static int cli_net_ifconfig_command(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     (void)args; 
@@ -450,7 +444,6 @@ static int cli_net_jitter(const char* args, kernel::hal::UARTDriverOps* uart_ops
     }
     return 0;
 }
-
 
 // --- DSP Command Implementations ---
 static int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops) {

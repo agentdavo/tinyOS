@@ -18,33 +18,23 @@
  */
 
 #include "audio.hpp"
-#include "dsp.hpp" // Now needed for std::make_unique<kernel::dsp::DSPGraph>
-#include "util.hpp" 
+#include "dsp.hpp"
+#include "util.hpp"
 #include <cstring>   
 #include <algorithm> 
 #include <vector>    
 
-// The global instance kernel::g_audio_system is defined in miniOS.cpp
-
 namespace audio {
 
 AudioSystem::AudioSystem() 
-    : i2s_ops_(nullptr), dsp_thread_tcb_(nullptr) {
-    // dsp_graph_ is unique_ptr, will be default constructed to nullptr.
-    // It will be initialized in init().
+    : running_(false), initialized_(false), dsp_thread_tcb_(nullptr), i2s_ops_(nullptr) {
 }
 
 AudioSystem::~AudioSystem() {
-    stop(); 
-    // If dsp_thread_tcb_ was managed by std::thread, join here.
-    // For kernel TCBs, ensure they exit cleanly.
+    stop();
 }
 
 bool AudioSystem::init(const AudioConfig& cfg) {
-    // Use a lock if init can be called from multiple contexts,
-    // or ensure it's called from a single-threaded context during setup.
-    // kernel::ScopedLock lock(audio_system_lock_); // Example, if audio_system_lock_ is defined and needed.
-
     if (initialized_.load(std::memory_order_acquire)) {
         return true; 
     }
@@ -55,7 +45,7 @@ bool AudioSystem::init(const AudioConfig& cfg) {
     config_ = cfg;
     if (config_.sample_rate_hz < 8000 || config_.sample_rate_hz > 192000 ||
         config_.samples_per_block == 0 || config_.samples_per_block > MAX_AUDIO_SAMPLES_PER_BLOCK ||
-        config_.num_channels == 0 || config_.num_channels > MAX_AUDIO_CHANNELS ||
+        config_.num_channels == 0 || config_.num_channels > kernel::dsp::MAX_AUDIO_CHANNELS ||
         config_.num_i2s_dma_buffers == 0 || config_.num_i2s_dma_buffers > 16 || 
         config_.num_audio_pool_buffers == 0 || config_.num_audio_pool_buffers > 32) { 
         if (kernel::g_platform) kernel::g_platform->panic("AudioSystem: Invalid configuration", __FILE__, __LINE__);
@@ -68,23 +58,15 @@ bool AudioSystem::init(const AudioConfig& cfg) {
         return false;
     }
 
-    // Initialize DSPGraph
-    try {
-        dsp_graph_ = std::make_unique<kernel::dsp::DSPGraph>("main_audio_dsp");
-    } catch (const std::bad_alloc& e) {
+    dsp_graph_ = std::make_unique<kernel::dsp::DSPGraph>("main_audio_dsp");
+    if (!dsp_graph_) {
         if (kernel::g_platform) kernel::g_platform->panic("AudioSystem: Failed to allocate DSPGraph", __FILE__, __LINE__);
         return false;
     }
-    if (!dsp_graph_) { // Should not happen if make_unique doesn't throw and returns null on failure (it throws)
-         if (kernel::g_platform) kernel::g_platform->panic("AudioSystem: DSPGraph is null after make_unique", __FILE__, __LINE__);
-        return false;
-    }
-
 
     size_t single_audio_buffer_obj_size = sizeof(AudioBuffer);
-    try {
-        pool_storage_for_audio_buffers_.resize(single_audio_buffer_obj_size * config_.num_audio_pool_buffers);
-    } catch (const std::bad_alloc& e) {
+    pool_storage_for_audio_buffers_.resize(single_audio_buffer_obj_size * config_.num_audio_pool_buffers);
+    if (pool_storage_for_audio_buffers_.empty()) {
         if (kernel::g_platform) kernel::g_platform->panic("AudioSystem: Failed to allocate memory for AudioBuffer pool storage", __FILE__, __LINE__);
         return false;
     }
@@ -100,16 +82,14 @@ bool AudioSystem::init(const AudioConfig& cfg) {
     }
 
     constexpr size_t queue_capacity = 16; 
-    try {
-        i2s_rx_to_dsp_queue_ = std::make_unique<kernel::SPSCQueue<audio::AudioBuffer, queue_capacity>>();
-        dsp_to_app_rx_queue_ = std::make_unique<kernel::SPSCQueue<audio::AudioBuffer, queue_capacity>>();
-        app_tx_to_dsp_queue_ = std::make_unique<kernel::SPSCQueue<audio::AudioBuffer, queue_capacity>>();
-        dsp_to_i2s_tx_queue_ = std::make_unique<kernel::SPSCQueue<audio::AudioBuffer, queue_capacity>>();
-    } catch (const std::bad_alloc& e) {
+    i2s_rx_to_dsp_queue_ = std::make_unique<kernel::SPSCQueue<audio::AudioBuffer, queue_capacity>>();
+    dsp_to_app_rx_queue_ = std::make_unique<kernel::SPSCQueue<audio::AudioBuffer, queue_capacity>>();
+    app_tx_to_dsp_queue_ = std::make_unique<kernel::SPSCQueue<audio::AudioBuffer, queue_capacity>>();
+    dsp_to_i2s_tx_queue_ = std::make_unique<kernel::SPSCQueue<audio::AudioBuffer, queue_capacity>>();
+    if (!i2s_rx_to_dsp_queue_ || !dsp_to_app_rx_queue_ || !app_tx_to_dsp_queue_ || !dsp_to_i2s_tx_queue_) {
         if (kernel::g_platform) kernel::g_platform->panic("AudioSystem: Failed to allocate SPSC queues", __FILE__, __LINE__);
-        return false; // Other unique_ptrs will clean up
+        return false;
     }
-
 
     kernel::hal::i2s::Format i2s_format;
     i2s_format.sample_rate_hz = config_.sample_rate_hz;
@@ -135,12 +115,10 @@ bool AudioSystem::init(const AudioConfig& cfg) {
 }
 
 bool AudioSystem::start() {
-    // kernel::ScopedLock lock(audio_system_lock_); // If needed
     if (!initialized_.load(std::memory_order_acquire) || running_.load(std::memory_order_acquire)) {
         return false;
     }
     if (!i2s_ops_ || !audio_buffer_pool_ || !dsp_graph_) return false;
-
 
     if (!i2s_ops_->start(config_.i2s_rx_instance_id)) { 
         if (kernel::g_platform) kernel::g_platform->panic("AudioSystem: Failed to start I2S RX", __FILE__, __LINE__);
@@ -161,31 +139,31 @@ bool AudioSystem::start() {
             tx_buf->sample_rate_hz = config_.sample_rate_hz;
             std::fill(tx_buf->data.begin(), tx_buf->data.begin() + (config_.samples_per_block * config_.num_channels), 0.0f); 
             
-             if(!dsp_to_i2s_tx_queue_->enqueue(tx_buf)) {
+            if (!dsp_to_i2s_tx_queue_->enqueue(tx_buf)) {
                 audio_buffer_pool_->free_block(tx_buf); 
-             }
+            }
         }
     }
 
     running_.store(true, std::memory_order_release);
 
     if (kernel::g_scheduler_ptr) {
-         dsp_thread_tcb_ = kernel::g_scheduler_ptr->create_thread(
-             [](void* arg) { static_cast<AudioSystem*>(arg)->dsp_thread_entry(); },
-             this,
-             10, 
-             -1, 
-             "AudioDSP",
-             false, 
-             static_cast<uint64_t>( (static_cast<double>(config_.samples_per_block) / config_.sample_rate_hz) * 1000000.0 ) // Deadline based on block rate
-         );
-         if (!dsp_thread_tcb_) {
+        dsp_thread_tcb_ = kernel::g_scheduler_ptr->create_thread(
+            [](void* arg) { static_cast<AudioSystem*>(arg)->dsp_thread_entry(); },
+            this,
+            10, 
+            -1, 
+            "AudioDSP",
+            false, 
+            static_cast<uint64_t>((static_cast<double>(config_.samples_per_block) / config_.sample_rate_hz) * 1000000.0)
+        );
+        if (!dsp_thread_tcb_) {
             running_.store(false, std::memory_order_relaxed);
             i2s_ops_->stop(config_.i2s_rx_instance_id);
             i2s_ops_->stop(config_.i2s_tx_instance_id);
             if (kernel::g_platform) kernel::g_platform->panic("AudioSystem: Failed to create DSP thread", __FILE__, __LINE__);
             return false;
-         }
+        }
     } else {
         running_.store(false, std::memory_order_relaxed);
         i2s_ops_->stop(config_.i2s_rx_instance_id);
@@ -198,39 +176,27 @@ bool AudioSystem::start() {
 }
 
 void AudioSystem::stop() {
-    // kernel::ScopedLock lock(audio_system_lock_); // If needed
-    if (!initialized_.load(std::memory_order_acquire)) { // No need to check running_ if not initialized
+    if (!initialized_.load(std::memory_order_acquire)) {
         return;
     }
     
     bool expected_running = true;
     if (!running_.compare_exchange_strong(expected_running, false, std::memory_order_acq_rel)) {
-        return; // Already stopped or stopping
+        return;
     }
-
-    // Signal DSP thread to terminate (it checks running_ flag)
-    // If DSP thread is waiting on a queue, it might need an explicit wakeup/poison pill.
-    // For now, assume it yields and checks running_.
 
     if (i2s_ops_) {
         i2s_ops_->stop(config_.i2s_rx_instance_id);
         i2s_ops_->stop(config_.i2s_tx_instance_id);
     }
 
-    // For kernel TCBs, the thread should exit based on running_ flag.
-    // Actual TCB reclamation is responsibility of the scheduler or a reaper.
-    // We don't explicitly "join" a kernel TCB in the same way as std::thread.
-    // If dsp_thread_tcb_ was stored, we might signal it or set its state if direct control is needed.
-    dsp_thread_tcb_ = nullptr; // Clear TCB pointer
+    dsp_thread_tcb_ = nullptr;
 
     AudioBuffer* buf;
-    if(i2s_rx_to_dsp_queue_) while((buf = i2s_rx_to_dsp_queue_->dequeue()) != nullptr) release_buffer_to_pool(buf);
-    if(dsp_to_app_rx_queue_) while((buf = dsp_to_app_rx_queue_->dequeue()) != nullptr) release_buffer_to_pool(buf);
-    if(app_tx_to_dsp_queue_) while((buf = app_tx_to_dsp_queue_->dequeue()) != nullptr) release_buffer_to_pool(buf);
-    if(dsp_to_i2s_tx_queue_) while((buf = dsp_to_i2s_tx_queue_->dequeue()) != nullptr) release_buffer_to_pool(buf);
-
-    // Consider if pools should be reset/cleared. FixedMemoryPool itself doesn't clear memory.
-    // Objects from pool are constructed on allocation and potentially destructed on release.
+    if (i2s_rx_to_dsp_queue_) while ((buf = i2s_rx_to_dsp_queue_->dequeue()) != nullptr) release_buffer_to_pool(buf);
+    if (dsp_to_app_rx_queue_) while ((buf = dsp_to_app_rx_queue_->dequeue()) != nullptr) release_buffer_to_pool(buf);
+    if (app_tx_to_dsp_queue_) while ((buf = app_tx_to_dsp_queue_->dequeue()) != nullptr) release_buffer_to_pool(buf);
+    if (dsp_to_i2s_tx_queue_) while ((buf = dsp_to_i2s_tx_queue_->dequeue()) != nullptr) release_buffer_to_pool(buf);
 }
 
 AudioBuffer* AudioSystem::get_buffer_for_app_tx() {
@@ -264,18 +230,13 @@ AudioBuffer* AudioSystem::get_filled_buffer_from_dsp_rx() {
 
 void AudioSystem::release_buffer_to_pool(AudioBuffer* buffer) {
     if (buffer && audio_buffer_pool_) {
-        // If placement new was used, and AudioBuffer has a non-trivial destructor, call it.
-        // buffer->~AudioBuffer(); // std::array<float> has trivial destructor.
         audio_buffer_pool_->free_block(buffer);
     }
 }
 
 kernel::dsp::DSPGraph& AudioSystem::get_dsp_graph() {
     if (!dsp_graph_) {
-        // This should ideally not happen if init was successful.
-        // Handle error: either panic or return a dummy static graph.
-        if(kernel::g_platform) kernel::g_platform->panic("AudioSystem: DSPGraph not initialized in get_dsp_graph", __FILE__, __LINE__);
-        // Fallback to a static dummy if panic is not desired, but this indicates a severe issue.
+        if (kernel::g_platform) kernel::g_platform->panic("AudioSystem: DSPGraph not initialized in get_dsp_graph", __FILE__, __LINE__);
         static kernel::dsp::DSPGraph dummy_graph("dummy_null_graph");
         return dummy_graph;
     }
@@ -284,15 +245,12 @@ kernel::dsp::DSPGraph& AudioSystem::get_dsp_graph() {
 
 const kernel::dsp::DSPGraph& AudioSystem::get_dsp_graph() const {
     if (!dsp_graph_) {
-        if(kernel::g_platform) kernel::g_platform->panic("AudioSystem: DSPGraph not initialized in get_dsp_graph const", __FILE__, __LINE__);
+        if (kernel::g_platform) kernel::g_platform->panic("AudioSystem: DSPGraph not initialized in get_dsp_graph const", __FILE__, __LINE__);
         static kernel::dsp::DSPGraph dummy_graph("dummy_null_graph_const");
         return dummy_graph;
     }
     return *dsp_graph_;
 }
-
-
-// --- Thread Entries and Callbacks ---
 
 void AudioSystem::dsp_thread_entry() {
     if (!kernel::g_platform || !dsp_graph_) return; 
@@ -342,11 +300,10 @@ void AudioSystem::dsp_thread_entry() {
         }
 
         if (!processed_something) {
-            if(kernel::g_scheduler_ptr && kernel::g_platform) {
-                 kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id());
+            if (kernel::g_scheduler_ptr && kernel::g_platform) {
+                kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id());
             } else {
-                // Minimal busy wait or platform sleep if no scheduler yield
-                for(volatile int i=0; i < 1000; ++i); // Placeholder for actual sleep/yield
+                for (int i = 0; i < 1000; ++i) {} // Placeholder for sleep/yield
             }
         }
     }
@@ -365,28 +322,22 @@ void AudioSystem::i2s_hal_callback_wrapper(uint32_t instance_id,
 
 void AudioSystem::i2s_callback_internal(uint32_t instance_id, audio::AudioBuffer* buffer_from_hal, kernel::hal::i2s::Mode mode) {
     if (!buffer_from_hal || !initialized_.load(std::memory_order_acquire)) {
-        // If this buffer was from our pool and HAL is just returning it, we must free it
-        // This is complex if we don't know its origin. Let's assume HAL gives back what we gave it.
         if (buffer_from_hal && audio_buffer_pool_ && mode == kernel::hal::i2s::Mode::MASTER_TX) {
             release_buffer_to_pool(buffer_from_hal);
         }
         return;
     }
-    if(!running_.load(std::memory_order_acquire)) { // If system is stopping
+    if (!running_.load(std::memory_order_acquire)) {
         if (buffer_from_hal && audio_buffer_pool_) release_buffer_to_pool(buffer_from_hal);
         return;
     }
 
-
     if (mode == kernel::hal::i2s::Mode::MASTER_RX && instance_id == config_.i2s_rx_instance_id) {
         if (!i2s_ops_ || !kernel::g_platform || !kernel::g_platform->get_timer_ops() || !i2s_rx_to_dsp_queue_) {
-            release_buffer_to_pool(buffer_from_hal); // Cannot process
+            release_buffer_to_pool(buffer_from_hal);
             return;
         }
         
-        // Assuming buffer_from_hal is one of our pooled AudioBuffers that HAL has filled.
-        // Its metadata (num_samples, channels, sample_rate_hz) should be pre-set or set by HAL.
-        // For safety, let's ensure they are consistent:
         buffer_from_hal->num_samples = config_.samples_per_block;
         buffer_from_hal->channels = config_.num_channels;
         buffer_from_hal->sample_rate_hz = config_.sample_rate_hz;
@@ -401,14 +352,7 @@ void AudioSystem::i2s_callback_internal(uint32_t instance_id, audio::AudioBuffer
 
         if (!i2s_rx_to_dsp_queue_->enqueue(buffer_from_hal)) {
             release_buffer_to_pool(buffer_from_hal);
-            // TODO: Log RX overflow
         }
-        // The HAL might require an explicit call to requeue this (or another) buffer for further RX DMA.
-        // This detail is very HAL specific. If the HAL reuses the same set of buffers, nothing more here.
-        // If it needs new ones:
-        // AudioBuffer* next_empty_for_rx = static_cast<AudioBuffer*>(audio_buffer_pool_->allocate());
-        // if(next_empty_for_rx) { /* init it */ i2s_ops_->submit_empty_buffer_to_hal_rx(instance_id, next_empty_for_rx); }
-
     } else if (mode == kernel::hal::i2s::Mode::MASTER_TX && instance_id == config_.i2s_tx_instance_id) {
         release_buffer_to_pool(buffer_from_hal);
     }

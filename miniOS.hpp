@@ -32,7 +32,6 @@
 #include <array>
 #include <concepts>
 
-
 // Global constants needed by subsystem headers before kernel namespace
 constexpr size_t MAX_THREADS = 16;
 constexpr size_t MAX_NAME_LENGTH = 32;
@@ -46,9 +45,8 @@ constexpr size_t NET_MAX_PACKET_SIZE = 1500;
 constexpr size_t GPIO_BANKS = 4;
 constexpr size_t GPIO_PINS_PER_BANK = 64;
 
-// Forward declarations for types used by HAL from other namespaces
-// and for types used between subsystems if include order is tricky.
-namespace audio { class AudioBuffer; } // Used by hal::i2s and SPSCQueue_AudioBuffer
+// Forward declarations for types used by HAL and subsystems
+namespace audio { class AudioBuffer; class AudioSystem; } // Used by hal::i2s, SPSCQueue_AudioBuffer, and extern
 namespace kernel { namespace dsp { class DSPGraph; } } // Used by audio::AudioSystem
 
 namespace kernel {
@@ -134,7 +132,6 @@ public:
 };
 
 using SPSCQueue_AudioBuffer = SPSCQueue<audio::AudioBuffer, 16>;
-
 
 /**
  * @brief Thread Control Block (TCB).
@@ -423,20 +420,18 @@ extern Spinlock g_audio_system_lock;
 
 } // namespace kernel
 
-// Subsystem includes (after kernel namespace and HAL are defined)
-#include "util.hpp"    // General utilities
-// Corrected include order: dsp.hpp needs audio.hpp for MAX_AUDIO_CHANNELS.
-// audio.hpp needs dsp.hpp for kernel::dsp::DSPGraph (but will use forward decl + unique_ptr).
-#include "audio.hpp"   // Defines audio types including MAX_AUDIO_CHANNELS. Uses forward decl of DSPGraph.
-#include "dsp.hpp"     // Defines kernel::dsp::DSPGraph. Includes audio.hpp for MAX_AUDIO_CHANNELS.
-#include "cli.hpp"     // CLI uses kernel::hal::UARTDriverOps
-#include "fs.hpp"      // FileSystem uses kernel::hal::UARTDriverOps
-#include "gpio.hpp"    // GPIOManager uses kernel::hal::gpio::GPIODriverOps, kernel::Spinlock, kernel::TCB
-#include "net.hpp"     // NetManager uses kernel::hal::net::NetworkDriverOps, kernel::hal::UARTDriverOps
-#include "trace.hpp"   // TraceManager uses kernel::TCB, kernel::hal::UARTDriverOps
+// Subsystem includes
+#include "util.hpp"
+#include "audio.hpp"
+#include "dsp.hpp"
+#include "cli.hpp"
+#include "fs.hpp"
+#include "gpio.hpp"
+#include "net.hpp"
+#include "trace.hpp"
 
+// Subsystem extern declarations
 namespace kernel {
-    // Extern declarations for subsystem managers, now that their types are defined
     extern audio::AudioSystem g_audio_system;
     extern trace::TraceManager g_trace_manager;
     extern fs::FileSystem g_file_system;

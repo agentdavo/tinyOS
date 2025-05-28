@@ -32,7 +32,7 @@ namespace {
     constexpr float MAX_GAIN_DB_DSP = 24.0f;
 }
 
-// --- Utility Functions --- (generate_hann_window, generate_biquad_coeffs, generate_crossover_coeffs from previous correct version)
+// --- Utility Functions ---
 void generate_hann_window(std::span<float> window) noexcept {
     if (window.empty()) return;
     size_t n = window.size();
@@ -93,7 +93,7 @@ void generate_biquad_coeffs(std::string_view type, float fc_hz, float q_factor, 
     } else if (type == "highshelf") {
         float two_sqrt_A_alpha = 2.0f * std::sqrt(A) * alpha;
         float common_denom = (A + 1.0f) - (A - 1.0f) * cos_w0 + two_sqrt_A_alpha;
-         if (std::abs(common_denom) < 1e-9f) common_denom = 1e-9f;
+        if (std::abs(common_denom) < 1e-9f) common_denom = 1e-9f;
 
         b_coeffs[0] = (A * ((A + 1.0f) + (A - 1.0f) * cos_w0 + two_sqrt_A_alpha)) / common_denom;
         b_coeffs[1] = (-2.0f * A * ((A - 1.0f) + (A + 1.0f) * cos_w0)) / common_denom;
@@ -106,12 +106,9 @@ void generate_biquad_coeffs(std::string_view type, float fc_hz, float q_factor, 
 }
 
 void generate_crossover_coeffs(std::string_view type, int order, float fc_hz, float sample_rate_hz,
-                              std::vector<std::array<float, 3>>& b_coeffs_stages, 
-                              std::vector<std::array<float, 3>>& a_coeffs_stages,
-                              bool is_highpass_section) noexcept {
-    b_coeffs_stages.clear();
-    a_coeffs_stages.clear();
-    if (order < 1 || order > 8 || fc_hz < MIN_FREQ_HZ_DSP || fc_hz > std::min(MAX_FREQ_HZ_DSP, sample_rate_hz / 2.0f -1.0f) || sample_rate_hz <= 0.0f) return;
+                              std::vector<FilterStage>& stages, bool is_highpass_section) noexcept {
+    stages.clear();
+    if (order < 1 || order > 8 || fc_hz < MIN_FREQ_HZ_DSP || fc_hz > std::min(MAX_FREQ_HZ_DSP, sample_rate_hz / 2.0f - 1.0f) || sample_rate_hz <= 0.0f) return;
 
     int num_2nd_order_sections = order / 2;
     bool has_1st_order_section = (order % 2 == 1);
@@ -121,51 +118,36 @@ void generate_crossover_coeffs(std::string_view type, int order, float fc_hz, fl
         if (order == 2) q_val_stage = 0.57735f;
         // Add more cases for higher order Bessel if needed
     }
-    // For Linkwitz-Riley, each 2nd order acoustic stage is made of two 2nd order Butterworth electrical stages.
-    // So an LR4 (24dB/oct) means order=4, num_2nd_order_sections = 2 electrical Butterworth stages per path (LP/HP).
-    // The 'order' parameter here refers to the final acoustic slope (e.g. LR4 is 4th order acoustic).
-    // A common simplification is that an Nth order Linkwitz-Riley filter is N/2 cascaded 2nd-order Butterworth sections.
     if (type == "linkwitz") {
-        num_2nd_order_sections = order / 2; // An LR of order 'N' has N/2 second-order sections.
-                                         // e.g., LR4 (order=4) has 2 second-order sections.
-        has_1st_order_section = false; // LR filters are typically even order.
+        num_2nd_order_sections = order / 2;
+        has_1st_order_section = false; // LR filters are typically even order
     }
 
-
     for (int i = 0; i < num_2nd_order_sections; ++i) {
-        std::array<float, 3> b_stage, a_stage;
-        // For higher order Butterworth/Bessel, Q varies per cascaded biquad stage.
-        // This simplification uses a fixed Q per stage for these types, which is an approximation.
-        // For LR, the Q is for the underlying Butterworth section.
-        generate_biquad_coeffs(is_highpass_section ? "highpass" : "lowpass", fc_hz, q_val_stage, 0.0f, sample_rate_hz, b_stage, a_stage);
-        b_coeffs_stages.push_back(b_stage);
-        a_coeffs_stages.push_back(a_stage);
+        FilterStage stage;
+        generate_biquad_coeffs(is_highpass_section ? "highpass" : "lowpass", fc_hz, q_val_stage, 0.0f, sample_rate_hz, stage.b_coeffs, stage.a_coeffs);
+        stages.push_back(stage);
     }
 
     if (has_1st_order_section && type != "linkwitz") {
-        std::array<float, 3> b1_s = {0.0f, 0.0f, 0.0f}, a1_s = {1.0f, 0.0f, 0.0f};
+        FilterStage stage;
         float wc_norm = PI_F_DSP * fc_hz / sample_rate_hz; 
         float k_tan = std::tan(wc_norm / 2.0f); 
-        
         float den_1st = 1.0f + k_tan;
         if (std::abs(den_1st) < 1e-9f) den_1st = 1e-9f;
 
         if (is_highpass_section) {
             float norm_factor = 1.0f / den_1st;
-            b1_s[0] = norm_factor;
-            b1_s[1] = -norm_factor;
-            a1_s[1] = (k_tan - 1.0f) * norm_factor;
+            stage.b_coeffs = {norm_factor, -norm_factor, 0.0f};
+            stage.a_coeffs = {1.0f, (k_tan - 1.0f) * norm_factor, 0.0f};
         } else { 
             float norm_factor = 1.0f / den_1st;
-            b1_s[0] = k_tan * norm_factor;
-            b1_s[1] = k_tan * norm_factor;
-            a1_s[1] = (k_tan - 1.0f) * norm_factor;
+            stage.b_coeffs = {k_tan * norm_factor, k_tan * norm_factor, 0.0f};
+            stage.a_coeffs = {1.0f, (k_tan - 1.0f) * norm_factor, 0.0f};
         }
-        b_coeffs_stages.push_back(b1_s);
-        a_coeffs_stages.push_back(a1_s);
+        stages.push_back(stage);
     }
 }
-
 
 // --- DSPNode ---
 DSPNode::DSPNode(std::string_view node_name) : name_storage_(node_name) {}
@@ -199,7 +181,7 @@ MixerDSP::MixerDSP(std::string_view name, uint8_t num_inputs)
     reset();
 }
 void MixerDSP::process(std::span<float> buffer) {
-     if (num_inputs_ == 0 || buffer.empty()) return;
+    if (num_inputs_ == 0 || buffer.empty()) return;
     if (buffer.size() % num_inputs_ != 0 && num_inputs_ > 1) return; 
     
     size_t samples_per_output_channel = (num_inputs_ > 1) ? buffer.size() / num_inputs_ : buffer.size();
@@ -323,7 +305,7 @@ void ParametricEQDSP::update_band_filter_coeffs(size_t band_idx) {
 
 // --- NoiseGateDSP ---
 NoiseGateDSP::NoiseGateDSP(std::string_view name) : DSPNode(name) {
-    threshold_db_.start(-60.0f, 0, sample_rate_); // Use correct member name
+    threshold_db_.start(-60.0f, 0, sample_rate_);
     attack_time_ms_.start(10.0f, 0, sample_rate_);
     release_time_ms_.start(100.0f, 0, sample_rate_);
     reset();
@@ -391,7 +373,7 @@ void WaveshaperDSP::configure(const char* args, kernel::hal::UARTDriverOps* uart
         else { if (uart_ops) uart_ops->puts("Invalid shape type.\n"); return; }
         drive_linear_.start(drv, ramp, sample_rate_);
         bias_offset_.start(bs, ramp, sample_rate_);
-         if (uart_ops) { /* Success */ }
+        if (uart_ops) { /* Success */ }
     } else if (uart_ops) { /* Error */ }
 }
 void WaveshaperDSP::ramp_params() { drive_linear_.next(); bias_offset_.next(); }
@@ -399,9 +381,7 @@ void WaveshaperDSP::ramp_params() { drive_linear_.next(); bias_offset_.next(); }
 // --- DelayDSP ---
 DelayDSP::DelayDSP(std::string_view name) 
     : DSPNode(name), current_delay_samples_(0), write_index_(0) {
-    try {
-        delay_buffer_.resize(sample_rate_); // Default 1s
-    } catch(const std::bad_alloc&){ /* Handle */ }
+    delay_buffer_.resize(sample_rate_); // Default 1s, no try/catch due to -fno-exceptions
     reset();
 }
 void DelayDSP::process(std::span<float> buffer) {
@@ -423,7 +403,7 @@ void DelayDSP::configure(const char* args, kernel::hal::UARTDriverOps* uart_ops)
             current_delay_samples_ = MAX_DELAY_SAMPLES_CONST;
         }
         if (delay_buffer_.size() < current_delay_samples_ && current_delay_samples_ > 0) {
-             try { delay_buffer_.resize(current_delay_samples_); } catch (const std::bad_alloc&) { /* handle */ }
+            delay_buffer_.resize(current_delay_samples_); // No try/catch
         }
         reset(); 
         if (uart_ops) { /* Success message */ }
@@ -436,51 +416,49 @@ void DelayDSP::reset() {
 
 // --- ReverbDSP ---
 ReverbDSP::ReverbDSP(std::string_view name) : DSPNode(name) {
-    pre_delay_time_ms_.start(20.0f,0,sample_rate_); // default 20ms
+    pre_delay_time_ms_.start(20.0f,0,sample_rate_);
     room_size_param_.start(0.7f,0,sample_rate_);
     damping_param_.start(0.5f,0,sample_rate_);
     wet_dry_mix_.start(0.3f,0,sample_rate_); 
     
-    // Initialize comb/allpass filters based on typical prime number delays (scaled by sample_rate)
-    const float prime_delays_ms[] = {29.7f, 37.1f, 41.1f, 43.7f}; // For combs
-    const float allpass_delays_ms[] = {5.0f, 1.7f}; // For allpass
+    const float prime_delays_ms[] = {29.7f, 37.1f, 41.1f, 43.7f};
+    const float allpass_delays_ms[] = {5.0f, 1.7f};
 
     for(size_t i=0; i < NUM_COMB_FILTERS; ++i) {
         comb_filters_[i].init(static_cast<size_t>(prime_delays_ms[i%4] * sample_rate_ / 1000.0f), sample_rate_);
     }
     for(size_t i=0; i < NUM_ALLPASS_FILTERS; ++i) {
         allpass_filters_[i].init(static_cast<size_t>(allpass_delays_ms[i%2] * sample_rate_ / 1000.0f), sample_rate_);
-        allpass_filters_[i].gain = 0.7f; // Typical allpass gain
+        allpass_filters_[i].gain = 0.7f;
     }
     
-    size_t max_predelay_samples = static_cast<size_t>(100.0f * sample_rate_ / 1000.0f); // Max 100ms predelay
-    try{ pre_delay_line_.resize(max_predelay_samples > 0 ? max_predelay_samples : 1); } catch(const std::bad_alloc&){/*handle*/}
+    size_t max_predelay_samples = static_cast<size_t>(100.0f * sample_rate_ / 1000.0f);
+    pre_delay_line_.resize(max_predelay_samples > 0 ? max_predelay_samples : 1);
     
     update_internal_reverb_params();
     reset();
 }
 void ReverbDSP::CombFilter::init(size_t delay_samples, float /*sr*/) {
-    try{ buffer.assign(delay_samples > 0 ? delay_samples : 1, 0.0f); } catch(const std::bad_alloc&){/*handle*/}
+    buffer.assign(delay_samples > 0 ? delay_samples : 1, 0.0f);
     index = 0; last_filtered_out = 0.0f;
 }
 float ReverbDSP::CombFilter::process_sample(float input_sample) {
     if (buffer.empty()) return input_sample;
     float delayed_sample = buffer[index];
-    // Damping is a simple one-pole LPF on the feedback signal
     last_filtered_out = delayed_sample * damping_mix + last_filtered_out * (1.0f - damping_mix);
     buffer[index] = input_sample + last_filtered_out * feedback;
     index = (index + 1) % buffer.size();
-    return delayed_sample; // Output of comb is the direct delay line tap
+    return delayed_sample;
 }
 void ReverbDSP::AllpassFilter::init(size_t delay_samples, float /*sr*/) {
-    try { buffer.assign(delay_samples > 0 ? delay_samples : 1, 0.0f); } catch(const std::bad_alloc&){/*handle*/}
+    buffer.assign(delay_samples > 0 ? delay_samples : 1, 0.0f);
     index = 0;
 }
 float ReverbDSP::AllpassFilter::process_sample(float input_sample) {
     if (buffer.empty()) return input_sample;
     float delayed_sample = buffer[index];
-    float output = -gain * input_sample + delayed_sample; // y[n] = -g*x[n] + x[n-d] + g*y[n-d]
-    buffer[index] = input_sample + gain * output; // Store intermediate for next y[n-d]
+    float output = -gain * input_sample + delayed_sample;
+    buffer[index] = input_sample + gain * output;
     index = (index + 1) % buffer.size();
     return output;
 }
@@ -488,8 +466,8 @@ void ReverbDSP::update_internal_reverb_params() {
     float room = room_size_param_.get_current(); 
     float damp_val = damping_param_.get_current(); 
     for(auto& cf : comb_filters_) {
-        cf.feedback = 0.82f + room * 0.17f; // Feedback range e.g. 0.82 to 0.99
-        cf.damping_mix = damp_val;      // Controls how much high frequencies are damped in feedback
+        cf.feedback = 0.82f + room * 0.17f;
+        cf.damping_mix = damp_val;
     }
     current_pre_delay_samples_ = static_cast<size_t>(pre_delay_time_ms_.get_current() * sample_rate_ / 1000.0f);
     if (current_pre_delay_samples_ >= pre_delay_line_.size() && !pre_delay_line_.empty()) {
@@ -517,7 +495,6 @@ void ReverbDSP::process(std::span<float> buffer) {
         for(auto& cf : comb_filters_) {
             comb_out_sum += cf.process_sample(pre_delayed_sample);
         }
-        // Average or sum comb outputs then feed to allpass
         float allpass_input = comb_out_sum / (NUM_COMB_FILTERS > 0 ? static_cast<float>(NUM_COMB_FILTERS) : 1.0f);
         
         float wet_sample = allpass_input;
@@ -527,12 +504,12 @@ void ReverbDSP::process(std::span<float> buffer) {
         sample = dry_sample * dry + wet_sample * wet;
     }
 }
-void ReverbDSP::configure(const char* args, kernel::hal::UARTDriverOps* uart_ops){ /* As before */ 
+void ReverbDSP::configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) { 
     if(!args) { /* Usage */ return; }
     float pre_del=0, room=0.5f, damp=0.5f, wd=0.3f, ramp=0;
     if(std::sscanf(args, "%f %f %f %f %f", &pre_del, &room, &damp, &wd, &ramp) >= 4){
         pre_delay_time_ms_.start(pre_del, ramp, sample_rate_);
-        room_size_param_.start(clip(room,0.0f,1.0f), ramp, sample_rate_); // clip params
+        room_size_param_.start(clip(room,0.0f,1.0f), ramp, sample_rate_);
         damping_param_.start(clip(damp,0.0f,1.0f), ramp, sample_rate_);
         wet_dry_mix_.start(clip(wd,0.0f,1.0f), ramp, sample_rate_); 
         if(ramp == 0) update_internal_reverb_params();
@@ -598,7 +575,7 @@ void FlangerDSP::process(std::span<float> buffer) {
     for (float& sample : buffer) {
         float dry_sample = sample;
         float lfo_val = std::sin(lfo_phase_);
-        float current_delay_base = 1.0f; // Add small base delay for flanger (e.g. 1ms worth of samples)
+        float current_delay_base = 1.0f;
         float current_delay = current_delay_base + depth_s * (1.0f + lfo_val) * 0.5f;
         current_delay = std::max(0.0f, std::min(current_delay, static_cast<float>(MAX_FLANGER_DELAY_SAMPLES -1)));
 
@@ -609,7 +586,7 @@ void FlangerDSP::process(std::span<float> buffer) {
 
         float delayed_sample = delay_line_[read_idx0] * (1.0f - d_frac) + delay_line_[read_idx1] * d_frac;
         
-        delay_line_[write_index_] = dry_sample + delayed_sample * fb; // Input + feedback term
+        delay_line_[write_index_] = dry_sample + delayed_sample * fb;
         sample = dry_sample * (1.0f - mix) + delayed_sample * mix;
 
         write_index_ = (write_index_ + 1) % MAX_FLANGER_DELAY_SAMPLES;
@@ -641,57 +618,57 @@ void PitchShifterDSP::reset() {
     pitch_shift_factor_.start(1.0f,0,sample_rate_);
 }
 
-
-// ... Stubs for other DSP node classes like CrossoverDSP, PhaseCorrectionDSP, SRCDSP, FIR, IIR, FFTEQ ...
-// Ensure all member names used in .cpp match their declarations in .hpp for these classes too.
-
-// Example: CrossoverDSP constructor matching the one in dsp.hpp
+// --- CrossoverDSP ---
 CrossoverDSP::CrossoverDSP(std::string_view name, uint8_t num_ways)
     : DSPNode(name), num_output_ways_(num_ways > 0 && num_ways <= MAX_CROSSOVER_BANDS_OUTPUT ? num_ways : 2),
       selected_band_output_idx_(0) {
     if (num_output_ways_ < 2) num_output_ways_ = 2; 
-    // Initialize split_points_ based on num_output_ways_
-    for(size_t i=0; i < num_output_ways_ -1; ++i) {
-        splits_[i].cutoff_hz.start(1000.0f * (i+1), 0, sample_rate_); // Example default cutoffs
-        splits_[i].filter_type = CrossoverFilterType::LINKWITZ_RILEY;
-        splits_[i].order = (typeid(splits_[i].order) == typeid(int)) ? 4 : 4 ; // Default LR4 (24dB/oct)
+    for(size_t i=0; i < static_cast<size_t>(num_output_ways_) - 1; ++i) {
+        split_points_[i].cutoff_hz.start(1000.0f * (i+1), 0, sample_rate_);
+        split_points_[i].filter_type = CrossoverFilterType::LINKWITZ_RILEY;
+        split_points_[i].order = 4; // Default LR4 (24dB/oct)
         update_split_filter_coeffs(i);
     }
-    try { temp_processing_buffer_.resize(4096); } catch(const std::bad_alloc&){/*handle*/} // Temp buffer for processing
+    temp_processing_buffer_.resize(4096);
     reset();
 }
-// ... rest of CrossoverDSP methods, ensure member names like num_output_ways_ and splits_ are used.
-// ... and MAX_CROSSOVER_BANDS_OUTPUT for array bounds. FilterShape enum needs to be in dsp.hpp
-// ... update_band_coeffs needs to be update_split_filter_coeffs
 void CrossoverDSP::process(std::span<float> buffer) { (void)buffer; /* Placeholder */ }
-void CrossoverDSP::configure(const char* args, kernel::hal::UARTDriverOps* uart_ops){ (void)args; (void)uart_ops; /* Placeholder */ }
-void CrossoverDSP::ramp_params(){ for(size_t i=0; i<num_output_ways_-1; ++i) { if(splits_[i].cutoff_hz.is_active()){ splits_[i].cutoff_hz.next(); update_split_filter_coeffs(i);}}}
-void CrossoverDSP::reset(){ for(auto& split : splits_){ for(auto& stage : split.lp_stages) stage.z_state.fill(0.0f); for(auto& stage : split.hp_stages) stage.z_state.fill(0.0f);}}
-void CrossoverDSP::update_split_filter_coeffs(size_t split_idx){ 
-    if(split_idx >= num_output_ways_ -1) return;
-    BandSplitPoint& sp = splits_[split_idx];
-    // Generate LP coeffs
-    generate_crossover_coeffs(sp.filter_type == CrossoverFilterType::LINKWITZ_RILEY ? "linkwitz" : 
-                              sp.filter_type == CrossoverFilterType::BUTTERWORTH ? "butterworth" : "bessel", 
-                              sp.order, sp.cutoff_hz.get_current(), sample_rate_, 
-                              sp.lp_stages, sp.lp_stages, false); // False for lowpass // Mismatch, b_coeffs, a_coeffs
-    // Generate HP coeffs
-    generate_crossover_coeffs(sp.filter_type == CrossoverFilterType::LINKWITZ_RILEY ? "linkwitz" : 
-                              sp.filter_type == CrossoverFilterType::BUTTERWORTH ? "butterworth" : "bessel", 
-                              sp.order, sp.cutoff_hz.get_current(), sample_rate_, 
-                              sp.hp_stages, sp.hp_stages, true); // True for highpass
-    // This needs generate_crossover_coeffs to populate vectors of FilterStage or separate b/a coeff vectors
+void CrossoverDSP::configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) { (void)args; (void)uart_ops; /* Placeholder */ }
+void CrossoverDSP::ramp_params() {
+    for(size_t i=0; i < static_cast<size_t>(num_output_ways_) - 1; ++i) {
+        if(split_points_[i].cutoff_hz.is_active()) {
+            split_points_[i].cutoff_hz.next();
+            update_split_filter_coeffs(i);
+        }
+    }
+}
+void CrossoverDSP::reset() {
+    for(auto& split : split_points_) {
+        for(auto& stage : split.lp_stages) stage.z_state.fill(0.0f);
+        for(auto& stage : split.hp_stages) stage.z_state.fill(0.0f);
+    }
+}
+void CrossoverDSP::update_split_filter_coeffs(size_t split_idx) { 
+    if(split_idx >= static_cast<size_t>(num_output_ways_) - 1) return;
+    BandSplitPoint& sp = split_points_[split_idx];
+    std::string_view type_str = (sp.filter_type == CrossoverFilterType::LINKWITZ_RILEY) ? "linkwitz" :
+                                (sp.filter_type == CrossoverFilterType::BUTTERWORTH) ? "butterworth" : "bessel";
+    generate_crossover_coeffs(type_str, sp.order, sp.cutoff_hz.get_current(), sample_rate_, 
+                             sp.lp_stages, false);
+    generate_crossover_coeffs(type_str, sp.order, sp.cutoff_hz.get_current(), sample_rate_, 
+                             sp.hp_stages, true);
 }
 
-
-
-// NetworkAudioSinkSource (configure fixed, process from previous)
+// --- NetworkAudioSinkSource ---
 NetworkAudioSinkSource::NetworkAudioSinkSource(std::string_view name) 
     : DSPNode(name), udp_socket_idx_(-1), is_socket_valid_(false), is_configured_as_sink_(false), remote_target_port_(0), num_audio_channels_(2) {
     remote_target_ip_.addr = 0; 
 }
 void NetworkAudioSinkSource::configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    if (!args) { if (uart_ops) uart_ops->puts("Usage: netaudio <sink|source> <ip> <port> <channels>\n"); return; }
+    if (!args) { 
+        if (uart_ops) uart_ops->puts("Usage: netaudio <sink|source> <ip> <port> <channels>\n"); 
+        return; 
+    }
     char mode_str[10], ip_str_val[16];
     int port_val = 0, channels_val = 0;
 
@@ -699,14 +676,24 @@ void NetworkAudioSinkSource::configure(const char* args, kernel::hal::UARTDriver
         std::string_view mode_sv(mode_str);
         if (mode_sv == "sink") is_configured_as_sink_ = true;
         else if (mode_sv == "source") is_configured_as_sink_ = false;
-        else { if (uart_ops) uart_ops->puts("Invalid mode (sink/source).\n"); return; }
+        else { 
+            if (uart_ops) uart_ops->puts("Invalid mode (sink/source).\n"); 
+            return; 
+        }
 
         if (!kernel::util::ipv4_to_uint32(ip_str_val, remote_target_ip_.addr)) {
-            if (uart_ops) uart_ops->puts("Invalid IP address string.\n"); return;
+            if (uart_ops) uart_ops->puts("Invalid IP address string.\n"); 
+            return;
         }
-        if (port_val <= 0 || port_val > 65535) { if (uart_ops) uart_ops->puts("Invalid port number.\n"); return; }
+        if (port_val <= 0 || port_val > 65535) { 
+            if (uart_ops) uart_ops->puts("Invalid port number.\n"); 
+            return; 
+        }
         remote_target_port_ = static_cast<uint16_t>(port_val);
-        if (channels_val <=0 || channels_val > audio::MAX_AUDIO_CHANNELS) { if (uart_ops) uart_ops->puts("Invalid channel count.\n"); return; }
+        if (channels_val <= 0 || static_cast<size_t>(channels_val) > audio::MAX_AUDIO_CHANNELS) { 
+            if (uart_ops) uart_ops->puts("Invalid channel count.\n"); 
+            return; 
+        }
         num_audio_channels_ = static_cast<uint8_t>(channels_val);
 
         if (is_socket_valid_) {
@@ -717,9 +704,15 @@ void NetworkAudioSinkSource::configure(const char* args, kernel::hal::UARTDriver
         udp_socket_idx_ = kernel::g_net_manager.create_udp_socket(net::IPv4Addr(0U), local_bind_port); 
         is_socket_valid_ = (udp_socket_idx_ >= 0);
 
-        if (is_socket_valid_) { if (uart_ops) { uart_ops->puts("NetworkAudio node configured.\n");} }
-        else { if (uart_ops) uart_ops->puts("Failed to create UDP socket for netaudio.\n"); }
-    } else if (uart_ops) { uart_ops->puts("Invalid netaudio args format.\n"); }
+        if (is_socket_valid_) { 
+            if (uart_ops) { uart_ops->puts("NetworkAudio node configured.\n");} 
+        }
+        else { 
+            if (uart_ops) uart_ops->puts("Failed to create UDP socket for netaudio.\n"); 
+        }
+    } else if (uart_ops) { 
+        uart_ops->puts("Invalid netaudio args format.\n"); 
+    }
 }
 void NetworkAudioSinkSource::process(std::span<float> buffer) {
     if (!is_socket_valid_ || buffer.empty() || !kernel::g_platform || !kernel::g_platform->get_timer_ops()) return;
@@ -791,7 +784,6 @@ bool DSPGraph::configure_node(std::string_view name, const char* args, kernel::h
 }
 void DSPGraph::process(std::span<float> audio_buffer) {
     if (audio_buffer.empty()) return;
-    // Assuming single-threaded access to process, or nodes_ vector is stable during process.
     for (auto& node_ptr : dsp_nodes_) { 
         node_ptr->ramp_params(); 
         node_ptr->process(audio_buffer); 

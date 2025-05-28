@@ -20,7 +20,6 @@
 
 #include "miniOS.hpp" // Includes kernel types, kernel::hal::UARTDriverOps
 #include "net.hpp"    // For net::IPv4Addr (used by NetworkAudioSinkSource)
-#include "audio.hpp"  // For audio::MAX_AUDIO_CHANNELS (used by PitchShifterDSP)
 #include <span>
 #include <vector>
 #include <array>
@@ -33,6 +32,8 @@
 
 namespace kernel {
 namespace dsp {
+
+constexpr size_t MAX_AUDIO_CHANNELS = 2; // Moved from audio.hpp
 
 // --- DSP Utility Functions ---
 
@@ -52,11 +53,17 @@ void generate_hann_window(std::span<float> window) noexcept;
 void generate_biquad_coeffs(std::string_view type, float fc_hz, float q_factor, float gain_db, float sample_rate_hz,
                            std::array<float, 3>& b_coeffs, std::array<float, 3>& a_coeffs) noexcept;
 
+// --- Common DSP Structures ---
+
+struct FilterStage { 
+    std::array<float, 3> b_coeffs = {1.0f, 0.0f, 0.0f}; 
+    std::array<float, 3> a_coeffs = {1.0f, 0.0f, 0.0f}; 
+    std::array<float, 2> z_state = {0.0f, 0.0f}; 
+};
+
 /** @brief Generates crossover filter coefficients (cascaded biquads). */
 void generate_crossover_coeffs(std::string_view type, int order, float fc_hz, float sample_rate_hz,
-                              std::vector<std::array<float, 3>>& b_coeffs_stages, 
-                              std::vector<std::array<float, 3>>& a_coeffs_stages,
-                              bool is_highpass_section) noexcept;
+                              std::vector<FilterStage>& stages, bool is_highpass_section) noexcept;
 
 /**
  * @brief Parameter ramping for smooth transitions of DSP parameters.
@@ -66,6 +73,27 @@ struct ParamRamp {
     std::atomic<float> target{0.0f};  
     float step_size_ = 0.0f;          
     std::atomic<int> steps_remaining_{0}; 
+
+    ParamRamp() = default;
+
+    ParamRamp(ParamRamp&& other) noexcept
+        : current(other.current.load(std::memory_order_relaxed)),
+          target(other.target.load(std::memory_order_relaxed)),
+          step_size_(other.step_size_),
+          steps_remaining_(other.steps_remaining_.load(std::memory_order_relaxed)) {}
+
+    ParamRamp& operator=(ParamRamp&& other) noexcept {
+        if (this != &other) {
+            current.store(other.current.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            target.store(other.target.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            step_size_ = other.step_size_;
+            steps_remaining_.store(other.steps_remaining_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        }
+        return *this;
+    }
+
+    ParamRamp(const ParamRamp&) = delete;
+    ParamRamp& operator=(const ParamRamp&) = delete;
 
     void start(float to_value, float duration_ms, float sample_rate) noexcept {
         float current_val = current.load(std::memory_order_relaxed);
@@ -109,7 +137,6 @@ struct ParamRamp {
     float get_current() const noexcept { return current.load(std::memory_order_relaxed); }
     bool is_active() const noexcept { return steps_remaining_.load(std::memory_order_relaxed) > 0; }
 };
-
 
 // --- Base DSP Node ---
 class DSPNode {
@@ -363,8 +390,8 @@ private:
     std::array<float, PITCH_WINDOW_SIZE> analysis_window_; 
     size_t input_write_ptr_ = 0;
     float phase_accumulator_ = 0.0f;
-    std::array<float, audio::MAX_AUDIO_CHANNELS> last_input_phase_ = {0.0f}; 
-    std::array<float, audio::MAX_AUDIO_CHANNELS> last_output_phase_ = {0.0f};
+    std::array<float, MAX_AUDIO_CHANNELS> last_input_phase_ = {0.0f}; 
+    std::array<float, MAX_AUDIO_CHANNELS> last_output_phase_ = {0.0f};
 };
 
 class ConvolutionReverbDSP : public DSPNode {
@@ -389,17 +416,10 @@ public:
     static constexpr size_t MAX_CROSSOVER_BANDS_OUTPUT = 4; 
     enum class CrossoverFilterType { BUTTERWORTH, BESSEL, LINKWITZ_RILEY };
     
-    struct FilterStage { 
-        std::array<float, 3> b_coeffs = {1.0f, 0.0f, 0.0f}; 
-        std::array<float, 3> a_coeffs = {1.0f, 0.0f, 0.0f}; 
-        std::array<float, 2> z_state = {0.0f, 0.0f}; 
-    };
-
     struct BandSplitPoint {
         ParamRamp cutoff_hz; 
         CrossoverFilterType filter_type = CrossoverFilterType::LINKWITZ_RILEY;
         int order = 4; // Default to LR4 (24dB/oct)
-        
         std::vector<FilterStage> lp_stages; 
         std::vector<FilterStage> hp_stages; 
     };
@@ -503,7 +523,6 @@ private:
     uint16_t remote_target_port_ = 0; 
     uint8_t num_audio_channels_ = 2; 
 };
-
 
 class DSPGraph {
 public:

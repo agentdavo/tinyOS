@@ -21,26 +21,21 @@
 #ifndef AUDIO_HPP
 #define AUDIO_HPP
 
-#include "miniOS.hpp" // Includes kernel types, SPSCQueue, FixedMemoryPool, hal::i2s, FORWARD DECL of DSPGraph
-// dsp.hpp is NOT included here to break the circular dependency.
-// kernel::dsp::DSPGraph is forward-declared in miniOS.hpp
+#include "miniOS.hpp"
 #include <span>
 #include <vector>
-#include <memory>   // For std::unique_ptr
-#include <thread>   // For std::thread
-#include <atomic>   // For std::atomic
+#include <memory>
+#include <thread>
+#include <atomic>
 
-// Forward declaration for robustness, though miniOS.hpp should provide it.
-namespace kernel { namespace hal { namespace i2s { struct I2SDriverOps; } } }
-// kernel::dsp::DSPGraph is forward declared in miniOS.hpp
+namespace kernel { namespace hal { struct I2SDriverOps; } }
 
 namespace audio {
 
-constexpr size_t MAX_AUDIO_SAMPLES_PER_BLOCK = 1024; 
-constexpr size_t MAX_AUDIO_CHANNELS = 2; 
+constexpr size_t MAX_AUDIO_SAMPLES_PER_BLOCK = 1024;
 
 struct AudioBuffer {
-    std::array<float, MAX_AUDIO_SAMPLES_PER_BLOCK * MAX_AUDIO_CHANNELS> data;
+    std::array<float, MAX_AUDIO_SAMPLES_PER_BLOCK * kernel::dsp::MAX_AUDIO_CHANNELS> data;
     size_t num_samples = 0;    
     uint8_t channels = 0;      
     uint32_t sample_rate_hz = 0; 
@@ -76,20 +71,8 @@ public:
     AudioBuffer* get_filled_buffer_from_dsp_rx();
     void release_buffer_to_pool(AudioBuffer* buffer);
 
-    /**
-     * @brief Provides access to the DSP graph for configuration.
-     * @details Dereferences the unique_ptr. Caller must check if underlying graph is valid if it can be null.
-     * @return A reference to the internal DSPGraph object. Throws if dsp_graph_ is null.
-     */
-    kernel::dsp::DSPGraph& get_dsp_graph(); // Implementation will dereference unique_ptr
-
-    /**
-     * @brief Provides const access to the DSP graph.
-     * @details Dereferences the unique_ptr. Caller must check if underlying graph is valid if it can be null.
-     * @return A const reference to the internal DSPGraph object. Throws if dsp_graph_ is null.
-     */
-    const kernel::dsp::DSPGraph& get_dsp_graph() const; // Implementation will dereference unique_ptr
-
+    kernel::dsp::DSPGraph& get_dsp_graph();
+    const kernel::dsp::DSPGraph& get_dsp_graph() const;
 
 private:
     void dsp_thread_entry();
@@ -102,19 +85,15 @@ private:
     AudioConfig config_;                        
     std::atomic<bool> running_{false};          
     std::atomic<bool> initialized_{false};      
-
+    kernel::TCB* dsp_thread_tcb_ = nullptr; 
+    kernel::hal::I2SDriverOps* i2s_ops_ = nullptr; 
+    std::unique_ptr<kernel::dsp::DSPGraph> dsp_graph_;
     std::unique_ptr<kernel::FixedMemoryPool> audio_buffer_pool_; 
     std::vector<uint8_t> pool_storage_for_audio_buffers_;
-
     std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> i2s_rx_to_dsp_queue_;
     std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> dsp_to_app_rx_queue_;
     std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> app_tx_to_dsp_queue_;
     std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> dsp_to_i2s_tx_queue_;
-
-    std::unique_ptr<kernel::dsp::DSPGraph> dsp_graph_; // Changed to unique_ptr
-    kernel::TCB* dsp_thread_tcb_ = nullptr; 
-
-    kernel::hal::i2s::I2SDriverOps* i2s_ops_ = nullptr; 
 };
 
 } // namespace audio
