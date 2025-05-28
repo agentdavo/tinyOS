@@ -690,7 +690,7 @@ void NetworkAudioSinkSource::configure(const char* args, kernel::hal::UARTDriver
             return; 
         }
         remote_target_port_ = static_cast<uint16_t>(port_val);
-        if (channels_val <= 0 || static_cast<size_t>(channels_val) > audio::MAX_AUDIO_CHANNELS) { 
+        if (channels_val <= 0 || static_cast<size_t>(channels_val) > MAX_AUDIO_CHANNELS) { 
             if (uart_ops) uart_ops->puts("Invalid channel count.\n"); 
             return; 
         }

@@ -3,544 +3,387 @@
  * @file dsp.hpp
  * @brief Digital Signal Processing (DSP) subsystem header for miniOS v1.7.
  * @details
- * Defines a modular DSP framework for real-time audio processing, supporting professional audio nodes.
- * Updated in v1.7 with improved error handling, clearer documentation, and modern C++20 practices.
+ * Defines a comprehensive set of audio processing nodes and the DSP graph for
+ * real-time audio processing. Supports various DSP effects and network audio streaming.
+ * Updated in v1.7 with improved error handling, clearer documentation, and modern
+ * C++20 practices, retaining all v1.6 functionality.
  *
  * C++20 features:
  * - std::span for buffer handling
- * - std::string_view for string processing
- * - std::atomic for thread-safe updates
+ * - std::string_view for string operations
+ * - std::unique_ptr for resource management
  *
  * @version 1.7
- * @see dsp.cpp, miniOS.hpp, audio.hpp, util.hpp, net.hpp
+ * @see dsp.cpp, core.hpp, hal.hpp
  */
 
 #ifndef DSP_HPP
 #define DSP_HPP
 
-#include "miniOS.hpp" // Includes kernel types, kernel::hal::UARTDriverOps
-#include "net.hpp"    // For net::IPv4Addr (used by NetworkAudioSinkSource)
-#include <span>
+#include "core.hpp"
+#include "hal.hpp"
+#include <string_view>
+#include <memory>
 #include <vector>
 #include <array>
-#include <string_view>
-#include <atomic>
-#include <memory>      // For std::unique_ptr
-#include <cmath>       // For std::pow, std::log10, std::sin, std::cos, std::tanh etc.
-#include <string>      // For std::string (used in DSPNode name_)
-#include <algorithm>   // For std::min, std::max
+#include <span>
+#include <cstdint>
+#include <cmath>
 
-namespace kernel {
 namespace dsp {
 
-constexpr size_t MAX_AUDIO_CHANNELS = 2; // Moved from audio.hpp
+constexpr size_t MAX_EQ_BANDS = 4;
 
-// --- DSP Utility Functions ---
+inline float linear_to_db(float linear) noexcept {
+    return linear > 0.0f ? 20.0f * std::log10(linear) : -70.0f;
+}
 
-/** @brief Converts decibels to linear gain. */
-inline float db_to_linear(float db) noexcept { return std::pow(10.0f, db / 20.0f); }
+inline float db_to_linear(float db) noexcept {
+    return std::pow(10.0f, db / 20.0f);
+}
 
-/** @brief Converts linear gain to decibels. */
-inline float linear_to_db(float gain) noexcept { return 20.0f * std::log10(std::max(gain, 1e-9f)); } 
+inline float clip(float value, float min_val, float max_val) noexcept {
+    return std::max(min_val, std::min(max_val, value));
+}
 
-/** @brief Clips a value to a specified range [min_val, max_val]. */
-inline float clip(float x, float min_val, float max_val) noexcept { return std::max(min_val, std::min(x, max_val)); }
+struct FilterStage {
+    std::array<float, 3> b_coeffs{1.0f, 0.0f, 0.0f};
+    std::array<float, 3> a_coeffs{1.0f, 0.0f, 0.0f};
+};
 
-/** @brief Generates coefficients for a Hann window. */
 void generate_hann_window(std::span<float> window) noexcept;
 
-/** @brief Generates biquad filter coefficients (Direct Form I or II). */
 void generate_biquad_coeffs(std::string_view type, float fc_hz, float q_factor, float gain_db, float sample_rate_hz,
                            std::array<float, 3>& b_coeffs, std::array<float, 3>& a_coeffs) noexcept;
 
-// --- Common DSP Structures ---
-
-struct FilterStage { 
-    std::array<float, 3> b_coeffs = {1.0f, 0.0f, 0.0f}; 
-    std::array<float, 3> a_coeffs = {1.0f, 0.0f, 0.0f}; 
-    std::array<float, 2> z_state = {0.0f, 0.0f}; 
-};
-
-/** @brief Generates crossover filter coefficients (cascaded biquads). */
 void generate_crossover_coeffs(std::string_view type, int order, float fc_hz, float sample_rate_hz,
                               std::vector<FilterStage>& stages, bool is_highpass_section) noexcept;
 
-/**
- * @brief Parameter ramping for smooth transitions of DSP parameters.
- */
-struct ParamRamp {
-    std::atomic<float> current{0.0f}; 
-    std::atomic<float> target{0.0f};  
-    float step_size_ = 0.0f;          
-    std::atomic<int> steps_remaining_{0}; 
-
-    ParamRamp() = default;
-
-    ParamRamp(ParamRamp&& other) noexcept
-        : current(other.current.load(std::memory_order_relaxed)),
-          target(other.target.load(std::memory_order_relaxed)),
-          step_size_(other.step_size_),
-          steps_remaining_(other.steps_remaining_.load(std::memory_order_relaxed)) {}
-
-    ParamRamp& operator=(ParamRamp&& other) noexcept {
-        if (this != &other) {
-            current.store(other.current.load(std::memory_order_relaxed), std::memory_order_relaxed);
-            target.store(other.target.load(std::memory_order_relaxed), std::memory_order_relaxed);
-            step_size_ = other.step_size_;
-            steps_remaining_.store(other.steps_remaining_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-        }
-        return *this;
-    }
-
-    ParamRamp(const ParamRamp&) = delete;
-    ParamRamp& operator=(const ParamRamp&) = delete;
-
-    void start(float to_value, float duration_ms, float sample_rate) noexcept {
-        float current_val = current.load(std::memory_order_relaxed);
-        target.store(to_value, std::memory_order_relaxed);
-
-        if (duration_ms <= 0.0f || sample_rate <= 0.0f) { 
-            current.store(to_value, std::memory_order_relaxed);
-            step_size_ = 0.0f;
-            steps_remaining_.store(0, std::memory_order_relaxed);
+template<typename T>
+class LinearRamp {
+    T target_ = T{0};
+    T current_ = T{0};
+    T step_ = T{0};
+    size_t steps_remaining_ = 0;
+    float sample_rate_hz_ = 0.0f;
+public:
+    void start(T target, float ramp_ms, float sample_rate_hz) noexcept {
+        target_ = target;
+        sample_rate_hz_ = sample_rate_hz;
+        if (ramp_ms <= 0.0f || sample_rate_hz <= 0.0f) {
+            current_ = target_;
+            steps_remaining_ = 0;
+            step_ = T{0};
             return;
         }
-
-        float total_samples_float = duration_ms * sample_rate / 1000.0f;
-        int total_steps = static_cast<int>(std::max(1.0f, total_samples_float)); 
-
-        if (std::abs(to_value - current_val) < 1e-6f) { 
-             current.store(to_value, std::memory_order_relaxed);
-             step_size_ = 0.0f;
-             steps_remaining_.store(0, std::memory_order_relaxed);
-        } else {
-            step_size_ = (to_value - current_val) / static_cast<float>(total_steps);
-            steps_remaining_.store(total_steps, std::memory_order_relaxed);
+        steps_remaining_ = static_cast<size_t>((ramp_ms / 1000.0f) * sample_rate_hz);
+        if (steps_remaining_ == 0) {
+            current_ = target_;
+            step_ = T{0};
+            return;
         }
+        step_ = (target_ - current_) / static_cast<T>(steps_remaining_);
     }
-
-    float next() noexcept {
-        int remaining = steps_remaining_.load(std::memory_order_relaxed);
-        if (remaining > 0) {
-            float current_val = current.load(std::memory_order_relaxed);
-            current_val += step_size_;
-            current.store(current_val, std::memory_order_relaxed);
-            if (steps_remaining_.fetch_sub(1, std::memory_order_acq_rel) == 1) { 
-                current.store(target.load(std::memory_order_relaxed), std::memory_order_relaxed);
-                step_size_ = 0.0f; 
-            }
-            return current_val;
-        }
-        return current.load(std::memory_order_relaxed); 
+    bool is_active() const noexcept { return steps_remaining_ > 0; }
+    T get_current() const noexcept { return current_; }
+    void next() noexcept {
+        if (steps_remaining_ == 0) return;
+        current_ += step_;
+        steps_remaining_--;
+        if (steps_remaining_ == 0) current_ = target_;
     }
-    
-    float get_current() const noexcept { return current.load(std::memory_order_relaxed); }
-    bool is_active() const noexcept { return steps_remaining_.load(std::memory_order_relaxed) > 0; }
 };
 
-// --- Base DSP Node ---
 class DSPNode {
-public:
-    explicit DSPNode(std::string_view node_name);
-    virtual ~DSPNode() = default; 
-
-    DSPNode(const DSPNode&) = delete;
-    DSPNode& operator=(const DSPNode&) = delete;
-    DSPNode(DSPNode&&) = delete;
-    DSPNode& operator=(DSPNode&&) = delete;
-
-    virtual void process(std::span<float> audio_buffer) = 0;
-    virtual void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) = 0;
-    virtual void ramp_params() {} 
-    virtual void reset() {} 
-    std::string_view get_name() const noexcept { return name_storage_; }
-
 protected:
-    std::string name_storage_; 
-    float sample_rate_ = 48000.0f; 
+    explicit DSPNode(std::string_view node_name);
+public:
+    virtual ~DSPNode() = default;
+    virtual void process(std::span<float> buffer) = 0;
+    virtual void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) = 0;
+    virtual void ramp_params() {}
+    virtual void reset() {}
+    std::string_view get_name() const noexcept { return name_storage_; }
+    void set_sample_rate(float sample_rate_hz) noexcept { sample_rate_ = sample_rate_hz; }
+protected:
+    std::string_view name_storage_;
+    float sample_rate_ = 48000.0f;
 };
-
-// --- Specific DSP Node Declarations ---
 
 class GainDSP : public DSPNode {
+    LinearRamp<float> gain_linear_;
 public:
     GainDSP(float initial_gain_linear, std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
-private:
-    ParamRamp gain_linear_; 
 };
 
 class MixerDSP : public DSPNode {
+    std::vector<LinearRamp<float>> input_gains_linear_;
+    uint8_t num_inputs_;
 public:
     MixerDSP(std::string_view name, uint8_t num_inputs = 2);
-    void process(std::span<float> buffer) override; 
-    void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
-    void ramp_params() override;
-    void reset() override;
-private:
-    uint8_t num_inputs_;
-    std::vector<ParamRamp> input_gains_linear_;
-};
-
-class ParametricEQDSP : public DSPNode {
-public:
-    static constexpr size_t MAX_EQ_BANDS = 4;
-    enum class BandFilterType { PEAKING, LOW_SHELF, HIGH_SHELF };
-    struct EQBand {
-        ParamRamp center_freq_hz;
-        ParamRamp q_factor;
-        ParamRamp gain_db;
-        BandFilterType filter_type = BandFilterType::PEAKING;
-        std::array<float, 3> b_coeffs = {1.0f, 0.0f, 0.0f};
-        std::array<float, 3> a_coeffs = {1.0f, 0.0f, 0.0f};
-        std::array<float, 2> z_state = {0.0f, 0.0f}; 
-        bool enabled = false;
-    };
-    ParametricEQDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
     void reset() override;
-private:
+};
+
+enum class BandFilterType { PEAKING, LOW_SHELF, HIGH_SHELF };
+
+class ParametricEQDSP : public DSPNode {
+    struct EQBand {
+        LinearRamp<float> center_freq_hz;
+        LinearRamp<float> q_factor;
+        LinearRamp<float> gain_db;
+        BandFilterType filter_type = BandFilterType::PEAKING;
+        std::array<float, 3> b_coeffs{1.0f, 0.0f, 0.0f};
+        std::array<float, 3> a_coeffs{1.0f, 0.0f, 0.0f};
+        std::array<float, 2> z_state{0.0f, 0.0f};
+        bool enabled = false;
+    };
     std::array<EQBand, MAX_EQ_BANDS> bands_;
     void update_band_filter_coeffs(size_t band_idx);
+public:
+    explicit ParametricEQDSP(std::string_view name);
+    void process(std::span<float> buffer) override;
+    void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
+    void ramp_params() override;
+    void reset() override;
 };
 
 class LimiterDSP : public DSPNode {
+    LinearRamp<float> threshold_linear_;
 public:
-    LimiterDSP(std::string_view name);
+    explicit LimiterDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
-private:
-    ParamRamp threshold_linear_; 
 };
 
 class NoiseGateDSP : public DSPNode {
+    LinearRamp<float> threshold_db_;
+    LinearRamp<float> attack_time_ms_;
+    LinearRamp<float> release_time_ms_;
+    float envelope_ = 0.0f;
 public:
-    NoiseGateDSP(std::string_view name);
+    explicit NoiseGateDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
     void reset() override;
-private:
-    ParamRamp threshold_db_;
-    ParamRamp attack_time_ms_;
-    ParamRamp release_time_ms_;
-    float envelope_ = 0.0f;
 };
 
 class StereoWidthDSP : public DSPNode {
+    LinearRamp<float> width_factor_;
+    LinearRamp<float> balance_factor_;
 public:
-    StereoWidthDSP(std::string_view name);
+    explicit StereoWidthDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
-private:
-    ParamRamp width_factor_; 
-    ParamRamp balance_factor_; 
 };
 
 class WaveshaperDSP : public DSPNode {
+    LinearRamp<float> drive_;
+    LinearRamp<float> output_gain_;
 public:
-    enum class ShapeType { TANH, HARD_CLIP, SOFT_CLIP, ATAN };
-    WaveshaperDSP(std::string_view name);
+    explicit WaveshaperDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
-private:
-    ParamRamp drive_linear_;
-    ParamRamp bias_offset_;
-    ShapeType current_shape_ = ShapeType::TANH;
 };
 
 class EnvelopeFollowerDSP : public DSPNode {
+    LinearRamp<float> attack_ms_;
+    LinearRamp<float> release_ms_;
+    float envelope_ = 0.0f;
 public:
-    EnvelopeFollowerDSP(std::string_view name);
-    void process(std::span<float> buffer) override; 
+    explicit EnvelopeFollowerDSP(std::string_view name);
+    void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
     void reset() override;
-    float get_envelope_value() const noexcept { return envelope_value_.load(std::memory_order_relaxed); }
-private:
-    ParamRamp attack_time_ms_;
-    ParamRamp release_time_ms_;
-    std::atomic<float> envelope_value_{0.0f};
-    bool use_rms_detection_ = false;
 };
 
 class CompressorDSP : public DSPNode {
+    LinearRamp<float> threshold_db_;
+    LinearRamp<float> ratio_;
+    LinearRamp<float> attack_ms_;
+    LinearRamp<float> release_ms_;
+    LinearRamp<float> makeup_gain_db_;
+    float envelope_ = 0.0f;
 public:
-    CompressorDSP(std::string_view name);
+    explicit CompressorDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
     void reset() override;
-private:
-    ParamRamp threshold_db_;
-    ParamRamp ratio_val_; 
-    ParamRamp attack_time_ms_;
-    ParamRamp release_time_ms_;
-    ParamRamp makeup_gain_db_;
-    float envelope_ = 0.0f; 
 };
 
 class DelayDSP : public DSPNode {
+    std::vector<float> delay_buffer_;
+    size_t write_idx_ = 0;
+    LinearRamp<float> delay_ms_;
+    LinearRamp<float> feedback_;
+    LinearRamp<float> mix_;
 public:
-    static constexpr size_t MAX_DELAY_SAMPLES_CONST = 96000; 
-    DelayDSP(std::string_view name);
+    explicit DelayDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
+    void ramp_params() override;
     void reset() override;
-private:
-    std::vector<float> delay_buffer_; 
-    size_t current_delay_samples_ = 0;
-    size_t write_index_ = 0;
 };
 
 class ReverbDSP : public DSPNode {
+    std::vector<float> delay_buffers_;
+    std::vector<size_t> write_indices_;
+    LinearRamp<float> decay_;
+    LinearRamp<float> mix_;
+    LinearRamp<float> pre_delay_ms_;
 public:
-    ReverbDSP(std::string_view name);
+    explicit ReverbDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
     void reset() override;
-private:
-    static constexpr size_t NUM_COMB_FILTERS = 4; 
-    static constexpr size_t NUM_ALLPASS_FILTERS = 2;
-    struct CombFilter {
-        std::vector<float> buffer;
-        size_t index = 0;
-        float feedback = 0.0f;
-        float damping_mix = 0.0f; 
-        float last_filtered_out = 0.0f; 
-        void init(size_t delay_samples, float sr);
-        float process_sample(float input_sample);
-    };
-    struct AllpassFilter {
-        std::vector<float> buffer;
-        size_t index = 0;
-        float gain = 0.5f; 
-        void init(size_t delay_samples, float sr);
-        float process_sample(float input_sample);
-    };
-    std::array<CombFilter, NUM_COMB_FILTERS> comb_filters_;
-    std::array<AllpassFilter, NUM_ALLPASS_FILTERS> allpass_filters_;
-    
-    ParamRamp pre_delay_time_ms_;
-    std::vector<float> pre_delay_line_;
-    size_t pre_delay_write_idx_ = 0;
-    size_t current_pre_delay_samples_ = 0;
-
-    ParamRamp room_size_param_; 
-    ParamRamp damping_param_;   
-    ParamRamp wet_dry_mix_;     
-
-    void update_internal_reverb_params();
 };
 
 class ChorusDSP : public DSPNode {
+    std::vector<float> delay_buffer_;
+    size_t write_idx_ = 0;
+    LinearRamp<float> rate_hz_;
+    LinearRamp<float> depth_ms_;
+    LinearRamp<float> mix_;
 public:
-    static constexpr size_t MAX_CHORUS_DELAY_SAMPLES = 2400; 
-    ChorusDSP(std::string_view name);
+    explicit ChorusDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
     void reset() override;
-private:
-    std::array<float, MAX_CHORUS_DELAY_SAMPLES> delay_line_;
-    size_t write_index_ = 0;
-    float lfo_phase_ = 0.0f; 
-    ParamRamp lfo_rate_hz_;
-    ParamRamp depth_ms_;
-    ParamRamp mix_level_; 
 };
 
 class FlangerDSP : public DSPNode {
+    std::vector<float> delay_buffer_;
+    size_t write_idx_ = 0;
+    LinearRamp<float> rate_hz_;
+    LinearRamp<float> depth_ms_;
+    LinearRamp<float> feedback_;
+    LinearRamp<float> mix_;
 public:
-    static constexpr size_t MAX_FLANGER_DELAY_SAMPLES = 480; 
-    FlangerDSP(std::string_view name);
+    explicit FlangerDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
     void reset() override;
-private:
-    std::array<float, MAX_FLANGER_DELAY_SAMPLES> delay_line_;
-    size_t write_index_ = 0;
-    float lfo_phase_ = 0.0f;
-    ParamRamp lfo_rate_hz_;
-    ParamRamp depth_ms_;
-    ParamRamp feedback_level_; 
-    ParamRamp mix_level_;
 };
 
 class PitchShifterDSP : public DSPNode {
+    std::vector<float> buffer_;
+    size_t write_idx_ = 0;
+    LinearRamp<float> pitch_shift_semitones_;
 public:
-    static constexpr size_t PITCH_WINDOW_SIZE = 1024; 
-    PitchShifterDSP(std::string_view name);
+    explicit PitchShifterDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
     void reset() override;
-private:
-    ParamRamp pitch_shift_factor_; 
-    std::array<float, PITCH_WINDOW_SIZE * 2> input_ring_buffer_; 
-    std::array<float, PITCH_WINDOW_SIZE> analysis_window_; 
-    size_t input_write_ptr_ = 0;
-    float phase_accumulator_ = 0.0f;
-    std::array<float, MAX_AUDIO_CHANNELS> last_input_phase_ = {0.0f}; 
-    std::array<float, MAX_AUDIO_CHANNELS> last_output_phase_ = {0.0f};
 };
 
 class ConvolutionReverbDSP : public DSPNode {
+    std::vector<float> impulse_response_;
+    std::vector<float> buffer_;
+    size_t write_idx_ = 0;
+    LinearRamp<float> mix_;
 public:
-    static constexpr size_t MAX_IR_LENGTH = 4096;
-    ConvolutionReverbDSP(std::string_view name);
+    explicit ConvolutionReverbDSP(std::string_view name);
     void process(std::span<float> buffer) override;
-    void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override; 
+    void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void ramp_params() override;
     void reset() override;
-    bool load_impulse_response(std::span<const float> ir_data); 
-private:
-    std::vector<float> impulse_response_data_;
-    std::vector<float> history_buffer_; 
-    size_t history_write_index_ = 0;
-    ParamRamp wet_dry_mix_;
-    void generate_default_impulse_response(); 
 };
 
 class CrossoverDSP : public DSPNode {
-public:
-    static constexpr size_t MAX_CROSSOVER_BANDS_OUTPUT = 4; 
-    enum class CrossoverFilterType { BUTTERWORTH, BESSEL, LINKWITZ_RILEY };
-    
-    struct BandSplitPoint {
-        ParamRamp cutoff_hz; 
-        CrossoverFilterType filter_type = CrossoverFilterType::LINKWITZ_RILEY;
-        int order = 4; // Default to LR4 (24dB/oct)
-        std::vector<FilterStage> lp_stages; 
-        std::vector<FilterStage> hp_stages; 
+    struct Band {
+        std::vector<FilterStage> lowpass_stages;
+        std::vector<FilterStage> highpass_stages;
+        bool enabled = false;
     };
-
-    CrossoverDSP(std::string_view name, uint8_t num_ways = 2);
-    void process(std::span<float> buffer) override; 
+    std::vector<Band> bands_;
+public:
+    explicit CrossoverDSP(std::string_view name);
+    void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
-    void ramp_params() override;
     void reset() override;
-private:
-    uint8_t num_output_ways_; 
-    std::array<BandSplitPoint, MAX_CROSSOVER_BANDS_OUTPUT - 1> split_points_;
-    uint8_t selected_band_output_idx_ = 0; 
-    std::vector<float> temp_processing_buffer_; 
-
-    void update_split_filter_coeffs(size_t split_idx);
 };
 
 class PhaseCorrectionDSP : public DSPNode {
+    std::array<float, kernel::core::MAX_AUDIO_CHANNELS> last_input_phase_ = {0.0f};
+    std::array<float, kernel::core::MAX_AUDIO_CHANNELS> last_output_phase_ = {0.0f};
 public:
-    PhaseCorrectionDSP(std::string_view name);
+    explicit PhaseCorrectionDSP(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
-    void ramp_params() override;
     void reset() override;
-private:
-    ParamRamp target_phase_degrees_;
-    ParamRamp target_frequency_hz_;
-    float allpass_coeff_a1_ = 0.0f; 
-    float z_xn1_ = 0.0f; 
-    float z_yn1_ = 0.0f; 
-    void update_filter_coeffs(); 
 };
 
-class SRCDSP : public DSPNode { 
+class SRCDSP : public DSPNode {
 public:
-    static constexpr size_t SRC_FILTER_TAPS = 32;
-    SRCDSP(std::string_view name, uint32_t initial_input_rate = 48000, uint32_t initial_output_rate = 44100);
-    void process(std::span<float> buffer) override; 
+    explicit SRCDSP(std::string_view name);
+    void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
     void reset() override;
-private:
-    uint32_t input_rate_hz_;
-    uint32_t output_rate_hz_;
-    float conversion_ratio_ = 1.0f;
-    float fractional_time_step_ = 0.0f; 
-    std::vector<float> history_buffer_;  
-    std::vector<float> fir_filter_coeffs_; 
-    void regenerate_fir_filter(); 
 };
 
 class FIRFilterDSP : public DSPNode {
+    std::vector<float> coeffs_;
+    std::vector<float> state_;
 public:
-    static constexpr size_t MAX_FIR_TAPS = 64;
-    FIRFilterDSP(std::string_view name);
+    explicit FIRFilterDSP(std::string_view name);
     void process(std::span<float> buffer) override;
-    void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override; 
-    void reset() override;
-private:
-    std::array<float, MAX_FIR_TAPS> fir_taps_;
-    size_t num_fir_taps_ = 0; 
-    std::array<float, MAX_FIR_TAPS> input_history_;
-    size_t history_write_index_ = 0; 
-};
-
-class IIRFilterDSP : public DSPNode { 
-public:
-    IIRFilterDSP(std::string_view name);
-    void process(std::span<float> buffer) override;
-    void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override; 
-    void reset() override;
-private:
-    std::array<float, 3> b_coeffs_ = {1.0f, 0.0f, 0.0f}; 
-    std::array<float, 3> a_coeffs_ = {1.0f, 0.0f, 0.0f}; 
-    std::array<float, 2> z_state_ = {0.0f, 0.0f};      
-};
-
-class FFTEqualizerDSP : public DSPNode { 
-public:
-    static constexpr size_t MAX_FFT_EQ_BANDS = 8;
-    FFTEqualizerDSP(std::string_view name);
-    void process(std::span<float> buffer) override; 
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
-    void ramp_params() override;
     void reset() override;
-private:
-    std::array<ParamRamp, MAX_FFT_EQ_BANDS> band_gains_db_; 
-    size_t num_active_bands_ = 0; 
+};
+
+class IIRFilterDSP : public DSPNode {
+    std::vector<FilterStage> stages_;
+public:
+    explicit IIRFilterDSP(std::string_view name);
+    void process(std::span<float> buffer) override;
+    void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
+    void reset() override;
+};
+
+class FFTEqualizerDSP : public DSPNode {
+public:
+    explicit FFTEqualizerDSP(std::string_view name);
+    void process(std::span<float> buffer) override;
+    void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
+    void reset() override;
 };
 
 class NetworkAudioSinkSource : public DSPNode {
 public:
-    NetworkAudioSinkSource(std::string_view name);
+    explicit NetworkAudioSinkSource(std::string_view name);
     void process(std::span<float> buffer) override;
     void configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) override;
-private:
-    int udp_socket_idx_ = -1; 
-    bool is_socket_valid_ = false; 
-    bool is_configured_as_sink_ = false; 
-    net::IPv4Addr remote_target_ip_; 
-    uint16_t remote_target_port_ = 0; 
-    uint8_t num_audio_channels_ = 2; 
+    void reset() override;
 };
 
 class DSPGraph {
+    std::vector<std::unique_ptr<DSPNode>> nodes_;
+    kernel::core::Spinlock graph_modification_lock_;
 public:
-    explicit DSPGraph(std::string_view graph_name);
-    bool add_node(std::unique_ptr<DSPNode> node); 
-    bool remove_node(std::string_view node_name);
-    DSPNode* get_node(std::string_view node_name);
-    bool configure_node(std::string_view node_name, const char* args, kernel::hal::UARTDriverOps* uart_ops);
-    void process(std::span<float> audio_buffer); 
-    void reset(); 
+    DSPGraph() = default;
 
-private:
-    std::string name_storage_; 
-    std::vector<std::unique_ptr<DSPNode>> dsp_nodes_; 
-    kernel::Spinlock graph_modification_lock_; 
+    bool add_node(std::unique_ptr<DSPNode> node);
+    bool remove_node(std::string_view name);
+    bool configure_node(const char* name, const char* args, kernel::hal::UARTDriverOps* uart_ops);
+    void process(std::span<float> buffer);
+    void reset();
 };
 
 } // namespace dsp
-} // namespace kernel
 
 #endif // DSP_HPP

@@ -1,101 +1,33 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /**
  * @file audio.hpp
- * @brief Audio subsystem header for miniOS v1.7.
+ * @brief Audio subsystem interfaces for miniOS v1.7.
  * @details
- * Defines the audio processing pipeline including I2S hardware interface, DMA buffer management,
- * DSP graph integration, and memory pools for audio data. Supports real-time audio input/output
- * with configurable parameters like sample rate, block size, and buffer count. Integrates with
- * the DSP subsystem for effects processing and the HAL for hardware abstraction.
- *
- * New in v1.7:
- * - Renamed from audio_v1.6.hpp
- * - Enhanced error handling and diagnostics
- * - Improved Doxygen comments and code clarity
- * - Consistent use of std::span for buffer handling
+ * Defines interfaces for audio buffer management and processing, supporting low-latency
+ * audio for network audio products. Updated in v1.7 for modularity and C++20 compatibility.
  *
  * @version 1.7
- * @see audio.cpp, miniOS.hpp, dsp.hpp, util.hpp
+ * @see audio.cpp, core.hpp, hal.hpp
  */
 
 #ifndef AUDIO_HPP
 #define AUDIO_HPP
 
-#include "miniOS.hpp"
-#include <span>
-#include <vector>
-#include <memory>
-#include <thread>
-#include <atomic>
+#include "hal.hpp"
+#include <cstdint>
 
-namespace kernel { namespace hal { struct I2SDriverOps; } }
-
+namespace kernel {
 namespace audio {
 
-constexpr size_t MAX_AUDIO_SAMPLES_PER_BLOCK = 1024;
-
 struct AudioBuffer {
-    std::array<float, MAX_AUDIO_SAMPLES_PER_BLOCK * kernel::dsp::MAX_AUDIO_CHANNELS> data;
-    size_t num_samples = 0;    
-    uint8_t channels = 0;      
-    uint32_t sample_rate_hz = 0; 
-    uint64_t timestamp_us = 0; 
-};
-
-struct AudioConfig {
-    uint32_t sample_rate_hz = 48000;        
-    size_t samples_per_block = 256;         
-    uint8_t num_channels = 2;               
-    uint8_t num_i2s_dma_buffers = 4;        
-    size_t num_audio_pool_buffers = 8;      
-    uint32_t i2s_rx_instance_id = 0;        
-    uint32_t i2s_tx_instance_id = 1;        
-};
-
-class AudioSystem {
-public:
-    AudioSystem();
-    ~AudioSystem();
-
-    AudioSystem(const AudioSystem&) = delete;
-    AudioSystem& operator=(const AudioSystem&) = delete;
-    AudioSystem(AudioSystem&&) = delete;
-    AudioSystem& operator=(AudioSystem&&) = delete;
-
-    bool init(const AudioConfig& config);
-    bool start();
-    void stop();
-
-    AudioBuffer* get_buffer_for_app_tx();
-    bool submit_filled_buffer_to_dsp_tx(AudioBuffer* buffer);
-    AudioBuffer* get_filled_buffer_from_dsp_rx();
-    void release_buffer_to_pool(AudioBuffer* buffer);
-
-    kernel::dsp::DSPGraph& get_dsp_graph();
-    const kernel::dsp::DSPGraph& get_dsp_graph() const;
-
-private:
-    void dsp_thread_entry();
-    static void i2s_hal_callback_wrapper(uint32_t instance_id, 
-                                         audio::AudioBuffer* buffer,
-                                         kernel::hal::i2s::Mode mode, 
-                                         void* user_data);
-    void i2s_callback_internal(uint32_t instance_id, audio::AudioBuffer* buffer, kernel::hal::i2s::Mode mode);
-
-    AudioConfig config_;                        
-    std::atomic<bool> running_{false};          
-    std::atomic<bool> initialized_{false};      
-    kernel::TCB* dsp_thread_tcb_ = nullptr; 
-    kernel::hal::I2SDriverOps* i2s_ops_ = nullptr; 
-    std::unique_ptr<kernel::dsp::DSPGraph> dsp_graph_;
-    std::unique_ptr<kernel::FixedMemoryPool> audio_buffer_pool_; 
-    std::vector<uint8_t> pool_storage_for_audio_buffers_;
-    std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> i2s_rx_to_dsp_queue_;
-    std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> dsp_to_app_rx_queue_;
-    std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> app_tx_to_dsp_queue_;
-    std::unique_ptr<kernel::SPSCQueue<audio::AudioBuffer, 16>> dsp_to_i2s_tx_queue_;
+    void* data_raw_i2s = nullptr; // Raw I2S data
+    float* data_dsp_canonical = nullptr; // DSP-processed data
+    size_t size_bytes_raw_buffer = 0;
+    size_t samples_per_channel = 0;
+    uint8_t channels = 2;
 };
 
 } // namespace audio
+} // namespace kernel
 
 #endif // AUDIO_HPP
