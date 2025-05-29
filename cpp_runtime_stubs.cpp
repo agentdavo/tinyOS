@@ -1,184 +1,118 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /**
- * @file freestanding_stubs.cpp
- * @brief Provides freestanding implementations for common C library functions and atomic builtins.
+ * @file cpp_runtime_stubs.cpp
+ * @brief Provides minimal stubs for C++ runtime functions needed in freestanding environment.
  */
+#include <cstddef>     
+#include <cstdint>     
+#include <new>         // For std::nothrow_t declaration
 
-#include <cstddef> // For size_t
-#include <cstdint> // For integer types
+#include "miniOS.hpp"  // For kernel::g_platform
+#include "core.hpp"    // For kernel::core::Spinlock, kernel::core::ScopedLock
 
-// extern "C" functions from previous version (memcpy, memset, etc.)
+// Basic panic function if platform isn't available or if panic is called too early
+[[noreturn]] static void basic_halt_loop() {
+    for (;;) {
+        asm volatile("wfi");
+    }
+}
+
+// --- Minimal new/delete ---
+#define KERNEL_SIMPLE_HEAP_SIZE (1024 * 64) 
+[[gnu::aligned(16)]] static char simple_kernel_heap[KERNEL_SIMPLE_HEAP_SIZE];
+static size_t simple_kernel_heap_ptr = 0;
+// This global Spinlock relies on its own constructor being called by call_constructors.
+// If new/delete is used by another static constructor *before* this lock is initialized,
+// it's unsafe. For truly safe early new/delete, the lock itself needs to be simpler
+// (e.g., a raw atomic_flag if used before full Spinlock construction).
+// Assuming for now that static constructors using new/delete run after g_simple_heap_lock's constructor.
+static kernel::core::Spinlock g_simple_heap_lock; 
+
+[[noreturn]] static void heap_panic_oom() {
+    if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+        kernel::g_platform->get_uart_ops()->puts("PANIC: operator new - Out Of Memory!\n");
+    }
+    basic_halt_loop();
+}
+
+// Define the std::nothrow object.
+// The type std::nothrow_t should be in <new>.
+// Explicitly call the constructor.
+namespace std {
+    const nothrow_t nothrow = nothrow_t(); // Explicit constructor call
+}
+
+void* operator new(size_t size) noexcept { 
+    kernel::core::ScopedLock lock(g_simple_heap_lock); 
+    size = (size + 15) & ~static_cast<size_t>(15); 
+    if (simple_kernel_heap_ptr + size > KERNEL_SIMPLE_HEAP_SIZE) {
+        heap_panic_oom(); 
+    }
+    void* p = &simple_kernel_heap[simple_kernel_heap_ptr];
+    simple_kernel_heap_ptr += size;
+    return p;
+}
+
+void* operator new[](size_t size) noexcept { 
+    return ::operator new(size); 
+}
+
+// Use ::std::nothrow to ensure we are referring to the global one we defined.
+void* operator new(size_t size, const ::std::nothrow_t&) noexcept {
+    kernel::core::ScopedLock lock(g_simple_heap_lock);
+    size = (size + 15) & ~static_cast<size_t>(15);
+    if (simple_kernel_heap_ptr + size > KERNEL_SIMPLE_HEAP_SIZE) {
+        return nullptr; 
+    }
+    void* p = &simple_kernel_heap[simple_kernel_heap_ptr];
+    simple_kernel_heap_ptr += size;
+    return p;
+}
+
+void* operator new[](size_t size, const ::std::nothrow_t&) noexcept {
+    return ::operator new(size, std::nothrow); 
+}
+
+void operator delete(void* ptr) noexcept { (void)ptr; }
+void operator delete[](void* ptr) noexcept { (void)ptr; }
+void operator delete(void* ptr, size_t size) noexcept { (void)ptr; (void)size; }
+void operator delete[](void* ptr, size_t size) noexcept { (void)ptr; (void)size; }
+
+// --- C++ ABI Stubs ---
 extern "C" {
-
-void* memcpy(void* dest_ptr, const void* src_ptr, size_t count) {
-    unsigned char* dest = static_cast<unsigned char*>(dest_ptr);
-    const unsigned char* src = static_cast<const unsigned char*>(src_ptr);
-    for (size_t i = 0; i < count; ++i) {
-        dest[i] = src[i];
-    }
-    return dest_ptr;
-}
-
-void* memset(void* dest_ptr, int ch_int, size_t count) {
-    unsigned char* dest = static_cast<unsigned char*>(dest_ptr);
-    unsigned char ch = static_cast<unsigned char>(ch_int);
-    for (size_t i = 0; i < count; ++i) {
-        dest[i] = ch;
-    }
-    return dest_ptr;
-}
-
-int memcmp(const void* ptr1, const void* ptr2, size_t count) {
-    const unsigned char* p1 = static_cast<const unsigned char*>(ptr1);
-    const unsigned char* p2 = static_cast<const unsigned char*>(ptr2);
-    for (size_t i = 0; i < count; ++i) {
-        if (p1[i] != p2[i]) {
-            return (p1[i] < p2[i]) ? -1 : 1;
+    [[noreturn]] void __cxa_pure_virtual() { 
+        if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+             kernel::g_platform->get_uart_ops()->puts("PANIC: Pure virtual function call!\n");
         }
+        basic_halt_loop();
     }
-    return 0;
-}
 
-size_t strlen(const char* str) {
-    if (!str) return 0; 
-    size_t len = 0;
-    while (str[len] != '\0') {
-        len++;
+    int __cxa_atexit(void (*func)(void*), void* arg, void* dso_handle) {
+        (void)func; (void)arg; (void)dso_handle; return 0; 
     }
-    return len;
-}
-
-char* strcpy(char* dest, const char* src) {
-    if (!dest || !src) return dest; 
-    char* orig_dest = dest;
-    while ((*dest++ = *src++)) {}
-    return orig_dest;
-}
-
-char* strncpy(char* dest, const char* src, size_t count) {
-    if (!dest || !src) return dest;
-    char* orig_dest = dest;
-    size_t i;
-    for (i = 0; i < count && src[i] != '\0'; ++i) {
-        dest[i] = src[i];
-    }
-    for (; i < count; ++i) { 
-        dest[i] = '\0';
-    }
-    return orig_dest;
-}
-
-int strcmp(const char* lhs, const char* rhs) {
-    if (!lhs && !rhs) return 0;
-    if (!lhs) return -1; 
-    if (!rhs) return 1;
-    while (*lhs && (*lhs == *rhs)) {
-        lhs++;
-        rhs++;
-    }
-    return static_cast<int>(static_cast<unsigned char>(*lhs)) - 
-           static_cast<int>(static_cast<unsigned char>(*rhs));
-}
-
-int strncmp(const char* lhs, const char* rhs, size_t count) {
-    if (count == 0) return 0;
-    if (!lhs && !rhs) return 0; 
-    if (!lhs) return -1; 
-    if (!rhs) return 1;
     
-    size_t i = 0;
-    while (i < count && lhs[i] && rhs[i] && (lhs[i] == rhs[i])) {
-        if (lhs[i] == '\0') { 
-            return 0;
+    static kernel::core::Spinlock g_cxa_guard_lock; 
+    
+    int __cxa_guard_acquire(uint64_t* guard_object) {
+        kernel::core::ScopedLock lock(g_cxa_guard_lock);
+        if (*reinterpret_cast<volatile uint8_t*>(guard_object) == 0) { 
+            return 1; 
         }
-        i++;
+        return 0; 
     }
-    if (i == count) return 0; 
+
+    void __cxa_guard_release(uint64_t* guard_object) {
+        kernel::core::ScopedLock lock(g_cxa_guard_lock);
+        *reinterpret_cast<volatile uint8_t*>(guard_object) = 1; 
+    }
+
+    void __cxa_guard_abort(uint64_t* guard_object) { (void)guard_object; }
     
-    return static_cast<int>(static_cast<unsigned char>(lhs[i])) - 
-           static_cast<int>(static_cast<unsigned char>(rhs[i]));
-}
-
-
-// Atomic builtins for AArch64
-// These are simplified and might not cover all memory orderings perfectly
-// or might not be optimal, but aim to satisfy the linker.
-
-// bool __aarch64_cas1_acq(uint8_t *mem, uint8_t *oldval, uint8_t newval)
-// CAS: Compare And Swap. Atomically performs:
-//   if (*mem == *oldval) { *mem = newval; return true (or 0 for success by some ABI); }
-//   else { *oldval = *mem; return false (or 1 for failure by some ABI); }
-// The `acq` means acquire semantics.
-// GCC builtins usually return 0 if comparison fails, 1 if succeeds.
-// The __aarch64_cas<size>_<memorder> builtins often return the *old* value from memory before the CAS.
-// Let's assume a common pattern for CAS: it returns true if successful.
-// Arguments: x0 = mem, x1 = oldval_ptr, w2 = newval (for 1 byte)
-// We need to return a boolean (int 0 or 1).
-// Using LDXRB/STXRB for exclusive load/store for 1-byte CAS.
-bool __aarch64_cas1_acq(volatile uint8_t* ptr, uint8_t* expected_val_ptr, uint8_t desired_val) {
-    uint8_t current_val;
-    uint32_t success; // STXRB status, 0 for success, 1 for failure
-    asm volatile (
-        "1: ldaxrb   %w[current_val], [%[ptr]]\n"          // Load-acquire exclusive byte
-        "   cmp     %w[current_val], %w[expected_val]\n"  // Compare with expected
-        "   b.ne    2f\n"                                 // If not equal, skip store
-        "   stlxrb   %w[success], %w[desired_val], [%[ptr]]\n" // Store-release exclusive byte
-        "   cbnz    %w[success], 1b\n"                   // If store failed (contention), retry
-        "2:"
-        : [current_val] "=&r"(current_val), [success] "=&r"(success), "+m" (*ptr)
-        : [ptr] "r"(ptr), [expected_val] "r"(*expected_val_ptr), [desired_val] "r"(desired_val)
-        : "cc", "memory"
-    );
-    if (current_val != *expected_val_ptr) { // If comparison failed initially
-        *expected_val_ptr = current_val; // Update expected with current
-        return false;                   // CAS failed
+    [[noreturn]] void _Unwind_Resume() { 
+        if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+             kernel::g_platform->get_uart_ops()->puts("PANIC: _Unwind_Resume called!\n");
+        }
+        basic_halt_loop();
     }
-    return success == 0; // CAS succeeded if store exclusive succeeded
+    // void __gxx_personality_v0() {} // Add if linker asks
 }
-
-
-// uint64_t __aarch64_ldadd8_relax(uint64_t* mem, uint64_t val)
-// Atomically performs: *mem += val; returns OLD value of *mem.
-// Relaxed memory order.
-// LDADDAL on ARMv8.1-LSE, or LDXR/STXR loop for ARMv8.0
-// Arguments: x0 = mem_ptr, x1 = val_to_add
-// Returns old value in x0.
-uint64_t __aarch64_ldadd8_relax(volatile uint64_t* ptr, uint64_t val) {
-    uint64_t old_val;
-    uint64_t new_val;
-    uint32_t success;
-    asm volatile (
-        "1: ldxr    %[old_val], [%[ptr]]\n"            // Load exclusive
-        "   add     %[new_val], %[old_val], %[val]\n"  // Calculate new value
-        "   stxr    %w[success], %[new_val], [%[ptr]]\n"// Store exclusive
-        "   cbnz    %w[success], 1b\n"                 // Retry if store failed
-        : [old_val] "=&r"(old_val), [new_val] "=&r"(new_val), [success] "=&r"(success), "+m" (*ptr)
-        : [ptr] "r"(ptr), [val] "r"(val)
-        : "cc", "memory"
-    );
-    return old_val;
-}
-
-
-// uint8_t __aarch64_swp1_rel(uint8_t *mem, uint8_t val)
-// Atomically performs: temp = *mem; *mem = val; return temp;
-// Release semantics.
-// SWPALB on ARMv8.1-LSE, or LDXRB/STXRB loop.
-// Arguments: x0 = mem_ptr, w1 = val_to_store
-// Returns old value in w0.
-uint8_t __aarch64_swp1_rel(volatile uint8_t* ptr, uint8_t val) {
-    uint8_t old_val;
-    uint32_t success;
-    asm volatile (
-        "1: ldaxrb  %w[old_val], [%[ptr]]\n"         // Load-acquire exclusive (acquire for the store-release pair)
-        "   stlxrb  %w[success], %w[val], [%[ptr]]\n"// Store-release exclusive
-        "   cbnz   %w[success], 1b\n"               // Retry if store failed
-        : [old_val] "=&r"(old_val), [success] "=&r"(success), "+m" (*ptr)
-        : [ptr] "r"(ptr), [val] "r"(val)
-        : "cc", "memory"
-    );
-    return old_val;
-}
-
-
-} // extern "C"
