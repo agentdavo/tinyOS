@@ -1,76 +1,86 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /**
  * @file util.hpp
- * @brief Utility functions header for miniOS v1.7.
- * @details
- * Declares common utility functions like string manipulation, memory operations,
- * and parsing, used across various subsystems of miniOS.
- *
- * @version 1.7
- * @see util.cpp, miniOS.hpp
+ * @brief Freestanding utility functions header for miniOS v1.7.
  */
 
 #ifndef UTIL_HPP
 #define UTIL_HPP
 
-#include <string_view>
-#include <cstddef>
-#include <cstdint>
-#include <cstring>   // For std::memcpy, std::memset, std::strlen, std::strcmp, std::strncpy
-#include <limits>    // For std::numeric_limits
-#include <cstdlib>   // For std::strtol, std::strtoul, std::strtof
-#include <span>      // For std::span
+#include <string_view> 
+#include <cstddef>     
+#include <cstdint>     
+#include <limits>      
+#include <span>        
+#include <cstdarg>      // For va_list, va_start, va_arg, va_end
 
 namespace kernel {
 namespace util {
 
-// Use std versions directly or wrap them if specific behavior/portability is needed.
-// The provided implementations are mostly wrappers around std functions.
-// For a bare-metal OS, you might implement these from scratch or use a freestanding library.
-
-inline void* memcpy(void* dest, const void* src, size_t count) noexcept {
-    return std::memcpy(dest, src, count);
+// Memory manipulation functions (declarations for freestanding_stubs.cpp)
+extern "C" {
+    void* memcpy(void* dest, const void* src, size_t count);
+    void* memset(void* dest, int ch, size_t count);
+    int memcmp(const void* ptr1, const void* ptr2, size_t count);
+    size_t strlen(const char* str);
+    int strcmp(const char* lhs, const char* rhs);
+    int strncmp(const char* lhs, const char* rhs, size_t count);
+    char* strcpy(char* dest, const char* src);
+    char* strncpy(char* dest, const char* src, size_t count);
 }
 
-inline void* memset(void* dest, int ch, size_t count) noexcept { // Changed src to dest to match std::memset
-    return std::memset(dest, ch, count);
+// Inline wrappers in the kernel::util namespace
+inline void* kmemcpy(void* dest, const void* src, size_t count) noexcept { return ::memcpy(dest, src, count); }
+inline void* kmemset(void* dest, int ch, size_t count) noexcept { return ::memset(dest, ch, count); }
+inline int kmemcmp(const void* ptr1, const void* ptr2, size_t count) noexcept { return ::memcmp(ptr1, ptr2, count); }
+inline size_t kstrlen(const char* str) noexcept { if (!str) return 0; return ::strlen(str); }
+inline int kstrcmp(const char* lhs, const char* rhs) noexcept { return ::strcmp(lhs, rhs); }
+inline int kstrncmp(const char* lhs, const char* rhs, size_t count) noexcept { return ::strncmp(lhs, rhs, count); }
+inline char* kstrcpy(char* dest, const char* src) noexcept { return ::strcpy(dest, src); }
+inline char* kstrncpy(char* dest, const char* src, size_t count) noexcept { return ::strncpy(dest, src, count); }
+
+bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept; 
+char* kstrcat(char* dest, const char* src, size_t dest_max_len) noexcept; 
+
+// Character functions
+inline bool isspace(char c) noexcept { 
+    return (c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r');
 }
-
-inline size_t strlen(const char* str) noexcept {
-    if (!str) return 0;
-    return std::strlen(str);
+inline bool isdigit(char c) noexcept { 
+    return (c >= '0' && c <= '9');
 }
+bool isalpha(char c) noexcept; 
+bool isalnum(char c) noexcept; 
+int toupper(int c) noexcept;   
+int tolower(int c) noexcept;   
 
-inline int strcmp(const char* lhs, const char* rhs) noexcept {
-    if (!lhs && !rhs) return 0;
-    if (!lhs) return -1; // lhs is null, rhs is not
-    if (!rhs) return 1;  // rhs is null, lhs is not
-    return std::strcmp(lhs, rhs);
-}
-
-/**
- * @brief Safely copies a C-string. Ensures null termination.
- * @param dest Destination buffer.
- * @param src Source string.
- * @param dest_size Size of the destination buffer.
- * @return True if the entire string was copied without truncation, false otherwise.
- */
-bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept;
-
+// String to number conversion
 bool str_to_int32(std::string_view input, int32_t& out_val) noexcept;
 bool str_to_uint32(std::string_view input, uint32_t& out_val) noexcept;
-bool str_to_float(std::string_view input, float& out_val) noexcept;
-bool ipv4_to_uint32(std::string_view ip_str, uint32_t& ip_addr) noexcept;
-void uint32_to_ipv4_str(uint32_t ip_addr, std::span<char> out_buffer) noexcept;
+bool str_to_float(std::string_view input, float& out_val) noexcept; 
 
-/**
- * @brief Extracts the next token from a string_view, advancing the view.
- * @param input The string_view to parse. Modified to point past the extracted token and delimiter.
- * @param delimiter The character delimiting tokens.
- * @return A string_view of the token. Empty if no token found or input is empty.
- *         Leading/trailing whitespace around the token is trimmed.
- */
+// IP address conversion
+bool ipv4_to_uint32(std::string_view ip_str, uint32_t& ip_addr) noexcept;
+
+// Number to string conversion helpers (definitions in util.cpp)
+int int_to_str(int32_t value, char* buffer, size_t buffer_size, int base = 10) noexcept;
+int uint_to_str(uint32_t value, char* buffer, size_t buffer_size, int base = 10) noexcept;
+int uint64_to_str(uint64_t value, char* buffer, size_t buffer_size, int base = 10) noexcept;
+int uint64_to_hex_str(uint64_t value, char* buffer, size_t buffer_size, bool leading_0x = true) noexcept;
+
+void uint32_to_ipv4_str(uint32_t ip_addr, std::span<char> out_buffer) noexcept; 
+
 std::string_view get_next_token(std::string_view& input, char delimiter) noexcept;
+
+// Simplified snprintf-like functions
+int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) noexcept;
+int k_snprintf(char* buffer, size_t bufsz, const char* format, ...) noexcept __attribute__((format(printf, 3, 4)));
+
+
+template <typename T>
+constexpr const T& min(const T& a, const T& b) { return (b < a) ? b : a; }
+template <typename T>
+constexpr const T& max(const T& a, const T& b) { return (a < b) ? b : a; }
 
 } // namespace util
 } // namespace kernel

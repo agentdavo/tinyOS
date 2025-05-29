@@ -1,45 +1,48 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Makefile - Build automation for miniOS v1.7 (ARM64 and RISC-V)
+# Makefile - Build automation for miniOS v1.7 (ARM64)
+# Bare-metal build with freestanding utilities
 
 TARGET ?= arm64
-DEBUG_PORT ?= 1234 
-SERIAL_LOG_FILE = serial_core0.log 
 
 ifeq ($(TARGET),arm64)
-	CC = aarch64-linux-gnu-g++
-	AS = aarch64-linux-gnu-gcc
-	LD = aarch64-linux-gnu-g++
-	OBJCOPY = aarch64-linux-gnu-objcopy
-	CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -mcpu=cortex-a53 -march=armv8-a+simd -std=c++20 -I. -fno-PIE -Woverloaded-virtual -g3
-	ASFLAGS = -mcpu=cortex-a53 -march=armv8-a -g3
-	LDFLAGS = -T ld/linker_arm64.ld -no-pie -nostartfiles -Wl,--no-relax
-	QEMU_SYSTEM = qemu-system-aarch64
-	QEMU_ARGS = -M virt -cpu cortex-a53 -smp 4 -m 128M 
-	KERNEL_OBJ = core.o hal.o util.o trace.o cli_minimal.o kernel_globals.o cpu_arm64.o hal_qemu_arm64.o
-	OBJ = $(KERNEL_OBJ) 
-else ifeq ($(TARGET),riscv64)
-	CC = riscv64-linux-gnu-g++
-	AS = riscv64-linux-gnu-gcc
-	LD = riscv64-linux-gnu-g++
-	OBJCOPY = riscv64-linux-gnu-objcopy
-	CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -march=rv64imafdc -mabi=lp64 -std=c++20 -I. -fno-PIE -Woverloaded-virtual -g3
-	ASFLAGS = -march=rv64imafdc -mabi=lp64 -g3
-	LDFLAGS = -T ld/linker_rv64ima.ld -no-pie -nostartfiles -Wl,--no-relax -L/usr/riscv64-linux-gnu/lib -L/usr/lib/riscv64-linux-gnu -lc -lgcc -lstdc++
-	QEMU_SYSTEM = qemu-system-riscv64
-	QEMU_ARGS = -M virt -cpu rv64 -smp 4 -m 128M 
-	KERNEL_OBJ = core.o hal.o util.o trace.o cli_minimal.o kernel_globals.o cpu_rv64.o hal_qemu_rv64ima.o
-	OBJ = $(KERNEL_OBJ)
+    CC = aarch64-linux-gnu-g++
+    AS = aarch64-linux-gnu-gcc
+    LD = aarch64-linux-gnu-g++
+    OBJCOPY = aarch64-linux-gnu-objcopy
+
+    # -ffreestanding implies that standard includes and libraries are not available
+    # Use -O2 and -g3 for debug builds.
+    CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -mcpu=cortex-a53 -march=armv8-a+simd -std=c++20 -I. -fno-PIE -Woverloaded-virtual -g3 -ffreestanding
+    ASFLAGS = -mcpu=cortex-a53 -march=armv8-a -g3
+
+    # -nostartfiles and -nostdlib prevent linking system startup files and standard C++ library, respectively.
+    # -lgcc provides compiler support functions (e.g., for 64-bit division, atomic ops).
+    # -latomic is used to ensure all atomic operation functionality exists
+    LDFLAGS = -T ld/linker_arm64.ld -nostartfiles -Wl,--no-relax -nostdlib -lgcc -latomic
+
+    QEMU_SYSTEM = qemu-system-aarch64
+    QEMU_ARGS = -M virt -cpu cortex-a53 -smp 4 -m 128M -nographic -kernel
+
+    KERNEL_OBJ = core.o hal.o util.o trace.o cli_minimal.o kernel_globals.o cpu_arm64.o hal_qemu_arm64.o cpp_runtime_stubs.o freestanding_stubs.o
+    OBJ = $(KERNEL_OBJ)
+
 else
-	$(error Invalid TARGET: use 'arm64' or 'riscv64')
+	$(error Invalid TARGET: use 'arm64')
 endif
 
 TARGET_ELF_NAME = miniOS_kernel.elf
-QEMU_KERNEL_OPT = -kernel 
+QEMU_KERNEL_OPT = -kernel
+
+# Chardev/Serial settings - Used to redirect serial output
+SERIAL_LOG_FILE = serial_core0.log # File where the serial output will be logged
 QEMU_SERIAL_CHARDEV = -chardev file,id=serial_chardev,path=$(SERIAL_LOG_FILE)
-QEMU_SERIAL_OPTS = -serial chardev:serial_chardev 
-QEMU_DISPLAY_OPTS = -nographic 
+QEMU_SERIAL_OPTS = -serial chardev:serial_chardev # Tell QEMU to use the defined chardev for the serial port.
+QEMU_DISPLAY_OPTS = -nographic # Sets to headless.
 QEMU_NET_ARGS = -netdev user,id=net0 -device virtio-net-device,netdev=net0
-GDB_SCRIPT_FILE = gdb_init.gdb 
+
+# GDB Settings
+DEBUG_PORT = 1234
+GDB_SCRIPT_FILE = gdb_init.gdb
 
 all: $(TARGET_ELF_NAME)
 	@echo "Build complete. ELF file: $(TARGET_ELF_NAME)"
@@ -47,7 +50,7 @@ all: $(TARGET_ELF_NAME)
 kernel: $(TARGET_ELF_NAME)
 
 $(TARGET_ELF_NAME): $(KERNEL_OBJ)
-	$(LD) $(LDFLAGS) -o $@ $^
+	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJ)
 
 %.o: %.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -66,26 +69,26 @@ run: $(TARGET_ELF_NAME)
 		$(QEMU_SERIAL_CHARDEV) $(QEMU_SERIAL_OPTS) \
 		$(QEMU_DISPLAY_OPTS) $(QEMU_NET_ARGS)
 
-.ONESHELL:
+# Use a .ONESHELL:
 debug: $(TARGET_ELF_NAME)
-	@echo "IMPORTANT: Manual QEMU cleanup might be needed if old instances are running on port $(DEBUG_PORT)."
-	@echo "           You can try: pkill -f \"$(QEMU_SYSTEM)\" or check processes manually."
-	@echo "           Serial output from kernel will be logged to: $(SERIAL_LOG_FILE)"
-	@rm -f $(SERIAL_LOG_FILE) 
-	
+	@echo "Cleaning up old QEMU instances for target $(TARGET)..."
+	@-pkill -f "$(QEMU_SYSTEM)" 2>/dev/null || true
+	@echo "Serial output from kernel will be logged to: $(SERIAL_LOG_FILE)"
+	@rm -f $(SERIAL_LOG_FILE)
+
 	@echo "Starting QEMU for debugging $(TARGET_ELF_NAME) on port $(DEBUG_PORT)..."
 	$(QEMU_SYSTEM) $(QEMU_ARGS) $(QEMU_KERNEL_OPT) $< \
 		-S -gdb tcp::$(DEBUG_PORT) \
 		$(QEMU_SERIAL_CHARDEV) $(QEMU_SERIAL_OPTS) \
 		$(QEMU_DISPLAY_OPTS) $(QEMU_NET_ARGS) &
-	echo $$! > qemu.pid 
-	
-	@echo "QEMU started (PID `cat qemu.pid`). Waiting for GDB connection (3s)..."; 
-	sleep 3; 
-	
+	echo $$! > qemu.pid
+
+	@echo "QEMU started (PID `cat qemu.pid`). Waiting for GDB connection (3s)...";
+	sleep 3;
+
 	@echo "Starting GDB with script $(GDB_SCRIPT_FILE) and connecting to localhost:$(DEBUG_PORT)..."
 	gdb-multiarch $< -x $(GDB_SCRIPT_FILE)
-	
+
 	@echo "GDB session ended."
 	if [ -f qemu.pid ]; then \
 		QEMU_PID_VAL=`cat qemu.pid`; \
