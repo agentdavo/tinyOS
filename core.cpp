@@ -5,7 +5,7 @@
  */
 
 #include "core.hpp"
-#include "hal.hpp"      
+#include "hal.hpp"    
 #include "util.hpp"
 #include "trace.hpp"    
 #include "miniOS.hpp"   
@@ -13,10 +13,10 @@
 #include <cstring>      
 #include <algorithm>    
 #include <limits>       
-#include <atomic>       
+#include <atomic> 
+#include <cstddef>
 
 namespace kernel {
-
 namespace core {
 
 alignas(64) uint8_t g_software_timer_obj_pool_mem[MAX_SOFTWARE_TIMERS * sizeof(kernel::hal::timer::SoftwareTimer)];
@@ -24,7 +24,7 @@ FixedMemoryPool g_software_timer_obj_pool;
 std::array<TraceEntry, TRACE_BUFFER_SIZE> g_trace_buffer;
 std::array<std::atomic<size_t>, MAX_CORES> g_trace_overflow_count{}; 
 alignas(16) std::array<std::array<uint8_t, DEFAULT_STACK_SIZE>, MAX_THREADS> g_task_stacks;
-std::array<TCB, MAX_THREADS> g_task_tcbs;
+std::array<TCB, MAX_THREADS> g_task_tfds;
 alignas(64) std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
 uint32_t Spinlock::next_lock_id_ = 0;
 
@@ -156,12 +156,12 @@ TCB* Scheduler::create_thread(void (*fn)(void*), const void* arg, int prio, int 
     if (num_active_tasks_.load(std::memory_order_relaxed) >= MAX_THREADS) return nullptr;
     size_t tcb_idx = MAX_THREADS;
     for (size_t i = 0; i < MAX_THREADS; ++i) {
-        if (g_task_tcbs[i].state == TCB::State::INACTIVE || g_task_tcbs[i].state == TCB::State::ZOMBIE) {
+        if (g_task_tfds[i].state == TCB::State::INACTIVE || g_task_tfds[i].state == TCB::State::ZOMBIE) {
             tcb_idx = i; break;
         }
     }
     if (tcb_idx == MAX_THREADS) return nullptr;
-    TCB& tcb = g_task_tcbs[tcb_idx];
+    TCB& tcb = g_task_tfds[tcb_idx];
     kernel::util::kmemset(&tcb, 0, sizeof(TCB));
     tcb.entry_point = fn; tcb.arg_ptr = const_cast<void*>(arg);
     tcb.priority = (prio >= 0 && static_cast<size_t>(prio) < MAX_PRIORITY_LEVELS) ? prio : 0;
@@ -388,12 +388,30 @@ void get_kernel_stats(hal::UARTDriverOps* uart_ops) {
 }
 
 extern "C" void kernel_main() {
-    g_platform = hal::get_platform(); 
-    if (!g_platform) { for(;;); return; }
-    g_platform->early_init_platform(); 
+	
+    early_uart_puts("[DEBUG] Entering kernel_main\n");
+    g_platform = hal::get_platform();
+    early_uart_puts("[DEBUG] Got platform\n");
+    if (!g_platform) {
+        early_uart_puts("[DEBUG] Null platform, halting\n");
+        for(;;);
+        return;
+    }
+    early_uart_puts("[DEBUG] g_platform address: ");
+    char addr_buf[20];
+    kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "0x%llx\n", (unsigned long long)g_platform);
+    early_uart_puts(addr_buf);
+    // Log vtable pointer
+    early_uart_puts("[DEBUG] g_platform vtable address: ");
+    kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "0x%llx\n", *(unsigned long long*)g_platform);
+    early_uart_puts(addr_buf);
+    early_uart_puts("[DEBUG] Calling early_init_platform\n");
+    g_platform->early_init_platform();
+    early_uart_puts("[DEBUG] early_init_platform done\n");
     static core::Scheduler scheduler_instance;
     scheduler_instance.set_policy(new core::EDFPolicy());
     g_scheduler_ptr = &scheduler_instance;
+
     if (!core::g_software_timer_obj_pool.init(core::g_software_timer_obj_pool_mem, 
                                               core::MAX_SOFTWARE_TIMERS,
                                               sizeof(hal::timer::SoftwareTimer), 
@@ -420,12 +438,20 @@ extern "C" void kernel_main() {
     if (g_platform->get_core_id() == 0) { // Only core 0 enables its IRQs here.
          asm volatile("msr daifclr, #2"); // Enable IRQs (clear PSTATE.I bit)
     }
-	// THIS IS LINE 424
+	// THIS IS LINE 423
     // kernel_main returns to _start assembly. 
     // _start currently has a .L_kernel_halt loop.
     // For actual scheduling to begin on core 0, _start must be modified to:
     // 1. Load context of g_per_cpu_data[0].idle_thread (or current_thread if set by scheduler_start)
     // 2. Perform an 'eret' to start that first task.
-}
-
+	
+} // namespace core
 } // namespace kernel
+
+// Define kernel_g_per_cpu_data to alias g_per_cpu_data for C linkage
+extern "C" kernel::core::PerCPUData kernel_g_per_cpu_data[4] = {
+    kernel::core::g_per_cpu_data[0],
+    kernel::core::g_per_cpu_data[1],
+    kernel::core::g_per_cpu_data[2],
+    kernel::core::g_per_cpu_data[3]
+};

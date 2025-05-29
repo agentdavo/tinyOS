@@ -15,18 +15,32 @@
 #endif
 #include <arm_neon.h>
 
+void early_uart_puts(const char* str); // Declaration for core.hpp
+
 static void early_uart_putc(char c) {
     while ((*reinterpret_cast<volatile uint32_t*>(hal::qemu_virt_arm64::UART_BASE + 0x18)) & (1 << 5)) {}
     *reinterpret_cast<volatile uint32_t*>(hal::qemu_virt_arm64::UART_BASE + 0x00) = static_cast<uint32_t>(c);
 }
 
-static void early_uart_puts(const char* str) {
+void early_uart_puts(const char* str) {
     if (!str) return;
     while (*str) {
         if (*str == '\n') early_uart_putc('\r'); 
         early_uart_putc(*str++);
     }
 }
+
+namespace hal::qemu_virt_arm64 {
+static PlatformQEMUVirtARM64 g_platform_instance;
+} // namespace hal::qemu_virt_arm64
+
+namespace hal {
+kernel::hal::Platform* get_platform() {
+    early_uart_puts("[DEBUG] Entering get_platform\n");
+    early_uart_puts("[DEBUG] Returning platform instance\n");
+    return &qemu_virt_arm64::g_platform_instance;
+}
+} // namespace hal
 
 namespace hal::qemu_virt_arm64 {
 
@@ -211,7 +225,11 @@ void TimerDriver::hardware_timer_irq_fired(uint32_t core_id) {
 }
 
 // --- DMAController (Stub) ---
-DMAController::DMAController() { channels_in_use_.fill(false); }
+DMAController::DMAController() { 
+    early_uart_puts("[DEBUG] DMAController CONSTRUCTOR ENTRY\n");
+    channels_in_use_.fill(false);
+    early_uart_puts("[DEBUG] DMAController CONSTRUCTOR EXIT\n");
+}
 kernel::hal::dma::ChannelID DMAController::request_channel() {
     kernel::core::ScopedLock lock(dma_lock_);
     for (size_t i = 0; i < channels_in_use_.size(); ++i) {
@@ -380,9 +398,34 @@ bool WatchdogDriver::stop_watchdog() {
 }
 
 // --- PlatformQEMUVirtARM64 ---
-PlatformQEMUVirtARM64::PlatformQEMUVirtARM64() {
-    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR\n");
+PlatformQEMUVirtARM64::PlatformQEMUVirtARM64() :
+    uart_driver_(),
+    irq_controller_(),
+    timer_driver_(),
+    dma_controller_(),
+    i2s_driver_(),
+    memory_ops_(),
+    network_driver_(),
+    power_ops_(),
+    gpio_driver_(),
+    watchdog_driver_()
+{
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR ENTRY\n");
+    unsigned long long vtable_addr = *(unsigned long long*)this;
+    char addr_buf[20];
+    kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "[HAL_DEBUG] Constructor vtable: 0x%llx\n", vtable_addr);
+    early_uart_puts(addr_buf);
+    if (vtable_addr == 0) {
+        early_uart_puts("[HAL_DEBUG] ERROR: Null vtable in constructor\n");
+    }
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR: Members initialized\n");
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR EXIT\n");
 }
+
+PlatformQEMUVirtARM64::~PlatformQEMUVirtARM64() {
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 DESTRUCTOR\n");
+}
+
 uint32_t PlatformQEMUVirtARM64::get_core_id() const {
     uint64_t mpidr;
     asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
@@ -391,20 +434,26 @@ uint32_t PlatformQEMUVirtARM64::get_core_id() const {
 uint32_t PlatformQEMUVirtARM64::get_num_cores() const { return kernel::core::MAX_CORES; }
 
 void PlatformQEMUVirtARM64::early_init_platform() {
+    // Log vtable address
+    unsigned long long vtable_addr = *(unsigned long long*)this;
+    char addr_buf[20];
+    kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "[HAL_DEBUG] early_init_platform vtable: 0x%llx\n", vtable_addr);
+    early_uart_puts(addr_buf);
     early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_platform() ENTRY\n");
-    early_uart_puts("[HAL_DEBUG] Calling irq_controller_.init_distributor()...\n");
+    early_uart_puts("[HAL_DEBUG] Preparing to call irq_controller_.init_distributor()\n");
     irq_controller_.init_distributor();
-    early_uart_puts("[HAL_DEBUG] Returned from irq_controller_.init_distributor().\n");
-    early_uart_puts("[HAL_DEBUG] Calling timer_driver_.init_system_timer_properties()...\n");
+    early_uart_puts("[HAL_DEBUG] Returned from irq_controller_.init_distributor()\n");
+    early_uart_puts("[HAL_DEBUG] Calling timer_driver_.init_system_timer_properties()\n");
     timer_driver_.init_system_timer_properties(); 
-    early_uart_puts("[HAL_DEBUG] Returned from timer_driver_.init_system_timer_properties().\n");
+    early_uart_puts("[HAL_DEBUG] Returned from timer_driver_.init_system_timer_properties()\n");
     if (kernel::g_platform && kernel::g_platform->get_uart_ops() == &uart_driver_) {
-        uart_driver_.puts("[miniOS HAL] QEMU ARM64 Platform Early Init Done (via object).\n");
+        uart_driver_.puts("[miniOS HAL] QEMU ARM64 Platform Early Init Done (via object)\n");
     } else { 
-        early_uart_puts("[miniOS HAL] QEMU ARM64 Platform Early Init Done (via early_uart).\n");
+        early_uart_puts("[miniOS HAL] QEMU ARM64 Platform Early Init Done (via early_uart)\n");
     }
     early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_platform() EXIT\n");
 }
+
 void PlatformQEMUVirtARM64::early_init_core(uint32_t core_id) { 
     char buf[80]; 
     kernel::util::k_snprintf(buf, sizeof(buf), "[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_core(%u) ENTRY\n", core_id);
@@ -435,9 +484,6 @@ void PlatformQEMUVirtARM64::early_init_core(uint32_t core_id) {
     kernel::util::k_snprintf(line_buf, sizeof(line_buf), ":%d", line); 
     early_uart_puts(line_buf);
     early_uart_puts("\nCore: ");
-    // uint32_t core_val = get_core_id(); 
-    // char core_char = (core_val % 10) + '0'; 
-    // early_uart_putc(core_char);
     early_uart_puts("\nHalting.\n");
     while (true) { asm volatile("wfi"); }
 }

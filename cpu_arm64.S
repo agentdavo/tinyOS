@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
 /**
  * @file cpu_arm64.S
  * @brief ARM64 CPU specific assembly functions for miniOS v1.7.
@@ -20,22 +20,38 @@
     .align 11 
 .global exception_vectors 
 exception_vectors:
-    b       unhandled_exception_sp0_sync; .align 7 
-    b       unhandled_exception_sp0_irq;  .align 7
-    b       unhandled_exception_sp0_fiq;  .align 7
-    b       unhandled_exception_sp0_serror; .align 7
-    b       unhandled_exception_spx_sync; .align 7
-    b       current_el_spx_irq_entry; .align 7 
-    b       unhandled_exception_spx_fiq;  .align 7
-    b       unhandled_exception_spx_serror; .align 7
-    b       unhandled_exception_lower_a64_sync; .align 7
-    b       unhandled_exception_lower_a64_irq;  .align 7
-    b       unhandled_exception_lower_a64_fiq;  .align 7
-    b       unhandled_exception_lower_a64_serror; .align 7
-    b       unhandled_exception_lower_a32_sync; .align 7
-    b       unhandled_exception_lower_a32_irq;  .align 7
-    b       unhandled_exception_lower_a32_fiq;  .align 7
-    b       unhandled_exception_lower_a32_serror; .align 7
+    b       unhandled_exception_sp0_sync
+    .align 7 
+    b       unhandled_exception_sp0_irq
+    .align 7
+    b       unhandled_exception_sp0_fiq
+    .align 7
+    b       unhandled_exception_sp0_serror
+    .align 7
+    b       unhandled_exception_spx_sync
+    .align 7
+    b       current_el_spx_irq_entry
+    .align 7 
+    b       unhandled_exception_spx_fiq
+    .align 7
+    b       unhandled_exception_spx_serror
+    .align 7
+    b       unhandled_exception_lower_a64_sync
+    .align 7
+    b       unhandled_exception_lower_a64_irq
+    .align 7
+    b       unhandled_exception_lower_a64_fiq
+    .align 7
+    b       unhandled_exception_lower_a64_serror
+    .align 7
+    b       unhandled_exception_lower_a32_sync
+    .align 7
+    b       unhandled_exception_lower_a32_irq
+    .align 7
+    b       unhandled_exception_lower_a32_fiq
+    .align 7
+    b       unhandled_exception_lower_a32_serror
+    .align 7
 
     .section .text.boot, "ax", %progbits
     .global _start  
@@ -45,20 +61,23 @@ _start:
 
     ldr     x1, =_stacks_start          
     mov     x2, #STACK_SIZE_ASM         
-    mul     x3, x0, x2                  
-    add     x1, x1, x3                  
-    add     x1, x1, x2                  
-    mov     sp, x1                      
+    mul     x3, x0, x2                  // x3 = core_id * STACK_SIZE_ASM
+    add     x1, x1, x3                  // x1 = _stacks_start + offset
+    add     x1, x1, x2                  // x1 = stack top for this core
+    mov     sp, x1                      // Set stack pointer
 
     // DEBUG: Output 'A' after setting stack
     stp     x0, x1, [sp, #-16]!
     mov     x19, x0         // Save original x0 (core_id)
     ldr     x0, =UART_BASE
     mov     w1, #'A'
-.L_uart_A_wait:  ldr w2, [x0, #UARTFR]; tst w2, #UART_TXFF; b.ne .L_uart_A_wait
+.L_uart_A_wait:  
+    ldr     w2, [x0, #UARTFR]
+    tst     w2, #UART_TXFF
+    b.ne    .L_uart_A_wait
     str     w1, [x0, #UARTDR]
     mov     x0, x19         // Restore original x0
-    ldp     x19, x1, [sp], #16 // Restore x1 (x19 was just used as temp for original x0)
+    ldp     x19, x1, [sp], #16 
 
     cbz     x0, .L_primary_core_continue_setup 
 
@@ -73,7 +92,10 @@ _start:
     mov     x19, x0
     ldr     x0, =UART_BASE
     mov     w1, #'B'
-.L_uart_B_wait:  ldr w2, [x0, #UARTFR]; tst w2, #UART_TXFF; b.ne .L_uart_B_wait
+.L_uart_B_wait:  
+    ldr     w2, [x0, #UARTFR]
+    tst     w2, #UART_TXFF
+    b.ne    .L_uart_B_wait
     str     w1, [x0, #UARTDR]
     mov     x0, x19
     ldp     x19, x1, [sp], #16
@@ -82,30 +104,23 @@ _start:
     msr     vbar_el1, x0
     isb 
 
-    // *** ENABLE NEON/SIMD ACCESS for EL1 BEFORE C++ CONSTRUCTORS ***
-    // CPACR_EL1.FPEN (bits [21:20]):
-    // 00: Trap EL0 and EL1 accesses to EL1 (or EL2 if active)
-    // 01: Trap EL0 accesses to EL1. EL1 accesses enabled.
-    // 10: Trap EL0 and EL1 accesses to EL1 (or EL2 if active)
-    // 11: Enable EL0 and EL1 access (no trap).
-    // We want 0b11 if tasks might run in EL0, or 0b01 if only EL1 uses NEON.
-    // For kernel static initializers running in EL1, 0b01 is sufficient.
-    // For general safety and if EL0 tasks might use NEON later, 0b11 is better.
+    // ENABLE NEON/SIMD ACCESS for EL1 BEFORE C++ CONSTRUCTORS
     mrs     x0, cpacr_el1
     orr     x0, x0, #(3 << 20)    // Set FPEN to 0b11
     msr     cpacr_el1, x0
     isb                           // Synchronize context changes
-    // ESB is an older instruction synchronization barrier, ISB is preferred for AArch64.
-    // After msr to system register, an ISB is good practice.
 
     // DEBUG: Output 'C' before calling constructors
-    stp     x0, x1, [sp, #-16]! // x0 is clobbered by UART, x1 is scratch
-    mov     x19, x0             // Save current x0 if needed after UART
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0             
     ldr     x0, =UART_BASE
     mov     w1, #'C'
-.L_uart_C_wait:  ldr w2, [x0, #UARTFR]; tst w2, #UART_TXFF; b.ne .L_uart_C_wait
+.L_uart_C_wait:  
+    ldr     w2, [x0, #UARTFR]
+    tst     w2, #UART_TXFF
+    b.ne    .L_uart_C_wait
     str     w1, [x0, #UARTDR]
-    mov     x0, x19             // Restore original x0 (if it was important)
+    mov     x0, x19             
     ldp     x19, x1, [sp], #16
 
     bl      call_constructors 
@@ -115,7 +130,10 @@ _start:
     mov     x19, x0
     ldr     x0, =UART_BASE
     mov     w1, #'E'
-.L_uart_E_wait:  ldr w2, [x0, #UARTFR]; tst w2, #UART_TXFF; b.ne .L_uart_E_wait
+.L_uart_E_wait:  
+    ldr     w2, [x0, #UARTFR]
+    tst     w2, #UART_TXFF
+    b.ne    .L_uart_E_wait
     str     w1, [x0, #UARTDR]
     mov     x0, x19
     ldp     x19, x1, [sp], #16
@@ -134,12 +152,49 @@ _start:
     mov     x19, x0
     ldr     x0, =UART_BASE
     mov     w1, #'F'
-.L_uart_F_wait:  ldr w2, [x0, #UARTFR]; tst w2, #UART_TXFF; b.ne .L_uart_F_wait
+.L_uart_F_wait:  
+    ldr     w2, [x0, #UARTFR]
+    tst     w2, #UART_TXFF
+    b.ne    .L_uart_F_wait
     str     w1, [x0, #UARTDR]
     mov     x0, x19
     ldp     x19, x1, [sp], #16
 
-    bl      kernel_main // Line 142
+    bl      kernel_main
+
+    // After kernel_main, load initial thread context for core 0
+    ldr     x0, =kernel_g_per_cpu_data  // Address of kernel::core::g_per_cpu_data
+    ldr     x1, [x0, #0]                // Load g_per_cpu_data[0].current_thread (TCB*)
+    cbz     x1, .L_kernel_halt          // If null, halt
+
+    // Restore thread context from TCB
+    add     x2, x1, #TCB_SP_OFFSET      // Offset to sp in TCB
+    ldr     x3, [x2]                    // Load sp
+    mov     sp, x3                      // Set stack pointer
+    add     x2, x2, #8                  // Offset to pc
+    ldr     x3, [x2]                    // Load pc
+    add     x2, x2, #8                  // Offset to pstate
+    ldr     x4, [x2]                    // Load pstate
+    msr     spsr_el1, x4                // Set SPSR_EL1 (pstate)
+    mov     x30, x3                     // Set LR to pc (eret will use this)
+    // Restore registers x0-x30
+    ldp     x0, x1, [x1, #TCB_REGS_X0_OFFSET]
+    ldp     x2, x3, [x1, #TCB_REGS_X0_OFFSET + 16]
+    ldp     x4, x5, [x1, #TCB_REGS_X0_OFFSET + 32]
+    ldp     x6, x7, [x1, #TCB_REGS_X0_OFFSET + 48]
+    ldp     x8, x9, [x1, #TCB_REGS_X0_OFFSET + 64]
+    ldp     x10, x11, [x1, #TCB_REGS_X0_OFFSET + 80]
+    ldp     x12, x13, [x1, #TCB_REGS_X0_OFFSET + 96]
+    ldp     x14, x15, [x1, #TCB_REGS_X0_OFFSET + 112]
+    ldp     x16, x17, [x1, #TCB_REGS_X0_OFFSET + 128]
+    ldp     x18, x19, [x1, #TCB_REGS_X0_OFFSET + 144]
+    ldp     x20, x21, [x1, #TCB_REGS_X0_OFFSET + 160]
+    ldp     x22, x23, [x1, #TCB_REGS_X0_OFFSET + 176]
+    ldp     x24, x25, [x1, #TCB_REGS_X0_OFFSET + 192]
+    ldp     x26, x27, [x1, #TCB_REGS_X0_OFFSET + 208]
+    ldp     x28, x29, [x1, #TCB_REGS_X0_OFFSET + 224]
+    ldr     x30, [x1, #TCB_REGS_X30_OFFSET]  // Restore x30 (LR)
+    eret                                // Switch to thread context
 
 .L_kernel_halt:
     wfi
@@ -153,13 +208,13 @@ call_constructors:
     mov     x19, lr         
     ldr     x0, =__init_array_start 
     ldr     x1, =__init_array_end   
-.L_init_loop: // Line 156
+.L_init_loop:
     cmp     x0, x1          
     b.ge    .L_init_done    
     ldr     x2, [x0], #8    
     cbz     x2, .L_init_loop 
     blr     x2              
-    b       .L_init_loop    // Line 162
+    b       .L_init_loop    
 .L_init_done:
     mov     lr, x19         
     ret                     
@@ -200,12 +255,15 @@ current_el_spx_irq_entry:
     add     sp, sp, #176                            
     eret                                            
 
-unhandled_exception_loop: // Line 139 in your GDB 'list' output
+unhandled_exception_loop:
     stp     x0, x1, [sp, #-16]!
     mov     x19, x0
     ldr     x0, =UART_BASE
     mov     w1, #'Z'
-.L_uart_Z_wait:  ldr w2, [x0, #UARTFR]; tst w2, #UART_TXFF; b.ne .L_uart_Z_wait
+.L_uart_Z_wait:  
+    ldr     w2, [x0, #UARTFR]
+    tst     w2, #UART_TXFF
+    b.ne    .L_uart_Z_wait
     str     w1, [x0, #UARTDR]
     mov     x0, x19
     ldp     x19, x1, [sp], #16
@@ -217,7 +275,7 @@ unhandled_exception_sp0_sync:   b unhandled_exception_loop
 unhandled_exception_sp0_irq:    b unhandled_exception_loop
 unhandled_exception_sp0_fiq:    b unhandled_exception_loop
 unhandled_exception_sp0_serror: b unhandled_exception_loop
-unhandled_exception_spx_sync:   b unhandled_exception_loop // Line 147 in GDB
+unhandled_exception_spx_sync:   b unhandled_exception_loop
 unhandled_exception_spx_fiq:    b unhandled_exception_loop
 unhandled_exception_spx_serror: b unhandled_exception_loop
 unhandled_exception_lower_a64_sync: b unhandled_exception_loop
@@ -231,4 +289,62 @@ unhandled_exception_lower_a32_serror:b unhandled_exception_loop
 
 .global cpu_context_switch_impl
 cpu_context_switch_impl:
-    ret
+    // x0 = old_tcb, x1 = new_tcb
+    // If old_tcb is null (x0 == 0), skip saving context
+    cbz     x0, .L_restore_new_context
+
+    // Save old TCB context
+    // Save x0-x30
+    stp     x0, x1, [x0, #TCB_REGS_X0_OFFSET]
+    stp     x2, x3, [x0, #TCB_REGS_X0_OFFSET + 16]
+    stp     x4, x5, [x0, #TCB_REGS_X0_OFFSET + 32]
+    stp     x6, x7, [x0, #TCB_REGS_X0_OFFSET + 48]
+    stp     x8, x9, [x0, #TCB_REGS_X0_OFFSET + 64]
+    stp     x10, x11, [x0, #TCB_REGS_X0_OFFSET + 80]
+    stp     x12, x13, [x0, #TCB_REGS_X0_OFFSET + 96]
+    stp     x14, x15, [x0, #TCB_REGS_X0_OFFSET + 112]
+    stp     x16, x17, [x0, #TCB_REGS_X0_OFFSET + 128]
+    stp     x18, x19, [x0, #TCB_REGS_X0_OFFSET + 144]
+    stp     x20, x21, [x0, #TCB_REGS_X0_OFFSET + 160]
+    stp     x22, x23, [x0, #TCB_REGS_X0_OFFSET + 176]
+    stp     x24, x25, [x0, #TCB_REGS_X0_OFFSET + 192]
+    stp     x26, x27, [x0, #TCB_REGS_X0_OFFSET + 208]
+    stp     x28, x29, [x0, #TCB_REGS_X0_OFFSET + 224]
+    str     x30, [x0, #TCB_REGS_X30_OFFSET]
+    // Save SP
+    mov     x2, sp
+    str     x2, [x0, #TCB_SP_OFFSET]
+    // Save PC (use caller’s LR as PC)
+    str     x30, [x0, #TCB_PC_OFFSET]
+    // Save PSTATE (SPSR_EL1)
+    mrs     x2, spsr_el1
+    str     x2, [x0, #TCB_PSTATE_OFFSET]
+
+.L_restore_new_context:
+    // Restore new TCB context
+    // Load SP
+    ldr     x2, [x1, #TCB_SP_OFFSET]
+    mov     sp, x2
+    // Load PC into x30
+    ldr     x3, [x1, #TCB_PC_OFFSET]
+    // Load PSTATE
+    ldr     x4, [x1, #TCB_PSTATE_OFFSET]
+    msr     spsr_el1, x4
+    // Load x0-x30
+    ldp     x0, x2, [x1, #TCB_REGS_X0_OFFSET]  // Load x0, x2 (x1 will be loaded later)
+    ldp     x4, x5, [x1, #TCB_REGS_X0_OFFSET + 16]
+    ldp     x6, x7, [x1, #TCB_REGS_X0_OFFSET + 32]
+    ldp     x8, x9, [x1, #TCB_REGS_X0_OFFSET + 48]
+    ldp     x10, x11, [x1, #TCB_REGS_X0_OFFSET + 64]
+    ldp     x12, x13, [x1, #TCB_REGS_X0_OFFSET + 80]
+    ldp     x14, x15, [x1, #TCB_REGS_X0_OFFSET + 96]
+    ldp     x16, x17, [x1, #TCB_REGS_X0_OFFSET + 112]
+    ldp     x18, x19, [x1, #TCB_REGS_X0_OFFSET + 128]
+    ldp     x20, x21, [x1, #TCB_REGS_X0_OFFSET + 144]
+    ldp     x22, x23, [x1, #TCB_REGS_X0_OFFSET + 160]
+    ldp     x24, x25, [x1, #TCB_REGS_X0_OFFSET + 176]
+    ldp     x26, x27, [x1, #TCB_REGS_X0_OFFSET + 192]
+    ldp     x28, x29, [x1, #TCB_REGS_X0_OFFSET + 208]
+    ldp     x1, x30, [x1, #TCB_REGS_X0_OFFSET + 224]  // Load x1, x30
+    mov     x30, x3  // Set LR to PC
+    eret

@@ -37,6 +37,8 @@ constexpr size_t MAX_LOCKS = 32;
 constexpr size_t NET_MAX_PACKET_SIZE = 1500; 
 constexpr size_t MAX_AUDIO_CHANNELS = 2; 
 
+// Forward declarations
+struct PerCPUData; // Forward declaration
 
 class Spinlock {
     std::atomic<bool> lock_flag_{false};
@@ -139,6 +141,9 @@ struct PerCPUData {
     TCB* idle_thread = nullptr;    
 };
 
+// Declare g_per_cpu_data after PerCPUData definition
+alignas(64) extern std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
+
 class SchedulerPolicy {
 public:
     virtual ~SchedulerPolicy() = default;
@@ -182,5 +187,12 @@ private:
 
 } // namespace core
 } // namespace kernel
+
+// Expose g_per_cpu_data with C linkage for assembly access
+extern "C" {
+    extern kernel::core::PerCPUData kernel_g_per_cpu_data[4];
+}
+
+extern "C" void early_uart_puts(const char* str);
 
 #endif // CORE_HPP

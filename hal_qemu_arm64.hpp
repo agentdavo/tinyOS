@@ -35,9 +35,12 @@ constexpr uint32_t IRQ_RTC_PL031 = 34;
 constexpr uint32_t IRQ_VIRTIO_NET = 35;
 constexpr uint32_t IRQ_GPIO_EXAMPLE = 36;
 
-
 class UARTDriver : public kernel::hal::UARTDriverOps {
 public:
+    UARTDriver() {
+        early_uart_puts("[DEBUG] UARTDriver CONSTRUCTOR ENTRY\n");
+        early_uart_puts("[DEBUG] UARTDriver CONSTRUCTOR EXIT\n");
+    }
     void putc(char c) override;
     void puts(const char* str) override;
     void uart_put_uint64_hex(uint64_t value) override;
@@ -49,6 +52,10 @@ private:
 
 class IRQController : public kernel::hal::IRQControllerOps {
 public:
+    IRQController() {
+        early_uart_puts("[DEBUG] IRQController CONSTRUCTOR ENTRY\n");
+        early_uart_puts("[DEBUG] IRQController CONSTRUCTOR EXIT\n");
+    }
     void enable_core_irqs(uint32_t core_id, uint32_t irq_source_mask) override;
     void disable_core_irqs(uint32_t core_id) override;
     void init_distributor() override;
@@ -96,6 +103,10 @@ private:
 
 class I2SDriver : public kernel::hal::I2SDriverOps {
 public:
+    I2SDriver() {
+        early_uart_puts("[DEBUG] I2SDriver CONSTRUCTOR ENTRY\n");
+        early_uart_puts("[DEBUG] I2SDriver CONSTRUCTOR EXIT\n");
+    }
     bool init(uint32_t instance_id, kernel::hal::i2s::Mode mode, const kernel::hal::i2s::Format& format,
               size_t samples_per_block, uint8_t num_buffers, kernel::hal::i2s::I2SCallback cb,
               void* user_data) override;
@@ -120,33 +131,45 @@ private:
 
 class MemoryOps : public kernel::hal::MemoryOps {
 public:
+    MemoryOps() {
+        early_uart_puts("[DEBUG] MemoryOps CONSTRUCTOR ENTRY\n");
+        early_uart_puts("[DEBUG] MemoryOps CONSTRUCTOR EXIT\n");
+    }
     void flush_cache_range(const void* addr, size_t size) override;
     void invalidate_cache_range(const void* addr, size_t size) override;
 };
 
 class NetworkDriver : public kernel::hal::net::NetworkDriverOps {
 public:
-    // Constructor initializes members
-    NetworkDriver() : packet_received_cb_(nullptr), cb_context_(nullptr), initialized_(false) {}
+    NetworkDriver() : packet_received_cb_(nullptr), cb_context_(nullptr), initialized_(false) {
+        early_uart_puts("[DEBUG] NetworkDriver CONSTRUCTOR ENTRY\n");
+        early_uart_puts("[DEBUG] NetworkDriver CONSTRUCTOR EXIT\n");
+    }
     bool init_interface(int if_idx) override;
     bool send_packet(int if_idx, const uint8_t* data, size_t len) override;
-    // Ensure this signature EXACTLY matches the base class version
     void register_packet_receiver(kernel::hal::net::PacketReceivedCallback cb, void* context) override;
 private:
-    // Ensure this type EXACTLY matches the type used in the function parameter above
-    kernel::hal::net::PacketReceivedCallback packet_received_cb_;
-    void* cb_context_;
-    bool initialized_;
+    kernel::hal::net::PacketReceivedCallback packet_received_cb_ = nullptr;
+    void* cb_context_ = nullptr;
+    bool initialized_ = false;
 };
 
 class PowerOps : public kernel::hal::PowerOps {
 public:
+    PowerOps() {
+        early_uart_puts("[DEBUG] PowerOps CONSTRUCTOR ENTRY\n");
+        early_uart_puts("[DEBUG] PowerOps CONSTRUCTOR EXIT\n");
+    }
     void enter_idle_state(uint32_t core_id) override;
     bool set_cpu_frequency(uint32_t core_id, uint32_t freq_hz) override;
 };
 
 class GPIODriver : public kernel::hal::gpio::GPIODriverOps {
 public:
+    GPIODriver() {
+        early_uart_puts("[DEBUG] GPIODriver CONSTRUCTOR ENTRY\n");
+        early_uart_puts("[DEBUG] GPIODriver CONSTRUCTOR EXIT\n");
+    }
     bool init_bank(uint32_t bank_id) override;
     bool configure_pin(uint32_t bank, uint32_t pin, kernel::hal::gpio::PinMode mode) override;
     bool set_pin_state(uint32_t bank, uint32_t pin, kernel::hal::gpio::PinState state) override;
@@ -156,6 +179,10 @@ public:
 
 class WatchdogDriver : public kernel::hal::WatchdogOps {
 public:
+    WatchdogDriver() {
+        early_uart_puts("[DEBUG] WatchdogDriver CONSTRUCTOR ENTRY\n");
+        early_uart_puts("[DEBUG] WatchdogDriver CONSTRUCTOR EXIT\n");
+    }
     bool start_watchdog(uint32_t timeout_ms) override;
     bool reset_watchdog() override;
     bool stop_watchdog() override;
@@ -164,6 +191,7 @@ public:
 class PlatformQEMUVirtARM64 : public kernel::hal::Platform {
 public:
     PlatformQEMUVirtARM64();
+    virtual ~PlatformQEMUVirtARM64(); // Declare, define in .cpp
     uint32_t get_core_id() const override;
     uint32_t get_num_cores() const override;
     void early_init_platform() override;
@@ -187,7 +215,7 @@ private:
     DMAController dma_controller_;
     I2SDriver i2s_driver_;
     MemoryOps memory_ops_;
-    NetworkDriver network_driver_; // This instantiation was problematic
+    NetworkDriver network_driver_;
     PowerOps power_ops_;
     GPIODriver gpio_driver_;
     WatchdogDriver watchdog_driver_;
