@@ -59,7 +59,7 @@ public:
             if (!result) ++failures;
         }
         char buf[32];
-        std::snprintf(buf, sizeof(buf), "\nTests completed: %u passed, %u failed\n",
+        kernel::util::k_snprintf(buf, sizeof(buf), "\nTests completed: %u passed, %u failed\n",
                       static_cast<unsigned>(tests_.size() - failures), static_cast<unsigned>(failures));
         uart_ops->puts(buf);
         return failures;

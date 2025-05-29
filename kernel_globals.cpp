@@ -29,7 +29,7 @@ void configure_memory_protection(core::TCB* tcb, bool enable_for_task) {
     // Example logging (only if platform and UART are up)
     // if (g_platform && g_platform->get_uart_ops()) {
     //     char buf[128];
-    //     std::snprintf(buf, sizeof(buf), "MemProtect: %s for TCB:%p Name:'%s'\n",
+    //     kernel::util::k_snprintf(buf, sizeof(buf), "MemProtect: %s for TCB:%p Name:'%s'\n",
     //                   enable_for_task ? "ON" : "OFF",
     //                   (void*)tcb,
     //                   (tcb && tcb->name[0] != '\0') ? tcb->name : "N/A");

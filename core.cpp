@@ -342,10 +342,10 @@ void dump_trace_buffer(hal::UARTDriverOps* uart_ops) {
         const core::TraceEntry& entry = core::g_trace_buffer[i];
         if (entry.event_str) {
             char buf[128];
-            std::snprintf(buf, sizeof(buf), "[LTraceC%u] %llu us: %s", entry.core_id, (unsigned long long)entry.timestamp_us, entry.event_str);
+            kernel::util::k_snprintf(buf, sizeof(buf), "[LTraceC%u] %llu us: %s", entry.core_id, (unsigned long long)entry.timestamp_us, entry.event_str);
             uart_ops->puts(buf);
             if (entry.arg1 != 0 || entry.arg2 != 0) {
-                 std::snprintf(buf, sizeof(buf), ", args: 0x%llx, 0x%llx", 
+                 kernel::util::k_snprintf(buf, sizeof(buf), ", args: 0x%llx, 0x%llx", 
                     static_cast<unsigned long long>(entry.arg1), static_cast<unsigned long long>(entry.arg2));
                  uart_ops->puts(buf);
             }
@@ -356,7 +356,7 @@ void dump_trace_buffer(hal::UARTDriverOps* uart_ops) {
     for (uint32_t i = 0; i < core::MAX_CORES; ++i) {
         size_t overflows = core::g_trace_overflow_count[i].load(std::memory_order_relaxed);
         if (overflows > 0) {
-            char buf[64]; std::snprintf(buf, sizeof(buf), "Core %u legacy trace overflow count: %zu\n", i, overflows);
+            char buf[64]; kernel::util::k_snprintf(buf, sizeof(buf), "Core %u legacy trace overflow count: %zu\n", i, overflows);
             uart_ops->puts(buf);
         }
     }
@@ -365,21 +365,21 @@ void get_kernel_stats(hal::UARTDriverOps* uart_ops) {
     if (!uart_ops || !g_scheduler_ptr) return; 
     core::ScopedLock lock(g_scheduler_ptr->get_global_scheduler_lock()); 
     char buf[128];
-    std::snprintf(buf, sizeof(buf), "\n--- Kernel Stats ---\nActive tasks: %zu\n", g_scheduler_ptr->get_num_active_tasks()); 
+    kernel::util::k_snprintf(buf, sizeof(buf), "\n--- Kernel Stats ---\nActive tasks: %zu\n", g_scheduler_ptr->get_num_active_tasks()); 
     uart_ops->puts(buf);
     for (uint32_t core_idx = 0; core_idx < core::MAX_CORES; ++core_idx) {
         if (core_idx < core::g_per_cpu_data.size()) { 
             const core::PerCPUData& cpu_data = core::g_per_cpu_data[core_idx];
             if (cpu_data.current_thread) {
-                std::snprintf(buf, sizeof(buf), "Core %u: Running Task='%s' (TCB:%p, Prio:%d, Deadline:%lluus)\n",
+                kernel::util::k_snprintf(buf, sizeof(buf), "Core %u: Running Task='%s' (TCB:%p, Prio:%d, Deadline:%lluus)\n",
                               core_idx, cpu_data.current_thread->name, (void*)cpu_data.current_thread,
                               cpu_data.current_thread->priority, (unsigned long long)cpu_data.current_thread->deadline_us);
                 uart_ops->puts(buf);
             } else {
-                std::snprintf(buf, sizeof(buf), "Core %u: No current task assigned.\n", core_idx); uart_ops->puts(buf);
+                kernel::util::k_snprintf(buf, sizeof(buf), "Core %u: No current task assigned.\n", core_idx); uart_ops->puts(buf);
             }
              if (cpu_data.idle_thread) {
-                std::snprintf(buf, sizeof(buf), "Core %u: Idle Task='%s' (TCB:%p)\n",
+                kernel::util::k_snprintf(buf, sizeof(buf), "Core %u: Idle Task='%s' (TCB:%p)\n",
                               core_idx, cpu_data.idle_thread->name, (void*)cpu_data.idle_thread);
                 uart_ops->puts(buf);
             }
@@ -406,7 +406,7 @@ extern "C" void kernel_main() {
 
     for (uint32_t i = 0; i < g_platform->get_num_cores(); ++i) {
         char idle_name[core::MAX_NAME_LENGTH];
-        std::snprintf(idle_name, sizeof(idle_name), "idle%u", i);
+        kernel::util::k_snprintf(idle_name, sizeof(idle_name), "idle%u", i);
         if (!g_scheduler_ptr->create_thread(&core::Scheduler::idle_thread_func, 
                 reinterpret_cast<void*>(static_cast<uintptr_t>(i)), 0, static_cast<int>(i), idle_name, true, 0)) {
             g_platform->panic("Failed to create idle thread", __FILE__, __LINE__); return;

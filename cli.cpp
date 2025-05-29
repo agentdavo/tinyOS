@@ -138,7 +138,7 @@ int cli_gpio_read(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
 
     kernel::hal::gpio::PinState state = kernel::g_gpio_manager.read_pin(static_cast<uint32_t>(bank), static_cast<uint32_t>(pin));
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "GPIO %d:%d = %s\n", bank, pin, state == kernel::hal::gpio::PinState::HIGH ? "HIGH" : "LOW");
+    kernel::util::k_snprintf(buf, sizeof(buf), "GPIO %d:%d = %s\n", bank, pin, state == kernel::hal::gpio::PinState::HIGH ? "HIGH" : "LOW");
     uart_ops->puts(buf);
     return 0;
 }
@@ -361,7 +361,7 @@ int cli_net_listen_udp_command(const char* args, kernel::hal::UARTDriverOps* uar
     int sock_idx = kernel::g_net_manager.create_udp_socket(net::IPv4Addr{0}, static_cast<uint16_t>(port));
     if (sock_idx >= 0) {
         char buf[32];
-        std::snprintf(buf, sizeof(buf), "UDP socket %d listening on port %d\n", sock_idx, port);
+        kernel::util::k_snprintf(buf, sizeof(buf), "UDP socket %d listening on port %d\n", sock_idx, port);
         uart_ops->puts(buf);
         return 0;
     }

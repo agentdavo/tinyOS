@@ -270,7 +270,7 @@ Scheduler::Scheduler() : policy_(nullptr) {
 
     for (uint32_t i = 0; i < MAX_CORES; ++i) {
         char idle_name[MAX_NAME_LENGTH];
-        std::snprintf(idle_name, MAX_NAME_LENGTH, "IdleCore%u", i);
+        kernel::util::k_snprintf(idle_name, MAX_NAME_LENGTH, "IdleCore%u", i);
         auto* tcb = create_thread(idle_thread_func, reinterpret_cast<void*>(static_cast<uintptr_t>(i)), 
                                   0, static_cast<int>(i), idle_name, true);
         if (!tcb) {
@@ -539,17 +539,17 @@ void get_kernel_stats(hal::UARTDriverOps* uart_ops) {
     char buffer[128]; 
 
     uart_ops->puts("Kernel Statistics:\n");
-    std::snprintf(buffer, sizeof(buffer), "  Active Threads: %zu\n", g_scheduler_ptr->get_num_active_tasks());
+    kernel::util::k_snprintf(buffer, sizeof(buffer), "  Active Threads: %zu\n", g_scheduler_ptr->get_num_active_tasks());
     uart_ops->puts(buffer);
 
     for (uint32_t core = 0; core < MAX_CORES; ++core) { 
         if (core < g_per_cpu_data.size() && g_per_cpu_data[core].current_thread) {
-             std::snprintf(buffer, sizeof(buffer), "  Core %u: Running '%s' (prio %d)\n", 
+             kernel::util::k_snprintf(buffer, sizeof(buffer), "  Core %u: Running '%s' (prio %d)\n", 
                            core, 
                            g_per_cpu_data[core].current_thread->name,
                            g_per_cpu_data[core].current_thread->priority);
         } else {
-             std::snprintf(buffer, sizeof(buffer), "  Core %u: (idle or no thread info)\n", core);
+             kernel::util::k_snprintf(buffer, sizeof(buffer), "  Core %u: (idle or no thread info)\n", core);
         }
         uart_ops->puts(buffer);
     }
@@ -615,7 +615,7 @@ void dump_trace_buffer(hal::UARTDriverOps* uart_ops) {
         size_t idx_to_read = (start_idx_read + i) % TRACE_BUFFER_SIZE;
         const TraceEntry& entry = g_trace_buffer[idx_to_read];
         if (entry.event_str) { 
-            std::snprintf(buffer, sizeof(buffer), "T:%llu C:%u EVT:%s A1:0x%lx A2:0x%lx\n",
+            kernel::util::k_snprintf(buffer, sizeof(buffer), "T:%llu C:%u EVT:%s A1:0x%lx A2:0x%lx\n",
                           static_cast<unsigned long long>(entry.timestamp_us),
                           entry.core_id,
                           entry.event_str,
@@ -636,7 +636,7 @@ void dump_trace_buffer(hal::UARTDriverOps* uart_ops) {
     for (uint32_t i = 0; i < MAX_CORES; ++i) {
         size_t overflows = g_trace_overflow_count[i].load(std::memory_order_relaxed);
         if (overflows > 0) {
-            std::snprintf(buffer, sizeof(buffer), "Core %u Overflows: %zu\n", i, overflows);
+            kernel::util::k_snprintf(buffer, sizeof(buffer), "Core %u Overflows: %zu\n", i, overflows);
             uart_ops->puts(buffer);
         }
     }
@@ -730,7 +730,7 @@ extern "C" void kernel_main() {
         #endif
         if (g_platform->get_uart_ops()) {
             char msg_buf[64];
-            std::snprintf(msg_buf, sizeof(msg_buf), "[miniOS v1.7] Core %u Initialized\n", core_id);
+            kernel::util::k_snprintf(msg_buf, sizeof(msg_buf), "[miniOS v1.7] Core %u Initialized\n", core_id);
             g_platform->get_uart_ops()->puts(msg_buf);
         }
     }
@@ -774,7 +774,7 @@ extern "C" void hal_irq_handler(uint32_t /*irq_id_from_vector*/) { // Marked unu
         trace_event("IRQ:Unhandled", actual_irq_id, core_id);
         if (g_platform->get_uart_ops()) {
             char buffer[64];
-            std::snprintf(buffer, sizeof(buffer), "Unhandled IRQ: %u on Core %u\n", actual_irq_id, core_id);
+            kernel::util::k_snprintf(buffer, sizeof(buffer), "Unhandled IRQ: %u on Core %u\n", actual_irq_id, core_id);
             g_platform->get_uart_ops()->puts(buffer);
         }
     }

@@ -19,8 +19,8 @@
 
 #include "fs.hpp"
 #include "util.hpp" // For kernel::util::safe_strcpy, kernel::util::memcpy
-#include <cstring>   // For std::strcmp, std::snprintf (used by list_files)
-#include <cstdio>    // For std::snprintf
+#include <cstring>   // For std::strcmp, kernel::util::k_snprintf (used by list_files)
+#include <cstdio>    // For kernel::util::k_snprintf
 #include <algorithm> // For std::min, std::remove_if, std::move
 
 // Global file system instance definition is in miniOS.cpp (kernel::g_file_system)
@@ -330,12 +330,12 @@ bool FileSystem::list_files(std::string_view path, kernel::hal::UARTDriverOps* u
 
             char buf[40]; 
             if (!entries_[i].is_directory) {
-                std::snprintf(buf, sizeof(buf), " [%zu bytes]", entries_[i].size);
+                kernel::util::k_snprintf(buf, sizeof(buf), " [%zu bytes]", entries_[i].size);
                 uart_ops->puts(buf);
             }
 
             uint8_t p = static_cast<uint8_t>(entries_[i].permissions);
-            std::snprintf(buf, sizeof(buf), " (perm: %c%c%c)",
+            kernel::util::k_snprintf(buf, sizeof(buf), " (perm: %c%c%c)",
                           (p & static_cast<uint8_t>(Permissions::READ)) ? 'r' : '-',
                           (p & static_cast<uint8_t>(Permissions::WRITE)) ? 'w' : '-',
                           (p & static_cast<uint8_t>(Permissions::EXECUTE)) ? 'x' : '-');

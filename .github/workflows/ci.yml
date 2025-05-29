@@ -66,25 +66,49 @@ jobs:
           grep ".text.*0x40000000" section_mappings.txt
           grep ".data.*0x40100000" section_mappings.txt
 
-      - name: Run tests in QEMU (${{ matrix.arch }})
+      - name: Run tests in QEMU (arm64)
+        if: matrix.arch == 'arm64'
         run: |
-          timeout 60s sh -c 'echo -e "test\n" | ${{ matrix.arch == "arm64" && "qemu-system-aarch64 -M virt -cpu cortex-a53 -smp 4 -m 128M -nographic -kernel miniOS_kernel.elf" || "qemu-system-riscv64 -M virt -cpu rv64 -smp 4 -m 128M -nographic -kernel miniOS_kernel.elf" }}' > test_output.txt 2>&1 || true
+          timeout 60s sh -c 'echo -e "test\n" | qemu-system-aarch64 -M virt -cpu cortex-a53 -smp 4 -m 128M -nographic -kernel miniOS_kernel.elf' > test_output.txt 2>&1 || true
           cat test_output.txt
           grep "Tests completed:.*0 failed" test_output.txt || { echo "Tests failed or incomplete"; exit 1; }
 
-      - name: Debug with GDB (${{ matrix.arch }})
+      - name: Run tests in QEMU (riscv64)
+        if: matrix.arch == 'riscv64'
         run: |
-          echo "set architecture ${{ matrix.arch == 'arm64' && 'aarch64' || 'riscv:rv64' }}" > gdb_init_ci.gdb
+          timeout 60s sh -c 'echo -e "test\n" | qemu-system-riscv64 -M virt -cpu rv64 -smp 4 -m 128M -nographic -kernel miniOS_kernel.elf' > test_output.txt 2>&1 || true
+          cat test_output.txt
+          grep "Tests completed:.*0 failed" test_output.txt || { echo "Tests failed or incomplete"; exit 1; }
+
+      - name: Debug with GDB (arm64)
+        if: matrix.arch == 'arm64'
+        run: |
+          echo "set architecture aarch64" > gdb_init_ci.gdb
           echo "target remote localhost:1234" >> gdb_init_ci.gdb
           echo "break kernel_main" >> gdb_init_ci.gdb
           echo "continue" >> gdb_init_ci.gdb
           echo "quit" >> gdb_init_ci.gdb
-          timeout 60s sh -c '${{ matrix.arch == "arm64" && "qemu-system-aarch64 -M virt -cpu cortex-a53 -smp 4 -m 128M -nographic -kernel miniOS_kernel.elf -S -s" || "qemu-system-riscv64 -M virt -cpu rv64 -smp 4 -m 128M -nographic -kernel miniOS_kernel.elf -S -s" }}' > qemu_debug.txt 2>&1 &
+          timeout 60s sh -c 'qemu-system-aarch64 -M virt -cpu cortex-a53 -smp 4 -m 128M -nographic -kernel miniOS_kernel.elf -S -s' > qemu_debug.txt 2>&1 &
           sleep 5
           gdb-multiarch -q -x gdb_init_ci.gdb miniOS_kernel.elf > gdb_output.txt 2>&1
           cat gdb_output.txt
           grep "Breakpoint.*kernel_main" gdb_output.txt || { echo "GDB failed to hit kernel_main"; exit 1; }
-          pkill -f qemu-system || true
+          pkill -f qemu-system-aarch64 || true
+
+      - name: Debug with GDB (riscv64)
+        if: matrix.arch == 'riscv64'
+        run: |
+          echo "set architecture riscv:rv64" > gdb_init_ci.gdb
+          echo "target remote localhost:1234" >> gdb_init_ci.gdb
+          echo "break kernel_main" >> gdb_init_ci.gdb
+          echo "continue" >> gdb_init_ci.gdb
+          echo "quit" >> gdb_init_ci.gdb
+          timeout 60s sh -c 'qemu-system-riscv64 -M virt -cpu rv64 -smp 4 -m 128M -nographic -kernel miniOS_kernel.elf -S -s' > qemu_debug.txt 2>&1 &
+          sleep 5
+          gdb-multiarch -q -x gdb_init_ci.gdb miniOS_kernel.elf > gdb_output.txt 2>&1
+          cat gdb_output.txt
+          grep "Breakpoint.*kernel_main" gdb_output.txt || { echo "GDB failed to hit kernel_main"; exit 1; }
+          pkill -f qemu-system-riscv64 || true
 
       - name: Generate documentation
         run: doxygen Doxyfile

@@ -407,7 +407,7 @@ void PlatformQEMUVirtARM64::early_init_platform() {
 }
 void PlatformQEMUVirtARM64::early_init_core(uint32_t core_id) { 
     char buf[80]; 
-    std::snprintf(buf, sizeof(buf), "[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_core(%u) ENTRY\n", core_id);
+    kernel::util::k_snprintf(buf, sizeof(buf), "[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_core(%u) ENTRY\n", core_id);
     early_uart_puts(buf);
     irq_controller_.init_cpu_interface(core_id);
     timer_driver_.init_core_timer_interrupt(core_id);
@@ -416,13 +416,13 @@ void PlatformQEMUVirtARM64::early_init_core(uint32_t core_id) {
     cpacr_el1 |= (3ULL << 20); 
     asm volatile("msr cpacr_el1, %0" : : "r"(cpacr_el1));
     asm volatile("isb");
-    std::snprintf(buf, sizeof(buf), "[miniOS HAL] Core %u Early Init Done.\n", core_id);
+    kernel::util::k_snprintf(buf, sizeof(buf), "[miniOS HAL] Core %u Early Init Done.\n", core_id);
     if (kernel::g_platform && kernel::g_platform->get_uart_ops() == &uart_driver_) {
         uart_driver_.puts(buf);
     } else {
         early_uart_puts(buf);
     }
-    std::snprintf(buf, sizeof(buf), "[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_core(%u) EXIT\n", core_id);
+    kernel::util::k_snprintf(buf, sizeof(buf), "[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_core(%u) EXIT\n", core_id);
     early_uart_puts(buf);
 }
 
@@ -432,7 +432,7 @@ void PlatformQEMUVirtARM64::early_init_core(uint32_t core_id) {
     if (msg) { early_uart_puts("Message: "); early_uart_puts(msg); early_uart_puts("\n"); }
     if (file) { early_uart_puts("File: "); early_uart_puts(file); }
     char line_buf[16];
-    std::snprintf(line_buf, sizeof(line_buf), ":%d", line); 
+    kernel::util::k_snprintf(line_buf, sizeof(line_buf), ":%d", line); 
     early_uart_puts(line_buf);
     early_uart_puts("\nCore: ");
     // uint32_t core_val = get_core_id(); 

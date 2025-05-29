@@ -50,7 +50,7 @@ bool GPIOManager::init(kernel::hal::gpio::GPIODriverOps* ops) {
     // Create per-bank threads with 5ms deadline
     for (uint8_t i = 0; i < NUM_BANKS; ++i) {
         char name[16];
-        std::snprintf(name, sizeof(name), "GPIOBank%u", i);
+        kernel::util::k_snprintf(name, sizeof(name), "GPIOBank%u", i);
         bank_threads_[i] = kernel::g_scheduler_ptr->create_thread(bank_thread_entry,
                                                                  reinterpret_cast<void*>(static_cast<uintptr_t>(i)),
                                                                  6, -1, name, false, 5000);

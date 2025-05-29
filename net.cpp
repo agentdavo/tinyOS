@@ -138,24 +138,24 @@ void NetManager::list_sockets(kernel::hal::UARTDriverOps* uart_ops) const {
             found = true;
             char buf[32];
             uart_ops->puts("  Socket ");
-            std::snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(i));
+            kernel::util::k_snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(i));
             uart_ops->puts(buf);
             uart_ops->puts(": ");
             uart_ops->puts(sockets_[i].is_tcp ? "TCP" : "UDP");
             uart_ops->puts(", IP=");
             uint32_t ip = sockets_[i].local_ip.addr;
-            std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+            kernel::util::k_snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
                           (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
             uart_ops->puts(buf);
             uart_ops->puts(", Port=");
-            std::snprintf(buf, sizeof(buf), "%u", sockets_[i].local_port);
+            kernel::util::k_snprintf(buf, sizeof(buf), "%u", sockets_[i].local_port);
             uart_ops->puts(buf);
             uart_ops->puts(", Priority=");
-            std::snprintf(buf, sizeof(buf), "%u", sockets_[i].priority);
+            kernel::util::k_snprintf(buf, sizeof(buf), "%u", sockets_[i].priority);
             uart_ops->puts(buf);
             if (sockets_[i].jitter_buffer_size > 0) {
                 uart_ops->puts(", JitterBuffer=");
-                std::snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(sockets_[i].jitter_buffer_size));
+                kernel::util::k_snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(sockets_[i].jitter_buffer_size));
                 uart_ops->puts(buf);
                 uart_ops->puts(" packets");
             }

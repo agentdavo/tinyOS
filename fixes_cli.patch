@@ -8,7 +8,7 @@ index 9f299fc..29c3932 100644
  #include "gpio.hpp"   // For GPIO commands
 +#include "dsp.hpp"    // For DSP Node types (kernel::dsp::)
  #include <cstring>    // For std::sscanf, std::strlen, etc. (brought by util.hpp usually)
- #include <cstdio>     // For std::snprintf
+ #include <cstdio>     // For kernel::util::k_snprintf
  
 @@ -31,11 +32,19 @@
  namespace cli {

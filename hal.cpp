@@ -25,7 +25,7 @@ void cpu_context_switch(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb) 
     if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
          char b[128];
          uint32_t core_id_of_new = new_tcb ? new_tcb->cpu_id_running_on : static_cast<uint32_t>(-1);
-         std::snprintf(b, sizeof(b), "HAL_CTXSW: OLD TCB:%p(%s) -> NEW TCB:%p(%s) on Core:%u\n",
+         kernel::util::k_snprintf(b, sizeof(b), "HAL_CTXSW: OLD TCB:%p(%s) -> NEW TCB:%p(%s) on Core:%u\n",
             (void*)old_tcb, old_tcb ? old_tcb->name : "NULL",
             (void*)new_tcb, new_tcb ? new_tcb->name : "NULL",
             core_id_of_new

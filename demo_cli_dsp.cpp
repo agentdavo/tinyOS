@@ -178,7 +178,7 @@ private:
             return 1;
         }
         char config[64];
-        std::snprintf(config, sizeof(config), "sink %s %d %d", ip_str, port, channels);
+        kernel::util::k_snprintf(config, sizeof(config), "sink %s %d %d", ip_str, port, channels);
         if (!kernel::g_audio_system.get_dsp_graph().configure_node("netaudio", config, uart_ops)) {
             return 1;
         }

@@ -56,7 +56,7 @@ void TraceManager::dump_trace(kernel::hal::UARTDriverOps* uart_ops) const {
     for (size_t i = 0; i < std::min(buffer_idx_.load(std::memory_order_relaxed), MAX_TRACE_EVENTS); ++i) {
         const auto& event = buffer_[i];
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "%lu", event.timestamp_us);
+        kernel::util::k_snprintf(buf, sizeof(buf), "%lu", event.timestamp_us);
         uart_ops->puts("[Trace] ");
         uart_ops->puts(buf);
         uart_ops->puts(" us: ");
@@ -79,7 +79,7 @@ void TraceManager::dump_trace(kernel::hal::UARTDriverOps* uart_ops) const {
 
         if (event.value) {
             uart_ops->puts(", Value=");
-            std::snprintf(buf, sizeof(buf), "0x%lx", event.value);
+            kernel::util::k_snprintf(buf, sizeof(buf), "0x%lx", event.value);
             uart_ops->puts(buf);
         }
 

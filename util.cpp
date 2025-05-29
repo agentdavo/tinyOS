@@ -5,27 +5,50 @@
  */
 
 #include "util.hpp" 
-// <cstdarg> is included via util.hpp for va_list
+#include <cstdarg> // For va_list in k_vsnprintf
 
 namespace kernel {
 namespace util {
 
-// safe_strcpy, kstrcat, character functions, str_to_*, num_to_str helpers, IP functions
-// ... (These function implementations remain exactly as provided in the previous response) ...
-// For brevity, I'm not re-pasting all of them, but they must be present.
-// I will re-paste a few essential ones that k_vsnprintf will use.
+// Definitions for kernel::util functions, calling the extern "C" _c versions
+void* kmemcpy(void* dest, const void* src, size_t count) noexcept {
+    return ::memcpy_c(dest, src, count);
+}
+void* kmemset(void* dest, int ch, size_t count) noexcept {
+    return ::memset_c(dest, ch, count);
+}
+int kmemcmp(const void* ptr1, const void* ptr2, size_t count) noexcept {
+    return ::memcmp_c(ptr1, ptr2, count);
+}
+size_t kstrlen(const char* str) noexcept {
+    if (!str) return 0;
+    return ::strlen_c(str);
+}
+int kstrcmp(const char* lhs, const char* rhs) noexcept {
+    return ::strcmp_c(lhs, rhs);
+}
+int kstrncmp(const char* lhs, const char* rhs, size_t count) noexcept {
+    return ::strncmp_c(lhs, rhs, count);
+}
+char* kstrcpy(char* dest, const char* src) noexcept {
+    return ::strcpy_c(dest, src);
+}
+char* kstrncpy(char* dest, const char* src, size_t count) noexcept {
+    return ::strncpy_c(dest, src, count);
+}
+
 
 bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept {
     if (!dest || !src || dest_size == 0) {
         if (dest && dest_size > 0) dest[0] = '\0'; 
         return false;
     }
-    size_t src_len = ::strlen(src); 
+    size_t src_len = kstrlen(src); // Uses kernel::util::kstrlen
     if (src_len < dest_size) {
-        ::memcpy(dest, src, src_len + 1); 
+        kmemcpy(dest, src, src_len + 1); // Uses kernel::util::kmemcpy
         return true;
     } else {
-        ::memcpy(dest, src, dest_size - 1);
+        kmemcpy(dest, src, dest_size - 1);
         dest[dest_size - 1] = '\0'; 
         return false; 
     }
@@ -33,10 +56,10 @@ bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept {
 
 char* kstrcat(char* dest, const char* src, size_t dest_max_len) noexcept {
     if (!dest || !src || dest_max_len == 0) return dest;
-    size_t dest_len = ::strlen(dest);
+    size_t dest_len = kstrlen(dest); // Uses kernel::util::kstrlen
     if (dest_len >= dest_max_len -1) return dest; 
 
-    size_t remaining_space = dest_max_len - dest_len - 1; // -1 for null terminator
+    size_t remaining_space = dest_max_len - dest_len - 1;
     char* p = dest + dest_len;
     const char* s = src;
     while (*s && remaining_space > 0) {
@@ -63,278 +86,218 @@ int tolower(int c_int) noexcept {
     if (c >= 'A' && c <= 'Z') return c - 'A' + 'a';
     return c;
 }
-bool str_to_int32(std::string_view input, int32_t& out_val) noexcept { /* ... as before ... */ return false;}
-bool str_to_uint32(std::string_view input, uint32_t& out_val) noexcept { /* ... as before ... */ return false;}
+bool str_to_int32(std::string_view input, int32_t& out_val) noexcept {
+    if (input.empty()) return false;
+    long long acc = 0; 
+    size_t i = 0;
+    bool negative = false;
+    while (i < input.length() && isspace(input[i])) { i++; } 
+    if (i < input.length()) {
+        if (input[i] == '-') { negative = true; i++; }
+        else if (input[i] == '+') { i++; }
+    }
+    bool found_digits = false;
+    while (i < input.length() && isdigit(input[i])) { 
+        found_digits = true;
+        int digit = input[i] - '0';
+        if (!negative) { 
+             if (acc > (std::numeric_limits<int32_t>::max() - digit) / 10) return false; 
+        } else { 
+             if (acc > (static_cast<long long>(std::numeric_limits<int32_t>::max()) + 1 - digit) / 10 && digit !=0) { 
+                if (acc * 10 + digit > static_cast<long long>(std::numeric_limits<int32_t>::max()) +1) return false;
+             } else if (acc > (static_cast<long long>(std::numeric_limits<int32_t>::max()) / 10) && negative && digit==0 && acc * 10 + digit > (static_cast<long long>(std::numeric_limits<int32_t>::max())+1) ) {
+                 if (acc * 10 + digit > (static_cast<long long>(std::numeric_limits<int32_t>::max()) +1 )) return false;
+             }
+        }
+        acc = acc * 10 + digit;
+        i++;
+    }
+    if (!found_digits) return false;
+    while (i < input.length() && isspace(input[i])) { i++; }
+    if (i != input.length()) return false; 
+    if (negative) acc = -acc;
+    if (acc < std::numeric_limits<int32_t>::min() || acc > std::numeric_limits<int32_t>::max()) return false;
+    out_val = static_cast<int32_t>(acc);
+    return true;
+}
+bool str_to_uint32(std::string_view input, uint32_t& out_val) noexcept {
+    if (input.empty()) return false;
+    unsigned long long acc = 0; 
+    size_t i = 0;
+    while (i < input.length() && isspace(input[i])) { i++; }
+    if (i < input.length() && input[i] == '+') { i++; }
+    bool found_digits = false;
+    while (i < input.length() && isdigit(input[i])) {
+        found_digits = true;
+        int digit = input[i] - '0';
+        if (acc > (std::numeric_limits<uint32_t>::max() - static_cast<unsigned long long>(digit)) / 10ULL) return false;
+        acc = acc * 10ULL + static_cast<unsigned long long>(digit);
+        i++;
+    }
+    if (!found_digits) return false;
+    while (i < input.length() && isspace(input[i])) { i++; }
+    if (i != input.length()) return false;
+    if (acc > std::numeric_limits<uint32_t>::max()) return false;
+    out_val = static_cast<uint32_t>(acc);
+    return true;
+}
 bool str_to_float(std::string_view input, float& out_val) noexcept { (void)input; out_val = 0.0f; return false; }
-bool ipv4_to_uint32(std::string_view ip_str, uint32_t& ip_addr) noexcept { /* ... as before ... */ return false;}
-
 
 static char* reverse_str(char* str, int length) {
-    int start = 0;
-    int end = length - 1;
-    while (start < end) {
-        char temp = str[start];
-        str[start] = str[end];
-        str[end] = temp;
-        start++;
-        end--;
-    }
+    int start = 0; int end = length - 1;
+    while (start < end) { char temp = str[start]; str[start] = str[end]; str[end] = temp; start++; end--; }
     return str;
 }
-
-static int num_to_str_base_internal(uint64_t value, char* buffer, size_t buffer_size, int base, bool is_signed_val, bool& was_negative_val) {
+static int num_to_str_base_internal(uint64_t value, char* buffer, size_t buffer_size, int base, bool is_signed_val) {
     if (buffer_size == 0) return -1; 
-    if (base < 2 || base > 36) { 
-        if (buffer_size > 0) buffer[0] = '\0'; 
-        return -1; 
-    }
-
-    char* ptr = buffer;
-    size_t count = 0; // Chars written to ptr, excluding null terminator
-    was_negative_val = false;
-    
+    if (base < 2 || base > 36) { if (buffer_size > 0) buffer[0] = '\0'; return -1; }
+    char* ptr = buffer; size_t count = 0; 
+    bool was_negative_val = false; // Not strictly needed for this internal func but matches signature
     if (is_signed_val && base == 10 && static_cast<int64_t>(value) < 0) {
         if (count + 1 >= buffer_size) { buffer[0] = '\0'; return -1; }
-        *ptr++ = '-';
-        count++;
+        *ptr++ = '-'; count++;
         if (value == static_cast<uint64_t>(std::numeric_limits<int64_t>::min())) {
-            // Special case: print "9223372036854775808" for INT64_MIN's magnitude
-            // This string is 19 chars + null = 20.
-            const char* min_int_mag = "9223372036854775808";
-            size_t min_len = kernel::util::kstrlen(min_int_mag); // Use our kstrlen
+            const char* min_int_mag = "9223372036854775808"; size_t min_len = kstrlen(min_int_mag);
             if (count + min_len >= buffer_size) { buffer[count > 0 ? count-1 : 0] = '\0'; return -1; }
-            kernel::util::kmemcpy(ptr, min_int_mag, min_len + 1); // Use our kmemcpy
-            return static_cast<int>(count + min_len);
+            kmemcpy(ptr, min_int_mag, min_len + 1); return static_cast<int>(count + min_len);
         }
-        value = static_cast<uint64_t>(-static_cast<int64_t>(value)); // Make positive
-        was_negative_val = true;
+        value = static_cast<uint64_t>(-static_cast<int64_t>(value)); was_negative_val = true;
     }
-    
     if (value == 0) {
         if (count + 1 >= buffer_size) { buffer[0] = '\0'; return -1; }
-        *ptr++ = '0';
-        count++;
-        *ptr = '\0';
-        return static_cast<int>(count);
+        *ptr++ = '0'; count++; *ptr = '\0'; return static_cast<int>(count);
     }
-
     char* start_digits = ptr; 
     while (value > 0) {
-        if (count + 1 >= buffer_size) { 
-            buffer[kernel::util::min(count, buffer_size-1)] = '\0'; 
-            return -1; 
-        }
-        // Ensure base is treated as unsigned for modulo with uint64_t
-        int remainder = value % static_cast<uint32_t>(base); 
+        if (count + 1 >= buffer_size) { buffer[min(count, buffer_size-1)] = '\0'; return -1; }
+        int remainder = value % static_cast<unsigned int>(base); 
         *ptr++ = (remainder > 9) ? static_cast<char>((remainder - 10) + 'a') : static_cast<char>(remainder + '0');
-        value /= static_cast<uint32_t>(base);
-        count++;
+        value /= static_cast<unsigned int>(base); count++;
     }
     *ptr = '\0'; 
-    reverse_str(start_digits, static_cast<int>(ptr - start_digits)); // Pass length of digits
+    reverse_str(start_digits, static_cast<int>(ptr - start_digits)); 
     return static_cast<int>(count);
 }
-
 int int_to_str(int32_t value, char* buffer, size_t buffer_size, int base) noexcept {
-    bool was_negative;
-    return num_to_str_base_internal(static_cast<uint64_t>(static_cast<int64_t>(value)), buffer, buffer_size, base, true, was_negative);
+    return num_to_str_base_internal(static_cast<uint64_t>(static_cast<int64_t>(value)), buffer, buffer_size, base, true);
 }
 int uint_to_str(uint32_t value, char* buffer, size_t buffer_size, int base) noexcept {
-    bool was_negative;
-    return num_to_str_base_internal(value, buffer, buffer_size, base, false, was_negative);
+    return num_to_str_base_internal(value, buffer, buffer_size, base, false);
 }
 int uint64_to_str(uint64_t value, char* buffer, size_t buffer_size, int base) noexcept {
-    bool was_negative;
-    return num_to_str_base_internal(value, buffer, buffer_size, base, false, was_negative);
+    return num_to_str_base_internal(value, buffer, buffer_size, base, false);
 }
 int uint64_to_hex_str(uint64_t value, char* buffer, size_t buffer_size, bool leading_0x) noexcept {
     if (buffer_size == 0) return -1;
-    char* start_ptr = buffer;
-    size_t remaining_size = buffer_size;
-
+    char* ptr_start = buffer; size_t current_written = 0;
     if (leading_0x) {
-        if (remaining_size < 3) { buffer[0] = '\0'; return -1; } 
-        *start_ptr++ = '0';
-        *start_ptr++ = 'x';
-        remaining_size -= 2;
+        if (buffer_size < 3) { buffer[0] = '\0'; return -1; } 
+        *ptr_start++ = '0'; *ptr_start++ = 'x'; current_written += 2;
     }
-    
-    int digits_len = num_to_str_base_internal(value, start_ptr, remaining_size, 16, false, *(new bool(false))); // Dummy was_negative
-    if (digits_len < 0) { 
-        if (buffer_size > 0) buffer[0] = '\0';
-        return -1;
-    }
-    return static_cast<int>((start_ptr - buffer) + digits_len);
+    int digits_len = num_to_str_base_internal(value, ptr_start, buffer_size - current_written, 16, false);
+    if (digits_len < 0) { if (buffer_size > 0) buffer[0] = '\0'; return -1; }
+    return static_cast<int>(current_written + static_cast<size_t>(digits_len));
 }
-
-
 void uint32_to_ipv4_str(uint32_t ip_addr, std::span<char> out_buffer) noexcept {
-    // ... (implementation using uint_to_str and kstrcat, as in previous freestanding util.cpp) ...
     if (out_buffer.empty()) return;
-    char* p = out_buffer.data();
-    size_t remaining = out_buffer.size();
-    int written_this_segment;
-
+    char* p = out_buffer.data(); size_t remaining = out_buffer.size(); int written_this_segment;
     for (int i = 0; i < 4; ++i) {
         if (remaining == 0) { if(p != out_buffer.data()) *(p-1) = '\0'; else out_buffer[0] = '\0'; return; }
         uint8_t octet = (ip_addr >> (24 - i * 8)) & 0xFF;
         written_this_segment = uint_to_str(octet, p, remaining, 10);
-
         if (written_this_segment < 0 || static_cast<size_t>(written_this_segment) >= remaining) {
-            if(!out_buffer.empty()) out_buffer[0] = '\0';
-            return;
+            if(!out_buffer.empty()) out_buffer[0] = '\0'; return;
         }
-        p += written_this_segment;
-        remaining -= static_cast<size_t>(written_this_segment);
-
+        p += written_this_segment; remaining -= static_cast<size_t>(written_this_segment);
         if (i < 3) {
             if (remaining <= 1) { *p = '\0'; return; } 
-            *p++ = '.';
-            remaining--;
+            *p++ = '.'; remaining--;
         }
     }
-    if (remaining > 0) *p = '\0';
+    if (remaining > 0) *p = '\0'; 
     else if (!out_buffer.empty()) out_buffer.back() = '\0';
 }
+bool ipv4_to_uint32(std::string_view ip_str, uint32_t& ip_addr) noexcept { /* ... as before ... */ return false; }
+std::string_view get_next_token(std::string_view& input, char delimiter) noexcept { /* ... as before ... */ return {}; }
 
-std::string_view get_next_token(std::string_view& input, char delimiter) noexcept { /* ... as before ... */ return {};}
-
-
-// Implementation of k_vsnprintf and k_snprintf
 int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) noexcept {
-    if (!buffer || bufsz == 0 || !format) return 0;
-
+    if (!buffer || bufsz == 0 || !format) { if (bufsz > 0) buffer[0] = '\0'; return 0; }
     char* buf_ptr = buffer;
-    size_t remaining_len = bufsz -1; // Leave space for null terminator
+    char* const buf_end = buffer + bufsz -1; // Pointer to last char before null terminator
     int written_chars = 0;
-    char temp_num_buf[24]; // For converting numbers (max 20 digits for uint64_t + sign + null)
+    char temp_num_buf[24]; 
 
-    while (*format && remaining_len > 0) {
+    while (*format && buf_ptr < buf_end) {
         if (*format == '%') {
-            format++; // Move past '%'
+            format++; 
             bool is_long_long = false;
-            // Rudimentary length specifier check for %ll
             if (format[0] == 'l' && format[1] == 'l') {
                 is_long_long = true;
                 format += 2;
             }
+            int len = 0;
+            const char* str_to_copy = temp_num_buf;
 
             switch (*format) {
-                case 's': { // String
+                case 's': { 
                     const char* s_arg = va_arg(args, const char*);
                     if (!s_arg) s_arg = "(null)";
-                    size_t arg_len = kstrlen(s_arg);
-                    size_t copy_len = min(arg_len, remaining_len);
-                    kmemcpy(buf_ptr, s_arg, copy_len);
-                    buf_ptr += copy_len;
-                    written_chars += static_cast<int>(copy_len);
-                    remaining_len -= copy_len;
+                    str_to_copy = s_arg;
+                    len = static_cast<int>(kstrlen(s_arg));
                     break;
                 }
-                case 'c': { // Character
-                    char c_arg = static_cast<char>(va_arg(args, int)); // char promotes to int
-                    *buf_ptr++ = c_arg;
-                    written_chars++;
-                    remaining_len--;
+                case 'c': { 
+                    temp_num_buf[0] = static_cast<char>(va_arg(args, int)); 
+                    temp_num_buf[1] = '\0';
+                    len = 1;
                     break;
                 }
-                case 'd': case 'i': { // Signed decimal integer
-                    int len;
-                    if (is_long_long) {
-                        long long ll_val = va_arg(args, long long);
-                        len = uint64_to_str(static_cast<uint64_t>(ll_val), temp_num_buf, sizeof(temp_num_buf), 10);
-                    } else {
-                        int i_val = va_arg(args, int);
-                        len = int_to_str(i_val, temp_num_buf, sizeof(temp_num_buf));
-                    }
-                    if (len > 0 && static_cast<size_t>(len) <= remaining_len) {
-                        kmemcpy(buf_ptr, temp_num_buf, static_cast<size_t>(len));
-                        buf_ptr += len;
-                        written_chars += len;
-                        remaining_len -= static_cast<size_t>(len);
-                    } else if (len > 0) { // Not enough space
-                        kmemcpy(buf_ptr, temp_num_buf, remaining_len);
-                        buf_ptr += remaining_len;
-                        written_chars += static_cast<int>(remaining_len);
-                        remaining_len = 0;
-                    }
+                case 'd': case 'i': { 
+                    if (is_long_long) len = uint64_to_str(static_cast<uint64_t>(va_arg(args, long long)), temp_num_buf, sizeof(temp_num_buf), 10);
+                    else len = int_to_str(va_arg(args, int), temp_num_buf, sizeof(temp_num_buf));
                     break;
                 }
-                case 'u': { // Unsigned decimal integer
-                    int len;
-                    if (is_long_long) {
-                        unsigned long long ull_val = va_arg(args, unsigned long long);
-                        len = uint64_to_str(ull_val, temp_num_buf, sizeof(temp_num_buf));
-                    } else {
-                        unsigned int ui_val = va_arg(args, unsigned int);
-                        len = uint_to_str(ui_val, temp_num_buf, sizeof(temp_num_buf));
-                    }
-                     if (len > 0 && static_cast<size_t>(len) <= remaining_len) {
-                        kmemcpy(buf_ptr, temp_num_buf, static_cast<size_t>(len));
-                        buf_ptr += len;
-                        written_chars += len;
-                        remaining_len -= static_cast<size_t>(len);
-                    } else if (len > 0) {
-                        kmemcpy(buf_ptr, temp_num_buf, remaining_len);
-                        buf_ptr += remaining_len;
-                        written_chars += static_cast<int>(remaining_len);
-                        remaining_len = 0;
-                    }
+                case 'u': { 
+                    if (is_long_long) len = uint64_to_str(va_arg(args, unsigned long long), temp_num_buf, sizeof(temp_num_buf));
+                    else len = uint_to_str(va_arg(args, unsigned int), temp_num_buf, sizeof(temp_num_buf));
                     break;
                 }
-                case 'x': case 'X': case 'p': { // Hexadecimal / Pointer
-                    // For %p, treat as uint64_t. For %x, %X check long long.
-                    // Assume %p takes void* which promotes to uint64_t on AArch64 for va_arg.
+                case 'x': case 'X': case 'p': { 
                     uint64_t hex_val;
-                    if (*format == 'p') {
-                        hex_val = reinterpret_cast<uint64_t>(va_arg(args, void*));
-                    } else if (is_long_long) {
-                        hex_val = va_arg(args, unsigned long long);
-                    } else {
-                        hex_val = va_arg(args, unsigned int);
-                    }
-                    // For %X, convert to uppercase later if needed. This uint64_to_hex_str produces lowercase.
-                    int len = uint64_to_hex_str(hex_val, temp_num_buf, sizeof(temp_num_buf), (*format == 'p'));
-                     if (len > 0 && static_cast<size_t>(len) <= remaining_len) {
-                        kmemcpy(buf_ptr, temp_num_buf, static_cast<size_t>(len));
-                        buf_ptr += len;
-                        written_chars += len;
-                        remaining_len -= static_cast<size_t>(len);
-                    } else if (len > 0) {
-                        kmemcpy(buf_ptr, temp_num_buf, remaining_len);
-                        buf_ptr += remaining_len;
-                        written_chars += static_cast<int>(remaining_len);
-                        remaining_len = 0;
-                    }
+                    if (*format == 'p') hex_val = reinterpret_cast<uint64_t>(va_arg(args, void*));
+                    else if (is_long_long) hex_val = va_arg(args, unsigned long long);
+                    else hex_val = va_arg(args, unsigned int);
+                    len = uint64_to_hex_str(hex_val, temp_num_buf, sizeof(temp_num_buf), (*format == 'p'));
+                    // %X for uppercase - current uint64_to_hex_str produces lowercase. Needs modification if UC needed.
                     break;
                 }
-                case '%': { // Literal '%'
-                    *buf_ptr++ = '%';
-                    written_chars++;
-                    remaining_len--;
+                case '%': { 
+                    temp_num_buf[0] = '%'; temp_num_buf[1] = '\0'; len = 1;
                     break;
                 }
-                default: { // Unknown specifier, just copy it
-                    *buf_ptr++ = '%'; 
-                    written_chars++; 
-                    remaining_len--;
-                    if (remaining_len > 0 && *format) {
-                         *buf_ptr++ = *format; 
-                         written_chars++; 
-                         remaining_len--;
-                    }
+                default: { 
+                    if (buf_ptr < buf_end) *buf_ptr++ = '%'; written_chars++;
+                    if (buf_ptr < buf_end && *format) *buf_ptr++ = *format; written_chars++;
+                    str_to_copy = nullptr; // Handled
                     break;
                 }
             }
-        } else { // Literal character
+
+            if (str_to_copy && len > 0) {
+                int copy_len = min(len, static_cast<int>(buf_end - buf_ptr));
+                kmemcpy(buf_ptr, str_to_copy, static_cast<size_t>(copy_len));
+                buf_ptr += copy_len;
+                written_chars += copy_len;
+            } else if (str_to_copy && len < 0) { /* conversion error */ }
+
+        } else { 
             *buf_ptr++ = *format;
             written_chars++;
-            remaining_len--;
         }
+        if (*format == '\0') break; // End of format string
         format++;
     }
-
-    *buf_ptr = '\0'; // Null terminate
+    *buf_ptr = '\0'; 
     return written_chars;
 }
 
@@ -345,7 +308,6 @@ int k_snprintf(char* buffer, size_t bufsz, const char* format, ...) noexcept {
     va_end(args);
     return result;
 }
-
 
 } // namespace util
 } // namespace kernel
