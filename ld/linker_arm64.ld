@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
-/* Linker Script for miniOS ARM64 (Freestanding) */
+/* Linker Script for miniOS ARM64 QEMU virt - Final Segment Fix */
 
 ENTRY(_start) 
 
@@ -10,110 +10,126 @@ MEMORY
 
 PHDRS
 {
-    kernel_rx PT_LOAD FLAGS(5); /* Read, Execute */
-    kernel_rw PT_LOAD FLAGS(6); /* Read, Write */
+    text_segment PT_LOAD FLAGS(5); /* Read, Execute */
+    data_segment PT_LOAD FLAGS(6); /* Read, Write */
 }
+
+/* Define symbols for stack configuration, matching assembly usage */
+STACK_SIZE = 0x4000;
+NUM_CORES = 4;
 
 SECTIONS
 {
-    . = ORIGIN(RAM); 
+    /* === Segment 1: Code and Read-Only Data (text_segment PHDR) === */
+    . = ORIGIN(RAM); /* VMA for this segment starts at 0x40000000 */
     _kernel_start_vma = .;
-
-    /* ========================= Loadable TEXT Segment  =========================*/
+    
+    /* The .text output section will collect all input sections assigned to it.
+       It defines the content of the 'text_segment' program header. */
     .text : ALIGN(4K) 
     {
-        _text_section_start_vma = .;
-        KEEP(*(.vectors))       /* First */
-        KEEP(*(.text.boot))     /* _start is here */
-        *(.text .text.*)        /* All other code */
-        . = ALIGN(8);
-        *(.rodata .rodata.*)    /* Read-only data */
+        _text_output_section_start_vma = .;
+        KEEP(*(.vectors))    
+        KEEP(*(.text.boot))  
+        *(.text .text.*)     
         
-        /* C++ Global Constructors - Init Array */
+        . = ALIGN(8);
+        *(.rodata .rodata.*) 
+        
         . = ALIGN(8);
         PROVIDE_HIDDEN (__init_array_start = .);
         KEEP (*(SORT_BY_INIT_PRIORITY(.init_array.*) .init_array*))
         PROVIDE_HIDDEN (__init_array_end = .);
 
-        /* C++ Global Destructors */
-        . = ALIGN(8);
         PROVIDE_HIDDEN (__fini_array_start = .);
         KEEP (*(SORT_BY_INIT_PRIORITY(.fini_array.*) .fini_array*))
         PROVIDE_HIDDEN (__fini_array_end = .);
+
+        *(.glue_7)           
+        *(.glue_7t)
+        KEEP(*(.eh_frame_hdr)) /* eh_frame_hdr usually comes before eh_frame */
+        KEEP(*(.eh_frame))     
         
-        KEEP(*(.eh_frame_hdr)) /* Exception Handling - Unwind Info */
-        KEEP(*(.eh_frame))     /* Needed for exception handling even if -fno-exceptions is used. *Might* pull in libgcc if kept. */
-
-        /* Place GOT here if we are to force position independent code which is currently *NOT* happening */
         . = ALIGN(8);
-        *(.plt) *(.plt.*) /* .plt entries */
-        *(.rela.plt)       /* Relocations for PLT (if used) */
-       
+        *(.plt) *(.plt.*) 
+        
         . = ALIGN(8);
-        _text_end = .; /* Symbol for end of text segment */
-    } > RAM :kernel_rx_load
+        *(.gnu.version) 
+        *(.gnu.version_r)
+        *(.rela.dyn)    
+        *(.rela.plt)
 
-    _text_lma_end = LOADADDR(.text) + SIZEOF(.text); //End LMA of Text/ROData region (file)
+        . = ALIGN(8); 
+        _text_output_section_end_vma = .; /* End of VMA for all content in this output section */
+    } > RAM :text_segment 
+    _text_segment_lma_end = LOADADDR(.text) + SIZEOF(.text); /* End LMA of text_segment in ELF file */
 
-    /* === Segment 2: Read-Write Data (in RAM) === */
-	/* Start a data segment here. The loading memory address starts after _text_end. */
 
-    . = _text_output_section_end_vma; /* Continue VMA from where the text segment ended in memory*/
-    . = ALIGN(4K); /* Align VMA for beginning of the data segment */
-    _data_segment_start_vma = .;
+    /* === Segment 2: Read-Write Data (data_segment PHDR) === */
+    /* VMA for this segment must start aligned AFTER the previous segment's VMA extent. */
+    /* LMA for this segment must start AFTER the previous segment's LMA extent in the file. */
+    
+    . = _text_output_section_end_vma; /* VMA continues from where the .text output section ended in MEMORY */
+    . = ALIGN(4K);                    /* Align this VMA for the start of the data segment */
+    _data_segment_vma_start = .;      /* This VMA is used for the data_segment PHDR */
 
-    .data : AT(_text_segment_lma_end) /* LMA follows directly after .text segment */
+    /* The .data output section. Its VMA starts at _data_segment_vma_start. */
+    /* Its LMA starts after the file portion of the text_segment. */
+    .data : AT (_text_segment_lma_end) 
     {
-        _data_section_start_vma = .;
-        *(.data .data.*)    /* Initialized Data */
+        /* _data_section_start_vma = .; // This would be same as _data_segment_vma_start */
+        *(.data .data.*)    
+        
         . = ALIGN(8);
-        *(.got)              /* Ensure GOT is present */
-        *(.got.plt) /* Ensure PLT GOT if used for relocation is also present */
+        *(.got)       
+        *(.got.plt)   
+        
+        . = ALIGN(8);
+        *(.dynamic) /* If present */
 
         . = ALIGN(8);
-        *(.dynamic)          /* Dynamic linking data, if it exists */
-        . = ALIGN(8);
-        _data_section_end_vma = .; /* Symbol for end of the data section, aligned */
-    } > RAM :kernel_rw_load
-    _data_segment_size_in_file = SIZEOF(.data);
+        _data_section_end_vma = .; /* End of VMA for .data and explicitly placed RW sections */
+    } > RAM :data_segment 
+    /* _data_segment_size_in_file = SIZEOF(.data); // Size of .data output section in file */
 
 
-    /* === Segment 3: Stack Section (Allocated but not loaded). === */
-	/* Starts after .data; not part of program header as it’s just a reservation in memory. */
-    . = _data_section_end_vma; /* VMA Continue after .data  and all RW sections */
-    . = ALIGN(4K);       /* Aligh current offset */
-
-    .bss (NOLOAD) : {   /* BSS memory region for uninitialized data */
-        _bss_start = .;   /* Label BSS start - ASM file uses this */
-        *(.bss .bss.*)    /* All .bss */
-        *(COMMON)          /* All COMMON */
-        . = ALIGN(8);
-        _bss_end = .; /* BSS end - needed for init by ASM*/
-    } > RAM :kernel_rw_load /* BSS is part of the RW section - zero init */
-
-    _bss_size = _bss_end - _bss_start;     /* calculate size */
-
-	/* Stack memory region setup - No load, No PHDR, so no need to touch file offset, we leave it zero */
-    . = ALIGN(16);          // Now start the stack, and ensure 16 byte alignment for security
-    _stacks (NOLOAD) :   /* Each core is given its own stack, just stack area (64 KiB)*/
+    /* BSS section. VMA follows .data sections. NOLOAD. Part of data_segment PHDR for memory. */
+    /* Its VMA will be current '.', which is _data_section_end_vma, aligned up. */
+    . = _data_section_end_vma; /* Ensure BSS VMA follows data VMA */
+    . = ALIGN(4K); /* Align VMA for .bss if needed after .data block */
+    .bss (NOLOAD) : 
     {
-		_stacks_start = .;
-        . += (NUM_CORES * STACK_SIZE);
-		_stacks_end = .;  /* each core stack is STACK_SIZE big, stack section is that many long */
-    } > RAM
+        _bss_start = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        . = ALIGN(8);
+        _bss_end = .;
+    } > RAM :data_segment /* Also assign to data_segment PHDR */
+    _bss_size = _bss_end - _bss_start; 
 
-    _kernel_end = .;
 
-	/* Other sections - discard, keep, just need to exist or get thrown to oblivion */
-    /DISCARD/ : {
-        *(.comment)        /* discard .comment section */
-        *(.note*)          /* discard GNU notes */
-        *(.ARM.attributes)  /* discard ARM arch. attributes */
-        *(.interp)         /* discard dynamic linker section */
-        *(.dynsym)         /* Should be no dynamic symbols present */
-        *(.dynstr)         /* Should be no dynamic strings here */
-        *(.gnu.hash)       /* Should be no GNU hash section */
-        /* The relocation section will be discarded as well */
-        *(.rela.dyn)  	  /* Section for runtime relocations */
+    /* Stack section. VMA follows BSS. NOLOAD. */
+    . = _bss_end; /* Start stack VMA after BSS */
+    . = ALIGN(16); 
+    .stacks (NOLOAD) : 
+    {
+        _stacks_start = .; 
+        . = . + (STACK_SIZE * NUM_CORES);       
+        _stacks_end = .;    
+    } > RAM /* Not part of a PT_LOAD segment for file loading purposes */
+    
+    _kernel_image_end_vma = _stacks_end; 
+
+    /DISCARD/ :
+    {
+        *(.comment)
+        *(.note.gnu.build-id) 
+        *(.ARM.attributes)    
+        *(.interp) 
+        *(.dynsym)      
+        *(.dynstr)      
+        *(.gnu.hash)
+        /* .rela.dyn and .rela.plt are attempted to be placed in .text segment */
+        /* If they are not found by those wildcards, they will be discarded if not placed elsewhere */
     }
 }

@@ -5,7 +5,8 @@
  */
 
 #include "hal_qemu_arm64.hpp"
-#include "miniOS.hpp" 
+#include "miniOS.hpp"
+#include "util.hpp"
 #include <cstring>    
 #include <cstdio>     
 #include <algorithm>  

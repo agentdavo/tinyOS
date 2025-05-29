@@ -163,7 +163,7 @@ TCB* Scheduler::create_thread(void (*fn)(void*), const void* arg, int prio, int 
     }
     if (tcb_idx == MAX_THREADS) return nullptr;
     TCB& tcb = g_task_tcbs[tcb_idx];
-    kernel::util::memset(&tcb, 0, sizeof(TCB));
+    kernel::util::kmemset(&tcb, 0, sizeof(TCB));
     tcb.entry_point = fn; tcb.arg_ptr = const_cast<void*>(arg);
     tcb.priority = (prio >= 0 && static_cast<size_t>(prio) < MAX_PRIORITY_LEVELS) ? prio : 0;
     tcb.core_affinity = (affinity >= -1 && affinity < static_cast<int>(MAX_CORES)) ? affinity : -1;

@@ -18,7 +18,7 @@
  */
 
 #include "fs.hpp"
-#include "util.hpp" // For kernel::util::safe_strcpy, kernel::util::memcpy
+#include "util.hpp" // For kernel::util::safe_strcpy, kernel::util::kmemcpy
 #include <cstring>   // For std::strcmp, kernel::util::k_snprintf (used by list_files)
 #include <cstdio>    // For kernel::util::k_snprintf
 #include <algorithm> // For std::min, std::remove_if, std::move
@@ -214,7 +214,7 @@ size_t FileSystem::read_file(std::string_view path, void* buffer, size_t max_siz
 
     size_t bytes_to_read = std::min(entry_ptr->size, max_size);
     if (bytes_to_read > 0) {
-        kernel::util::memcpy(buffer, entry_ptr->data.data(), bytes_to_read);
+        kernel::util::kmemcpy(buffer, entry_ptr->data.data(), bytes_to_read);
     }
     return bytes_to_read;
 }

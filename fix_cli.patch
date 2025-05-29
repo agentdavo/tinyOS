@@ -13,15 +13,15 @@
  
                  // Add to history
                  if (history_count_ < MAX_HISTORY) {
--                    kernel::util::memcpy(command_history_[history_count_].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
-+                    ::kernel::util::memcpy(command_history_[history_count_].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
+-                    kernel::util::kmemcpy(command_history_[history_count_].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
++                    ::kernel::util::kmemcpy(command_history_[history_count_].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
                      history_count_++;
                  } else { 
                      for (size_t i = 1; i < MAX_HISTORY; ++i) {
                          command_history_[i - 1] = command_history_[i];
                      }
--                    kernel::util::memcpy(command_history_[MAX_HISTORY - 1].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
-+                    ::kernel::util::memcpy(command_history_[MAX_HISTORY - 1].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
+-                    kernel::util::kmemcpy(command_history_[MAX_HISTORY - 1].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
++                    ::kernel::util::kmemcpy(command_history_[MAX_HISTORY - 1].data(), cmd_buffer_.data(), cmd_buffer_idx_ + 1);
                  }
                  history_idx_ = history_count_; 
  
@@ -164,10 +164,10 @@
              p.dst_port = static_cast<uint16_t>(port);
 -            p.data_len = kernel::util::strlen(data_str);
 -            if (p.data_len > p.data.size()) p.data_len = p.data.size(); // Prevent overflow
--            kernel::util::memcpy(p.data.data(), data_str, p.data_len);
+-            kernel::util::kmemcpy(p.data.data(), data_str, p.data_len);
 +            p.data_len = ::kernel::util::strlen(data_str);
 +            if (p.data_len >= p.data.size()) p.data_len = p.data.size() -1; // Prevent overflow, leave room for null if C-string like
-+            ::kernel::util::memcpy(p.data.data(), data_str, p.data_len);
++            ::kernel::util::kmemcpy(p.data.data(), data_str, p.data_len);
              
              int sock_idx = kernel::g_net_manager.create_udp_socket(net::IPv4Addr{0}, 0); 
              if (sock_idx >= 0) {

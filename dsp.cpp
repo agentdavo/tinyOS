@@ -200,9 +200,9 @@ void MixerDSP::process(std::span<float> buffer) {
         }
     }
     if (samples_per_output_channel > 0) {
-        ::kernel::util::memcpy(buffer.data(), mixed_output.data(), samples_per_output_channel * sizeof(float));
+        ::kernel::util::kmemcpy(buffer.data(), mixed_output.data(), samples_per_output_channel * sizeof(float));
         if (num_inputs_ > 1 && buffer.size() > samples_per_output_channel) {
-            ::kernel::util::memset(buffer.data() + samples_per_output_channel, 0, (buffer.size() - samples_per_output_channel) * sizeof(float));
+            ::kernel::util::kmemset(buffer.data() + samples_per_output_channel, 0, (buffer.size() - samples_per_output_channel) * sizeof(float));
         }
     }
 }
@@ -723,7 +723,7 @@ void NetworkAudioSinkSource::process(std::span<float> buffer) {
         packet.audio_channels = num_audio_channels_;
         size_t samples_to_send = std::min(buffer.size(), static_cast<size_t>(net::MAX_PAYLOAD / sizeof(float)));
         size_t bytes_to_send = samples_to_send * sizeof(float);
-        kernel::util::memcpy(packet.data.data(), buffer.data(), bytes_to_send);
+        kernel::util::kmemcpy(packet.data.data(), buffer.data(), bytes_to_send);
         packet.data_len = bytes_to_send;
         packet.timestamp_us = kernel::g_platform->get_timer_ops()->get_system_time_us();
         kernel::g_net_manager.send(udp_socket_idx_, packet, false); 
@@ -732,7 +732,7 @@ void NetworkAudioSinkSource::process(std::span<float> buffer) {
         if (kernel::g_net_manager.receive(udp_socket_idx_, packet, false) && packet.audio_channels == num_audio_channels_ && packet.data_len > 0) {
             size_t samples_received = packet.data_len / sizeof(float);
             size_t samples_to_copy = std::min(samples_received, buffer.size());
-            kernel::util::memcpy(buffer.data(), packet.data.data(), samples_to_copy * sizeof(float));
+            kernel::util::kmemcpy(buffer.data(), packet.data.data(), samples_to_copy * sizeof(float));
             if (samples_to_copy < buffer.size()) { 
                 std::fill(buffer.begin() + samples_to_copy, buffer.end(), 0.0f);
             }

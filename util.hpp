@@ -14,39 +14,64 @@
 #include <span>        
 #include <cstdarg>      
 
-// These C-linkage functions will be defined in freestanding_stubs.cpp
-// They are the raw implementations.
+// Declare the C-linkage functions that are defined in freestanding_stubs.cpp
+// This makes them visible to C++ code in the global namespace.
 extern "C" {
-    void* memcpy_c(void* dest, const void* src, size_t count);
-    void* memset_c(void* dest, int ch, size_t count);
-    int memcmp_c(const void* ptr1, const void* ptr2, size_t count);
-    size_t strlen_c(const char* str);
-    int strcmp_c(const char* lhs, const char* rhs);
-    int strncmp_c(const char* lhs, const char* rhs, size_t count);
-    char* strcpy_c(char* dest, const char* src);
-    char* strncpy_c(char* dest, const char* src, size_t count);
+    void* memcpy(void* dest, const void* src, size_t count);
+    void* memset(void* dest, int ch, size_t count);
+    int memcmp(const void* ptr1, const void* ptr2, size_t count);
+    size_t strlen(const char* str);
+    int strcmp(const char* lhs, const char* rhs);
+    int strncmp(const char* lhs, const char* rhs, size_t count);
+    char* strcpy(char* dest, const char* src);
+    char* strncpy(char* dest, const char* src, size_t count);
 }
 
 
 namespace kernel {
 namespace util {
 
-// These are the functions our kernel code will call.
-// Their implementations will be in util.cpp and will call the _c versions.
+// Inline wrappers in the kernel::util namespace calling global extern "C" versions
+// These provide a namespaced API for the rest of the kernel.
+inline void* kmemcpy(void* dest, const void* src, size_t count) noexcept {
+    return ::memcpy(dest, src, count); // Calls global C memcpy
+}
 
-void* kmemcpy(void* dest, const void* src, size_t count) noexcept;
-void* kmemset(void* dest, int ch, size_t count) noexcept;
-int kmemcmp(const void* ptr1, const void* ptr2, size_t count) noexcept;
-size_t kstrlen(const char* str) noexcept;
-int kstrcmp(const char* lhs, const char* rhs) noexcept;
-int kstrncmp(const char* lhs, const char* rhs, size_t count) noexcept;
-char* kstrcpy(char* dest, const char* src) noexcept;
-char* kstrncpy(char* dest, const char* src, size_t count) noexcept;
+inline void* kmemset(void* dest, int ch, size_t count) noexcept {
+    return ::memset(dest, ch, count); // Calls global C memset
+}
 
+inline int kmemcmp(const void* ptr1, const void* ptr2, size_t count) noexcept {
+    return ::memcmp(ptr1, ptr2, count); 
+}
+
+inline size_t kstrlen(const char* str) noexcept {
+    // The global ::strlen already handles null, but an extra check here is harmless.
+    if (!str) return 0; 
+    return ::strlen(str); 
+}
+
+inline int kstrcmp(const char* lhs, const char* rhs) noexcept {
+    return ::strcmp(lhs, rhs);
+}
+
+inline int kstrncmp(const char* lhs, const char* rhs, size_t count) noexcept {
+    return ::strncmp(lhs, rhs, count); 
+}
+
+inline char* kstrcpy(char* dest, const char* src) noexcept {
+    return ::strcpy(dest, src); 
+}
+
+inline char* kstrncpy(char* dest, const char* src, size_t count) noexcept {
+    return ::strncpy(dest, src, count); 
+}
+
+// Declarations for functions defined in util.cpp
 bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept; 
 char* kstrcat(char* dest, const char* src, size_t dest_max_len) noexcept; 
 
-// Character functions
+// Character functions (can be inline as they are simple)
 inline bool isspace(char c) noexcept { 
     return (c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r');
 }
@@ -76,7 +101,7 @@ void uint32_to_ipv4_str(uint32_t ip_addr, std::span<char> out_buffer) noexcept;
 
 std::string_view get_next_token(std::string_view& input, char delimiter) noexcept;
 
-// Simplified snprintf-like functions
+// Simplified snprintf-like functions (definitions in util.cpp)
 int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) noexcept;
 int k_snprintf(char* buffer, size_t bufsz, const char* format, ...) noexcept __attribute__((format(printf, 3, 4)));
 
