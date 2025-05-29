@@ -8,9 +8,8 @@
 #include "hal_qemu_arm64.hpp" 
 #include "core.hpp"           
 #include "miniOS.hpp"         
-#include "util.hpp"           // <<<< ADDED THIS INCLUDE
+#include "util.hpp"
 #include <cstdint>    
-// <cstdio> should no longer be needed if all snprintf are replaced by k_snprintf
 
 extern "C" {
     void cpu_context_switch_impl(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb);

@@ -10,10 +10,10 @@
  * @see miniOS.hpp, core.hpp, hal.hpp
  */
 
-#include "miniOS.hpp" // For declarations of g_platform, g_scheduler_ptr, etc.
 #include "core.hpp"   // For kernel::core types if needed for stubs
 #include "hal.hpp"    // For kernel::hal types if needed for stubs
-#include <cstdio>     // For snprintf in configure_memory_protection example
+#include "util.hpp"
+#include "miniOS.hpp" // For declarations of g_platform, g_scheduler_ptr, etc.
 
 namespace kernel {
 

@@ -108,8 +108,8 @@ int cli_gpio_config(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     }
 
     kernel::hal::gpio::PinMode mode_val;
-    if (std::strcmp(mode, "input") == 0) mode_val = kernel::hal::gpio::PinMode::INPUT;
-    else if (std::strcmp(mode, "output") == 0) mode_val = kernel::hal::gpio::PinMode::OUTPUT;
+    if (kernel::util::strcmp(mode, "input") == 0) mode_val = kernel::hal::gpio::PinMode::INPUT;
+    else if (kernel::util::strcmp(mode, "output") == 0) mode_val = kernel::hal::gpio::PinMode::OUTPUT;
     else {
         uart_ops->puts("Invalid mode: use input or output\n");
         return -1;
@@ -158,8 +158,8 @@ int cli_gpio_write(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
     }
 
     kernel::hal::gpio::PinState state_val;
-    if (std::strcmp(state, "high") == 0) state_val = kernel::hal::gpio::PinState::HIGH;
-    else if (std::strcmp(state, "low") == 0) state_val = kernel::hal::gpio::PinState::LOW;
+    if (kernel::util::strcmp(state, "high") == 0) state_val = kernel::hal::gpio::PinState::HIGH;
+    else if (kernel::util::strcmp(state, "low") == 0) state_val = kernel::hal::gpio::PinState::LOW;
     else {
         uart_ops->puts("Invalid state: use high or low\n");
         return -1;

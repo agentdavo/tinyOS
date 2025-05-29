@@ -8,10 +8,8 @@
 #include "core.hpp"
 #include "hal.hpp"
 #include "miniOS.hpp"
-#include "util.hpp"      // <<<< ADDED THIS INCLUDE
-#include <algorithm>    // For std::min (used in loop for dump_trace)
-// <cstdio> is no longer needed if std::snprintf is replaced by k_snprintf
-// #include <cstdio> 
+#include "util.hpp"
+#include <algorithm>
 #include <atomic>
 
 namespace trace {
@@ -57,7 +55,7 @@ void TraceManager::dump_trace(kernel::hal::UARTDriverOps* uart_ops) const {
     if (!uart_ops) return;
 
     size_t current_buffer_idx = buffer_idx_.load(std::memory_order_relaxed);
-    size_t count = std::min(current_buffer_idx, MAX_TRACE_EVENTS); // Number of valid entries if not wrapping
+    size_t count = kernel::util::min(current_buffer_idx, MAX_TRACE_EVENTS); // Number of valid entries if not wrapping
                                                                   // Or if wrapping, this is just total events written mod MAX
 
     if (count == 0 && current_buffer_idx < MAX_TRACE_EVENTS) { // If it hasn't wrapped and idx is 0

@@ -82,7 +82,7 @@ bool NetManager::send(int socket_idx, const Packet& packet, bool is_audio) {
     if (is_audio && send_packet.timestamp_us == 0) {
         send_packet.timestamp_us = kernel::g_platform ? kernel::g_platform->get_timer_ops()->get_system_time_us() : 0;
     }
-    send_packet.priority = std::min(sockets_[socket_idx].priority, static_cast<uint8_t>(15));
+    send_packet.priority = kernel::util::min(sockets_[socket_idx].priority, static_cast<uint8_t>(15));
 
     std::array<uint8_t, MAX_PAYLOAD + 64> buffer; // Extra space for headers
     size_t offset = 0;

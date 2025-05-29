@@ -7,8 +7,7 @@
 #include "hal_qemu_arm64.hpp"
 #include "miniOS.hpp"
 #include "util.hpp"
-#include <cstring>    
-#include <cstdio>     
+#include <cstring>   
 #include <algorithm>  
 
 #if defined(__aarch64__) && !defined(__ARM_NEON)
@@ -312,7 +311,7 @@ void I2SDriver::convert_dsp_format_to_hw_format(kernel::audio::AudioBuffer* buf,
     if (fmt.bit_depth == kernel::hal::i2s::BitDepth::BITS_16) {
         for (size_t i = 0; i < num_samples_total; ++i) {
             float val = buf->data_dsp_canonical[i];
-            val = std::max(-1.0f, std::min(1.0f, val)); 
+            val = kernel::util::max(-1.0f, kernel::util::min(1.0f, val)); 
             pcm_data[i] = static_cast<int16_t>(val * 32767.0f);
         }
     } 

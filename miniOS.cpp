@@ -30,7 +30,7 @@
 #include <cstring>    
 #include <cstdio>     
 #include <cassert>    
-#include <algorithm>  // For std::max
+#include <algorithm>  // For kernel::util::max
 
 // Declare demo and test registration functions
 namespace demo { void register_demo_commands(); }
@@ -115,7 +115,7 @@ void Spinlock::release_general() {
 bool FixedMemoryPool::init(void* base, size_t num_blocks, size_t block_size_user, size_t alignment_user_data) {
     if (!base || num_blocks == 0 || block_size_user == 0) return false;
     
-    size_t actual_alignment = std::max(alignment_user_data, sizeof(Block*));
+    size_t actual_alignment = kernel::util::max(alignment_user_data, sizeof(Block*));
     if (actual_alignment == 0 || (actual_alignment & (actual_alignment - 1)) != 0) {
         actual_alignment = sizeof(Block*);
     }

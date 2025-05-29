@@ -9,15 +9,29 @@ ifeq ($(TARGET),arm64)
     AS = aarch64-linux-gnu-gcc
     LD = aarch64-linux-gnu-g++
     OBJCOPY = aarch64-linux-gnu-objcopy
+
+    # CFLAGS includes -ffreestanding
     CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -mcpu=cortex-a53 -march=armv8-a+simd -std=c++20 -I. -fno-PIE -Woverloaded-virtual -g3 -ffreestanding
     ASFLAGS = -mcpu=cortex-a53 -march=armv8-a -g3
-    LDFLAGS = -T ld/linker_arm64.ld -nostartfiles -Wl,--no-relax -nostdlib -lgcc -latomic
+    
+    # Get paths to crt files from the compiler driver
+    # Pass CFLAGS to -print-file-name in case it influences path (e.g. for multilib)
+    CRT_CFLAGS = $(filter -mcpu=% -march=%, $(CFLAGS)) # Extract relevant flags for CRT path finding
+    CRTBEGIN_S_O := $(shell $(CC) $(CRT_CFLAGS) -print-file-name=crtbeginS.o)
+    CRTEND_S_O := $(shell $(CC) $(CRT_CFLAGS) -print-file-name=crtendS.o)
+
+    # General linker flags, excluding libraries and CRT files which are handled in the rule
+    LDFLAGS_NO_LIBS = -T ld/linker_arm64.ld -nostartfiles -Wl,--no-relax -nostdlib
+    # Libraries grouped for better dependency resolution
+    LIBS = -Wl,--start-group -lgcc -latomic -Wl,--end-group
+
     QEMU_SYSTEM = qemu-system-aarch64
     QEMU_ARGS = -M virt -cpu cortex-a53 -smp 4 -m 128M 
     KERNEL_OBJ = core.o hal.o util.o trace.o cli_minimal.o kernel_globals.o cpu_arm64.o hal_qemu_arm64.o cpp_runtime_stubs.o freestanding_stubs.o
-    OBJ = $(KERNEL_OBJ) 
+    # OBJ is not used for 'kernel' target, but could be for a 'full_app' target later
+    # OBJ = $(KERNEL_OBJ) ... other_app_specific.o ... 
 else
-	$(error Invalid TARGET: use 'arm64')
+	$(error Invalid TARGET: use 'arm64' or 'riscv64' - RISC-V settings need similar review)
 endif
 
 TARGET_ELF_NAME = miniOS_kernel.elf
@@ -35,8 +49,18 @@ all: $(TARGET_ELF_NAME)
 
 kernel: $(TARGET_ELF_NAME)
 
-$(TARGET_ELF_NAME): $(KERNEL_OBJ)
-	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJ)
+# Linker rule: crtbeginS.o, then all our objects, then libraries, then crtendS.o
+$(TARGET_ELF_NAME): $(KERNEL_OBJ) # CRT files are not direct make dependencies for this rule
+	@echo "--- Linking $(TARGET_ELF_NAME) ---"
+	@echo "LD: $(LD)"
+	@echo "LDFLAGS_NO_LIBS: $(LDFLAGS_NO_LIBS)"
+	@echo "CRTBEGIN_S_O: $(CRTBEGIN_S_O)"
+	@echo "KERNEL_OBJ: $(KERNEL_OBJ)"
+	@echo "LIBS: $(LIBS)"
+	@echo "CRTEND_S_O: $(CRTEND_S_O)"
+	$(LD) $(LDFLAGS_NO_LIBS) -o $@ $(CRTBEGIN_S_O) $(KERNEL_OBJ) $(LIBS) $(CRTEND_S_O)
+	@echo "--- Linking finished ---"
+
 
 %.o: %.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<

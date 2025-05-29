@@ -43,7 +43,7 @@ inline float db_to_linear(float db) noexcept {
 }
 
 inline float clip(float value, float min_val, float max_val) noexcept {
-    return std::max(min_val, std::min(max_val, value));
+    return kernel::util::max(min_val, kernel::util::min(max_val, value));
 }
 
 struct FilterStage {

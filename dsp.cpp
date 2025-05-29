@@ -47,7 +47,7 @@ void generate_hann_window(std::span<float> window) noexcept {
 
 void generate_biquad_coeffs(std::string_view type, float fc_hz, float q_factor, float gain_db, float sample_rate_hz,
                            std::array<float, 3>& b_coeffs, std::array<float, 3>& a_coeffs) noexcept {
-    if (fc_hz < MIN_FREQ_HZ_DSP || fc_hz > std::min(MAX_FREQ_HZ_DSP, sample_rate_hz / 2.0f - 1.0f) || 
+    if (fc_hz < MIN_FREQ_HZ_DSP || fc_hz > kernel::util::min(MAX_FREQ_HZ_DSP, sample_rate_hz / 2.0f - 1.0f) || 
         q_factor < MIN_Q_FACTOR_DSP || q_factor > MAX_Q_FACTOR_DSP || sample_rate_hz <= 0.0f) {
         b_coeffs = {1.0f, 0.0f, 0.0f}; a_coeffs = {1.0f, 0.0f, 0.0f}; return;
     }
@@ -108,7 +108,7 @@ void generate_biquad_coeffs(std::string_view type, float fc_hz, float q_factor, 
 void generate_crossover_coeffs(std::string_view type, int order, float fc_hz, float sample_rate_hz,
                               std::vector<FilterStage>& stages, bool is_highpass_section) noexcept {
     stages.clear();
-    if (order < 1 || order > 8 || fc_hz < MIN_FREQ_HZ_DSP || fc_hz > std::min(MAX_FREQ_HZ_DSP, sample_rate_hz / 2.0f - 1.0f) || sample_rate_hz <= 0.0f) return;
+    if (order < 1 || order > 8 || fc_hz < MIN_FREQ_HZ_DSP || fc_hz > kernel::util::min(MAX_FREQ_HZ_DSP, sample_rate_hz / 2.0f - 1.0f) || sample_rate_hz <= 0.0f) return;
 
     int num_2nd_order_sections = order / 2;
     bool has_1st_order_section = (order % 2 == 1);
@@ -540,7 +540,7 @@ void ChorusDSP::process(std::span<float> buffer) {
         float dry_sample = sample;
         float lfo_val = std::sin(lfo_phase_); 
         float current_delay = depth_s * (1.0f + lfo_val) * 0.5f; 
-        current_delay = std::max(0.0f, std::min(current_delay, static_cast<float>(MAX_CHORUS_DELAY_SAMPLES -1) ));
+        current_delay = kernel::util::max(0.0f, kernel::util::min(current_delay, static_cast<float>(MAX_CHORUS_DELAY_SAMPLES -1) ));
         size_t d_int = static_cast<size_t>(current_delay);
         float d_frac = current_delay - d_int;
         size_t read_idx0 = (write_index_ + MAX_CHORUS_DELAY_SAMPLES - d_int) % MAX_CHORUS_DELAY_SAMPLES;
@@ -577,7 +577,7 @@ void FlangerDSP::process(std::span<float> buffer) {
         float lfo_val = std::sin(lfo_phase_);
         float current_delay_base = 1.0f;
         float current_delay = current_delay_base + depth_s * (1.0f + lfo_val) * 0.5f;
-        current_delay = std::max(0.0f, std::min(current_delay, static_cast<float>(MAX_FLANGER_DELAY_SAMPLES -1)));
+        current_delay = kernel::util::max(0.0f, kernel::util::min(current_delay, static_cast<float>(MAX_FLANGER_DELAY_SAMPLES -1)));
 
         size_t d_int = static_cast<size_t>(current_delay);
         float d_frac = current_delay - d_int;
@@ -721,7 +721,7 @@ void NetworkAudioSinkSource::process(std::span<float> buffer) {
         packet.dst_ip = remote_target_ip_;
         packet.dst_port = remote_target_port_;
         packet.audio_channels = num_audio_channels_;
-        size_t samples_to_send = std::min(buffer.size(), static_cast<size_t>(net::MAX_PAYLOAD / sizeof(float)));
+        size_t samples_to_send = kernel::util::min(buffer.size(), static_cast<size_t>(net::MAX_PAYLOAD / sizeof(float)));
         size_t bytes_to_send = samples_to_send * sizeof(float);
         kernel::util::kmemcpy(packet.data.data(), buffer.data(), bytes_to_send);
         packet.data_len = bytes_to_send;
@@ -731,7 +731,7 @@ void NetworkAudioSinkSource::process(std::span<float> buffer) {
         net::Packet packet{};
         if (kernel::g_net_manager.receive(udp_socket_idx_, packet, false) && packet.audio_channels == num_audio_channels_ && packet.data_len > 0) {
             size_t samples_received = packet.data_len / sizeof(float);
-            size_t samples_to_copy = std::min(samples_received, buffer.size());
+            size_t samples_to_copy = kernel::util::min(samples_received, buffer.size());
             kernel::util::kmemcpy(buffer.data(), packet.data.data(), samples_to_copy * sizeof(float));
             if (samples_to_copy < buffer.size()) { 
                 std::fill(buffer.begin() + samples_to_copy, buffer.end(), 0.0f);

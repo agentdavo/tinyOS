@@ -13,7 +13,6 @@
 #include <cstring>      
 #include <algorithm>    
 #include <limits>       
-#include <cstdio>       
 #include <atomic>       
 
 namespace kernel {
