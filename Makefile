@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Makefile - Build automation for miniOS v1.7 (ARM64 and RISC-V)
-# Supports QEMU ARM64 and RISC-V virt machines with GPIO, networking, audio, and scripting
-# @version 1.7
 
 TARGET ?= arm64
-DEBUG_PORT ?= 1234 # QEMU will listen on this port
+DEBUG_PORT ?= 1234 
+SERIAL_LOG_FILE = serial_core0.log 
 
 ifeq ($(TARGET),arm64)
 	CC = aarch64-linux-gnu-g++
@@ -13,9 +12,9 @@ ifeq ($(TARGET),arm64)
 	OBJCOPY = aarch64-linux-gnu-objcopy
 	CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -mcpu=cortex-a53 -march=armv8-a+simd -std=c++20 -I. -fno-PIE -Woverloaded-virtual -g3
 	ASFLAGS = -mcpu=cortex-a53 -march=armv8-a -g3
-	LDFLAGS = -T ld/linker_arm64.ld -no-pie -nostartfiles -Wl,--no-relax -L/usr/aarch64-linux-gnu/lib -L/usr/lib/aarch64-linux-gnu -lc -lgcc -lstdc++
+	LDFLAGS = -T ld/linker_arm64.ld -no-pie -nostartfiles -Wl,--no-relax
 	QEMU_SYSTEM = qemu-system-aarch64
-	QEMU_ARGS = -M virt -cpu cortex-a53 -smp 4 -m 128M -nographic -kernel
+	QEMU_ARGS = -M virt -cpu cortex-a53 -smp 4 -m 128M 
 	KERNEL_OBJ = core.o hal.o util.o trace.o cli_minimal.o kernel_globals.o cpu_arm64.o hal_qemu_arm64.o
 	OBJ = $(KERNEL_OBJ) 
 else ifeq ($(TARGET),riscv64)
@@ -27,7 +26,7 @@ else ifeq ($(TARGET),riscv64)
 	ASFLAGS = -march=rv64imafdc -mabi=lp64 -g3
 	LDFLAGS = -T ld/linker_rv64ima.ld -no-pie -nostartfiles -Wl,--no-relax -L/usr/riscv64-linux-gnu/lib -L/usr/lib/riscv64-linux-gnu -lc -lgcc -lstdc++
 	QEMU_SYSTEM = qemu-system-riscv64
-	QEMU_ARGS = -M virt -cpu rv64 -smp 4 -m 128M -nographic -kernel
+	QEMU_ARGS = -M virt -cpu rv64 -smp 4 -m 128M 
 	KERNEL_OBJ = core.o hal.o util.o trace.o cli_minimal.o kernel_globals.o cpu_rv64.o hal_qemu_rv64ima.o
 	OBJ = $(KERNEL_OBJ)
 else
@@ -35,8 +34,12 @@ else
 endif
 
 TARGET_ELF_NAME = miniOS_kernel.elf
+QEMU_KERNEL_OPT = -kernel 
+QEMU_SERIAL_CHARDEV = -chardev file,id=serial_chardev,path=$(SERIAL_LOG_FILE)
+QEMU_SERIAL_OPTS = -serial chardev:serial_chardev 
+QEMU_DISPLAY_OPTS = -nographic 
 QEMU_NET_ARGS = -netdev user,id=net0 -device virtio-net-device,netdev=net0
-GDB_SCRIPT_FILE = gdb_init.gdb # Define the GDB script file name
+GDB_SCRIPT_FILE = gdb_init.gdb 
 
 all: $(TARGET_ELF_NAME)
 	@echo "Build complete. ELF file: $(TARGET_ELF_NAME)"
@@ -54,32 +57,33 @@ $(TARGET_ELF_NAME): $(KERNEL_OBJ)
 
 clean:
 	@echo "Cleaning up build files..."
-	rm -f *.o $(TARGET_ELF_NAME) miniOS.bin miniOS.elf qemu.pid # No gdb_commands.txt to remove
+	rm -f *.o $(TARGET_ELF_NAME) miniOS.bin miniOS.elf qemu.pid $(SERIAL_LOG_FILE)
 	@echo "Cleanup finished. Manual QEMU cleanup might be needed if instances were running."
 
-
 run: $(TARGET_ELF_NAME)
-	$(QEMU_SYSTEM) $(QEMU_ARGS) $< $(QEMU_NET_ARGS)
+	@echo "Running $(TARGET_ELF_NAME). Serial output will be in $(SERIAL_LOG_FILE)."
+	$(QEMU_SYSTEM) $(QEMU_ARGS) $(QEMU_KERNEL_OPT) $< \
+		$(QEMU_SERIAL_CHARDEV) $(QEMU_SERIAL_OPTS) \
+		$(QEMU_DISPLAY_OPTS) $(QEMU_NET_ARGS)
 
-# Use .ONESHELL for recipes that need shell variables to persist across lines.
 .ONESHELL:
 debug: $(TARGET_ELF_NAME)
 	@echo "IMPORTANT: Manual QEMU cleanup might be needed if old instances are running on port $(DEBUG_PORT)."
-	@echo "You can try: pkill -f \"$(QEMU_SYSTEM)\" or check processes manually."
+	@echo "           You can try: pkill -f \"$(QEMU_SYSTEM)\" or check processes manually."
+	@echo "           Serial output from kernel will be logged to: $(SERIAL_LOG_FILE)"
+	@rm -f $(SERIAL_LOG_FILE) 
 	
 	@echo "Starting QEMU for debugging $(TARGET_ELF_NAME) on port $(DEBUG_PORT)..."
-	# Start QEMU in the background and save its PID to a file
-	$(QEMU_SYSTEM) $(QEMU_ARGS) $< -S -gdb tcp::$(DEBUG_PORT) $(QEMU_NET_ARGS) &
-	echo $$! > qemu.pid # Save PID of QEMU
+	$(QEMU_SYSTEM) $(QEMU_ARGS) $(QEMU_KERNEL_OPT) $< \
+		-S -gdb tcp::$(DEBUG_PORT) \
+		$(QEMU_SERIAL_CHARDEV) $(QEMU_SERIAL_OPTS) \
+		$(QEMU_DISPLAY_OPTS) $(QEMU_NET_ARGS) &
+	echo $$! > qemu.pid 
 	
-	@echo "QEMU started (PID `cat qemu.pid`). Waiting for GDB connection (2s)..."; 
-	sleep 2; # Give QEMU time to start listening
+	@echo "QEMU started (PID `cat qemu.pid`). Waiting for GDB connection (3s)..."; 
+	sleep 3; 
 	
 	@echo "Starting GDB with script $(GDB_SCRIPT_FILE) and connecting to localhost:$(DEBUG_PORT)..."
-	# GDB will take commands from GDB_SCRIPT_FILE. 
-	# Ensure GDB_SCRIPT_FILE has "target remote localhost:$(DEBUG_PORT)"
-	# If DEBUG_PORT in Makefile needs to propagate to gdb_init.gdb, that's more complex.
-	# For now, gdb_init.gdb has port 1234 hardcoded. Ensure they match.
 	gdb-multiarch $< -x $(GDB_SCRIPT_FILE)
 	
 	@echo "GDB session ended."
@@ -96,6 +100,7 @@ debug: $(TARGET_ELF_NAME)
 	else \
 		echo "qemu.pid not found. Manual QEMU cleanup might be needed if it's still running."; \
 	fi
+	@echo "Serial log is in: $(SERIAL_LOG_FILE)"
 
 docs:
 	doxygen Doxyfile

@@ -420,7 +420,7 @@ extern "C" void kernel_main() {
     
     if (g_platform->get_core_id() == 0) { // Only core 0 enables its IRQs here.
          asm volatile("msr daifclr, #2"); // Enable IRQs (clear PSTATE.I bit)
-    } 
+    }
 	// THIS IS LINE 424
     // kernel_main returns to _start assembly. 
     // _start currently has a .L_kernel_halt loop.
