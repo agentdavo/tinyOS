@@ -1,0 +1,3245 @@
+// === Makefile ===
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Makefile - Build automation for miniOS v1.7 (ARM64)
+# Bare-metal build with freestanding utilities
+
+TARGET ?= arm64
+
+ifeq ($(TARGET),arm64)
+    CC = aarch64-linux-gnu-g++
+    AS = aarch64-linux-gnu-gcc
+    LD = aarch64-linux-gnu-g++
+    OBJCOPY = aarch64-linux-gnu-objcopy
+
+    CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -mcpu=cortex-a53 -march=armv8-a+simd -std=c++20 -I. -fno-PIE -Woverloaded-virtual -g3 -ffreestanding
+    ASFLAGS = -mcpu=cortex-a53 -march=armv8-a -g3
+
+    LINKER_SCRIPT = ld/linker_arm64.ld # Define linker script path
+    LDFLAGS_NO_LIBS = -T $(LINKER_SCRIPT) -nostartfiles -Wl,--no-relax -nostdlib # Base LDFLAGS
+    LIBS = -Wl,--start-group -lgcc -latomic -Wl,--end-group
+
+    QEMU_SYSTEM = qemu-system-aarch64
+    QEMU_ARGS = -M virt -cpu cortex-a53 -smp 4 -m 128M
+    KERNEL_OBJ = core.o hal.o util.o trace.o cli_minimal.o kernel_globals.o cpu_arm64.o hal_qemu_arm64.o cpp_runtime_stubs.o freestanding_stubs.o
+else
+    $(error Invalid TARGET: use 'arm64' or 'riscv64' - RISC-V settings need similar review)
+endif
+
+TARGET_ELF_NAME = miniOS_kernel.elf
+MAP_FILE_NAME = $(TARGET_ELF_NAME).map # Consistent map file name
+QEMU_KERNEL_OPT = -kernel
+SERIAL_LOG_FILE = serial_core0.log
+QEMU_SERIAL_CHARDEV = -chardev file,id=serial_chardev,path=$(SERIAL_LOG_FILE)
+QEMU_SERIAL_OPTS = -serial chardev:serial_chardev
+QEMU_DISPLAY_OPTS = -nographic
+QEMU_NET_ARGS = -netdev user,id=net0 -device virtio-net-device,netdev=net0
+DEBUG_PORT = 1234
+GDB_SCRIPT_FILE = gdb_init.gdb
+
+all: $(TARGET_ELF_NAME)
+    @echo "Build complete. ELF file: $(TARGET_ELF_NAME)"
+
+kernel: $(TARGET_ELF_NAME)
+
+$(TARGET_ELF_NAME): $(KERNEL_OBJ) $(LINKER_SCRIPT) # Add linker script as a prerequisite
+	@echo "--- Linking $(TARGET_ELF_NAME) ---"
+	@echo "LD: $(LD)"
+	@echo "Linker Script: $(LINKER_SCRIPT)"
+	@echo "LDFLAGS_NO_LIBS (base): $(LDFLAGS_NO_LIBS)"
+	@echo "KERNEL_OBJ: $(KERNEL_OBJ)"
+	@echo "LIBS: $(LIBS)"
+	$(LD) $(LDFLAGS_NO_LIBS) -Wl,-Map=$(MAP_FILE_NAME) -o $@ $(KERNEL_OBJ) $(LIBS)
+	@echo "--- Linking finished ---"
+
+%.o: %.cpp
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+%.o: %.S
+	$(AS) $(ASFLAGS) -c -o $@ $<
+
+clean:
+	@echo "Cleaning up build files..."
+	rm -f *.o $(TARGET_ELF_NAME) $(MAP_FILE_NAME) qemu.pid $(SERIAL_LOG_FILE)
+
+run: $(TARGET_ELF_NAME)
+	@echo "Running $(TARGET_ELF_NAME). Serial output will be in $(SERIAL_LOG_FILE)."
+	$(QEMU_SYSTEM) $(QEMU_ARGS) $(QEMU_KERNEL_OPT) $< \
+		$(QEMU_SERIAL_CHARDEV) $(QEMU_SERIAL_OPTS) \
+		$(QEMU_DISPLAY_OPTS) $(QEMU_NET_ARGS)
+
+.ONESHELL:
+debug: $(TARGET_ELF_NAME)
+	@echo "IMPORTANT: Manual QEMU cleanup might be needed if old instances are running on port $(DEBUG_PORT)."
+	@echo "           You can try: pkill -f \"$(QEMU_SYSTEM)\" or check processes manually."
+	@echo "           Serial output from kernel will be logged to: $(SERIAL_LOG_FILE)"
+	@rm -f $(SERIAL_LOG_FILE) qemu.pid # Also remove qemu.pid if it exists
+
+	@echo "Starting QEMU for debugging $(TARGET_ELF_NAME) on port $(DEBUG_PORT)..."
+	$(QEMU_SYSTEM) $(QEMU_ARGS) $(QEMU_KERNEL_OPT) $< \
+		-S -gdb tcp::$(DEBUG_PORT) \
+		$(QEMU_SERIAL_CHARDEV) $(QEMU_SERIAL_OPTS) \
+		$(QEMU_DISPLAY_OPTS) $(QEMU_NET_ARGS) &
+	echo $$! > qemu.pid
+
+	@echo "QEMU started (PID `cat qemu.pid`). Waiting for GDB connection (3s)...";
+	sleep 3;
+
+	@echo "Starting GDB with script $(GDB_SCRIPT_FILE) and connecting to localhost:$(DEBUG_PORT)..."
+	gdb-multiarch $< -x $(GDB_SCRIPT_FILE)
+
+	@echo "GDB session ended."
+	if [ -f qemu.pid ]; then \
+		QEMU_PID_VAL=`cat qemu.pid`; \
+		echo "Attempting to kill QEMU PID $$QEMU_PID_VAL..."; \
+		if ps -p $$QEMU_PID_VAL > /dev/null; then \
+            kill $$QEMU_PID_VAL; \
+            echo "QEMU PID $$QEMU_PID_VAL killed."; \
+        else \
+            echo "QEMU PID $$QEMU_PID_VAL already exited or was not found."; \
+        fi; \
+        rm -f qemu.pid; \
+    else \
+        echo "qemu.pid not found. Manual QEMU cleanup might be needed if it's still running."; \
+    fi
+	@echo "Serial log is in: $(SERIAL_LOG_FILE)"
+
+docs:
+	doxygen Doxyfile
+
+.PHONY: all kernel clean run debug docs// === core.hpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file core.hpp
+ * @brief Core kernel types and constants for miniOS v1.7.
+ * @details
+ * Defines essential kernel types (TCB, Scheduler, Spinlock) and global constants
+ * for the miniOS RTOS. Designed to be dependency-free except for standard headers.
+ *
+ * @version 1.7
+ * @see core.cpp, hal.hpp
+ */
+
+#ifndef CORE_HPP
+#define CORE_HPP
+
+#include <cstdint>
+#include <cstddef>
+#include <span>
+#include <string_view>
+#include <optional>
+#include <atomic>
+#include <array>
+#include <concepts>
+
+namespace kernel {
+namespace core {
+
+// Global constants
+constexpr size_t MAX_THREADS = 16;
+constexpr size_t MAX_NAME_LENGTH = 32;
+constexpr size_t MAX_CORES = 4;
+constexpr size_t MAX_PRIORITY_LEVELS = 16;
+constexpr size_t TRACE_BUFFER_SIZE = 1024; 
+constexpr size_t DEFAULT_STACK_SIZE = 4096;
+constexpr size_t MAX_SOFTWARE_TIMERS = 64;
+constexpr size_t MAX_LOCKS = 32; 
+constexpr size_t NET_MAX_PACKET_SIZE = 1500; 
+constexpr size_t MAX_AUDIO_CHANNELS = 2; 
+
+// Forward declarations
+struct PerCPUData; // Forward declaration
+
+alignas(64) extern std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
+
+class Spinlock {
+    std::atomic<bool> lock_flag_{false};
+    uint32_t lock_id_;
+    static uint32_t next_lock_id_; 
+public:
+    Spinlock();
+    void acquire_isr_safe();
+    void release_isr_safe();
+    void acquire_general();
+    void release_general();
+    uint32_t get_id() const noexcept { return lock_id_; }
+};
+
+class ScopedLock {
+    Spinlock& lock_;
+public:
+    explicit ScopedLock(Spinlock& l) : lock_(l) { lock_.acquire_general(); }
+    ~ScopedLock() { lock_.release_general(); }
+    ScopedLock(const ScopedLock&) = delete;
+    ScopedLock& operator=(const ScopedLock&) = delete;
+};
+
+class ScopedISRLock {
+    Spinlock& lock_;
+public:
+    explicit ScopedISRLock(Spinlock& l) : lock_(l) { lock_.acquire_isr_safe(); }
+    ~ScopedISRLock() { lock_.release_isr_safe(); }
+    ScopedISRLock(const ScopedISRLock&) = delete;
+    ScopedISRLock& operator=(const ScopedISRLock&) = delete;
+};
+
+class FixedMemoryPool {
+    struct Block { Block* next; };
+    Block* free_head_ = nullptr;
+    uint8_t* pool_memory_start_ = nullptr;
+    size_t block_storage_size_ = 0; 
+    size_t header_actual_size_ = 0; 
+    size_t user_data_offset_ = 0;   
+    size_t num_total_blocks_ = 0;
+    size_t num_free_blocks_ = 0;
+    Spinlock pool_lock_;
+public:
+    FixedMemoryPool() = default;
+    bool init(void* base, size_t num_blocks, size_t blk_sz_user, size_t align_user_data);
+    void* allocate();
+    void free_block(void* ptr);
+    size_t get_free_count() const noexcept { ScopedLock lock(const_cast<Spinlock&>(pool_lock_)); return num_free_blocks_; }
+    size_t get_total_count() const noexcept { return num_total_blocks_; }
+};
+
+template<typename T, size_t Capacity>
+class SPSCQueue {
+    static_assert(Capacity > 0 && (Capacity & (Capacity - 1)) == 0, "Capacity must be a power of 2");
+    std::array<T*, Capacity> items_;
+    alignas(64) std::atomic<size_t> head_{0}; 
+    alignas(64) std::atomic<size_t> tail_{0};
+public:
+    SPSCQueue() = default;
+    bool enqueue(T* item) noexcept;
+    T* dequeue() noexcept;
+    bool is_empty() const noexcept { return head_.load(std::memory_order_acquire) == tail_.load(std::memory_order_acquire); }
+    bool is_full() const noexcept {
+        size_t next_tail = (tail_.load(std::memory_order_acquire) + 1) & (Capacity - 1);
+        return next_tail == head_.load(std::memory_order_acquire);
+    }
+    size_t count() const noexcept {
+        return (tail_.load(std::memory_order_relaxed) - head_.load(std::memory_order_relaxed) + Capacity) & (Capacity - 1);
+    }
+};
+
+struct TCB {
+    uint64_t regs[31]; 
+    uint64_t sp;       
+    uint64_t pc;       
+    uint64_t pstate;   
+    void (*entry_point)(void*); 
+    void* arg_ptr;              
+    uint8_t* stack_base;        
+    size_t stack_size;          
+    enum class State { INACTIVE, READY, RUNNING, BLOCKED, ZOMBIE } state = State::INACTIVE;
+    int priority;               
+    int core_affinity;          
+    uint32_t cpu_id_running_on; 
+    char name[MAX_NAME_LENGTH]; 
+    TCB* next_in_q = nullptr;   
+    std::atomic<bool> event_flag{false}; 
+    uint64_t deadline_us = 0;   
+};
+
+struct TraceEntry { 
+    uint64_t timestamp_us;
+    uint32_t core_id;
+    const char* event_str; 
+    uintptr_t arg1, arg2;
+};
+
+struct PerCPUData {
+    TCB* current_thread = nullptr; 
+    TCB* idle_thread = nullptr;    
+};
+
+// Declare g_per_cpu_data after PerCPUData definition
+alignas(64) extern std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
+
+class SchedulerPolicy {
+public:
+    virtual ~SchedulerPolicy() = default;
+    virtual TCB* select_next_task(uint32_t core_id, TCB* current_task) = 0;
+    virtual void add_to_ready_queue(TCB* tcb, uint32_t core_id) = 0;
+};
+
+class EDFPolicy : public SchedulerPolicy {
+public:
+    TCB* select_next_task(uint32_t core_id, TCB* current_task) override;
+    void add_to_ready_queue(TCB* tcb, uint32_t core_id) override;
+};
+
+class Scheduler {
+    std::array<std::array<TCB*, MAX_PRIORITY_LEVELS>, MAX_CORES> ready_qs_ = {};
+    std::atomic<size_t> num_active_tasks_{0}; 
+    Spinlock scheduler_global_lock_;          
+    std::array<Spinlock, MAX_CORES> per_core_locks_; 
+    SchedulerPolicy* policy_ = nullptr;
+public:
+    Scheduler();
+    ~Scheduler();
+    void set_policy(SchedulerPolicy* p) noexcept { policy_ = p; }
+    TCB* create_thread(void (*fn)(void*), const void* arg, int prio, int affinity, const char* name, bool is_idle = false, uint64_t deadline_us = 0);
+    void start_core_scheduler(uint32_t core_id); 
+    void preemptive_tick(uint32_t core_id);      
+    void yield(uint32_t core_id);                
+    void signal_event_isr(TCB* tcb);             
+    void wait_for_event(TCB* tcb);               
+    size_t get_num_active_tasks() const { return num_active_tasks_.load(std::memory_order_relaxed); }
+    Spinlock& get_global_scheduler_lock() { return scheduler_global_lock_; }
+friend class EDFPolicy; 
+private:
+    TCB* pop_highest_priority_ready_task(uint32_t current_core_id);
+    void schedule(uint32_t core_id, bool is_preemption);
+public:
+    static void idle_thread_func(void* arg); 
+private:
+    static void thread_bootstrap(TCB* self); 
+};
+
+} // namespace core
+} // namespace kernel
+
+// Define kernel_g_per_cpu_data to alias g_per_cpu_data for C linkage
+extern "C" kernel::core::PerCPUData* const kernel_g_per_cpu_data;
+
+#endif // CORE_HPP// === core.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file core.cpp
+ * @brief Core kernel implementation for miniOS v1.7.
+ */
+
+#include "core.hpp"
+#include "hal.hpp"    
+#include "util.hpp"
+#include "trace.hpp"    
+#include "miniOS.hpp"   
+
+#include <cstring>      
+#include <algorithm>    
+#include <limits>       
+#include <atomic> 
+#include <cstddef>
+
+extern "C" void early_uart_puts(const char* str);
+extern "C" kernel::core::PerCPUData* const kernel_g_per_cpu_data = kernel::core::g_per_cpu_data.data();
+
+namespace kernel {
+namespace core {
+
+alignas(64) uint8_t g_software_timer_obj_pool_mem[MAX_SOFTWARE_TIMERS * sizeof(kernel::hal::timer::SoftwareTimer)];
+FixedMemoryPool g_software_timer_obj_pool;
+std::array<TraceEntry, TRACE_BUFFER_SIZE> g_trace_buffer;
+std::array<std::atomic<size_t>, MAX_CORES> g_trace_overflow_count{}; 
+alignas(16) std::array<std::array<uint8_t, DEFAULT_STACK_SIZE>, MAX_THREADS> g_task_stacks;
+std::array<TCB, MAX_THREADS> g_task_tfds;
+alignas(64) std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
+uint32_t Spinlock::next_lock_id_ = 0;
+
+Spinlock::Spinlock() : lock_id_(next_lock_id_++) {}
+void Spinlock::acquire_isr_safe() {
+    bool expected = false;
+    while (!lock_flag_.compare_exchange_strong(expected, true, std::memory_order_acquire, std::memory_order_relaxed)) {
+        expected = false;
+        while (lock_flag_.load(std::memory_order_relaxed)) {}
+    }
+}
+void Spinlock::release_isr_safe() { lock_flag_.store(false, std::memory_order_release); }
+void Spinlock::acquire_general() {
+    bool expected = false;
+    while (!lock_flag_.compare_exchange_strong(expected, true, std::memory_order_acquire, std::memory_order_relaxed)) {
+        expected = false;
+        while (lock_flag_.load(std::memory_order_relaxed)) {
+            if (kernel::g_platform && kernel::g_platform->get_num_cores() > 1) {
+                kernel::hal::sync::barrier_dmb(); 
+            }
+        }
+    }
+}
+void Spinlock::release_general() { lock_flag_.store(false, std::memory_order_release); }
+
+bool FixedMemoryPool::init(void* base, size_t num_blocks, size_t blk_sz_user, size_t align_user_data) {
+    if (!base || num_blocks == 0 || blk_sz_user == 0) return false;
+    size_t internal_header_align = sizeof(Block*);
+    size_t final_user_data_align = (align_user_data == 0 || (align_user_data & (align_user_data - 1)) != 0) 
+                                   ? internal_header_align : align_user_data;
+    header_actual_size_ = (sizeof(Block) + internal_header_align - 1) & ~(internal_header_align - 1);
+    user_data_offset_ = header_actual_size_;
+    if ((user_data_offset_ % final_user_data_align) != 0) {
+        user_data_offset_ = (user_data_offset_ + final_user_data_align - 1) & ~(final_user_data_align - 1);
+    }
+    block_storage_size_ = user_data_offset_ + blk_sz_user;
+    pool_memory_start_ = static_cast<uint8_t*>(base);
+    num_total_blocks_ = num_free_blocks_ = num_blocks;
+    free_head_ = nullptr;
+    for (size_t i = 0; i < num_blocks; ++i) {
+        uint8_t* current_block_raw_ptr = pool_memory_start_ + i * block_storage_size_;
+        Block* block_header = reinterpret_cast<Block*>(current_block_raw_ptr);
+        block_header->next = free_head_;
+        free_head_ = block_header;
+    }
+    return true;
+}
+void* FixedMemoryPool::allocate() {
+    ScopedLock lock(pool_lock_);
+    if (!free_head_) return nullptr;
+    Block* block_header_raw = free_head_;
+    free_head_ = block_header_raw->next;
+    num_free_blocks_--;
+    return static_cast<uint8_t*>(static_cast<void*>(block_header_raw)) + user_data_offset_;
+}
+void FixedMemoryPool::free_block(void* user_data_ptr) {
+    if (!user_data_ptr) return;
+    Block* block_header_raw = reinterpret_cast<Block*>(static_cast<uint8_t*>(user_data_ptr) - user_data_offset_);
+    ScopedLock lock(pool_lock_);
+    block_header_raw->next = free_head_;
+    free_head_ = block_header_raw;
+    num_free_blocks_++;
+}
+
+template<typename T, size_t Capacity>
+bool SPSCQueue<T, Capacity>::enqueue(T* item) noexcept {
+    size_t current_tail = tail_.load(std::memory_order_relaxed);
+    size_t next_tail = (current_tail + 1) & (Capacity - 1);
+    if (next_tail == head_.load(std::memory_order_acquire)) return false;
+    items_[current_tail] = item;
+    tail_.store(next_tail, std::memory_order_release);
+    return true;
+}
+template<typename T, size_t Capacity>
+T* SPSCQueue<T, Capacity>::dequeue() noexcept {
+    size_t current_head = head_.load(std::memory_order_relaxed);
+    if (current_head == tail_.load(std::memory_order_acquire)) return nullptr;
+    T* item = items_[current_head];
+    head_.store((current_head + 1) & (Capacity - 1), std::memory_order_release);
+    return item;
+}
+
+TCB* EDFPolicy::select_next_task(uint32_t core_id, TCB*) {
+    if (core_id >= MAX_CORES || !kernel::g_scheduler_ptr) return nullptr;
+    Scheduler* sched = kernel::g_scheduler_ptr;
+    ScopedLock lock(sched->per_core_locks_[core_id]);
+    uint64_t earliest_deadline = std::numeric_limits<uint64_t>::max();
+    TCB* earliest_task = nullptr; int chosen_priority_idx = -1; TCB* chosen_prev_in_list = nullptr;
+    for (int p_idx = MAX_PRIORITY_LEVELS - 1; p_idx >= 0; --p_idx) {
+        TCB* task_iter = sched->ready_qs_[core_id][p_idx]; TCB* prev_in_list = nullptr;
+        while (task_iter) {
+            if (task_iter->state == TCB::State::READY &&
+                (task_iter->core_affinity == -1 || task_iter->core_affinity == static_cast<int>(core_id))) {
+                if (task_iter->deadline_us > 0 && task_iter->deadline_us < earliest_deadline) {
+                    earliest_deadline = task_iter->deadline_us; earliest_task = task_iter;
+                    chosen_priority_idx = p_idx; chosen_prev_in_list = prev_in_list;
+                }
+            }
+            prev_in_list = task_iter; task_iter = task_iter->next_in_q;
+        }
+    }
+    if (earliest_task) {
+        if (chosen_prev_in_list) chosen_prev_in_list->next_in_q = earliest_task->next_in_q;
+        else sched->ready_qs_[core_id][chosen_priority_idx] = earliest_task->next_in_q;
+        earliest_task->next_in_q = nullptr; return earliest_task;
+    }
+    return sched->pop_highest_priority_ready_task(core_id);
+}
+
+void EDFPolicy::add_to_ready_queue(TCB* tcb, uint32_t core_id) {
+    if (!tcb || tcb->priority < 0 || static_cast<size_t>(tcb->priority) >= MAX_PRIORITY_LEVELS || core_id >= MAX_CORES || !kernel::g_scheduler_ptr) return;
+    Scheduler* sched = kernel::g_scheduler_ptr;
+    ScopedLock lock(sched->per_core_locks_[core_id]);
+    kernel::trace_event("SCHED:AddRdyEDF", reinterpret_cast<uintptr_t>(tcb), (core_id << 16) | tcb->priority);
+    tcb->next_in_q = sched->ready_qs_[core_id][tcb->priority];
+    sched->ready_qs_[core_id][tcb->priority] = tcb;
+    tcb->state = TCB::State::READY;
+}
+
+Scheduler::Scheduler() : policy_(nullptr) {
+    for (size_t c = 0; c < MAX_CORES; ++c) {
+        for (size_t p = 0; p < MAX_PRIORITY_LEVELS; ++p) { ready_qs_[c][p] = nullptr; }
+    }
+}
+Scheduler::~Scheduler() { delete policy_; }
+
+TCB* Scheduler::create_thread(void (*fn)(void*), const void* arg, int prio, int affinity, const char* name, bool is_idle, uint64_t deadline_us) {
+    ScopedLock lock(scheduler_global_lock_);
+    if (num_active_tasks_.load(std::memory_order_relaxed) >= MAX_THREADS) return nullptr;
+    size_t tcb_idx = MAX_THREADS;
+    for (size_t i = 0; i < MAX_THREADS; ++i) {
+        if (g_task_tfds[i].state == TCB::State::INACTIVE || g_task_tfds[i].state == TCB::State::ZOMBIE) {
+            tcb_idx = i; break;
+        }
+    }
+    if (tcb_idx == MAX_THREADS) return nullptr;
+    TCB& tcb = g_task_tfds[tcb_idx];
+    kernel::util::kmemset(&tcb, 0, sizeof(TCB));
+    tcb.entry_point = fn; tcb.arg_ptr = const_cast<void*>(arg);
+    tcb.priority = (prio >= 0 && static_cast<size_t>(prio) < MAX_PRIORITY_LEVELS) ? prio : 0;
+    tcb.core_affinity = (affinity >= -1 && affinity < static_cast<int>(MAX_CORES)) ? affinity : -1;
+    kernel::util::safe_strcpy(tcb.name, name, MAX_NAME_LENGTH);
+    tcb.stack_base = g_task_stacks[tcb_idx].data(); tcb.stack_size = DEFAULT_STACK_SIZE;
+    tcb.sp = reinterpret_cast<uint64_t>(tcb.stack_base + tcb.stack_size) & ~0xFUL; 
+    tcb.pc = reinterpret_cast<uint64_t>(thread_bootstrap); 
+    // SPSR_EL1 for EL1h with IRQs enabled: M[4]=0 (AArch64), M[3:0]=0101 (EL1h), DAIF all unmasked (bits 9-6 are 0)
+    tcb.pstate = 0x00000005; 
+    tcb.deadline_us = deadline_us; tcb.state = TCB::State::READY;
+    tcb.cpu_id_running_on = static_cast<uint32_t>(-1); tcb.event_flag.store(false, std::memory_order_relaxed);
+    tcb.regs[0] = reinterpret_cast<uint64_t>(&tcb); // thread_bootstrap argument
+    trace::g_trace_manager.record_event(&tcb, trace::EventType::THREAD_CREATE, tcb.name);
+    uint32_t target_core = (tcb.core_affinity != -1) ? static_cast<uint32_t>(tcb.core_affinity) : 0;
+    if (is_idle) {
+        g_per_cpu_data[target_core].idle_thread = &tcb;
+        tcb.pstate = 0x00000005; // Ensure idle thread can take interrupts
+    }
+    if (policy_) policy_->add_to_ready_queue(&tcb, target_core);
+    else { if (kernel::g_platform) kernel::g_platform->panic("Scheduler policy not set", __FILE__, __LINE__); return nullptr; }
+    num_active_tasks_.fetch_add(1, std::memory_order_relaxed);
+    return &tcb;
+}
+
+void Scheduler::start_core_scheduler(uint32_t core_id) {
+    if (!kernel::g_platform || core_id >= MAX_CORES || !kernel::g_platform->get_irq_ops() || !kernel::g_platform->get_timer_ops()) {
+        if (kernel::g_platform) kernel::g_platform->panic("Invalid core_id or platform components missing", __FILE__, __LINE__); else for(;;); return;
+    }
+    auto* idle_tcb = g_per_cpu_data[core_id].idle_thread;
+    if (!idle_tcb) { kernel::g_platform->panic("Idle thread not created for core", __FILE__, __LINE__); return; }
+    g_per_cpu_data[core_id].current_thread = idle_tcb; 
+    idle_tcb->state = TCB::State::RUNNING; 
+    idle_tcb->cpu_id_running_on = core_id;
+    kernel::g_platform->get_irq_ops()->enable_irq_line(kernel::hal::SYSTEM_TIMER_IRQ);
+    kernel::g_platform->get_irq_ops()->enable_core_irqs(core_id, 0x1); 
+}
+
+void Scheduler::preemptive_tick(uint32_t core_id) {
+    if (core_id >= MAX_CORES) return;
+    kernel::trace_event("SCHED:PreeTick", core_id, reinterpret_cast<uintptr_t>(g_per_cpu_data[core_id].current_thread));
+    schedule(core_id, true);
+}
+
+void Scheduler::yield(uint32_t core_id) {
+    if (core_id >= MAX_CORES) return;
+    TCB* current_task = g_per_cpu_data[core_id].current_thread;
+    if (current_task) trace::g_trace_manager.record_event(current_task, trace::EventType::THREAD_YIELD, current_task->name);
+    schedule(core_id, false);
+}
+
+void Scheduler::signal_event_isr(TCB* tcb) { if (!tcb) return; tcb->event_flag.exchange(true, std::memory_order_release); }
+void Scheduler::wait_for_event(TCB* tcb) {
+    if (!tcb) return;
+    while (!tcb->event_flag.load(std::memory_order_acquire)) kernel::hal::sync::barrier_dmb();
+    tcb->event_flag.store(false, std::memory_order_relaxed);
+}
+
+TCB* Scheduler::pop_highest_priority_ready_task(uint32_t current_core_id) {
+    if (current_core_id >= MAX_CORES) return nullptr;
+    for (int p = MAX_PRIORITY_LEVELS - 1; p >= 0; --p) {
+        TCB* task_iter = ready_qs_[current_core_id][p]; TCB* prev_task = nullptr;
+        while(task_iter) {
+            if (task_iter->core_affinity == -1 || task_iter->core_affinity == static_cast<int>(current_core_id)) {
+                if (prev_task) prev_task->next_in_q = task_iter->next_in_q;
+                else ready_qs_[current_core_id][p] = task_iter->next_in_q;
+                task_iter->next_in_q = nullptr; return task_iter;
+            }
+            prev_task = task_iter; task_iter = task_iter->next_in_q;
+        }
+    }
+    TCB* idle = g_per_cpu_data[current_core_id].idle_thread;
+    if (!idle) { if(kernel::g_platform) kernel::g_platform->panic("Idle thread null in pop", __FILE__, __LINE__); return nullptr; }
+    return idle;
+}
+
+void Scheduler::schedule(uint32_t core_id, bool is_preemption) {
+    if (core_id >= MAX_CORES || !policy_ || !kernel::g_platform) return;
+    uint64_t daif_flags; 
+    asm volatile("mrs %0, daif; msr daifset, #0xf" : "=r"(daif_flags) :: "memory"); 
+    ScopedLock core_lock(per_core_locks_[core_id]);
+    TCB* current_task = g_per_cpu_data[core_id].current_thread; TCB* next_task = nullptr;
+    if (current_task && current_task->state == TCB::State::RUNNING) {
+        if (current_task != g_per_cpu_data[core_id].idle_thread || is_preemption) {
+            current_task->state = TCB::State::READY;
+            // PC/PSTATE for current_task should be correctly set by IRQ handler or yield mechanism
+            // before calling schedule.
+            policy_->add_to_ready_queue(current_task, core_id);
+        }
+    }
+    next_task = policy_->select_next_task(core_id, current_task);
+    if (!next_task) {
+        next_task = g_per_cpu_data[core_id].idle_thread;
+        if (!next_task && kernel::g_platform) { 
+            kernel::g_platform->panic("Idle thread null in schedule", __FILE__, __LINE__); 
+            asm volatile("msr daif, %0" :: "r"(daif_flags) : "memory"); 
+            return; 
+        }
+    }
+    if (current_task != next_task) {
+        g_per_cpu_data[core_id].current_thread = next_task; 
+        next_task->state = TCB::State::RUNNING; 
+        next_task->cpu_id_running_on = core_id;
+        trace::g_trace_manager.record_event(next_task, trace::EventType::THREAD_SCHEDULE, next_task->name);
+        // cpu_context_switch does not return for the old task.
+        // Interrupts (DAIF) will be restored by the 'eret' in cpu_context_switch_impl, using new_task->pstate.
+        kernel::hal::cpu_context_switch(current_task, next_task);
+    } else {
+        if(current_task) { current_task->state = TCB::State::RUNNING; current_task->cpu_id_running_on = core_id; }
+        asm volatile("msr daif, %0" :: "r"(daif_flags) : "memory"); // Restore DAIF if no switch
+    }
+}
+
+void Scheduler::idle_thread_func(void* arg) {
+    uint32_t core_id = reinterpret_cast<uintptr_t>(arg);
+    if (!kernel::g_platform || !kernel::g_platform->get_power_ops()) { for (;;) { asm volatile("nop"); } }
+    // Ensure interrupts are enabled for the idle task. This is primarily controlled
+    // by the TCB.pstate (SPSR_EL1 value) used when switching to this task.
+    asm volatile("msr daifclr, #2"); // Explicitly enable IRQs (clear PSTATE.I bit)
+    while (true) { 
+        kernel::g_platform->get_power_ops()->enter_idle_state(core_id); 
+        kernel::hal::sync::barrier_dmb(); 
+    }
+}
+
+void Scheduler::thread_bootstrap(TCB* self) {
+    if (!self || !self->entry_point || !kernel::g_scheduler_ptr || !kernel::g_platform) {
+        if (kernel::g_platform) kernel::g_platform->panic("Invalid args in thread_bootstrap", __FILE__, __LINE__); else for(;;); return;
+    }
+    // Ensure interrupts are enabled as per this thread's TCB.pstate
+    asm volatile("msr daifclr, #2"); // Assuming tasks run with IRQs generally enabled
+    kernel::configure_memory_protection(self, true);
+    self->entry_point(self->arg_ptr); 
+    kernel::configure_memory_protection(self, false);
+    uint64_t daif_flags_on_exit;
+    asm volatile("mrs %0, daif; msr daifset, #0xf" : "=r"(daif_flags_on_exit) :: "memory");
+    { ScopedLock lock(kernel::g_scheduler_ptr->get_global_scheduler_lock());
+        trace::g_trace_manager.record_event(self, trace::EventType::THREAD_EXIT, self->name);
+        self->state = TCB::State::ZOMBIE;
+        kernel::g_scheduler_ptr->num_active_tasks_.fetch_sub(1, std::memory_order_relaxed);
+    }
+    uint32_t current_core_id = self->cpu_id_running_on;
+    if (current_core_id >= MAX_CORES) { if (kernel::g_platform) kernel::g_platform->panic("Invalid core ID on exit", __FILE__, __LINE__); else for(;;); }
+    kernel::g_scheduler_ptr->schedule(current_core_id, false); 
+    if (kernel::g_platform) kernel::g_platform->panic("Thread returned from bootstrap after schedule on exit", __FILE__, __LINE__); else for(;;);
+}
+
+} // namespace core
+
+void trace_event(const char* event_str, uintptr_t arg1, uintptr_t arg2) {
+    if (!g_platform || !g_platform->get_timer_ops() || !trace::g_trace_manager.is_enabled()) return;
+    uint32_t core_id = g_platform->get_core_id();
+    if (core_id >= core::MAX_CORES) return;
+    core::ScopedISRLock lock(g_trace_lock); 
+    static std::atomic<size_t> g_legacy_trace_idx{0};
+    size_t current_idx = g_legacy_trace_idx.fetch_add(1, std::memory_order_relaxed);
+    size_t buffer_idx = current_idx % core::TRACE_BUFFER_SIZE;
+    if (current_idx >= core::TRACE_BUFFER_SIZE && (current_idx % core::TRACE_BUFFER_SIZE == 0) ) {
+        core::g_trace_overflow_count[core_id].fetch_add(1, std::memory_order_relaxed);
+    }
+    auto* entry_ptr = &core::g_trace_buffer[buffer_idx];
+    entry_ptr->timestamp_us = g_platform->get_timer_ops()->get_system_time_us();
+    entry_ptr->core_id = core_id; entry_ptr->event_str = event_str;
+    entry_ptr->arg1 = arg1; entry_ptr->arg2 = arg2;
+}
+
+void dump_trace_buffer(hal::UARTDriverOps* uart_ops) { 
+    if (!uart_ops) return;
+    core::ScopedLock lock(g_trace_lock); 
+    uart_ops->puts("\n--- Legacy Global Trace Buffer ---\n");
+    size_t num_valid_entries = 0;
+    for(const auto& entry : core::g_trace_buffer) if(entry.event_str != nullptr) num_valid_entries++;
+    if (num_valid_entries == 0) {
+        uart_ops->puts("Legacy trace buffer empty or uninitialized.\n--- End Legacy Trace ---\n"); return;
+    }
+    for (size_t i = 0; i < core::TRACE_BUFFER_SIZE; ++i) {
+        const core::TraceEntry& entry = core::g_trace_buffer[i];
+        if (entry.event_str) {
+            char buf[128];
+            kernel::util::k_snprintf(buf, sizeof(buf), "[LTraceC%u] %llu us: %s", entry.core_id, (unsigned long long)entry.timestamp_us, entry.event_str);
+            uart_ops->puts(buf);
+            if (entry.arg1 != 0 || entry.arg2 != 0) {
+                 kernel::util::k_snprintf(buf, sizeof(buf), ", args: 0x%llx, 0x%llx", 
+                    static_cast<unsigned long long>(entry.arg1), static_cast<unsigned long long>(entry.arg2));
+                 uart_ops->puts(buf);
+            }
+            uart_ops->puts("\n");
+        }
+    }
+    uart_ops->puts("--- End Legacy Trace ---\n");
+    for (uint32_t i = 0; i < core::MAX_CORES; ++i) {
+        size_t overflows = core::g_trace_overflow_count[i].load(std::memory_order_relaxed);
+        if (overflows > 0) {
+            char buf[64]; kernel::util::k_snprintf(buf, sizeof(buf), "Core %u legacy trace overflow count: %zu\n", i, overflows);
+            uart_ops->puts(buf);
+        }
+    }
+}
+void get_kernel_stats(hal::UARTDriverOps* uart_ops) { 
+    if (!uart_ops || !g_scheduler_ptr) return; 
+    core::ScopedLock lock(g_scheduler_ptr->get_global_scheduler_lock()); 
+    char buf[128];
+    kernel::util::k_snprintf(buf, sizeof(buf), "\n--- Kernel Stats ---\nActive tasks: %zu\n", g_scheduler_ptr->get_num_active_tasks()); 
+    uart_ops->puts(buf);
+    for (uint32_t core_idx = 0; core_idx < core::MAX_CORES; ++core_idx) {
+        if (core_idx < core::g_per_cpu_data.size()) { 
+            const core::PerCPUData& cpu_data = core::g_per_cpu_data[core_idx];
+            if (cpu_data.current_thread) {
+                kernel::util::k_snprintf(buf, sizeof(buf), "Core %u: Running Task='%s' (TCB:%p, Prio:%d, Deadline:%lluus)\n",
+                              core_idx, cpu_data.current_thread->name, (void*)cpu_data.current_thread,
+                              cpu_data.current_thread->priority, (unsigned long long)cpu_data.current_thread->deadline_us);
+                uart_ops->puts(buf);
+            } else {
+                kernel::util::k_snprintf(buf, sizeof(buf), "Core %u: No current task assigned.\n", core_idx); uart_ops->puts(buf);
+            }
+             if (cpu_data.idle_thread) {
+                kernel::util::k_snprintf(buf, sizeof(buf), "Core %u: Idle Task='%s' (TCB:%p)\n",
+                              core_idx, cpu_data.idle_thread->name, (void*)cpu_data.idle_thread);
+                uart_ops->puts(buf);
+            }
+        }
+    }
+    uart_ops->puts("--- End Stats ---\n");
+}
+
+extern "C" void kernel_main() {
+    early_uart_puts("[DEBUG] Entering kernel_main\n");
+    g_platform = hal::get_platform();
+    early_uart_puts("[DEBUG] Got platform\n");
+    if (!g_platform) {
+        early_uart_puts("[DEBUG] Null platform, halting\n");
+        for(;;);
+        return;
+    }
+    early_uart_puts("[DEBUG] g_platform address: ");
+    char addr_buf[20];
+    kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "0x%llx\n", (unsigned long long)g_platform);
+    early_uart_puts(addr_buf);
+    early_uart_puts("[DEBUG] g_platform vtable address: ");
+    kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "0x%llx\n", *(unsigned long long*)g_platform);
+    early_uart_puts(addr_buf);
+    early_uart_puts("[DEBUG] Calling early_init_platform\n");
+    g_platform->early_init_platform();
+    early_uart_puts("[DEBUG] early_init_platform done\n");
+    static core::Scheduler scheduler_instance;
+    scheduler_instance.set_policy(new core::EDFPolicy());
+    g_scheduler_ptr = &scheduler_instance;
+
+    if (!core::g_software_timer_obj_pool.init(core::g_software_timer_obj_pool_mem, 
+                                              core::MAX_SOFTWARE_TIMERS,
+                                              sizeof(hal::timer::SoftwareTimer), 
+                                              alignof(hal::timer::SoftwareTimer))) {
+        g_platform->panic("Failed to init software timer pool", __FILE__, __LINE__); return;
+    }
+    trace::g_trace_manager.init();
+    trace::g_trace_manager.set_enabled(true);
+
+    for (uint32_t i = 0; i < g_platform->get_num_cores(); ++i) {
+        char idle_name[core::MAX_NAME_LENGTH];
+        kernel::util::k_snprintf(idle_name, sizeof(idle_name), "idle%u", i);
+        if (!g_scheduler_ptr->create_thread(&core::Scheduler::idle_thread_func, 
+                reinterpret_cast<void*>(static_cast<uintptr_t>(i)), 0, static_cast<int>(i), idle_name, true, 0)) {
+            g_platform->panic("Failed to create idle thread", __FILE__, __LINE__); return;
+        }
+    }
+    
+    for (uint32_t i = 0; i < g_platform->get_num_cores(); ++i) {
+        g_platform->early_init_core(i); 
+        g_scheduler_ptr->start_core_scheduler(i); 
+    }
+    
+    if (g_platform->get_core_id() == 0) { // Only core 0 enables its IRQs here.
+         asm volatile("msr daifclr, #2"); // Enable IRQs (clear PSTATE.I bit)
+    }
+} // namespace core
+} // namespace kernel// === hal.hpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file hal.hpp
+ * @brief Hardware Abstraction Layer (HAL) interfaces for miniOS v1.7.
+ * @details
+ * Defines HAL interfaces for hardware interactions (UART, IRQ, DMA, I2S, etc.).
+ * Depends on core.hpp for shared types, uses forward declarations for subsystems.
+ *
+ * @version 1.7
+ * @see hal.cpp, core.hpp
+ */
+
+#ifndef HAL_HPP
+#define HAL_HPP
+
+#include "core.hpp" // For kernel::core::MAX_CORES etc.
+#include <cstdint>   // For uint32_t, uint64_t etc.
+#include <cstddef>   // For size_t
+
+// Forward declarations for subsystems
+namespace kernel { namespace audio { class AudioBuffer; } } 
+namespace kernel { namespace core { struct TCB; } } // Forward declare TCB for context_switch
+
+namespace kernel {
+namespace hal {
+
+// ARM Generic Timer IRQ (Non-Secure EL1 Physical Timer)
+// This is a Private Peripheral Interrupt (PPI) for the core.
+// GIC IRQ IDs for PPIs are 16-31. CNTPNSIRQ is IRQ 30 (0-indexed from IRQ0).
+constexpr uint32_t SYSTEM_TIMER_IRQ = 30; // PPI ID for non-secure physical timer
+
+
+namespace sync {
+    void barrier_dmb();
+    void barrier_dsb();
+    void barrier_isb();
+}
+
+// Architecture specific CPU operations
+// This function is called by the scheduler to perform a context switch.
+// Its implementation is architecture-specific and typically involves assembly.
+void cpu_context_switch(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb);
+
+
+struct MemoryOps {
+    virtual ~MemoryOps() = default;
+    virtual void flush_cache_range(const void* addr, size_t size) = 0;
+    virtual void invalidate_cache_range(const void* addr, size_t size) = 0;
+};
+
+struct UARTDriverOps {
+    virtual ~UARTDriverOps() = default;
+    virtual void putc(char c) = 0;
+    virtual void puts(const char* str) = 0;
+    virtual void uart_put_uint64_hex(uint64_t value) = 0;
+    virtual char getc_blocking() = 0;
+};
+
+struct IRQControllerOps {
+    virtual ~IRQControllerOps() = default;
+    virtual void enable_core_irqs(uint32_t core_id, uint32_t irq_source_mask) = 0;
+    virtual void disable_core_irqs(uint32_t core_id) = 0;
+    virtual void init_distributor() = 0;
+    virtual void init_cpu_interface(uint32_t core_id) = 0;
+    virtual uint32_t ack_irq(uint32_t core_id) = 0;
+    virtual void end_irq(uint32_t core_id, uint32_t irq_id) = 0;
+    virtual void enable_irq_line(uint32_t irq_id) = 0;
+    virtual void disable_irq_line(uint32_t irq_id) = 0;
+    virtual void set_irq_priority(uint32_t irq_id, uint8_t priority) = 0;
+};
+
+namespace dma {
+    using ChannelID = int32_t;
+    constexpr ChannelID INVALID_CHANNEL = -1;
+    enum class Direction { MEM_TO_PERIPH, PERIPH_TO_MEM, MEM_TO_MEM };
+    struct TransferConfig {
+        uintptr_t src_addr;
+        uintptr_t dst_addr;
+        size_t size_bytes;
+        Direction direction;
+        bool src_increment = true;
+        bool dst_increment = true;
+        size_t burst_size_bytes = 4;
+    };
+    using DMACallback = void (*)(ChannelID channel, bool success, void* context);
+}
+struct DMAControllerOps {
+    virtual ~DMAControllerOps() = default;
+    virtual dma::ChannelID request_channel() = 0;
+    virtual void release_channel(dma::ChannelID channel) = 0;
+    virtual bool configure_and_start_transfer(dma::ChannelID channel, const dma::TransferConfig& cfg, dma::DMACallback cb, void* context) = 0;
+};
+
+namespace i2s {
+    enum class Mode { MASTER_TX, MASTER_RX, SLAVE_TX, SLAVE_RX };
+    enum class BitDepth { BITS_16, BITS_24_IN_32, BITS_32 };
+    struct Format {
+        uint32_t sample_rate_hz;
+        uint8_t num_channels;
+        BitDepth bit_depth;
+        
+        size_t get_bytes_per_sample_per_channel() const noexcept {
+            switch (bit_depth) {
+                case BitDepth::BITS_16: return 2;
+                case BitDepth::BITS_24_IN_32: [[fallthrough]];
+                case BitDepth::BITS_32: return 4;
+                default: return 0;
+            }
+        }
+        size_t get_bytes_per_frame() const noexcept {
+            return get_bytes_per_sample_per_channel() * num_channels;
+        }
+    };
+    using I2SCallback = void (*)(uint32_t instance_id, kernel::audio::AudioBuffer* buffer, Mode mode, void* user_data);
+}
+struct I2SDriverOps {
+    virtual ~I2SDriverOps() = default;
+    virtual bool init(uint32_t instance_id, i2s::Mode mode, const i2s::Format& format,
+                      size_t samples_per_block_per_channel, uint8_t num_dma_buffers,
+                      i2s::I2SCallback cb, void* user_data) = 0;
+    virtual bool start(uint32_t instance_id) = 0;
+    virtual bool stop(uint32_t instance_id) = 0;
+    virtual kernel::audio::AudioBuffer* get_buffer_for_app_tx(uint32_t instance_id) = 0;
+    virtual bool submit_filled_buffer_to_hw_tx(uint32_t instance_id, kernel::audio::AudioBuffer* buffer_to_send) = 0;
+    virtual void release_processed_buffer_to_hw_rx(uint32_t instance_id, kernel::audio::AudioBuffer* buffer) = 0;
+    virtual void convert_hw_format_to_dsp_format(kernel::audio::AudioBuffer* buffer, const i2s::Format& format) = 0;
+    virtual void convert_dsp_format_to_hw_format(kernel::audio::AudioBuffer* buffer, const i2s::Format& format) = 0;
+};
+
+namespace timer {
+    struct SoftwareTimer;
+    using software_timer_callback_t = void (*)(SoftwareTimer* timer, void* context);
+    struct SoftwareTimer {
+        uint64_t expiry_time_us;
+        uint64_t period_us;
+        software_timer_callback_t callback;
+        void* context;
+        bool active = false;
+        SoftwareTimer* next = nullptr;
+        uint32_t id = 0;
+    };
+}
+struct TimerDriverOps {
+    virtual ~TimerDriverOps() = default;
+    virtual void init_system_timer_properties(uint64_t freq_hz_override = 0) = 0;
+    virtual void init_core_timer_interrupt(uint32_t core_id) = 0;
+    virtual void ack_core_timer_interrupt(uint32_t core_id) = 0;
+    virtual bool add_software_timer(timer::SoftwareTimer* timer) = 0;
+    virtual bool remove_software_timer(timer::SoftwareTimer* timer) = 0;
+    virtual uint64_t get_system_time_us() = 0;
+    virtual void hardware_timer_irq_fired(uint32_t core_id) = 0;
+};
+
+namespace net {
+    using PacketReceivedCallback = void (*)(int if_idx, const uint8_t* data, size_t len, void* context);
+    struct NetworkDriverOps {
+        virtual ~NetworkDriverOps() = default;
+        virtual bool init_interface(int if_idx) = 0;
+        virtual bool send_packet(int if_idx, const uint8_t* data, size_t len) = 0;
+        virtual void register_packet_receiver(PacketReceivedCallback cb, void* context) = 0;
+    };
+}
+
+namespace gpio {
+    constexpr size_t NUM_BANKS = 4; 
+    constexpr size_t PINS_PER_BANK = 32; 
+    enum class PinMode { INPUT, OUTPUT, ALT_FUNC };
+    enum class PinState { LOW, HIGH };
+    struct GPIODriverOps {
+        virtual ~GPIODriverOps() = default;
+        virtual bool init_bank(uint32_t bank_id) = 0;
+        virtual bool configure_pin(uint32_t bank, uint32_t pin, PinMode mode) = 0;
+        virtual bool set_pin_state(uint32_t bank, uint32_t pin, PinState state) = 0;
+        virtual PinState read_pin_state(uint32_t bank, uint32_t pin) = 0;
+        virtual void enable_interrupt(uint32_t bank, uint32_t pin, bool rising_edge) = 0;
+    };
+}
+
+struct PowerOps {
+    virtual ~PowerOps() = default;
+    virtual void enter_idle_state(uint32_t core_id) = 0;
+    virtual bool set_cpu_frequency(uint32_t core_id, uint32_t freq_hz) = 0;
+};
+
+struct WatchdogOps {
+    virtual ~WatchdogOps() = default;
+    virtual bool start_watchdog(uint32_t timeout_ms) = 0;
+    virtual bool reset_watchdog() = 0;
+    virtual bool stop_watchdog() = 0;
+};
+
+class Platform {
+public:
+    virtual ~Platform() = default;
+    virtual uint32_t get_core_id() const = 0;
+    virtual uint32_t get_num_cores() const = 0;
+    virtual UARTDriverOps* get_uart_ops() = 0;
+    virtual IRQControllerOps* get_irq_ops() = 0;
+    virtual TimerDriverOps* get_timer_ops() = 0;
+    virtual DMAControllerOps* get_dma_ops() = 0;
+    virtual I2SDriverOps* get_i2s_ops() = 0;
+    virtual MemoryOps* get_mem_ops() = 0;
+    virtual net::NetworkDriverOps* get_net_ops() = 0;
+    virtual PowerOps* get_power_ops() = 0;
+    virtual gpio::GPIODriverOps* get_gpio_ops() = 0;
+    virtual WatchdogOps* get_watchdog_ops() = 0;
+    virtual void early_init_platform() = 0;
+    virtual void early_init_core(uint32_t core_id) = 0;
+    [[noreturn]] virtual void panic(const char* msg, const char* file, int line) = 0;
+    virtual void reboot_system() = 0;
+};
+
+Platform* get_platform();
+
+} // namespace hal
+} // namespace kernel
+
+#endif // HAL_HPP// === hal.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file hal.cpp
+ * @brief Hardware abstraction layer entry point for miniOS v1.7.
+ */
+
+#include "hal.hpp"
+#include "hal_qemu_arm64.hpp" 
+#include "core.hpp"           
+#include "miniOS.hpp"         
+#include "util.hpp"
+#include <cstdint>    
+
+extern "C" {
+    void cpu_context_switch_impl(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb);
+}
+
+namespace kernel {
+namespace hal {
+
+static ::hal::qemu_virt_arm64::PlatformQEMUVirtARM64 g_platform_instance;
+Platform* get_platform() { return &g_platform_instance; }
+
+void cpu_context_switch(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb) {
+    if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+         char b[128];
+         uint32_t core_id_of_new = new_tcb ? new_tcb->cpu_id_running_on : static_cast<uint32_t>(-1);
+         // Using kernel::util::k_snprintf now
+         kernel::util::k_snprintf(b, sizeof(b), "HAL_CTXSW: OLD TCB:%p(%s) -> NEW TCB:%p(%s) on Core:%u\n",
+            (void*)old_tcb, old_tcb ? old_tcb->name : "NULL",
+            (void*)new_tcb, new_tcb ? new_tcb->name : "NULL",
+            core_id_of_new
+         );
+         kernel::g_platform->get_uart_ops()->puts(b);
+    }
+    if (!new_tcb) {
+        if (kernel::g_platform) {
+            kernel::g_platform->panic("cpu_context_switch called with NULL new_tcb", __FILE__, __LINE__);
+        } else { for(;;); }
+    }
+    cpu_context_switch_impl(old_tcb, new_tcb);
+}
+
+extern "C" void hal_irq_handler(uint32_t core_id) {
+    core::ScopedISRLock lock(kernel::g_irq_handler_lock); 
+    if (core_id >= core::MAX_CORES || !kernel::g_platform || !kernel::g_platform->get_irq_ops() ||
+        !kernel::g_platform->get_timer_ops()) {
+        for (;;) asm volatile("nop"); 
+        return;
+    }
+    IRQControllerOps* irq_ops = kernel::g_platform->get_irq_ops();
+    TimerDriverOps* timer_ops = kernel::g_platform->get_timer_ops();
+    uint32_t irq_id = irq_ops->ack_irq(core_id);
+
+    if (irq_id < 1020) { 
+        if (irq_id == kernel::hal::SYSTEM_TIMER_IRQ) { 
+            timer_ops->ack_core_timer_interrupt(core_id); 
+            if (kernel::g_scheduler_ptr) {
+                kernel::g_scheduler_ptr->preemptive_tick(core_id);
+            }
+            timer_ops->hardware_timer_irq_fired(core_id);
+        } else if (irq_id == ::hal::qemu_virt_arm64::IRQ_UART0) { 
+            // UART specific handling if interrupt-driven
+        } else if (irq_id == ::hal::qemu_virt_arm64::IRQ_VIRTIO_NET) { 
+            // VirtIO Net specific handling
+        }
+        irq_ops->end_irq(core_id, irq_id);
+    } else if (irq_id == 1023) {
+        // Spurious interrupt
+    }
+}
+
+namespace sync {
+    void barrier_dmb() { asm volatile("dmb sy" ::: "memory"); }
+    void barrier_dsb() { asm volatile("dsb sy" ::: "memory"); }
+    void barrier_isb() { asm volatile("isb" ::: "memory"); }
+}
+
+} // namespace hal
+} // namespace kernel// === audio.hpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file audio.hpp
+ * @brief Audio subsystem interfaces for miniOS v1.7.
+ * @details
+ * Defines interfaces for audio buffer management and processing, supporting low-latency
+ * audio for network audio products. Updated in v1.7 for modularity and C++20 compatibility.
+ *
+ * @version 1.7
+ * @see audio.cpp, core.hpp, hal.hpp
+ */
+
+#ifndef AUDIO_HPP
+#define AUDIO_HPP
+
+#include "hal.hpp"
+#include <cstdint>
+
+namespace kernel {
+namespace audio {
+
+struct AudioBuffer {
+    void* data_raw_i2s = nullptr; // Raw I2S data
+    float* data_dsp_canonical = nullptr; // DSP-processed data
+    size_t size_bytes_raw_buffer = 0;
+    size_t samples_per_channel = 0;
+    uint8_t channels = 2;
+};
+
+} // namespace audio
+} // namespace kernel
+
+#endif // AUDIO_HPP// === audio.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file audio.hpp
+ * @brief Audio subsystem header for miniOS v1.7.
+ * @details
+ * Defines the audio processing subsystem, including buffer management, I2S interface,
+ * and DSP integration. Supports multi-channel audio with DMA-driven I2S transfers.
+ * Updated in v1.7 with improved error handling, clearer documentation, and modern
+ * C++20 practices, retaining all v1.6 functionality.
+ *
+ * C++20 features:
+ * - std::span for buffer handling
+ * - std::unique_ptr for resource management
+ * - std::string_view for string operations
+ *
+ * @version 1.7
+ * @see audio.cpp, core.hpp, hal.hpp
+ */
+
+#ifndef AUDIO_HPP
+#define AUDIO_HPP
+
+#include "core.hpp"
+#include "hal.hpp"
+#include <memory>
+#include <vector>
+#include <array>
+#include <string_view>
+
+// Forward declaration
+namespace dsp { class DSPGraph; }
+
+namespace audio {
+
+constexpr size_t MAX_AUDIO_SAMPLES_PER_BLOCK = 1024;
+
+struct AudioBuffer {
+    std::span<float> get_data() noexcept {
+        return std::span<float>(data.data(), data.size());
+    }
+    std::span<const float> get_data() const noexcept {
+        return std::span<const float>(data.data(), data.size());
+    }
+    std::array<float, MAX_AUDIO_SAMPLES_PER_BLOCK * kernel::core::MAX_AUDIO_CHANNELS> data;
+    uint32_t num_samples_per_channel = 0;
+    uint8_t num_channels = 0;
+    uint32_t sample_rate_hz = 0;
+};
+
+struct AudioConfig {
+    uint32_t sample_rate_hz;
+    size_t samples_per_block;
+    uint8_t num_channels;
+    uint8_t num_i2s_dma_buffers;
+    uint32_t i2s_rx_instance_id;
+    uint32_t i2s_tx_instance_id;
+};
+
+class AudioSystem {
+public:
+    AudioSystem() = default;
+    ~AudioSystem() = default;
+
+    bool init(const AudioConfig& config);
+    bool start();
+    void stop();
+
+    dsp::DSPGraph& get_dsp_graph();
+    const dsp::DSPGraph& get_dsp_graph() const;
+
+    AudioSystem(const AudioSystem&) = delete;
+    AudioSystem& operator=(const AudioSystem&) = delete;
+
+private:
+    static void i2s_rx_callback(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode, void* user_data);
+    static void i2s_tx_callback(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode, void* user_data);
+    static void dsp_thread(void* arg);
+
+    AudioConfig config_{};
+    bool is_running_ = false;
+    kernel::core::TCB* dsp_thread_tcb_ = nullptr;
+    std::unique_ptr<dsp::DSPGraph> dsp_graph_;
+    std::unique_ptr<kernel::core::FixedMemoryPool> audio_buffer_pool_;
+    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> i2s_rx_to_dsp_queue_;
+    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> dsp_to_app_rx_queue_;
+    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> app_tx_to_dsp_queue_;
+    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> dsp_to_i2s_tx_queue_;
+};
+
+} // namespace audio
+
+#endif // AUDIO_HPP// === util.hpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file util.hpp
+ * @brief Freestanding utility functions header for miniOS v1.7.
+ */
+
+#ifndef UTIL_HPP
+#define UTIL_HPP
+
+#include <string_view> 
+#include <cstddef>     
+#include <cstdint>     
+#include <limits>      
+#include <span>        
+#include <cstdarg>      
+
+// Declare the C-linkage functions that are defined in freestanding_stubs.cpp
+// This makes them visible to C++ code in the global namespace.
+extern "C" {
+    void* memcpy(void* dest, const void* src, size_t count);
+    void* memset(void* dest, int ch, size_t count);
+    int memcmp(const void* ptr1, const void* ptr2, size_t count);
+    size_t strlen(const char* str);
+    int strcmp(const char* lhs, const char* rhs);
+    int strncmp(const char* lhs, const char* rhs, size_t count);
+    char* strcpy(char* dest, const char* src);
+    char* strncpy(char* dest, const char* src, size_t count);
+	void early_uart_puts(const char* str);
+}
+
+
+namespace kernel {
+namespace util {
+
+// Inline wrappers in the kernel::util namespace calling global extern "C" versions
+// These provide a namespaced API for the rest of the kernel.
+inline void* kmemcpy(void* dest, const void* src, size_t count) noexcept {
+    return ::memcpy(dest, src, count); // Calls global C memcpy
+}
+
+inline void* kmemset(void* dest, int ch, size_t count) noexcept {
+    return ::memset(dest, ch, count); // Calls global C memset
+}
+
+inline int kmemcmp(const void* ptr1, const void* ptr2, size_t count) noexcept {
+    return ::memcmp(ptr1, ptr2, count); 
+}
+
+inline size_t kstrlen(const char* str) noexcept {
+    // The global ::strlen already handles null, but an extra check here is harmless.
+    if (!str) return 0; 
+    return ::strlen(str); 
+}
+
+inline int kstrcmp(const char* lhs, const char* rhs) noexcept {
+    return ::strcmp(lhs, rhs);
+}
+
+inline int kstrncmp(const char* lhs, const char* rhs, size_t count) noexcept {
+    return ::strncmp(lhs, rhs, count); 
+}
+
+inline char* kstrcpy(char* dest, const char* src) noexcept {
+    return ::strcpy(dest, src); 
+}
+
+inline char* kstrncpy(char* dest, const char* src, size_t count) noexcept {
+    return ::strncpy(dest, src, count); 
+}
+
+// Declarations for functions defined in util.cpp
+bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept; 
+char* kstrcat(char* dest, const char* src, size_t dest_max_len) noexcept; 
+
+// Character functions (can be inline as they are simple)
+inline bool isspace(char c) noexcept { 
+    return (c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r');
+}
+inline bool isdigit(char c) noexcept { 
+    return (c >= '0' && c <= '9');
+}
+bool isalpha(char c) noexcept; 
+bool isalnum(char c) noexcept; 
+int toupper(int c) noexcept;   
+int tolower(int c) noexcept;   
+
+// String to number conversion
+bool str_to_int32(std::string_view input, int32_t& out_val) noexcept;
+bool str_to_uint32(std::string_view input, uint32_t& out_val) noexcept;
+bool str_to_float(std::string_view input, float& out_val) noexcept; 
+
+// IP address conversion
+bool ipv4_to_uint32(std::string_view ip_str, uint32_t& ip_addr) noexcept;
+
+// Number to string conversion helpers (definitions in util.cpp)
+int int_to_str(int32_t value, char* buffer, size_t buffer_size, int base = 10) noexcept;
+int uint_to_str(uint32_t value, char* buffer, size_t buffer_size, int base = 10) noexcept;
+int uint64_to_str(uint64_t value, char* buffer, size_t buffer_size, int base = 10) noexcept;
+int uint64_to_hex_str(uint64_t value, char* buffer, size_t buffer_size, bool leading_0x = true) noexcept;
+
+void uint32_to_ipv4_str(uint32_t ip_addr, std::span<char> out_buffer) noexcept; 
+
+std::string_view get_next_token(std::string_view& input, char delimiter) noexcept;
+
+// Simplified snprintf-like functions (definitions in util.cpp)
+int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) noexcept;
+int k_snprintf(char* buffer, size_t bufsz, const char* format, ...) noexcept __attribute__((format(printf, 3, 4)));
+
+template <typename T>
+constexpr const T& min(const T& a, const T& b) { return (b < a) ? b : a; }
+template <typename T>
+constexpr const T& max(const T& a, const T& b) { return (a < b) ? b : a; }
+
+} // namespace util
+} // namespace kernel
+
+#endif // UTIL_HPP// === util.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file util.cpp
+ * @brief Freestanding utility functions implementation for miniOS v1.7.
+ */
+
+#include "util.hpp" 
+#include <cstdarg> // For va_list in k_vsnprintf
+
+namespace kernel {
+namespace util {
+	
+// safe_strcpy now uses kstrlen and kmemcpy (which call the global extern "C" versions)
+bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept {
+    if (!dest || !src || dest_size == 0) {
+        if (dest && dest_size > 0) dest[0] = '\0'; 
+        return false;
+    }
+    size_t src_len = kstrlen(src); // Uses kernel::util::kstrlen -> ::strlen
+    if (src_len < dest_size) {
+        kmemcpy(dest, src, src_len + 1); // Uses kernel::util::kmemcpy -> ::memcpy
+        return true;
+    } else {
+        kmemcpy(dest, src, dest_size - 1);
+        dest[dest_size - 1] = '\0'; 
+        return false; 
+    }
+}
+
+char* kstrcat(char* dest, const char* src, size_t dest_max_len) noexcept {
+    if (!dest || !src || dest_max_len == 0) return dest;
+    size_t dest_len = kstrlen(dest); 
+    if (dest_len >= dest_max_len -1) return dest; 
+
+    size_t remaining_space = dest_max_len - dest_len - 1; 
+    char* p = dest + dest_len;
+    const char* s = src;
+    while (*s && remaining_space > 0) {
+        *p++ = *s++;
+        remaining_space--;
+    }
+    *p = '\0';
+    return dest;
+}
+
+// Character functions moved from inline in header to .cpp
+bool isalpha(char c) noexcept {
+    return ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+}
+
+bool isalnum(char c) noexcept {
+    return isalpha(c) || isdigit(c); // Uses kernel::util::isalpha and inline kernel::util::isdigit
+}
+
+int toupper(int c_int) noexcept {
+    char c = static_cast<char>(c_int);
+    if (c >= 'a' && c <= 'z') {
+        return c - 'a' + 'A';
+    }
+    return c;
+}
+
+int tolower(int c_int) noexcept {
+    char c = static_cast<char>(c_int);
+    if (c >= 'A' && c <= 'Z') {
+        return c - 'A' + 'a';
+    }
+    return c;
+}
+
+bool str_to_int32(std::string_view input, int32_t& out_val) noexcept {
+    if (input.empty()) return false;
+    long long acc = 0; 
+    size_t i = 0;
+    bool negative = false;
+    const long long INT32_MIN_ABS_VAL = 2147483648LL; 
+
+    while (i < input.length() && isspace(input[i])) { i++; } 
+    if (i < input.length()) {
+        if (input[i] == '-') { negative = true; i++; }
+        else if (input[i] == '+') { i++; }
+    }
+    bool found_digits = false;
+    while (i < input.length() && isdigit(input[i])) { 
+        found_digits = true;
+        int digit = input[i] - '0';
+        if (negative) {
+             if (acc > (INT32_MIN_ABS_VAL - digit) / 10) return false; 
+             if (acc == (INT32_MIN_ABS_VAL - digit) / 10 && static_cast<long long>(digit) > (INT32_MIN_ABS_VAL % 10) ) return false;
+        } else { 
+             if (acc > (static_cast<long long>(std::numeric_limits<int32_t>::max()) - digit) / 10) return false; 
+        }
+        acc = acc * 10 + digit;
+        i++;
+    }
+    if (!found_digits) return false;
+    while (i < input.length() && isspace(input[i])) { i++; }
+    if (i != input.length()) return false; 
+
+    if (negative) acc = -acc;
+    if (acc < std::numeric_limits<int32_t>::min() || acc > std::numeric_limits<int32_t>::max()) return false;
+    out_val = static_cast<int32_t>(acc);
+    return true;
+}
+
+bool str_to_uint32(std::string_view input, uint32_t& out_val) noexcept {
+    if (input.empty()) return false;
+    unsigned long long acc = 0; 
+    size_t i = 0;
+    while (i < input.length() && isspace(input[i])) { i++; }
+    if (i < input.length() && input[i] == '+') { i++; }
+    bool found_digits = false;
+    while (i < input.length() && isdigit(input[i])) {
+        found_digits = true;
+        int digit = input[i] - '0';
+        if (acc > (std::numeric_limits<uint32_t>::max() - static_cast<unsigned long long>(digit)) / 10ULL) return false; 
+        acc = acc * 10ULL + static_cast<unsigned long long>(digit);
+        i++;
+    }
+    if (!found_digits) return false;
+    while (i < input.length() && isspace(input[i])) { i++; }
+    if (i != input.length()) return false;
+    if (acc > std::numeric_limits<uint32_t>::max()) return false;
+    out_val = static_cast<uint32_t>(acc);
+    return true;
+}
+
+bool str_to_float(std::string_view input, float& out_val) noexcept {
+    (void)input; 
+    out_val = 0.0f; 
+    return false; 
+}
+
+static char* reverse_str(char* str, int length) {
+    int start = 0; int end = length - 1;
+    while (start < end) { char temp = str[start]; str[start] = str[end]; str[end] = temp; start++; end--; }
+    return str;
+}
+
+static int num_to_str_base_internal(uint64_t value, char* buffer, size_t buffer_size, int base, bool handle_sign_for_base10) {
+    if (buffer_size == 0) return -1; 
+    if (base < 2 || base > 36) { 
+        if (buffer_size > 0) buffer[0] = '\0'; 
+        return -1; 
+    }
+    char* ptr = buffer;
+    int chars_written = 0; 
+    if (handle_sign_for_base10 && base == 10 && static_cast<int64_t>(value) < 0) {
+        if (static_cast<size_t>(chars_written + 1) >= buffer_size) { buffer[0] = '\0'; return -1; }
+        *ptr++ = '-';
+        chars_written++;
+        if (value == static_cast<uint64_t>(std::numeric_limits<int64_t>::min())) {
+            const char* min_int_mag = "9223372036854775808"; size_t min_len = kstrlen(min_int_mag); 
+            if (static_cast<size_t>(chars_written) + min_len >= buffer_size) { 
+                if(chars_written > 0) buffer[chars_written-1] = '\0'; else buffer[0] = '\0';
+                return -1; 
+            }
+            kmemcpy(ptr, min_int_mag, min_len + 1); 
+            return static_cast<int>(static_cast<size_t>(chars_written) + min_len);
+        }
+        value = static_cast<uint64_t>(-static_cast<int64_t>(value));
+        // is_negative was unused, removed
+    }
+    if (value == 0) {
+        if (static_cast<size_t>(chars_written + 1) >= buffer_size) { buffer[0] = '\0'; return -1; }
+        *ptr++ = '0';
+        chars_written++;
+        *ptr = '\0';
+        return chars_written;
+    }
+    char* start_digits = ptr; 
+    int num_digits = 0;
+    while (value > 0) {
+        if (static_cast<size_t>(chars_written + num_digits + 1) >= buffer_size) { 
+            buffer[min(static_cast<size_t>(chars_written + num_digits), buffer_size-1)] = '\0'; 
+            return -1; 
+        }
+        int remainder = value % static_cast<unsigned int>(base); 
+        *ptr++ = (remainder > 9) ? static_cast<char>((remainder - 10) + 'a') : static_cast<char>(remainder + '0');
+        value /= static_cast<unsigned int>(base);
+        num_digits++;
+    }
+    *ptr = '\0'; 
+    reverse_str(start_digits, num_digits); 
+    return chars_written + num_digits;
+}
+
+int int_to_str(int32_t value, char* buffer, size_t buffer_size, int base) noexcept {
+    return num_to_str_base_internal(static_cast<uint64_t>(static_cast<int64_t>(value)), buffer, buffer_size, base, true);
+}
+int uint_to_str(uint32_t value, char* buffer, size_t buffer_size, int base) noexcept {
+    return num_to_str_base_internal(value, buffer, buffer_size, base, false);
+}
+int uint64_to_str(uint64_t value, char* buffer, size_t buffer_size, int base) noexcept {
+    return num_to_str_base_internal(value, buffer, buffer_size, base, false);
+}
+int uint64_to_hex_str(uint64_t value, char* buffer, size_t buffer_size, bool leading_0x) noexcept {
+    if (buffer_size == 0) return -1;
+    char* ptr = buffer;
+    size_t current_written = 0;
+    if (leading_0x) {
+        if (buffer_size < 3) { buffer[0] = '\0'; return -1; } 
+        *ptr++ = '0'; *ptr++ = 'x'; current_written += 2;
+    }
+    int digits_len = num_to_str_base_internal(value, ptr, buffer_size - current_written, 16, false);
+    if (digits_len < 0) { if (buffer_size > 0) buffer[0] = '\0'; return -1; }
+    return static_cast<int>(current_written + static_cast<size_t>(digits_len));
+}
+
+void uint32_to_ipv4_str(uint32_t ip_addr, std::span<char> out_buffer) noexcept {
+    if (out_buffer.empty()) return;
+    char* p = out_buffer.data(); size_t remaining = out_buffer.size(); int written_this_segment;
+    for (int i = 0; i < 4; ++i) {
+        if (remaining == 0) { 
+            if(p != out_buffer.data()) { *(p-1) = '\0'; } 
+            else if (!out_buffer.empty()) { out_buffer[0] = '\0'; }
+            return; 
+        }
+        uint8_t octet = (ip_addr >> (24 - i * 8)) & 0xFF;
+        written_this_segment = uint_to_str(octet, p, remaining, 10);
+        if (written_this_segment < 0 || static_cast<size_t>(written_this_segment) >= remaining) {
+            if(!out_buffer.empty()) { out_buffer[0] = '\0'; }
+            return;
+        }
+        p += written_this_segment; remaining -= static_cast<size_t>(written_this_segment);
+        if (i < 3) {
+            if (remaining <= 1) { *p = '\0'; return; } 
+            *p++ = '.'; remaining--;
+        }
+    }
+    if (remaining > 0) { *p = '\0'; }
+    else if (!out_buffer.empty()) { out_buffer.back() = '\0'; }
+}
+
+bool ipv4_to_uint32(std::string_view ip_str_in, uint32_t& ip_addr) noexcept {
+    uint32_t parts[4] = {0}; int current_part_idx = 0;
+    uint32_t current_octet_val = 0; bool digits_in_octet = false; bool expect_dot = false; 
+    std::string_view ip_str = ip_str_in; 
+    size_t first_char = ip_str.find_first_not_of(" \t\r\n");
+    if (first_char == std::string_view::npos) return false;
+    ip_str.remove_prefix(first_char);
+    size_t last_char = ip_str.find_last_not_of(" \t\r\n");
+    if (last_char == std::string_view::npos) return false;
+    ip_str = ip_str.substr(0, last_char + 1);
+    for (char c : ip_str) {
+        if (isdigit(c)) {
+            if (expect_dot) return false; 
+            current_octet_val = current_octet_val * 10 + (c - '0');
+            if (current_octet_val > 255) return false; 
+            digits_in_octet = true;
+        } else if (c == '.') {
+            if (!digits_in_octet || current_part_idx >= 3) return false; 
+            parts[current_part_idx++] = current_octet_val;
+            current_octet_val = 0; digits_in_octet = false; expect_dot = false; 
+        } else if (isspace(c)) { 
+            if (digits_in_octet && current_part_idx < 3) expect_dot = true; 
+            continue; 
+        } else { return false; }
+    }
+    if (!digits_in_octet || current_part_idx != 3) return false; 
+    parts[current_part_idx] = current_octet_val;
+    ip_addr = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
+    return true;
+}
+
+std::string_view get_next_token(std::string_view& input_ref, char delimiter) noexcept {
+    std::string_view current_input = input_ref; 
+    size_t start = 0;
+    while(start < current_input.length() && isspace(current_input[start])) { start++; } 
+    current_input.remove_prefix(start);
+    if (current_input.empty()) { input_ref.remove_prefix(input_ref.length()); return {}; }
+    size_t pos = 0;
+    while(pos < current_input.length() && current_input[pos] != delimiter) { pos++; }
+    std::string_view token = current_input.substr(0, pos);
+    if (pos < current_input.length()) { current_input.remove_prefix(pos + 1); } 
+    else { current_input.remove_prefix(pos); }
+    input_ref = current_input; 
+    size_t token_end = token.length();
+    while(token_end > 0 && isspace(token[token_end - 1])) { token_end--; } 
+    return token.substr(0, token_end);
+}
+
+int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) noexcept {
+    if (!buffer || bufsz == 0 || !format) { if (bufsz > 0) buffer[0] = '\0'; return 0; }
+    char* buf_ptr = buffer;
+    char* const buf_write_end = buffer + bufsz -1; 
+    int total_written_chars = 0; 
+    char temp_num_buf[24]; 
+
+    while (*format && buf_ptr < buf_write_end) { 
+        if (*format == '%') {
+            format++; 
+            bool is_long_long = false;
+            if (format[0] == 'l' && format[1] == 'l') {
+                is_long_long = true; format += 2;
+            }
+            int current_segment_len = 0;
+            const char* str_to_copy_from = temp_num_buf; 
+
+            switch (*format) {
+                case 's': { 
+                    const char* s_arg = va_arg(args, const char*);
+                    if (!s_arg) s_arg = "(null)";
+                    str_to_copy_from = s_arg;
+                    current_segment_len = static_cast<int>(kstrlen(s_arg)); 
+                    break;
+                }
+                case 'c': { 
+                    temp_num_buf[0] = static_cast<char>(va_arg(args, int)); 
+                    temp_num_buf[1] = '\0'; current_segment_len = 1;
+                    break;
+                }
+                case 'd': case 'i': { 
+                    if (is_long_long) current_segment_len = int_to_str(static_cast<int32_t>(va_arg(args, long long)), temp_num_buf, sizeof(temp_num_buf));
+                    else current_segment_len = int_to_str(va_arg(args, int), temp_num_buf, sizeof(temp_num_buf));
+                    break;
+                }
+                case 'u': { 
+                    if (is_long_long) current_segment_len = uint64_to_str(va_arg(args, unsigned long long), temp_num_buf, sizeof(temp_num_buf));
+                    else current_segment_len = uint_to_str(va_arg(args, unsigned int), temp_num_buf, sizeof(temp_num_buf));
+                    break;
+                }
+                case 'x': case 'X': case 'p': { 
+                    uint64_t hex_val;
+                    if (*format == 'p') hex_val = reinterpret_cast<uint64_t>(va_arg(args, void*));
+                    else if (is_long_long) hex_val = va_arg(args, unsigned long long);
+                    else hex_val = va_arg(args, unsigned int);
+                    current_segment_len = uint64_to_hex_str(hex_val, temp_num_buf, sizeof(temp_num_buf), (*format == 'p'));
+                    break;
+                }
+                case '%': { 
+                    temp_num_buf[0] = '%'; temp_num_buf[1] = '\0'; current_segment_len = 1;
+                    break;
+                }
+                default: { 
+                    if (buf_ptr < buf_write_end) { *buf_ptr++ = '%'; total_written_chars++; }
+                    // Ensure not to read past end of format string if it ends with %
+                    if (*format && buf_ptr < buf_write_end) { *buf_ptr++ = *format; total_written_chars++; } 
+                    str_to_copy_from = nullptr; 
+                    break;
+                }
+            }
+
+            if (str_to_copy_from && current_segment_len > 0) {
+                int copy_actual_len = 0;
+                for(int k=0; k < current_segment_len && buf_ptr < buf_write_end; ++k) {
+                    *buf_ptr++ = str_to_copy_from[k];
+                    copy_actual_len++;
+                }
+                total_written_chars += copy_actual_len;
+            } else if (str_to_copy_from && current_segment_len < 0) { /* conversion error */ }
+             else if (!str_to_copy_from && (*format == '\0' || *(format+1) == '\0') ) { /* Format string ended after % or %? */ break; }
+
+
+        } else { 
+            *buf_ptr++ = *format;
+            total_written_chars++;
+        }
+        if (*format == '\0') break; 
+        format++;
+    }
+    *buf_ptr = '\0'; 
+    return total_written_chars;
+}
+
+int k_snprintf(char* buffer, size_t bufsz, const char* format, ...) noexcept {
+    va_list args;
+    va_start(args, format);
+    int result = k_vsnprintf(buffer, bufsz, format, args);
+    va_end(args);
+    return result;
+}
+
+} // namespace util
+} // namespace kernel// === trace.hpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file trace.hpp
+ * @brief Task tracing subsystem header for miniOS v1.7.
+ * @details
+ * Defines a lightweight, thread-safe tracing system for debugging thread execution in SMP
+ * environments. Records events (e.g., thread creation, scheduling, yield, exit, custom) in a
+ * fixed-size buffer, with support for enabling/disabling tracing, dumping to UART, and clearing
+ * via CLI. Updated in v1.7 for modularity and compatibility with low-latency audio RTOS.
+ *
+ * C++20 features:
+ * - std::span for buffer handling
+ * - std::atomic for thread-safe state
+ * - std::string_view for string operations
+ *
+ * @version 1.7
+ * @see trace.cpp, core.hpp, hal.hpp
+ */
+
+#ifndef TRACE_HPP
+#define TRACE_HPP
+
+#include "core.hpp"
+#include "hal.hpp"
+#include <span>
+#include <atomic>
+#include <array>
+#include <string_view>
+#include <cstdint>
+
+namespace trace {
+
+constexpr size_t MAX_TRACE_EVENTS = 64;
+
+enum class EventType {
+    THREAD_CREATE,
+    THREAD_SCHEDULE,
+    THREAD_YIELD,
+    THREAD_EXIT,
+    CUSTOM
+};
+
+struct TraceEvent {
+    uint64_t timestamp_us;
+    EventType type;
+    const kernel::core::TCB* tcb;
+    std::string_view name;
+    uint64_t value;
+};
+
+class TraceManager {
+public:
+    TraceManager() : enabled_(false) {}
+
+    void init() noexcept { clear_trace(); }
+
+    void set_enabled(bool enable) noexcept { enabled_.store(enable, std::memory_order_relaxed); }
+
+    bool is_enabled() const noexcept { return enabled_.load(std::memory_order_relaxed); }
+
+    bool record_event(const kernel::core::TCB* tcb, EventType type, std::string_view name, uint64_t value = 0) noexcept;
+
+    void dump_trace(kernel::hal::UARTDriverOps* uart_ops) const;
+
+    void clear_trace() noexcept;
+
+private:
+    std::atomic<bool> enabled_;
+    std::array<TraceEvent, MAX_TRACE_EVENTS> buffer_;
+    std::atomic<size_t> buffer_idx_{0};
+};
+
+extern TraceManager g_trace_manager;
+
+} // namespace trace
+
+#endif // TRACE_HPP// === trace.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file trace.cpp
+ * @brief Task tracing subsystem implementation for miniOS v1.7.
+ */
+
+#include "trace.hpp"
+#include "core.hpp"
+#include "hal.hpp"
+#include "miniOS.hpp"
+#include "util.hpp"
+#include <algorithm>
+#include <atomic>
+
+namespace trace {
+
+TraceManager g_trace_manager;
+
+bool TraceManager::record_event(const kernel::core::TCB* tcb, EventType type,
+                                std::string_view name_sv, uint64_t value) noexcept {
+    if (!enabled_.load(std::memory_order_relaxed) || !kernel::g_platform || !kernel::g_platform->get_timer_ops()) { // Added timer_ops check
+        return false;
+    }
+
+    // Using the lock from TraceManager if it exists, or a global one if necessary
+    // Assuming TraceManager has its own lock_ for buffer access (as per your trace.hpp)
+    // kernel::core::ScopedLock guard(lock_); // If lock_ is a member of TraceManager
+
+    // For this example, let's assume no internal lock in TraceManager and rely on atomics for buffer_idx_
+    // or if more complex, it should have its own kernel::core::Spinlock member.
+    // For now, let's use the simpler approach from your previous code.
+
+    size_t idx = buffer_idx_.fetch_add(1, std::memory_order_relaxed);
+    // Simple wrap-around for ring buffer behavior
+    idx %= MAX_TRACE_EVENTS; 
+
+    // buffer_[idx] = TraceEvent { ... } // This direct assignment can be problematic if TraceEvent has non-trivial members
+    // Corrected approach:
+    TraceEvent& current_event = buffer_[idx];
+    current_event.timestamp_us = kernel::g_platform->get_timer_ops()->get_system_time_us();
+    current_event.type = type;
+    current_event.tcb = tcb;
+
+    // Copy name safely if name is std::array<char, KERNEL_MAX_NAME_LENGTH> in TraceEvent
+    // If TraceEvent.name is std::string_view, this is fine:
+    current_event.name = name_sv; 
+    // If TraceEvent.name is char array like in my proposed trace.hpp:
+    // kernel::util::safe_strcpy(current_event.name_copy.data(), name_sv.data(), current_event.name_copy.size());
+    
+    current_event.value = value;
+    return true;
+}
+
+void TraceManager::dump_trace(kernel::hal::UARTDriverOps* uart_ops) const {
+    if (!uart_ops) return;
+
+    size_t current_buffer_idx = buffer_idx_.load(std::memory_order_relaxed);
+    size_t count = kernel::util::min(current_buffer_idx, MAX_TRACE_EVENTS); // Number of valid entries if not wrapping
+                                                                  // Or if wrapping, this is just total events written mod MAX
+
+    if (count == 0 && current_buffer_idx < MAX_TRACE_EVENTS) { // If it hasn't wrapped and idx is 0
+        uart_ops->puts("Trace buffer empty\n");
+        return;
+    }
+
+    uart_ops->puts("\n--- Trace Buffer (TraceManager) ---\n");
+    
+    // If it's a ring buffer, we need to print from head to tail.
+    // This simple iteration prints the first 'count' entries, or all if it wrapped.
+    // For a true ring buffer, this print logic needs to be smarter.
+    // Assuming for now it's a simple array that fills up and then wraps.
+    size_t start_idx = 0;
+    size_t num_to_print = count;
+
+    if (current_buffer_idx >= MAX_TRACE_EVENTS) { // It has wrapped at least once
+        start_idx = current_buffer_idx % MAX_TRACE_EVENTS; // Oldest entry is at current_idx
+        num_to_print = MAX_TRACE_EVENTS;
+    }
+
+
+    for (size_t i = 0; i < num_to_print; ++i) {
+        size_t actual_idx = (start_idx + i) % MAX_TRACE_EVENTS;
+        const auto& event = buffer_[actual_idx];
+        
+        // Check if the event looks initialized (e.g., timestamp is not 0, if that's a valid check)
+        // Or if TraceEvent has a 'valid' flag. For now, print if name/tcb suggests it's used.
+        if (event.tcb == nullptr && event.name.empty() && event.timestamp_us == 0 && i >= current_buffer_idx && current_buffer_idx < MAX_TRACE_EVENTS) {
+            // Likely an uninitialized entry if buffer hasn't filled yet.
+            continue;
+        }
+
+        char line_buf[256]; // Main buffer for the line
+        char temp_buf[64];  // Temporary buffer for numbers
+
+        kernel::util::k_snprintf(line_buf, sizeof(line_buf), "[TraceEvt %zu] %llu us: ",
+                                 actual_idx,
+                                 static_cast<unsigned long long>(event.timestamp_us));
+
+        switch (event.type) {
+            case EventType::THREAD_CREATE: kernel::util::kstrcat(line_buf, "CREATE ", sizeof(line_buf)); break;
+            case EventType::THREAD_SCHEDULE: kernel::util::kstrcat(line_buf, "SCHED  ", sizeof(line_buf)); break;
+            case EventType::THREAD_YIELD: kernel::util::kstrcat(line_buf, "YIELD  ", sizeof(line_buf)); break;
+            case EventType::THREAD_EXIT: kernel::util::kstrcat(line_buf, "EXIT   ", sizeof(line_buf)); break;
+            case EventType::CUSTOM: kernel::util::kstrcat(line_buf, "CUSTOM ", sizeof(line_buf)); break;
+            default: kernel::util::kstrcat(line_buf, "UNKNOWN", sizeof(line_buf)); break;
+        }
+
+        if (event.tcb && event.tcb->name[0]) {
+            kernel::util::kstrcat(line_buf, ", Thread=", sizeof(line_buf));
+            kernel::util::kstrcat(line_buf, event.tcb->name, sizeof(line_buf));
+        } else if (!event.name.empty()) {
+            // string_view might not be null terminated for kstrcat
+            // Create a temporary null-terminated string for name if needed, or ensure kstrcat handles non-null-terminated view
+            char name_temp_buf[kernel::core::MAX_NAME_LENGTH + 1];
+            size_t name_len = kernel::util::min(event.name.length(), kernel::core::MAX_NAME_LENGTH);
+            kernel::util::kmemcpy(name_temp_buf, event.name.data(), name_len);
+            name_temp_buf[name_len] = '\0';
+            kernel::util::kstrcat(line_buf, ", Name=", sizeof(line_buf));
+            kernel::util::kstrcat(line_buf, name_temp_buf, sizeof(line_buf));
+        }
+
+        if (event.value != 0 || event.type == EventType::CUSTOM) { 
+            kernel::util::uint64_to_hex_str(event.value, temp_buf, sizeof(temp_buf));
+            kernel::util::kstrcat(line_buf, ", Val=", sizeof(line_buf));
+            kernel::util::kstrcat(line_buf, temp_buf, sizeof(line_buf));
+        }
+        kernel::util::kstrcat(line_buf, "\n", sizeof(line_buf));
+        uart_ops->puts(line_buf);
+    }
+
+    uart_ops->puts("--- End Trace (TraceManager) ---\n");
+}
+
+void TraceManager::clear_trace() noexcept {
+    // Assuming single-producer for buffer_idx modification or that it's locked externally if multi-producer clear
+    buffer_idx_.store(0, std::memory_order_relaxed);
+    // For safety, clear the buffer content if needed, though new writes will overwrite.
+    // This depends on how 'empty' entries are detected in dump_trace.
+    for (auto& event_entry : buffer_) {
+        event_entry = TraceEvent{}; // Reset to default
+    }
+}
+
+} // namespace trace// === cli_minimal.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file cli_minimal.cpp
+ * @brief Minimal CLI subsystem implementation for miniOS v1.7 kernel.
+ * @details
+ * Implements a minimal command-line interface for the core kernel, supporting
+ * trace and stats commands via command registration. Used for the `make kernel` target.
+ *
+ * @version 1.7
+ * @see cli.hpp, core.hpp, hal.hpp, miniOS.hpp
+ */
+
+#include "cli.hpp"
+#include "miniOS.hpp"
+#include <cstring>
+
+namespace cli {
+
+CLI g_cli;
+
+// Command handlers
+[[maybe_unused]] static int trace_command([[maybe_unused]] const char* args, kernel::hal::UARTDriverOps* uart_ops) {
+    kernel::dump_trace_buffer(uart_ops);
+    return 0;
+}
+
+[[maybe_unused]] static int stats_command([[maybe_unused]] const char* args, kernel::hal::UARTDriverOps* uart_ops) {
+    kernel::get_kernel_stats(uart_ops);
+    return 0;
+}
+
+bool CLI::register_command([[maybe_unused]] const char* name,
+                           [[maybe_unused]] CommandHandler handler,
+                           [[maybe_unused]] const char* help_text) {
+    // Stub implementation for minimal kernel
+    return true;
+}
+
+CLI::CLI() {
+    // Register core commands
+    register_command("trace", trace_command, "Dump trace buffer");
+    register_command("stats", stats_command, "Show kernel statistics");
+}
+
+} // namespace cli// === kernel_globals.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file kernel_globals.cpp
+ * @brief Minimal definitions of global kernel variables and early UART output.
+ * @details
+ *   - Definitions for g_platform, g_scheduler_ptr, spinlocks, etc.
+ *   - Stubs for configure_memory_protection.
+ *   - Minimal early UART output for debugging/panic.
+ *   - __dso_handle for C++ runtime linking.
+ */
+
+#include "miniOS.hpp"   // For kernel::g_platform, g_scheduler_ptr, etc
+#include "core.hpp"     // For kernel::core types if needed
+#include "hal.hpp"      // For kernel::hal types if needed
+#include "util.hpp"     // For k_snprintf etc (optional, for future)
+
+namespace kernel {
+
+// Global platform pointer (set by platform init, used everywhere)
+hal::Platform* g_platform = nullptr;
+
+// Global scheduler pointer
+core::Scheduler* g_scheduler_ptr = nullptr;
+
+// Global spinlocks for IRQ/tracing
+core::Spinlock g_trace_lock;
+core::Spinlock g_irq_handler_lock;
+
+// Stub for memory protection (do nothing in minimal)
+void configure_memory_protection(core::TCB* tcb, bool enable_for_task) {
+    (void)tcb;
+    (void)enable_for_task;
+}
+
+} // namespace kernel
+// === cpu_arm64.S ===
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+/**
+ * @file cpu_arm64.S
+ * @brief ARM64 CPU specific assembly functions for miniOS v1.7.
+ */
+
+    .equ STACK_SIZE_ASM, 0x4000   
+    .equ UART_BASE,    0x09000000
+    .equ UARTFR,       0x18
+    .equ UARTDR,       0x00
+    .equ UART_TXFF,    (1 << 5)  
+
+    .equ TCB_REGS_X0_OFFSET, (0*8)
+    .equ TCB_REGS_X30_OFFSET, (30*8)
+    .equ TCB_SP_OFFSET, (31*8)      
+    .equ TCB_PC_OFFSET, (31*8 + 8)  
+    .equ TCB_PSTATE_OFFSET, (31*8 + 16) 
+
+.extern __init_array_start
+.extern __init_array_end
+.extern _bss_start
+.extern _bss_end
+.extern _stacks_start
+.extern _stacks_end
+
+    .section .rodata
+.L_debug_start:     .asciz "[DEBUG] _start ENTRY\n"
+.L_debug_stack:     .asciz "[DEBUG] Stack set up\n"
+.L_debug_primary:   .asciz "[DEBUG] Primary core setup\n"
+.L_debug_vectors:   .asciz "[DEBUG] Exception vectors set\n"
+.L_debug_constructors: .asciz "[DEBUG] Calling constructors\n"
+.L_debug_bss:       .asciz "[DEBUG] BSS zeroed\n"
+.L_debug_kernel_main: .asciz "[DEBUG] Entering kernel_main\n"
+
+    .section .vectors, "ax", %progbits 
+    .align 11 
+.global exception_vectors 
+exception_vectors:
+    b       unhandled_exception_sp0_sync
+    .align 7 
+    b       unhandled_exception_sp0_irq
+    .align 7
+    b       unhandled_exception_sp0_fiq
+    .align 7
+    b       unhandled_exception_sp0_serror
+    .align 7
+    b       unhandled_exception_spx_sync
+    .align 7
+    b       current_el_spx_irq_entry
+    .align 7 
+    b       unhandled_exception_spx_fiq
+    .align 7
+    b       unhandled_exception_spx_serror
+    .align 7
+    b       unhandled_exception_lower_a64_sync
+    .align 7
+    b       unhandled_exception_lower_a64_irq
+    .align 7
+    b       unhandled_exception_lower_a64_fiq
+    .align 7
+    b       unhandled_exception_lower_a64_serror
+    .align 7
+    b       unhandled_exception_lower_a32_sync
+    .align 7
+    b       unhandled_exception_lower_a32_irq
+    .align 7
+    b       unhandled_exception_lower_a32_fiq
+    .align 7
+    b       unhandled_exception_lower_a32_serror
+    .align 7
+
+    .section .text.boot, "ax", %progbits
+    .global _start  
+_start:
+    /* Print "[DEBUG] _start ENTRY" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_start
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    mrs     x0, mpidr_el1
+    and     x0, x0, #0xFF               // x0 = current core_id
+
+    ldr     x1, =_stacks_start          
+    mov     x2, #STACK_SIZE_ASM         
+    mul     x3, x0, x2                  // x3 = core_id * STACK_SIZE_ASM
+    add     x1, x1, x3                  // x1 = _stacks_start + offset
+    add     x1, x1, x2                  // x1 = stack top for this core
+    mov     sp, x1                      // Set stack pointer
+
+    /* Print "[DEBUG] Stack set up" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_stack
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    cbz     x0, .L_primary_core_continue_setup 
+
+.L_secondary_core_spin:
+    dmb     sy
+    wfe
+    b       .L_secondary_core_spin
+
+.L_primary_core_continue_setup:
+    /* Print "[DEBUG] Primary core setup" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_primary
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    ldr     x0, =exception_vectors
+    msr     vbar_el1, x0
+    isb 
+
+    /* Print "[DEBUG] Exception vectors set" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_vectors
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    // ENABLE NEON/SIMD ACCESS for EL1 BEFORE C++ CONSTRUCTORS
+    mrs     x0, cpacr_el1
+    orr     x0, x0, #(3 << 20)    // Set FPEN to 0b11
+    msr     cpacr_el1, x0
+    isb                           // Synchronize context changes
+
+    /* Print "[DEBUG] Calling constructors" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_constructors
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    bl      call_constructors 
+
+    /* Print "[DEBUG] BSS zeroed" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_bss
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    ldr     x1, =_bss_start
+    ldr     x2, =_bss_end
+.L_bss_zero_loop:
+    cmp     x1, x2
+    b.ge    .L_bss_zero_done
+    str     xzr, [x1], #8
+    b       .L_bss_zero_loop
+.L_bss_zero_done:
+
+    /* Print "[DEBUG] Entering kernel_main" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_kernel_main
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    bl      kernel_main
+
+    // After kernel_main, load initial thread context for core 0
+    ldr     x0, =kernel_g_per_cpu_data  // Address of kernel::core::g_per_cpu_data
+    ldr     x1, [x0, #0]                // Load g_per_cpu_data[0].current_thread (TCB*)
+    cbz     x1, .L_kernel_halt          // If null, halt
+
+    // Restore thread context from TCB
+    add     x2, x1, #TCB_SP_OFFSET      // Offset to sp in TCB
+    ldr     x3, [x2]                    // Load sp
+    mov     sp, x3                      // Set stack pointer
+    add     x2, x2, #8                  // Offset to pc
+    ldr     x3, [x2]                    // Load pc
+    add     x2, x2, #8                  // Offset to pstate
+    ldr     x4, [x2]                    // Load pstate
+    msr     spsr_el1, x4                // Set SPSR_EL1 (pstate)
+    mov     x30, x3                     // Set LR to pc (eret will use this)
+    // Restore registers x0-x30
+    ldp     x0, x1, [x1, #TCB_REGS_X0_OFFSET]
+    ldp     x2, x3, [x1, #TCB_REGS_X0_OFFSET + 16]
+    ldp     x4, x5, [x1, #TCB_REGS_X0_OFFSET + 32]
+    ldp     x6, x7, [x1, #TCB_REGS_X0_OFFSET + 48]
+    ldp     x8, x9, [x1, #TCB_REGS_X0_OFFSET + 64]
+    ldp     x10, x11, [x1, #TCB_REGS_X0_OFFSET + 80]
+    ldp     x12, x13, [x1, #TCB_REGS_X0_OFFSET + 96]
+    ldp     x14, x15, [x1, #TCB_REGS_X0_OFFSET + 112]
+    ldp     x16, x17, [x1, #TCB_REGS_X0_OFFSET + 128]
+    ldp     x18, x19, [x1, #TCB_REGS_X0_OFFSET + 144]
+    ldp     x20, x21, [x1, #TCB_REGS_X0_OFFSET + 160]
+    ldp     x22, x23, [x1, #TCB_REGS_X0_OFFSET + 176]
+    ldp     x24, x25, [x1, #TCB_REGS_X0_OFFSET + 192]
+    ldp     x26, x27, [x1, #TCB_REGS_X0_OFFSET + 208]
+    ldp     x28, x29, [x1, #TCB_REGS_X0_OFFSET + 224]
+    ldr     x30, [x1, #TCB_REGS_X30_OFFSET]  // Restore x30 (LR)
+    eret                                // Switch to thread context
+
+.L_kernel_halt:
+    wfi
+    b       .L_kernel_halt
+
+    .section .text
+    .align 2
+
+.global call_constructors
+call_constructors:
+    mov     x19, lr         
+    ldr     x0, =__init_array_start 
+    ldr     x1, =__init_array_end   
+.L_init_loop:
+    cmp     x0, x1          
+    b.ge    .L_init_done    
+    ldr     x2, [x0], #8    
+    cbz     x2, .L_init_loop 
+    blr     x2              
+    b       .L_init_loop    
+.L_init_done:
+    mov     lr, x19         
+    ret                     
+
+current_el_spx_irq_entry:
+    sub     sp, sp, #176                            
+    stp     x0, x1, [sp, #(0*16)]                   
+    stp     x2, x3, [sp, #(1*16)]                   
+    stp     x4, x5, [sp, #(2*16)]                   
+    stp     x6, x7, [sp, #(3*16)]
+    stp     x8, x9, [sp, #(4*16)]
+    stp     x10, x11, [sp, #(5*16)]
+    stp     x12, x13, [sp, #(6*16)]
+    stp     x14, x15, [sp, #(7*16)]
+    stp     x16, x17, [sp, #(8*16)]                 
+    mrs     x0, elr_el1                             
+    mrs     x1, spsr_el1                            
+    mov     x2, lr                                  
+    stp     x0, x1, [sp, #(9*16)]                   
+    str     x2, [sp, #(9*16 + 16)]                  
+    mrs     x0, mpidr_el1
+    and     x0, x0, #0xFF                           
+    bl      hal_irq_handler                         
+    ldr     x2, [sp, #(9*16 + 16)]                  
+    mov     lr, x2                                  
+    ldp     x0, x1, [sp, #(9*16)]                   
+    msr     elr_el1, x0                             
+    msr     spsr_el1, x1                            
+    ldp     x0, x1, [sp, #(0*16)]                   
+    ldp     x2, x3, [sp, #(1*16)]                   
+    ldp     x4, x5, [sp, #(2*16)]                   
+    ldp     x6, x7, [sp, #(3*16)]
+    ldp     x8, x9, [sp, #(4*16)]
+    ldp     x10, x11, [sp, #(5*16)]
+    ldp     x12, x13, [sp, #(6*16)]
+    ldp     x14, x15, [sp, #(7*16)]
+    ldp     x16, x17, [sp, #(8*16)]                 
+    add     sp, sp, #176                            
+    eret                                            
+
+unhandled_exception_loop:
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    ldr     x0, =UART_BASE
+    mov     w1, #'Z'
+.L_uart_Z_wait:  
+    ldr     w2, [x0, #UARTFR]
+    tst     w2, #UART_TXFF
+    b.ne    .L_uart_Z_wait
+    str     w1, [x0, #UARTDR]
+    mov     x0, x19
+    ldp     x19, x1, [sp], #16
+.unhandled_exc_loop_wfi:
+    wfi
+    b       .unhandled_exc_loop_wfi
+
+unhandled_exception_sp0_sync:   b unhandled_exception_loop
+unhandled_exception_sp0_irq:    b unhandled_exception_loop
+unhandled_exception_sp0_fiq:    b unhandled_exception_loop
+unhandled_exception_sp0_serror: b unhandled_exception_loop
+unhandled_exception_spx_sync:   b unhandled_exception_loop
+unhandled_exception_spx_fiq:    b unhandled_exception_loop
+unhandled_exception_spx_serror: b unhandled_exception_loop
+unhandled_exception_lower_a64_sync: b unhandled_exception_loop
+unhandled_exception_lower_a64_irq:  b unhandled_exception_loop
+unhandled_exception_lower_a64_fiq:  b unhandled_exception_loop
+unhandled_exception_lower_a64_serror:b unhandled_exception_loop
+unhandled_exception_lower_a32_sync: b unhandled_exception_loop
+unhandled_exception_lower_a32_irq:  b unhandled_exception_loop
+unhandled_exception_lower_a32_fiq:  b unhandled_exception_loop
+unhandled_exception_lower_a32_serror:b unhandled_exception_loop
+
+.global cpu_context_switch_impl
+cpu_context_switch_impl:
+    // x0 = old_tcb, x1 = new_tcb
+    // If old_tcb is null (x0 == 0), skip saving context
+    cbz     x0, .L_restore_new_context
+
+    // Save old TCB context
+    // Save x0-x30
+    stp     x0, x1, [x0, #TCB_REGS_X0_OFFSET]
+    stp     x2, x3, [x0, #TCB_REGS_X0_OFFSET + 16]
+    stp     x4, x5, [x0, #TCB_REGS_X0_OFFSET + 32]
+    stp     x6, x7, [x0, #TCB_REGS_X0_OFFSET + 48]
+    stp     x8, x9, [x0, #TCB_REGS_X0_OFFSET + 64]
+    stp     x10, x11, [x0, #TCB_REGS_X0_OFFSET + 80]
+    stp     x12, x13, [x0, #TCB_REGS_X0_OFFSET + 96]
+    stp     x14, x15, [x0, #TCB_REGS_X0_OFFSET + 112]
+    stp     x16, x17, [x0, #TCB_REGS_X0_OFFSET + 128]
+    stp     x18, x19, [x0, #TCB_REGS_X0_OFFSET + 144]
+    stp     x20, x21, [x0, #TCB_REGS_X0_OFFSET + 160]
+    stp     x22, x23, [x0, #TCB_REGS_X0_OFFSET + 176]
+    stp     x24, x25, [x0, #TCB_REGS_X0_OFFSET + 192]
+    stp     x26, x27, [x0, #TCB_REGS_X0_OFFSET + 208]
+    stp     x28, x29, [x0, #TCB_REGS_X0_OFFSET + 224]
+    str     x30, [x0, #TCB_REGS_X30_OFFSET]
+    // Save SP
+    mov     x2, sp
+    str     x2, [x0, #TCB_SP_OFFSET]
+    // Save PC (use caller’s LR as PC)
+    str     x30, [x0, #TCB_PC_OFFSET]
+    // Save PSTATE (SPSR_EL1)
+    mrs     x2, spsr_el1
+    str     x2, [x0, #TCB_PSTATE_OFFSET]
+
+.L_restore_new_context:
+    // Restore new TCB context
+    // Load SP
+    ldr     x2, [x1, #TCB_SP_OFFSET]
+    mov     sp, x2
+    // Load PC into x30
+    ldr     x3, [x1, #TCB_PC_OFFSET]
+    // Load PSTATE
+    ldr     x4, [x1, #TCB_PSTATE_OFFSET]
+    msr     spsr_el1, x4
+    // Load x0-x30
+    ldp     x0, x2, [x1, #TCB_REGS_X0_OFFSET]  // Load x0, x2 (x1 will be loaded later)
+    ldp     x4, x5, [x1, #TCB_REGS_X0_OFFSET + 16]
+    ldp     x6, x7, [x1, #TCB_REGS_X0_OFFSET + 32]
+    ldp     x8, x9, [x1, #TCB_REGS_X0_OFFSET + 48]
+    ldp     x10, x11, [x1, #TCB_REGS_X0_OFFSET + 64]
+    ldp     x12, x13, [x1, #TCB_REGS_X0_OFFSET + 80]
+    ldp     x14, x15, [x1, #TCB_REGS_X0_OFFSET + 96]
+    ldp     x16, x17, [x1, #TCB_REGS_X0_OFFSET + 112]
+    ldp     x18, x19, [x1, #TCB_REGS_X0_OFFSET + 128]
+    ldp     x20, x21, [x1, #TCB_REGS_X0_OFFSET + 144]
+    ldp     x22, x23, [x1, #TCB_REGS_X0_OFFSET + 160]
+    ldp     x24, x25, [x1, #TCB_REGS_X0_OFFSET + 176]
+    ldp     x26, x27, [x1, #TCB_REGS_X0_OFFSET + 192]
+    ldp     x28, x29, [x1, #TCB_REGS_X0_OFFSET + 208]
+    ldp     x1, x30, [x1, #TCB_REGS_X0_OFFSET + 224]  // Load x1, x30
+    mov     x30, x3  // Set LR to PC
+    eret// === hal_qemu_arm64.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file hal_qemu_arm64.cpp
+ * @brief ARM64 HAL implementation for QEMU virt platform in miniOS v1.7.
+ */
+
+#include "hal_qemu_arm64.hpp"
+#include "miniOS.hpp"
+#include "util.hpp"
+#include <cstring>   
+#include <algorithm>  
+
+#if defined(__aarch64__) && !defined(__ARM_NEON)
+#define __ARM_NEON 1
+#endif
+#include <arm_neon.h>
+
+extern "C" void early_uart_puts(const char* str);
+
+namespace hal::qemu_virt_arm64 {
+PlatformQEMUVirtARM64 g_platform_instance;
+
+inline void mmio_write32(uint64_t addr, uint32_t value) {
+    *reinterpret_cast<volatile uint32_t*>(addr) = value;
+}
+inline uint32_t mmio_read32(uint64_t addr) {
+    return *reinterpret_cast<volatile uint32_t*>(addr);
+}
+inline void write_sysreg_cntp_tval(uint64_t value) { asm volatile("msr cntp_tval_el0, %0" : : "r"(value)); }
+inline void write_sysreg_cntp_ctl(uint64_t value) { asm volatile("msr cntp_ctl_el0, %0" : : "r"(value)); }
+inline uint64_t read_sysreg_cntpct() { uint64_t v; asm volatile("mrs %0, cntpct_el0" : "=r"(v)); return v; }
+inline uint64_t read_sysreg_cntfrq() { uint64_t v; asm volatile("mrs %0, cntfrq_el0" : "=r"(v)); return v; }
+
+// --- UARTDriver ---
+void UARTDriver::write_uart_reg(uint32_t offset, uint32_t value) { mmio_write32(UART_BASE + offset, value); }
+uint32_t UARTDriver::read_uart_reg(uint32_t offset) { return mmio_read32(UART_BASE + offset); }
+void UARTDriver::putc(char c) {
+    while (read_uart_reg(0x18) & (1 << 5)) {} 
+    write_uart_reg(0x00, static_cast<uint32_t>(c)); 
+}
+void UARTDriver::puts(const char* str) {
+    if (!str) return;
+    while (*str) {
+        if (*str == '\n') this->putc('\r'); 
+        this->putc(*str++);
+    }
+}
+void UARTDriver::uart_put_uint64_hex(uint64_t value) {
+    char hex_chars[] = "0123456789ABCDEF";
+    char buffer[17] = {0}; 
+    buffer[16] = '\0';
+    for (int i = 15; i >= 0; --i) {
+        buffer[i] = hex_chars[value & 0xF];
+        value >>= 4;
+    }
+    this->puts(buffer); 
+}
+char UARTDriver::getc_blocking() {
+    while (read_uart_reg(0x18) & (1 << 4)) {} 
+    return static_cast<char>(read_uart_reg(0x00) & 0xFF); 
+}
+
+// --- IRQController ---
+void IRQController::write_gicd_reg(uint32_t o, uint32_t v) { mmio_write32(GIC_DISTRIBUTOR_BASE + o, v); }
+uint32_t IRQController::read_gicd_reg(uint32_t o) { return mmio_read32(GIC_DISTRIBUTOR_BASE + o); }
+void IRQController::write_gicc_reg(uint64_t o, uint32_t v) { mmio_write32(GIC_CPU_INTERFACE_BASE + o, v); }
+uint32_t IRQController::read_gicc_reg(uint64_t o) { return mmio_read32(GIC_CPU_INTERFACE_BASE + o); }
+
+void IRQController::enable_core_irqs(uint32_t core_id, uint32_t irq_source_mask) {
+    (void)core_id; (void)irq_source_mask;
+    write_gicc_reg(0x0000, read_gicc_reg(0x0000) | 0x1); 
+}
+void IRQController::disable_core_irqs(uint32_t core_id) {
+    (void)core_id;
+    write_gicc_reg(0x0000, read_gicc_reg(0x0000) & ~0x3); 
+}
+void IRQController::init_distributor() {
+    early_uart_puts("[HAL_DEBUG] IRQController::init_distributor() ENTRY\n"); 
+    write_gicd_reg(0x000, 0x0); 
+    for (uint32_t i = 32; i < 1020; i += 32) { 
+        write_gicd_reg(0x080 + ((i/32) -1)*4, 0x00000000); 
+        write_gicd_reg(0x180 + ((i/32) -1)*4, 0xFFFFFFFF); 
+    }
+    for (uint32_t i = 0; i < 1020; i += 4) { 
+        write_gicd_reg(0x400 + i, 0xA0A0A0A0); 
+    }
+    for (uint32_t i = 32; i < 1020; i += 4) { 
+        write_gicd_reg(0x800 + (i-32), 0x01010101); 
+    }
+    write_gicd_reg(0x000, 0x1); 
+    early_uart_puts("[HAL_DEBUG] IRQController::init_distributor() EXIT\n"); 
+}
+void IRQController::init_cpu_interface(uint32_t core_id) { 
+    (void)core_id;
+    early_uart_puts("[HAL_DEBUG] IRQController::init_cpu_interface() ENTRY\n");
+    write_gicc_reg(0x004, 0xFF); 
+    write_gicc_reg(0x008, 0x03); 
+    write_gicc_reg(0x000, 0x1);  
+    early_uart_puts("[HAL_DEBUG] IRQController::init_cpu_interface() EXIT\n");
+}
+uint32_t IRQController::ack_irq(uint32_t core_id) { (void)core_id; return read_gicc_reg(0x00C); }
+void IRQController::end_irq(uint32_t core_id, uint32_t irq_id) { (void)core_id; write_gicc_reg(0x010, irq_id); }
+void IRQController::enable_irq_line(uint32_t irq_id) {
+    write_gicd_reg(0x100 + (irq_id / 32) * 4, 1U << (irq_id % 32));
+}
+void IRQController::disable_irq_line(uint32_t irq_id) {
+    write_gicd_reg(0x180 + (irq_id / 32) * 4, 1U << (irq_id % 32));
+}
+void IRQController::set_irq_priority(uint32_t irq_id, uint8_t priority) {
+    uint32_t reg_offset = 0x400 + (irq_id / 4) * 4; 
+    uint32_t shift = (irq_id % 4) * 8; 
+    uint32_t val = read_gicd_reg(reg_offset);
+    val &= ~(0xFFU << shift); 
+    val |= (static_cast<uint32_t>(priority) << shift); 
+    write_gicd_reg(reg_offset, val);
+}
+
+// --- TimerDriver ---
+TimerDriver::TimerDriver() : timer_freq_hz_(0), active_sw_timers_head_(nullptr) {
+    early_uart_puts("[HAL_DEBUG] TimerDriver::TimerDriver() CONSTRUCTOR ENTRY\n");
+    timer_freq_hz_ = read_sysreg_cntfrq();
+    if (timer_freq_hz_ == 0) {
+        early_uart_puts("[HAL_DEBUG] CNTFRQ_EL0 is 0, using default 62.5MHz for QEMU virt\n");
+        timer_freq_hz_ = 62500000; 
+    } else {
+        early_uart_puts("[HAL_DEBUG] CNTFRQ_EL0 read by TimerDriver constructor.\n"); 
+    }
+    early_uart_puts("[HAL_DEBUG] TimerDriver::TimerDriver() CONSTRUCTOR EXIT\n");
+}
+void TimerDriver::init_system_timer_properties(uint64_t freq_hz_override) {
+    early_uart_puts("[HAL_DEBUG] TimerDriver::init_system_timer_properties() ENTRY\n");
+    if (freq_hz_override > 0) timer_freq_hz_ = freq_hz_override;
+    early_uart_puts("[HAL_DEBUG] TimerDriver::init_system_timer_properties() EXIT\n");
+}
+void TimerDriver::init_core_timer_interrupt(uint32_t core_id) { 
+    (void)core_id;
+    early_uart_puts("[HAL_DEBUG] TimerDriver::init_core_timer_interrupt() ENTRY\n");
+    uint64_t ticks_for_period = (timer_freq_hz_ * 10) / 1000; 
+    write_sysreg_cntp_tval(ticks_for_period); 
+    write_sysreg_cntp_ctl(1); 
+    early_uart_puts("[HAL_DEBUG] TimerDriver::init_core_timer_interrupt() EXIT\n");
+}
+void TimerDriver::ack_core_timer_interrupt(uint32_t core_id) { 
+    (void)core_id;
+    uint64_t ticks_for_period = (timer_freq_hz_ * 10) / 1000; 
+    write_sysreg_cntp_tval(ticks_for_period);
+}
+bool TimerDriver::add_software_timer(kernel::hal::timer::SoftwareTimer* timer) { 
+    if (!timer) return false;
+    kernel::core::ScopedLock lock(sw_timer_lock_);
+    timer->next = active_sw_timers_head_;
+    active_sw_timers_head_ = timer;
+    return true;
+}
+bool TimerDriver::remove_software_timer(kernel::hal::timer::SoftwareTimer* timer_to_remove) { 
+    if (!timer_to_remove) return false;
+    kernel::core::ScopedLock lock(sw_timer_lock_);
+    if (active_sw_timers_head_ == timer_to_remove) {
+        active_sw_timers_head_ = timer_to_remove->next;
+        timer_to_remove->next = nullptr; 
+        return true;
+    }
+    kernel::hal::timer::SoftwareTimer* current = active_sw_timers_head_;
+    while (current && current->next) {
+        if (current->next == timer_to_remove) {
+            current->next = timer_to_remove->next;
+            timer_to_remove->next = nullptr; 
+            return true;
+        }
+        current = current->next;
+    }
+    return false;
+}
+uint64_t TimerDriver::get_system_time_us() { 
+    if (timer_freq_hz_ == 0) return 0; 
+    return (read_sysreg_cntpct() * 1000000ULL) / timer_freq_hz_;
+}
+void TimerDriver::hardware_timer_irq_fired(uint32_t core_id) { 
+    (void)core_id;
+    kernel::core::ScopedLock lock(sw_timer_lock_);
+    uint64_t now_us = get_system_time_us();
+    kernel::hal::timer::SoftwareTimer* timer = active_sw_timers_head_;
+    while (timer) {
+        if (timer->active && now_us >= timer->expiry_time_us) {
+            if (timer->callback) {
+                timer->callback(timer, timer->context);
+            }
+            if (timer->period_us > 0) { 
+                timer->expiry_time_us += timer->period_us; 
+                if (timer->expiry_time_us < now_us) { 
+                    timer->expiry_time_us = now_us + timer->period_us;
+                }
+            } else {
+                timer->active = false; 
+            }
+        }
+        timer = timer->next;
+    }
+}
+
+// --- DMAController ---
+DMAController::DMAController() { 
+    early_uart_puts("[DEBUG] DMAController CONSTRUCTOR ENTRY\n");
+    channels_in_use_.fill(false);
+    early_uart_puts("[DEBUG] DMAController CONSTRUCTOR EXIT\n");
+}
+kernel::hal::dma::ChannelID DMAController::request_channel() {
+    kernel::core::ScopedLock lock(dma_lock_);
+    for (size_t i = 0; i < channels_in_use_.size(); ++i) {
+        if (!channels_in_use_[i]) { channels_in_use_[i] = true; return static_cast<kernel::hal::dma::ChannelID>(i); }
+    }
+    return kernel::hal::dma::INVALID_CHANNEL;
+}
+bool DMAController::configure_and_start_transfer(kernel::hal::dma::ChannelID ch, const kernel::hal::dma::TransferConfig&, kernel::hal::dma::DMACallback cb, void* ctx) {
+    if (ch < 0 || static_cast<size_t>(ch) >= channels_in_use_.size() || !channels_in_use_[static_cast<size_t>(ch)]) return false;
+    if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+         kernel::g_platform->get_uart_ops()->puts("[DMA STUB] Configure and start transfer.\n");
+    }
+    if (cb) cb(ch, true, ctx); 
+    return true;
+}
+void DMAController::release_channel(kernel::hal::dma::ChannelID ch) {
+    kernel::core::ScopedLock lock(dma_lock_);
+    if (ch >= 0 && static_cast<size_t>(ch) < channels_in_use_.size()) channels_in_use_[static_cast<size_t>(ch)] = false;
+}
+
+// --- I2SDriver ---
+bool I2SDriver::init(uint32_t id, kernel::hal::i2s::Mode, const kernel::hal::i2s::Format& fmt, size_t, uint8_t, kernel::hal::i2s::I2SCallback cb, void* udata) {
+    if (id >= instances_.size()) return false;
+    instances_[id] = {cb, udata, false, fmt};
+    if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+         kernel::g_platform->get_uart_ops()->puts("[I2S STUB] Initialized.\n");
+    }
+    return true;
+}
+bool I2SDriver::start(uint32_t id) { 
+    if (id < instances_.size()) { 
+        instances_[id].active = true; 
+        if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+            kernel::g_platform->get_uart_ops()->puts("[I2S STUB] Started.\n");
+        }
+        return true; 
+    } 
+    return false; 
+}
+bool I2SDriver::stop(uint32_t id) { 
+    if (id < instances_.size()) { 
+        instances_[id].active = false; 
+        if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+            kernel::g_platform->get_uart_ops()->puts("[I2S STUB] Stopped.\n");
+        }
+        return true; 
+    } 
+    return false; 
+}
+kernel::audio::AudioBuffer* I2SDriver::get_buffer_for_app_tx(uint32_t id) {
+    if (id >= instances_.size() || !instances_[id].active) return nullptr;
+    auto* buf = new (std::nothrow) kernel::audio::AudioBuffer();
+    if (!buf) return nullptr;
+    const auto& format = instances_[id].current_format;
+    buf->samples_per_channel = 256; 
+    buf->channels = format.num_channels;
+    size_t frame_size = format.get_bytes_per_frame();
+    buf->size_bytes_raw_buffer = buf->samples_per_channel * frame_size;
+    buf->data_raw_i2s = new (std::nothrow) uint8_t[buf->size_bytes_raw_buffer](); 
+    buf->data_dsp_canonical = new (std::nothrow) float[buf->samples_per_channel * buf->channels]();
+    if (!buf->data_raw_i2s || !buf->data_dsp_canonical) { 
+        delete[] static_cast<uint8_t*>(buf->data_raw_i2s); 
+        delete[] buf->data_dsp_canonical;
+        delete buf; 
+        return nullptr; 
+    }
+    return buf;
+}
+bool I2SDriver::submit_filled_buffer_to_hw_tx(uint32_t id, kernel::audio::AudioBuffer* buffer) {
+    if (id >= instances_.size() || !instances_[id].active || !buffer) return false;
+    if (instances_[id].callback) {
+        instances_[id].callback(id, buffer, kernel::hal::i2s::Mode::MASTER_TX, instances_[id].user_data);
+    }
+    return true;
+}
+void I2SDriver::release_processed_buffer_to_hw_rx(uint32_t, kernel::audio::AudioBuffer* buffer) {
+    if (buffer) {
+        delete[] static_cast<uint8_t*>(buffer->data_raw_i2s);
+        delete[] buffer->data_dsp_canonical;
+        delete buffer;
+    }
+}
+void I2SDriver::convert_hw_format_to_dsp_format(kernel::audio::AudioBuffer* buf, const kernel::hal::i2s::Format& fmt) {
+    if (!buf || !buf->data_raw_i2s || !buf->data_dsp_canonical) return;
+    auto* pcm_data = static_cast<int16_t*>(buf->data_raw_i2s); 
+    size_t num_samples_total = buf->samples_per_channel * fmt.num_channels;
+    if (fmt.bit_depth == kernel::hal::i2s::BitDepth::BITS_16) {
+        for (size_t i = 0; i < num_samples_total; ++i) {
+            buf->data_dsp_canonical[i] = static_cast<float>(pcm_data[i]) / 32768.0f;
+        }
+    } 
+}
+void I2SDriver::convert_dsp_format_to_hw_format(kernel::audio::AudioBuffer* buf, const kernel::hal::i2s::Format& fmt) {
+    if (!buf || !buf->data_raw_i2s || !buf->data_dsp_canonical) return;
+    auto* pcm_data = static_cast<int16_t*>(buf->data_raw_i2s); 
+    size_t num_samples_total = buf->samples_per_channel * fmt.num_channels;
+    if (fmt.bit_depth == kernel::hal::i2s::BitDepth::BITS_16) {
+        for (size_t i = 0; i < num_samples_total; ++i) {
+            float val = buf->data_dsp_canonical[i];
+            val = kernel::util::max(-1.0f, kernel::util::min(1.0f, val)); 
+            pcm_data[i] = static_cast<int16_t>(val * 32767.0f);
+        }
+    } 
+}
+
+// --- MemoryOps ---
+void MemoryOps::flush_cache_range(const void* addr, size_t size) {
+    if (!addr || size == 0) return;
+    uintptr_t current_addr = reinterpret_cast<uintptr_t>(addr);
+    uintptr_t end_addr = current_addr + size;
+    const size_t cache_line_size = 64; 
+    current_addr &= ~(cache_line_size - 1); 
+    for (; current_addr < end_addr; current_addr += cache_line_size) {
+        asm volatile("dc cvac, %0" : : "r"(current_addr) : "memory"); 
+    }
+    asm volatile("dsb sy" ::: "memory"); 
+    asm volatile("isb" ::: "memory");    
+}
+void MemoryOps::invalidate_cache_range(const void* addr, size_t size) {
+    if (!addr || size == 0) return;
+    uintptr_t current_addr = reinterpret_cast<uintptr_t>(addr);
+    uintptr_t end_addr = current_addr + size;
+    const size_t cache_line_size = 64;
+    current_addr &= ~(cache_line_size - 1);
+    for (; current_addr < end_addr; current_addr += cache_line_size) {
+        asm volatile("dc ivac, %0" : : "r"(current_addr) : "memory"); 
+    }
+    asm volatile("dsb sy" ::: "memory");
+    asm volatile("isb" ::: "memory");
+}
+
+// --- NetworkDriver ---
+bool NetworkDriver::init_interface(int) { initialized_ = true; return true; }
+bool NetworkDriver::send_packet(int, const uint8_t*, size_t) { if (!initialized_) return false; return true; }
+void NetworkDriver::register_packet_receiver(kernel::hal::net::PacketReceivedCallback cb, void* context) {
+    packet_received_cb_ = cb; cb_context_ = context;
+}
+
+// --- PowerOps ---
+void PowerOps::enter_idle_state(uint32_t) { asm volatile("wfi"); } 
+bool PowerOps::set_cpu_frequency(uint32_t, uint32_t) { return true; }
+
+// --- GPIODriver ---
+bool GPIODriver::init_bank(uint32_t) { return true; }
+bool GPIODriver::configure_pin(uint32_t, uint32_t, kernel::hal::gpio::PinMode) { return true; }
+bool GPIODriver::set_pin_state(uint32_t, uint32_t, kernel::hal::gpio::PinState) { return true; }
+kernel::hal::gpio::PinState GPIODriver::read_pin_state(uint32_t, uint32_t) { return kernel::hal::gpio::PinState::LOW; }
+void GPIODriver::enable_interrupt(uint32_t, uint32_t, bool) {}
+
+// --- WatchdogDriver ---
+bool WatchdogDriver::start_watchdog(uint32_t timeout_ms) {
+    uint32_t current_time = mmio_read32(RTC_BASE + 0x00); 
+    uint32_t match_value = current_time + (timeout_ms / 1000); 
+    mmio_write32(RTC_BASE + 0x04, match_value); 
+    mmio_write32(RTC_BASE + 0x0C, 1); 
+    return true;
+}
+bool WatchdogDriver::reset_watchdog() {
+    uint32_t timeout_ms = 5000; 
+    uint32_t current_time = mmio_read32(RTC_BASE + 0x00);
+    uint32_t match_value = current_time + (timeout_ms / 1000);
+    mmio_write32(RTC_BASE + 0x04, match_value);
+    return true;
+}
+bool WatchdogDriver::stop_watchdog() {
+    mmio_write32(RTC_BASE + 0x0C, 0); 
+    return true;
+}
+
+// --- PlatformQEMUVirtARM64 ---
+PlatformQEMUVirtARM64::PlatformQEMUVirtARM64() :
+    uart_driver_(),
+    irq_controller_(),
+    timer_driver_(),
+    dma_controller_(),
+    i2s_driver_(),
+    memory_ops_(),
+    network_driver_(),
+    power_ops_(),
+    gpio_driver_(),
+    watchdog_driver_()
+{
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR START\n");
+    unsigned long long vtable_addr = *(unsigned long long*)this;
+    char addr_buf[20];
+    kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "[HAL_DEBUG] Constructor vtable: 0x%llx\n", vtable_addr);
+    early_uart_puts(addr_buf);
+    if (vtable_addr == 0) {
+        early_uart_puts("[HAL_DEBUG] ERROR: Null vtable in constructor\n");
+    }
+    early_uart_puts("[HAL_DEBUG] Initializing uart_driver_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing irq_controller_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing timer_driver_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing dma_controller_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing i2s_driver_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing memory_ops_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing network_driver_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing power_ops_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing gpio_driver_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing watchdog_driver_\n");
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR: Members initialized\n");
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR EXIT\n");
+}
+
+PlatformQEMUVirtARM64::~PlatformQEMUVirtARM64() {
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 DESTRUCTOR\n");
+}
+
+uint32_t PlatformQEMUVirtARM64::get_core_id() const {
+    uint64_t mpidr;
+    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+    return static_cast<uint32_t>(mpidr & 0xFF); 
+}
+uint32_t PlatformQEMUVirtARM64::get_num_cores() const { return kernel::core::MAX_CORES; }
+
+void PlatformQEMUVirtARM64::early_init_platform() {
+    unsigned long long vtable_addr = *(unsigned long long*)this;
+    char addr_buf[20];
+    kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "[HAL_DEBUG] early_init_platform vtable: 0x%llx\n", vtable_addr);
+    early_uart_puts(addr_buf);
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_platform() ENTRY\n");
+    early_uart_puts("[HAL_DEBUG] Preparing to call irq_controller_.init_distributor()\n");
+    irq_controller_.init_distributor();
+    early_uart_puts("[HAL_DEBUG] Returned from irq_controller_.init_distributor()\n");
+    early_uart_puts("[HAL_DEBUG] Calling timer_driver_.init_system_timer_properties()\n");
+    timer_driver_.init_system_timer_properties(); 
+    early_uart_puts("[HAL_DEBUG] Returned from timer_driver_.init_system_timer_properties()\n");
+    if (kernel::g_platform && kernel::g_platform->get_uart_ops() == &uart_driver_) {
+        uart_driver_.puts("[miniOS HAL] QEMU ARM64 Platform Early Init Done (via object)\n");
+    } else { 
+        early_uart_puts("[miniOS HAL] QEMU ARM64 Platform Early Init Done (via early_uart)\n");
+    }
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_platform() EXIT\n");
+}
+
+void PlatformQEMUVirtARM64::early_init_core(uint32_t core_id) { 
+    char buf[80]; 
+    kernel::util::k_snprintf(buf, sizeof(buf), "[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_core(%u) ENTRY\n", core_id);
+    early_uart_puts(buf);
+    irq_controller_.init_cpu_interface(core_id);
+    timer_driver_.init_core_timer_interrupt(core_id);
+    uint64_t cpacr_el1;
+    asm volatile("mrs %0, cpacr_el1" : "=r"(cpacr_el1));
+    cpacr_el1 |= (3ULL << 20); 
+    asm volatile("msr cpacr_el1, %0" : : "r"(cpacr_el1));
+    asm volatile("isb");
+    kernel::util::k_snprintf(buf, sizeof(buf), "[miniOS HAL] Core %u Early Init Done.\n", core_id);
+    if (kernel::g_platform && kernel::g_platform->get_uart_ops() == &uart_driver_) {
+        uart_driver_.puts(buf);
+    } else {
+        early_uart_puts(buf);
+    }
+    kernel::util::k_snprintf(buf, sizeof(buf), "[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_core(%u) EXIT\n", core_id);
+    early_uart_puts(buf);
+}
+
+[[noreturn]] void PlatformQEMUVirtARM64::panic(const char* msg, const char* file, int line) { 
+    asm volatile("msr daifset, #0xf" ::: "memory"); 
+    early_uart_puts("\n*** KERNEL PANIC ***\n");
+    if (msg) { early_uart_puts("Message: "); early_uart_puts(msg); early_uart_puts("\n"); }
+    if (file) { early_uart_puts("File: "); early_uart_puts(file); }
+    char line_buf[16];
+    kernel::util::k_snprintf(line_buf, sizeof(line_buf), ":%d", line); 
+    early_uart_puts(line_buf);
+    early_uart_puts("\nCore: ");
+    early_uart_puts("\nHalting.\n");
+    while (true) { asm volatile("wfi"); }
+}
+void PlatformQEMUVirtARM64::reboot_system() { 
+    panic("Reboot requested but not implemented for QEMU virt.", __FILE__, __LINE__);
+}
+
+} // namespace hal::qemu_virt_arm64
+
+namespace hal {
+kernel::hal::Platform* get_platform() {
+    early_uart_puts("[DEBUG] get_platform ENTRY\n");
+    early_uart_puts("[DEBUG] Returning platform instance at 0x");
+    char addr_buf[20];
+    kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "%llx\n", (unsigned long long)&qemu_virt_arm64::g_platform_instance);
+    early_uart_puts(addr_buf);
+    return &qemu_virt_arm64::g_platform_instance;
+}
+} // namespace hal// === cpp_runtime_stubs.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file cpp_runtime_stubs.cpp
+ * @brief Provides minimal stubs for C++ runtime functions needed in freestanding environment.
+ */
+#include <cstddef>     
+#include <cstdint>     
+#include <new>         // For std::nothrow_t declaration
+
+#include "miniOS.hpp"  // For kernel::g_platform
+#include "core.hpp"    // For kernel::core::Spinlock, kernel::core::ScopedLock
+
+extern "C" {
+    void* __dso_handle = nullptr;
+}
+
+// Basic panic function if platform isn't available or if panic is called too early
+[[noreturn]] static void basic_halt_loop() {
+    for (;;) {
+        asm volatile("wfi");
+    }
+}
+
+// --- Minimal new/delete ---
+#define KERNEL_SIMPLE_HEAP_SIZE (1024 * 64) 
+[[gnu::aligned(16)]] static char simple_kernel_heap[KERNEL_SIMPLE_HEAP_SIZE];
+static size_t simple_kernel_heap_ptr = 0;
+// This global Spinlock relies on its own constructor being called by call_constructors.
+// If new/delete is used by another static constructor *before* this lock is initialized,
+// it's unsafe. For truly safe early new/delete, the lock itself needs to be simpler
+// (e.g., a raw atomic_flag if used before full Spinlock construction).
+// Assuming for now that static constructors using new/delete run after g_simple_heap_lock's constructor.
+static kernel::core::Spinlock g_simple_heap_lock; 
+
+[[noreturn]] static void heap_panic_oom() {
+    if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+        kernel::g_platform->get_uart_ops()->puts("PANIC: operator new - Out Of Memory!\n");
+    }
+    basic_halt_loop();
+}
+
+// Define the std::nothrow object.
+// The type std::nothrow_t should be in <new>.
+// Explicitly call the constructor.
+namespace std {
+    const nothrow_t nothrow = nothrow_t(); // Explicit constructor call
+}
+
+void* operator new(size_t size) noexcept { 
+    kernel::core::ScopedLock lock(g_simple_heap_lock); 
+    size = (size + 15) & ~static_cast<size_t>(15); 
+    if (simple_kernel_heap_ptr + size > KERNEL_SIMPLE_HEAP_SIZE) {
+        heap_panic_oom(); 
+    }
+    void* p = &simple_kernel_heap[simple_kernel_heap_ptr];
+    simple_kernel_heap_ptr += size;
+    return p;
+}
+
+void* operator new[](size_t size) noexcept { 
+    return ::operator new(size); 
+}
+
+// Use ::std::nothrow to ensure we are referring to the global one we defined.
+void* operator new(size_t size, const ::std::nothrow_t&) noexcept {
+    kernel::core::ScopedLock lock(g_simple_heap_lock);
+    size = (size + 15) & ~static_cast<size_t>(15);
+    if (simple_kernel_heap_ptr + size > KERNEL_SIMPLE_HEAP_SIZE) {
+        return nullptr; 
+    }
+    void* p = &simple_kernel_heap[simple_kernel_heap_ptr];
+    simple_kernel_heap_ptr += size;
+    return p;
+}
+
+void* operator new[](size_t size, const ::std::nothrow_t&) noexcept {
+    return ::operator new(size, std::nothrow); 
+}
+
+void operator delete(void* ptr) noexcept { (void)ptr; }
+void operator delete[](void* ptr) noexcept { (void)ptr; }
+void operator delete(void* ptr, size_t size) noexcept { (void)ptr; (void)size; }
+void operator delete[](void* ptr, size_t size) noexcept { (void)ptr; (void)size; }
+
+// --- C++ ABI Stubs ---
+extern "C" {
+    [[noreturn]] void __cxa_pure_virtual() { 
+        if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+             kernel::g_platform->get_uart_ops()->puts("PANIC: Pure virtual function call!\n");
+        }
+        basic_halt_loop();
+    }
+
+    int __cxa_atexit(void (*func)(void*), void* arg, void* dso_handle) {
+        (void)func; (void)arg; (void)dso_handle; return 0; 
+    }
+    
+    static kernel::core::Spinlock g_cxa_guard_lock; 
+    
+    int __cxa_guard_acquire(uint64_t* guard_object) {
+        kernel::core::ScopedLock lock(g_cxa_guard_lock);
+        if (*reinterpret_cast<volatile uint8_t*>(guard_object) == 0) { 
+            return 1; 
+        }
+        return 0; 
+    }
+
+    void __cxa_guard_release(uint64_t* guard_object) {
+        kernel::core::ScopedLock lock(g_cxa_guard_lock);
+        *reinterpret_cast<volatile uint8_t*>(guard_object) = 1; 
+    }
+
+    void __cxa_guard_abort(uint64_t* guard_object) { (void)guard_object; }
+    
+    [[noreturn]] void _Unwind_Resume() { 
+        if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+             kernel::g_platform->get_uart_ops()->puts("PANIC: _Unwind_Resume called!\n");
+        }
+        basic_halt_loop();
+    }
+    // void __gxx_personality_v0() {} // Add if linker asks
+}// === freestanding_stubs.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file freestanding_stubs.cpp
+ * @brief Provides freestanding implementations for common C library functions and atomic builtins.
+ */
+
+#include <cstddef> // For size_t
+#include <cstdint> // For integer types
+
+// extern "C" functions
+extern "C" {
+
+// --- Memory and String Functions ---
+void* memcpy(void* dest_ptr, const void* src_ptr, size_t count) {
+    auto* dest = static_cast<unsigned char*>(dest_ptr);
+    const auto* src = static_cast<const unsigned char*>(src_ptr);
+    for (size_t i = 0; i < count; ++i) {
+        dest[i] = src[i];
+    }
+    return dest_ptr;
+}
+
+void* memset(void* dest_ptr, int ch_int, size_t count) {
+    auto* dest = static_cast<unsigned char*>(dest_ptr);
+    unsigned char ch = static_cast<unsigned char>(ch_int);
+    for (size_t i = 0; i < count; ++i) {
+        dest[i] = ch;
+    }
+    return dest_ptr;
+}
+
+int memcmp(const void* ptr1, const void* ptr2, size_t count) {
+    const auto* p1 = static_cast<const unsigned char*>(ptr1);
+    const auto* p2 = static_cast<const unsigned char*>(ptr2);
+    for (size_t i = 0; i < count; ++i) {
+        if (p1[i] != p2[i]) {
+            return (p1[i] < p2[i]) ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+size_t strlen(const char* str) {
+    if (!str) return 0; 
+    size_t len = 0;
+    while (str[len] != '\0') {
+        len++;
+    }
+    return len;
+}
+
+char* strcpy(char* dest, const char* src) {
+    if (!dest || !src) return dest; 
+    char* orig_dest = dest;
+    while ((*dest++ = *src++)) {}
+    return orig_dest;
+}
+
+char* strncpy(char* dest, const char* src, size_t count) {
+    if (!dest || !src) return dest;
+    char* orig_dest = dest;
+    size_t i;
+    for (i = 0; i < count && src[i] != '\0'; ++i) {
+        dest[i] = src[i];
+    }
+    for (; i < count; ++i) { 
+        dest[i] = '\0';
+    }
+    return orig_dest;
+}
+
+int strcmp(const char* lhs, const char* rhs) {
+    if (!lhs && !rhs) return 0;
+    if (!lhs) return -1; 
+    if (!rhs) return 1;
+    while (*lhs && (*lhs == *rhs)) {
+        lhs++;
+        rhs++;
+    }
+    return static_cast<int>(static_cast<unsigned char>(*lhs)) - 
+           static_cast<int>(static_cast<unsigned char>(*rhs));
+}
+
+int strncmp(const char* lhs, const char* rhs, size_t count) {
+    if (count == 0) return 0;
+    if (!lhs && !rhs) return 0; 
+    if (!lhs) return -1; 
+    if (!rhs) return 1;
+    
+    size_t i = 0;
+    while (i < count && lhs[i] && rhs[i] && (lhs[i] == rhs[i])) {
+        if (lhs[i] == '\0') { 
+            return 0;
+        }
+        i++;
+    }
+    if (i == count) return 0; 
+    
+    return static_cast<int>(static_cast<unsigned char>(lhs[i])) - 
+           static_cast<int>(static_cast<unsigned char>(rhs[i]));
+}
+
+constexpr uint64_t EARLY_UART_BASE_ADDR = 0x09000000;
+constexpr uint32_t EARLY_UART_FR_REG = 0x18;
+constexpr uint32_t EARLY_UART_DR_REG = 0x00;
+constexpr uint32_t EARLY_UART_TXFF_FLAG = (1 << 5);
+
+void early_uart_puts(const char* str) {
+    if (!str) return;
+    while (*str) {
+        if (*str == '\n') {
+            while ((*reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_FR_REG)) & EARLY_UART_TXFF_FLAG) {}
+            *reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_DR_REG) = static_cast<uint32_t>('\r');
+        }
+        while ((*reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_FR_REG)) & EARLY_UART_TXFF_FLAG) {}
+        *reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_DR_REG) = static_cast<uint32_t>(*str++);
+    }
+}
+
+// --- Atomic Builtin Implementations for AArch64 ---
+// These use inline assembly with Load-Exclusive (LDXR) and Store-Exclusive (STXR)
+// instructions, which are part of ARMv8.0-A.
+
+// unsigned char __aarch64_cas1_acq(unsigned char*, unsigned char, unsigned char)
+// Atomic Compare-And-Swap byte with acquire semantics.
+// Arguments: x0: memory address (ptr)
+//            w1: expected value (oldval)
+//            w2: desired value (newval)
+// Return: old value from memory (in w0)
+// Note: The __atomic_compare_exchange_n builtin expects the 'expected' value to be passed by pointer
+// and updated if the CAS fails. The __aarch64_cas* builtins often just return the old value.
+// We will implement the behavior of __sync_val_compare_and_swap which is similar.
+// The signature GCC expects for __aarch64_cas1_acq might be slightly different in what it returns
+// (e.g., a status or the old value). Let's implement a common CAS pattern that returns the old value.
+// If the signature is different (e.g., returns bool success, updates expected by ref), this needs adjustment.
+// Based on common __sync_val_compare_and_swap, it returns the *original* value at *ptr.
+// The std::atomic version returns bool and updates expected.
+// The __aarch64_cas<N> builtins usually return the value read from memory before the store.
+// The prototype for __atomic_compare_exchange_N from GCC docs is:
+//   bool __atomic_compare_exchange_N (type *ptr, type *expected, type desired, bool weak, int success_memorder, int failure_memorder)
+// The __aarch64_cas<size>_<memorder> are lower-level and might be:
+//   type __aarch64_cas<size>_<memorder> (type *mem, type oldval, type newval); returning original *mem
+// Let's try implementing that:
+uint8_t __aarch64_cas1_acq(volatile uint8_t* mem, uint8_t oldval, uint8_t newval) {
+    uint8_t read_val;
+    uint32_t success;
+    asm volatile (
+        "1: ldaxrb   %w[read_val], [%[mem]]\n"      // Load-Acquire Exclusive Byte
+        "   cmp     %w[read_val], %w[oldval]\n"    // Compare with expected old value
+        "   b.ne    2f\n"                          // If not equal, CAS fails, store read_val in oldval
+        "   stlxrb   %w[success], %w[newval], [%[mem]]\n" // Store-Release Exclusive Byte
+        "   cbnz    %w[success], 1b\n"            // If store failed (contention), retry from load
+        "2:"
+        // Output operands: read_val will contain value from memory, success will be 0 if STLRXB succeeded
+        : [read_val] "=&r"(read_val), [success] "=&r"(success), "+Q"(*mem) // +Q means memory operand
+        // Input operands
+        : [mem] "r"(mem), [oldval] "r"(oldval), [newval] "r"(newval)
+        // Clobbers
+        : "cc", "memory" 
+    );
+    return read_val; // Return the value read from memory (which is oldval if CAS succeeded)
+}
+
+
+// uint64_t __aarch64_ldadd8_relax(uint64_t *mem, uint64_t val)
+// Atomically: tmp = *mem; *mem += val; return tmp; (Relaxed semantics)
+// Arguments: x0=mem, x1=val. Returns old value in x0.
+uint64_t __aarch64_ldadd8_relax(volatile uint64_t* mem, uint64_t val) {
+    uint64_t old_val;
+    uint64_t new_val;
+    uint32_t success; // For STXR status
+    asm volatile (
+        "1: ldxr    %[old_val], [%[mem]]\n"            // Load-Exclusive Register
+        "   add     %[new_val], %[old_val], %[val]\n"  // Add
+        "   stxr    %w[success], %[new_val], [%[mem]]\n"// Store-Exclusive Register
+        "   cbnz    %w[success], 1b\n"                 // If failed (somebody else wrote), retry
+        // Output operands: old_val will contain original *mem, new_val and success are scratch
+        : [old_val] "=&r"(old_val), [new_val] "=&r"(new_val), [success] "=&r"(success), "+Q"(*mem)
+        // Input operands
+        : [mem] "r"(mem), [val] "r"(val)
+        // Clobbers
+        : "cc", "memory"
+    );
+    return old_val;
+}
+
+// uint8_t __aarch64_swp1_rel(uint8_t* mem, uint8_t val)
+// Atomically: tmp = *mem; *mem = val; return tmp; (Release semantics for the store)
+// Arguments: x0=mem, w1=val. Returns old value in w0.
+uint8_t __aarch64_swp1_rel(volatile uint8_t* mem, uint8_t val) {
+    uint8_t old_val;
+    uint32_t success;
+    asm volatile (
+        // LDAXR provides acquire semantics for the load part of the RMW.
+        // STLXR provides release semantics for the store part of the RMW.
+        "1: ldaxrb  %w[old_val], [%[mem]]\n"             // Load-Acquire Exclusive Byte
+        "   stlxrb  %w[success], %w[val], [%[mem]]\n"    // Store-Release Exclusive Byte
+        "   cbnz    %w[success], 1b\n"                   // Retry if store failed
+        : [old_val] "=&r"(old_val), [success] "=&r"(success), "+Q"(*mem)
+        : [mem] "r"(mem), [val] "r"(val)
+        : "cc", "memory"
+    );
+    return old_val;
+}
+
+} // extern "C"// === ld/linker_rv64.ld ===
+/* === ld/linker_arm64.ld === */
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+
+ENTRY(_start)
+
+/* Attempt to define symbols globally and absolutely before SECTIONS block */
+/* Their values will be calculated by the linker based on section placements */
+/* Mark them as ABSOLUTE here. */
+__init_array_start = 0; /* Placeholder, actual value set by .init_array section */
+__init_array_end = 0;   /* Placeholder */
+_bss_start = 0;         /* Placeholder */
+_bss_end = 0;           /* Placeholder */
+_stacks_start = 0;      /* Placeholder */
+_stacks_end = 0;        /* Placeholder */
+_end = 0;               /* Placeholder */
+end = 0;                /* Placeholder */
+
+
+MEMORY
+{
+    RAM (rx) : ORIGIN = 0x40000000, LENGTH = 128M
+}
+
+NUM_CORES = 4;
+CORE_STARTUP_STACK_SIZE = 0x4000;
+
+PHDRS
+{
+    text_ro PT_LOAD FLAGS(5); /* R-X */
+    data_rw PT_LOAD FLAGS(6); /* RW- */
+}
+
+SECTIONS
+{
+    . = ORIGIN(RAM);
+
+    .text : ALIGN(4K)
+    {
+        KEEP(*(.text.boot))
+        *(.text .text.*)
+        *(.glue_7)
+        *(.glue_7t)
+    } > RAM AT>RAM :text_ro
+
+    .rodata : ALIGN(4K)
+    {
+        *(.rodata .rodata.*)
+    } > RAM AT>RAM :text_ro
+
+    .init_array : ALIGN(8)
+    {
+        __init_array_start = ABSOLUTE(.) ; /* Assign value here */
+        KEEP (*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+        KEEP (*(.init_array))
+        __init_array_end = ABSOLUTE(.) ;   /* Assign value here */
+    } > RAM AT>RAM :text_ro
+
+    .fini_array : ALIGN(8)
+    {
+        /* __fini_array_start = ABSOLUTE(.) ; Not strictly needed if unused */
+        KEEP (*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+        KEEP (*(.fini_array))
+        /* __fini_array_end = ABSOLUTE(.) ; Not strictly needed if unused */
+    } > RAM AT>RAM :text_ro
+
+    .data : ALIGN(4K)
+    {
+        *(.data .data.*)
+    } > RAM AT>RAM :data_rw
+
+    .bss (NOLOAD) : ALIGN(4K)
+    {
+        _bss_start = ABSOLUTE(.) ; /* Assign value here */
+        *(.bss .bss.*)
+        *(COMMON)
+        . = ALIGN(16);
+        _bss_end = ABSOLUTE(.) ;   /* Assign value here */
+    } > RAM :data_rw
+
+    .startup_stacks (NOLOAD) : ALIGN(16)
+    {
+        _stacks_start = ABSOLUTE(.) ; /* Assign value here */
+        . = . + (NUM_CORES * CORE_STARTUP_STACK_SIZE);
+        _stacks_end = ABSOLUTE(.) ;   /* Assign value here */
+    } > RAM :data_rw
+
+    _end = ALIGN(4K); /* Assign value here */
+    end = _end;
+
+
+    /DISCARD/ :
+    {
+        *(.comment)
+        *(.note.gnu.build-id)
+        *(.eh_frame)
+        *(.ARM.exidx)
+        *(.ARM.attributes)
+    }
+}
+
+/*
+  The PROVIDE statements at the end are removed as we are trying to define
+  them globally at the top and then assign values within SECTIONS.
+  If the top-level definitions are respected, PROVIDE becomes redundant for these.
+*/

@@ -40,6 +40,8 @@ constexpr size_t MAX_AUDIO_CHANNELS = 2;
 // Forward declarations
 struct PerCPUData; // Forward declaration
 
+alignas(64) extern std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
+
 class Spinlock {
     std::atomic<bool> lock_flag_{false};
     uint32_t lock_id_;
@@ -188,11 +190,7 @@ private:
 } // namespace core
 } // namespace kernel
 
-// Expose g_per_cpu_data with C linkage for assembly access
-extern "C" {
-    extern kernel::core::PerCPUData kernel_g_per_cpu_data[4];
-}
-
-extern "C" void early_uart_puts(const char* str);
+// Define kernel_g_per_cpu_data to alias g_per_cpu_data for C linkage
+extern "C" kernel::core::PerCPUData* const kernel_g_per_cpu_data;
 
 #endif // CORE_HPP

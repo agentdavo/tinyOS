@@ -9,7 +9,7 @@
 
 namespace kernel {
 namespace util {
-
+	
 // safe_strcpy now uses kstrlen and kmemcpy (which call the global extern "C" versions)
 bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept {
     if (!dest || !src || dest_size == 0) {

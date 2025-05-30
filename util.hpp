@@ -25,6 +25,7 @@ extern "C" {
     int strncmp(const char* lhs, const char* rhs, size_t count);
     char* strcpy(char* dest, const char* src);
     char* strncpy(char* dest, const char* src, size_t count);
+	void early_uart_puts(const char* str);
 }
 
 
@@ -104,7 +105,6 @@ std::string_view get_next_token(std::string_view& input, char delimiter) noexcep
 // Simplified snprintf-like functions (definitions in util.cpp)
 int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) noexcept;
 int k_snprintf(char* buffer, size_t bufsz, const char* format, ...) noexcept __attribute__((format(printf, 3, 4)));
-
 
 template <typename T>
 constexpr const T& min(const T& a, const T& b) { return (b < a) ? b : a; }

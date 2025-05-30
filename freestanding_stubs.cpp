@@ -40,6 +40,15 @@ int memcmp(const void* ptr1, const void* ptr2, size_t count) {
     return 0;
 }
 
+void* memchr(const void* s, int c, size_t n) {
+    const unsigned char* p = static_cast<const unsigned char*>(s);
+    unsigned char ch = static_cast<unsigned char>(c);
+    for (size_t i = 0; i < n; ++i) {
+        if (p[i] == ch) return (void*)(p + i);
+    }
+    return nullptr;
+}
+
 size_t strlen(const char* str) {
     if (!str) return 0; 
     size_t len = 0;
@@ -98,6 +107,23 @@ int strncmp(const char* lhs, const char* rhs, size_t count) {
     
     return static_cast<int>(static_cast<unsigned char>(lhs[i])) - 
            static_cast<int>(static_cast<unsigned char>(rhs[i]));
+}
+
+constexpr uint64_t EARLY_UART_BASE_ADDR = 0x09000000;
+constexpr uint32_t EARLY_UART_FR_REG = 0x18;
+constexpr uint32_t EARLY_UART_DR_REG = 0x00;
+constexpr uint32_t EARLY_UART_TXFF_FLAG = (1 << 5);
+
+void early_uart_puts(const char* str) {
+    if (!str) return;
+    while (*str) {
+        if (*str == '\n') {
+            while ((*reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_FR_REG)) & EARLY_UART_TXFF_FLAG) {}
+            *reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_DR_REG) = static_cast<uint32_t>('\r');
+        }
+        while ((*reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_FR_REG)) & EARLY_UART_TXFF_FLAG) {}
+        *reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_DR_REG) = static_cast<uint32_t>(*str++);
+    }
 }
 
 // --- Atomic Builtin Implementations for AArch64 ---

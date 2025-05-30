@@ -1,73 +1,95 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
-/*
- * @file linker_rv64.ld
- * @brief RISC-V linker script for miniOS v1.7.
- * @details
- * Defines the memory layout for the RISC-V QEMU virt platform, with 128MB RAM, placing text, data,
- * BSS, stack, and heap sections. Supports 4-core SMP with per-core stacks. Updated in v1.7 with
- * clearer comments and alignment with v1.7 kernel, retaining all v1.6 functionality.
- *
- * @version 1.7
- * @see cpu_rv64.S, miniOS.hpp
- */
+/* linker_arm64.ld: Linker script for miniOS v1.7 on ARM64 QEMU virt platform */
 
-MEMORY
-{
-    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 128M
+OUTPUT_FORMAT("elf64-littleaarch64")
+OUTPUT_ARCH(aarch64)
+ENTRY(_start)
+
+MEMORY {
+    RAM (rwx) : ORIGIN = 0x40000000, LENGTH = 128M
+}
+
+NUM_CORES = 4;
+CORE_STARTUP_STACK_SIZE = 0x4000;
+
+PHDRS {
+    text_ro PT_LOAD FLAGS(5); /* R-X */
+    data_rw PT_LOAD FLAGS(6); /* RW- */
 }
 
 SECTIONS
 {
-    . = 0x80000000;
+    . = ORIGIN(RAM);
 
-    .text :
+    /* Code + read-only data */
+    .text : ALIGN(4K)
     {
         KEEP(*(.text.boot))
         *(.text .text.*)
-    } > RAM
+        *(.vectors)
+    } > RAM : text_ro
 
-    .rodata :
+    .rodata : ALIGN(4K)
     {
         *(.rodata .rodata.*)
-    } > RAM
+    } > RAM : text_ro
 
-    .data :
+    /* Constructors/destructors */
+	.init_array : ALIGN(8) {
+		__init_array_start = .;
+		KEEP (*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+		KEEP (*(.init_array))
+		__init_array_end = .;
+	} >RAM :text_ro
+
+    .fini_array : ALIGN(8)
+    {
+        PROVIDE(__fini_array_start = .);
+        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+        KEEP(*(.fini_array))
+        PROVIDE(__fini_array_end = .);
+    } > RAM : text_ro
+
+    /* Writable data */
+    .data : ALIGN(4K)
     {
         *(.data .data.*)
-    } > RAM
+    } > RAM : data_rw
 
-    .bss :
-    {
-        __bss_start = .;
-        *(.bss .bss.*)
-        *(COMMON)
-        __bss_end = .;
-    } > RAM
+    /* Uninitialized data (zeroed at runtime) */
+	.bss (NOLOAD) : ALIGN(4K) {
+		_bss_start = .;
+		*(.bss .bss.*)
+		*(COMMON)
+		. = ALIGN(16);
+		_bss_end = .;
+	} >RAM :data_rw
 
-    .stack :
-    {
-        __stack_start = .;
-        . = . + 0x10000; /* 64KB for 4 cores (16KB each) */
-        __stack_end = .;
-    } > RAM
+    /* Per-core startup stacks (NOLOAD, filled by runtime) */
+	.startup_stacks (NOLOAD) : ALIGN(16) {
+		_stacks_start = .;
+		. = . + (NUM_CORES * CORE_STARTUP_STACK_SIZE);
+		_stacks_end = .;
+	} >RAM :data_rw
 
-    .heap :
-    {
-        __heap_start = .;
-        . = . + 0x100000; /* 1MB heap */
-        __heap_end = .;
-    } > RAM
+    /* End of the image */
+    PROVIDE(_end = ALIGN(4K));
+    PROVIDE(end = _end);
 
-    .trap_stack :
-    {
-        __trap_stack = .;
-        . = . + 0x1000; /* 4KB trap stack */
-        __trap_stack_end = .;
-    } > RAM
-
-    /DISCARD/ :
-    {
+    /DISCARD/ : {
         *(.comment)
+        *(.note.*)
         *(.eh_frame)
+        *(.ARM.exidx*)
+        *(.ARM.attributes)
+        *(.interp)
+        *(.gnu.version*)
+        *(.dynsym)
+        *(.dynstr)
+        *(.gnu.hash)
+        *(.rela.*)
+        *(.dynamic)
+        *(.got)
+        *(.plt)
     }
 }

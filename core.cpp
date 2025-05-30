@@ -16,6 +16,9 @@
 #include <atomic> 
 #include <cstddef>
 
+extern "C" void early_uart_puts(const char* str);
+extern "C" kernel::core::PerCPUData* const kernel_g_per_cpu_data = kernel::core::g_per_cpu_data.data();
+
 namespace kernel {
 namespace core {
 
@@ -388,7 +391,6 @@ void get_kernel_stats(hal::UARTDriverOps* uart_ops) {
 }
 
 extern "C" void kernel_main() {
-	
     early_uart_puts("[DEBUG] Entering kernel_main\n");
     g_platform = hal::get_platform();
     early_uart_puts("[DEBUG] Got platform\n");
@@ -401,7 +403,6 @@ extern "C" void kernel_main() {
     char addr_buf[20];
     kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "0x%llx\n", (unsigned long long)g_platform);
     early_uart_puts(addr_buf);
-    // Log vtable pointer
     early_uart_puts("[DEBUG] g_platform vtable address: ");
     kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "0x%llx\n", *(unsigned long long*)g_platform);
     early_uart_puts(addr_buf);
@@ -438,20 +439,5 @@ extern "C" void kernel_main() {
     if (g_platform->get_core_id() == 0) { // Only core 0 enables its IRQs here.
          asm volatile("msr daifclr, #2"); // Enable IRQs (clear PSTATE.I bit)
     }
-	// THIS IS LINE 423
-    // kernel_main returns to _start assembly. 
-    // _start currently has a .L_kernel_halt loop.
-    // For actual scheduling to begin on core 0, _start must be modified to:
-    // 1. Load context of g_per_cpu_data[0].idle_thread (or current_thread if set by scheduler_start)
-    // 2. Perform an 'eret' to start that first task.
-	
 } // namespace core
 } // namespace kernel
-
-// Define kernel_g_per_cpu_data to alias g_per_cpu_data for C linkage
-extern "C" kernel::core::PerCPUData kernel_g_per_cpu_data[4] = {
-    kernel::core::g_per_cpu_data[0],
-    kernel::core::g_per_cpu_data[1],
-    kernel::core::g_per_cpu_data[2],
-    kernel::core::g_per_cpu_data[3]
-};

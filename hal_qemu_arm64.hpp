@@ -10,6 +10,7 @@
 #include "hal.hpp"       // Directly include the base HAL interfaces FIRST
 #include "core.hpp"      // For TCB definition if used in context switch stubs, and core constants
 #include "audio.hpp"     // For kernel::audio::AudioBuffer
+#include "util.hpp"      // For early_uart_puts
 #include <string_view>
 #include <array>
 #include <atomic>
@@ -68,8 +69,8 @@ public:
 private:
     void write_gicd_reg(uint32_t offset, uint32_t value);
     uint32_t read_gicd_reg(uint32_t offset);
-    void write_gicc_reg(uint32_t offset, uint32_t value);
-    uint32_t read_gicc_reg(uint32_t offset);
+    void write_gicc_reg(uint64_t offset, uint32_t value);
+    uint32_t read_gicc_reg(uint64_t offset);
 };
 
 class TimerDriver : public kernel::hal::TimerDriverOps {
@@ -191,7 +192,8 @@ public:
 class PlatformQEMUVirtARM64 : public kernel::hal::Platform {
 public:
     PlatformQEMUVirtARM64();
-    virtual ~PlatformQEMUVirtARM64(); // Declare, define in .cpp
+    virtual ~PlatformQEMUVirtARM64();
+    virtual void dummy_vtable_anchor() {} // Force vtable generation
     uint32_t get_core_id() const override;
     uint32_t get_num_cores() const override;
     void early_init_platform() override;

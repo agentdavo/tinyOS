@@ -15,47 +15,22 @@
 #endif
 #include <arm_neon.h>
 
-void early_uart_puts(const char* str); // Declaration for core.hpp
-
-static void early_uart_putc(char c) {
-    while ((*reinterpret_cast<volatile uint32_t*>(hal::qemu_virt_arm64::UART_BASE + 0x18)) & (1 << 5)) {}
-    *reinterpret_cast<volatile uint32_t*>(hal::qemu_virt_arm64::UART_BASE + 0x00) = static_cast<uint32_t>(c);
-}
-
-void early_uart_puts(const char* str) {
-    if (!str) return;
-    while (*str) {
-        if (*str == '\n') early_uart_putc('\r'); 
-        early_uart_putc(*str++);
-    }
-}
-
-namespace hal::qemu_virt_arm64 {
-static PlatformQEMUVirtARM64 g_platform_instance;
-} // namespace hal::qemu_virt_arm64
-
-namespace hal {
-kernel::hal::Platform* get_platform() {
-    early_uart_puts("[DEBUG] Entering get_platform\n");
-    early_uart_puts("[DEBUG] Returning platform instance\n");
-    return &qemu_virt_arm64::g_platform_instance;
-}
-} // namespace hal
+extern "C" void early_uart_puts(const char* str);
 
 namespace hal::qemu_virt_arm64 {
 
-namespace { 
-    inline void mmio_write32(uint64_t addr, uint32_t value) {
-        *reinterpret_cast<volatile uint32_t*>(addr) = value;
-    }
-    inline uint32_t mmio_read32(uint64_t addr) {
-        return *reinterpret_cast<volatile uint32_t*>(addr);
-    }
-    inline void write_sysreg_cntp_tval(uint64_t value) { asm volatile("msr cntp_tval_el0, %0" : : "r"(value)); }
-    inline void write_sysreg_cntp_ctl(uint64_t value) { asm volatile("msr cntp_ctl_el0, %0" : : "r"(value)); }
-    inline uint64_t read_sysreg_cntpct() { uint64_t v; asm volatile("mrs %0, cntpct_el0" : "=r"(v)); return v; }
-    inline uint64_t read_sysreg_cntfrq() { uint64_t v; asm volatile("mrs %0, cntfrq_el0" : "=r"(v)); return v; }
+PlatformQEMUVirtARM64 g_platform_instance;
+
+inline void mmio_write32(uint64_t addr, uint32_t value) {
+    *reinterpret_cast<volatile uint32_t*>(addr) = value;
 }
+inline uint32_t mmio_read32(uint64_t addr) {
+    return *reinterpret_cast<volatile uint32_t*>(addr);
+}
+inline void write_sysreg_cntp_tval(uint64_t value) { asm volatile("msr cntp_tval_el0, %0" : : "r"(value)); }
+inline void write_sysreg_cntp_ctl(uint64_t value) { asm volatile("msr cntp_ctl_el0, %0" : : "r"(value)); }
+inline uint64_t read_sysreg_cntpct() { uint64_t v; asm volatile("mrs %0, cntpct_el0" : "=r"(v)); return v; }
+inline uint64_t read_sysreg_cntfrq() { uint64_t v; asm volatile("mrs %0, cntfrq_el0" : "=r"(v)); return v; }
 
 // --- UARTDriver ---
 void UARTDriver::write_uart_reg(uint32_t offset, uint32_t value) { mmio_write32(UART_BASE + offset, value); }
@@ -89,15 +64,15 @@ char UARTDriver::getc_blocking() {
 // --- IRQController ---
 void IRQController::write_gicd_reg(uint32_t o, uint32_t v) { mmio_write32(GIC_DISTRIBUTOR_BASE + o, v); }
 uint32_t IRQController::read_gicd_reg(uint32_t o) { return mmio_read32(GIC_DISTRIBUTOR_BASE + o); }
-void IRQController::write_gicc_reg(uint32_t o, uint32_t v) { mmio_write32(GIC_CPU_INTERFACE_BASE + o, v); }
-uint32_t IRQController::read_gicc_reg(uint32_t o) { return mmio_read32(GIC_CPU_INTERFACE_BASE + o); }
+void IRQController::write_gicc_reg(uint64_t o, uint32_t v) { mmio_write32(GIC_CPU_INTERFACE_BASE + o, v); }
+uint32_t IRQController::read_gicc_reg(uint64_t o) { return mmio_read32(GIC_CPU_INTERFACE_BASE + o); }
 
 void IRQController::enable_core_irqs(uint32_t core_id, uint32_t irq_source_mask) {
-    (void)core_id; (void)irq_source_mask; // Parameters unused in this simplified version
+    (void)core_id; (void)irq_source_mask;
     write_gicc_reg(0x0000, read_gicc_reg(0x0000) | 0x1); 
 }
 void IRQController::disable_core_irqs(uint32_t core_id) {
-    (void)core_id; // Parameter unused
+    (void)core_id;
     write_gicc_reg(0x0000, read_gicc_reg(0x0000) & ~0x3); 
 }
 void IRQController::init_distributor() {
@@ -117,7 +92,7 @@ void IRQController::init_distributor() {
     early_uart_puts("[HAL_DEBUG] IRQController::init_distributor() EXIT\n"); 
 }
 void IRQController::init_cpu_interface(uint32_t core_id) { 
-    (void)core_id; // Parameter unused
+    (void)core_id;
     early_uart_puts("[HAL_DEBUG] IRQController::init_cpu_interface() ENTRY\n");
     write_gicc_reg(0x004, 0xFF); 
     write_gicc_reg(0x008, 0x03); 
@@ -224,7 +199,7 @@ void TimerDriver::hardware_timer_irq_fired(uint32_t core_id) {
     }
 }
 
-// --- DMAController (Stub) ---
+// --- DMAController ---
 DMAController::DMAController() { 
     early_uart_puts("[DEBUG] DMAController CONSTRUCTOR ENTRY\n");
     channels_in_use_.fill(false);
@@ -250,7 +225,7 @@ void DMAController::release_channel(kernel::hal::dma::ChannelID ch) {
     if (ch >= 0 && static_cast<size_t>(ch) < channels_in_use_.size()) channels_in_use_[static_cast<size_t>(ch)] = false;
 }
 
-// --- I2SDriver (Stub) ---
+// --- I2SDriver ---
 bool I2SDriver::init(uint32_t id, kernel::hal::i2s::Mode, const kernel::hal::i2s::Format& fmt, size_t, uint8_t, kernel::hal::i2s::I2SCallback cb, void* udata) {
     if (id >= instances_.size()) return false;
     instances_[id] = {cb, udata, false, fmt};
@@ -323,7 +298,7 @@ void I2SDriver::convert_hw_format_to_dsp_format(kernel::audio::AudioBuffer* buf,
     } 
 }
 void I2SDriver::convert_dsp_format_to_hw_format(kernel::audio::AudioBuffer* buf, const kernel::hal::i2s::Format& fmt) {
-     if (!buf || !buf->data_raw_i2s || !buf->data_dsp_canonical) return;
+    if (!buf || !buf->data_raw_i2s || !buf->data_dsp_canonical) return;
     auto* pcm_data = static_cast<int16_t*>(buf->data_raw_i2s); 
     size_t num_samples_total = buf->samples_per_channel * fmt.num_channels;
     if (fmt.bit_depth == kernel::hal::i2s::BitDepth::BITS_16) {
@@ -361,16 +336,18 @@ void MemoryOps::invalidate_cache_range(const void* addr, size_t size) {
     asm volatile("isb" ::: "memory");
 }
 
-// --- NetworkDriver (Stub for VirtIO) ---
+// --- NetworkDriver ---
 bool NetworkDriver::init_interface(int) { initialized_ = true; return true; }
 bool NetworkDriver::send_packet(int, const uint8_t*, size_t) { if (!initialized_) return false; return true; }
-void NetworkDriver::register_packet_receiver(kernel::hal::net::PacketReceivedCallback cb, void* context) { packet_received_cb_ = cb; cb_context_ = context; }
+void NetworkDriver::register_packet_receiver(kernel::hal::net::PacketReceivedCallback cb, void* context) {
+    packet_received_cb_ = cb; cb_context_ = context;
+}
 
 // --- PowerOps ---
 void PowerOps::enter_idle_state(uint32_t) { asm volatile("wfi"); } 
 bool PowerOps::set_cpu_frequency(uint32_t, uint32_t) { return true; }
 
-// --- GPIODriver (Stub) ---
+// --- GPIODriver ---
 bool GPIODriver::init_bank(uint32_t) { return true; }
 bool GPIODriver::configure_pin(uint32_t, uint32_t, kernel::hal::gpio::PinMode) { return true; }
 bool GPIODriver::set_pin_state(uint32_t, uint32_t, kernel::hal::gpio::PinState) { return true; }
@@ -410,7 +387,7 @@ PlatformQEMUVirtARM64::PlatformQEMUVirtARM64() :
     gpio_driver_(),
     watchdog_driver_()
 {
-    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR ENTRY\n");
+    early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR START\n");
     unsigned long long vtable_addr = *(unsigned long long*)this;
     char addr_buf[20];
     kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "[HAL_DEBUG] Constructor vtable: 0x%llx\n", vtable_addr);
@@ -418,6 +395,16 @@ PlatformQEMUVirtARM64::PlatformQEMUVirtARM64() :
     if (vtable_addr == 0) {
         early_uart_puts("[HAL_DEBUG] ERROR: Null vtable in constructor\n");
     }
+    early_uart_puts("[HAL_DEBUG] Initializing uart_driver_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing irq_controller_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing timer_driver_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing dma_controller_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing i2s_driver_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing memory_ops_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing network_driver_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing power_ops_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing gpio_driver_\n");
+    early_uart_puts("[HAL_DEBUG] Initializing watchdog_driver_\n");
     early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR: Members initialized\n");
     early_uart_puts("[HAL_DEBUG] PlatformQEMUVirtARM64 CONSTRUCTOR EXIT\n");
 }
@@ -434,7 +421,6 @@ uint32_t PlatformQEMUVirtARM64::get_core_id() const {
 uint32_t PlatformQEMUVirtARM64::get_num_cores() const { return kernel::core::MAX_CORES; }
 
 void PlatformQEMUVirtARM64::early_init_platform() {
-    // Log vtable address
     unsigned long long vtable_addr = *(unsigned long long*)this;
     char addr_buf[20];
     kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "[HAL_DEBUG] early_init_platform vtable: 0x%llx\n", vtable_addr);
@@ -492,3 +478,14 @@ void PlatformQEMUVirtARM64::reboot_system() {
 }
 
 } // namespace hal::qemu_virt_arm64
+
+namespace hal {
+kernel::hal::Platform* get_platform() {
+    early_uart_puts("[DEBUG] get_platform ENTRY\n");
+    early_uart_puts("[DEBUG] Returning platform instance at 0x");
+    char addr_buf[20];
+    kernel::util::k_snprintf(addr_buf, sizeof(addr_buf), "%llx\n", (unsigned long long)&qemu_virt_arm64::g_platform_instance);
+    early_uart_puts(addr_buf);
+    return &qemu_virt_arm64::g_platform_instance;
+}
+} // namespace hal

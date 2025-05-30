@@ -10,6 +10,10 @@
 #include "miniOS.hpp"  // For kernel::g_platform
 #include "core.hpp"    // For kernel::core::Spinlock, kernel::core::ScopedLock
 
+extern "C" {
+    void* __dso_handle = nullptr;
+}
+
 // Basic panic function if platform isn't available or if panic is called too early
 [[noreturn]] static void basic_halt_loop() {
     for (;;) {
@@ -41,6 +45,26 @@ static kernel::core::Spinlock g_simple_heap_lock;
 namespace std {
     const nothrow_t nothrow = nothrow_t(); // Explicit constructor call
 }
+
+namespace std {
+    [[noreturn]] void terminate() noexcept {
+        if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+            kernel::g_platform->get_uart_ops()->puts("PANIC: std::terminate() called!\n");
+        }
+        for (;;) asm volatile("wfi");
+    }
+}
+
+extern "C" [[noreturn]] void _ZSt24__throw_out_of_range_fmtPKcz(const char*, ...) {
+    if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+        kernel::g_platform->get_uart_ops()->puts("PANIC: std::out_of_range thrown!\n");
+    }
+    for (;;) asm volatile("wfi");
+}
+
+extern "C" void __gxx_personality_v0() { for (;;) asm volatile("wfi"); }
+extern "C" void __cxa_deleted_virtual() { for (;;) asm volatile("wfi"); }
+extern "C" unsigned long __getauxval(unsigned long type) { (void)type; return 0; }
 
 void* operator new(size_t size) noexcept { 
     kernel::core::ScopedLock lock(g_simple_heap_lock); 

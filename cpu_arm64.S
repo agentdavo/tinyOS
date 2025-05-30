@@ -16,6 +16,22 @@
     .equ TCB_PC_OFFSET, (31*8 + 8)  
     .equ TCB_PSTATE_OFFSET, (31*8 + 16) 
 
+.extern __init_array_start
+.extern __init_array_end
+.extern _bss_start
+.extern _bss_end
+.extern _stacks_start
+.extern _stacks_end
+
+    .section .rodata
+.L_debug_start:     .asciz "[DEBUG] _start ENTRY\n"
+.L_debug_stack:     .asciz "[DEBUG] Stack set up\n"
+.L_debug_primary:   .asciz "[DEBUG] Primary core setup\n"
+.L_debug_vectors:   .asciz "[DEBUG] Exception vectors set\n"
+.L_debug_constructors: .asciz "[DEBUG] Calling constructors\n"
+.L_debug_bss:       .asciz "[DEBUG] BSS zeroed\n"
+.L_debug_kernel_main: .asciz "[DEBUG] Entering kernel_main\n"
+
     .section .vectors, "ax", %progbits 
     .align 11 
 .global exception_vectors 
@@ -56,6 +72,14 @@ exception_vectors:
     .section .text.boot, "ax", %progbits
     .global _start  
 _start:
+    /* Print "[DEBUG] _start ENTRY" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_start
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
     mrs     x0, mpidr_el1
     and     x0, x0, #0xFF               // x0 = current core_id
 
@@ -66,18 +90,13 @@ _start:
     add     x1, x1, x2                  // x1 = stack top for this core
     mov     sp, x1                      // Set stack pointer
 
-    // DEBUG: Output 'A' after setting stack
+    /* Print "[DEBUG] Stack set up" */
     stp     x0, x1, [sp, #-16]!
-    mov     x19, x0         // Save original x0 (core_id)
-    ldr     x0, =UART_BASE
-    mov     w1, #'A'
-.L_uart_A_wait:  
-    ldr     w2, [x0, #UARTFR]
-    tst     w2, #UART_TXFF
-    b.ne    .L_uart_A_wait
-    str     w1, [x0, #UARTDR]
-    mov     x0, x19         // Restore original x0
-    ldp     x19, x1, [sp], #16 
+    mov     x19, x0
+    adr     x0, .L_debug_stack
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
 
     cbz     x0, .L_primary_core_continue_setup 
 
@@ -87,22 +106,25 @@ _start:
     b       .L_secondary_core_spin
 
 .L_primary_core_continue_setup:
-    // DEBUG: Output 'B' after reaching primary core setup
+    /* Print "[DEBUG] Primary core setup" */
     stp     x0, x1, [sp, #-16]!
     mov     x19, x0
-    ldr     x0, =UART_BASE
-    mov     w1, #'B'
-.L_uart_B_wait:  
-    ldr     w2, [x0, #UARTFR]
-    tst     w2, #UART_TXFF
-    b.ne    .L_uart_B_wait
-    str     w1, [x0, #UARTDR]
+    adr     x0, .L_debug_primary
+    bl      early_uart_puts
     mov     x0, x19
-    ldp     x19, x1, [sp], #16
+    ldp     x0, x1, [sp], #16
 
     ldr     x0, =exception_vectors
     msr     vbar_el1, x0
     isb 
+
+    /* Print "[DEBUG] Exception vectors set" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_vectors
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
 
     // ENABLE NEON/SIMD ACCESS for EL1 BEFORE C++ CONSTRUCTORS
     mrs     x0, cpacr_el1
@@ -110,33 +132,23 @@ _start:
     msr     cpacr_el1, x0
     isb                           // Synchronize context changes
 
-    // DEBUG: Output 'C' before calling constructors
+    /* Print "[DEBUG] Calling constructors" */
     stp     x0, x1, [sp, #-16]!
-    mov     x19, x0             
-    ldr     x0, =UART_BASE
-    mov     w1, #'C'
-.L_uart_C_wait:  
-    ldr     w2, [x0, #UARTFR]
-    tst     w2, #UART_TXFF
-    b.ne    .L_uart_C_wait
-    str     w1, [x0, #UARTDR]
-    mov     x0, x19             
-    ldp     x19, x1, [sp], #16
+    mov     x19, x0
+    adr     x0, .L_debug_constructors
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
 
     bl      call_constructors 
 
-    // DEBUG: Output 'E' before BSS zeroing
+    /* Print "[DEBUG] BSS zeroed" */
     stp     x0, x1, [sp, #-16]!
     mov     x19, x0
-    ldr     x0, =UART_BASE
-    mov     w1, #'E'
-.L_uart_E_wait:  
-    ldr     w2, [x0, #UARTFR]
-    tst     w2, #UART_TXFF
-    b.ne    .L_uart_E_wait
-    str     w1, [x0, #UARTDR]
+    adr     x0, .L_debug_bss
+    bl      early_uart_puts
     mov     x0, x19
-    ldp     x19, x1, [sp], #16
+    ldp     x0, x1, [sp], #16
 
     ldr     x1, =_bss_start
     ldr     x2, =_bss_end
@@ -147,18 +159,13 @@ _start:
     b       .L_bss_zero_loop
 .L_bss_zero_done:
 
-    // DEBUG: Output 'F' before kernel_main
+    /* Print "[DEBUG] Entering kernel_main" */
     stp     x0, x1, [sp, #-16]!
     mov     x19, x0
-    ldr     x0, =UART_BASE
-    mov     w1, #'F'
-.L_uart_F_wait:  
-    ldr     w2, [x0, #UARTFR]
-    tst     w2, #UART_TXFF
-    b.ne    .L_uart_F_wait
-    str     w1, [x0, #UARTDR]
+    adr     x0, .L_debug_kernel_main
+    bl      early_uart_puts
     mov     x0, x19
-    ldp     x19, x1, [sp], #16
+    ldp     x0, x1, [sp], #16
 
     bl      kernel_main
 

@@ -7,43 +7,68 @@ echo [GDB_SCRIPT] Initial GDB settings applied.\n
 
 # Set architecture explicitly
 set architecture aarch64
-echo [GDB_SCRIPT] Architecture set to aarch64.\n
 
-# Connect to QEMU
-echo [GDB_SCRIPT] Attempting to connect to target remote localhost:1234\n
+echo [GDB_PROGRESS] Progress script loaded.\n
+
+# Connect to QEMU (modify as needed)
 target remote localhost:1234
-echo [GDB_SCRIPT] Connected to target.\n
+echo [GDB_PROGRESS] Connected to QEMU target.\n
 
-# Set breakpoints
-echo [GDB_SCRIPT] Setting Breakpoint 1: kernel_main\n
-break kernel_main
-commands 1
+# Key progress milestones
+break hal::get_platform
+commands
   silent
+  echo [GDB_PROGRESS] => At get_platform()\n
+  continue
+end
+
+break kernel_main
+commands
+  silent
+  echo [GDB_PROGRESS] => Entered kernel_main()\n
   print kernel::g_platform
+  continue
+end
+
+break hal::qemu_virt_arm64::PlatformQEMUVirtARM64::early_init_platform
+commands
+  silent
+  echo [GDB_PROGRESS] => Early platform init\n
+  continue
+end
+
+break init_scheduler
+commands
+  silent
+  echo [GDB_PROGRESS] => Scheduler initialized!\n
+  continue
+end
+
+break start_userland
+commands
+  silent
+  echo [GDB_PROGRESS] => Userland starting!\n
+  continue
+end
+
+# Optional: Watch a key variable for change (e.g., g_platform status)
+#watch kernel::g_platform.status
+#commands
+#  silent
+#  echo [GDB_PROGRESS] g_platform.status changed: 
+#  print kernel::g_platform.status
+#  continue
+#end
+
+# Exception or panic handler
+break unhandled_exception_loop
+commands
+  silent
+  echo [GDB_PROGRESS] !!! Exception loop entered!\n
+  backtrace
   info registers
   continue
 end
 
-echo [GDB_SCRIPT] Setting Breakpoint 2: unhandled_exception_loop\n
-break unhandled_exception_loop
-commands 2
-  silent
-  echo [GDB_SCRIPT] Data abort detected\n
-  backtrace
-  print /x $far_el1
-  x/10x $x0
-  disassemble $x30, $x30+0x10
-  info address _ZTVN3hal14qemu_virt_arm6420PlatformQEMUVirtARM64E
-  continue
-end
-
-echo [GDB_SCRIPT] Setting Breakpoint 3: early_init_platform\n
-break hal::qemu_virt_arm64::PlatformQEMUVirtARM64::early_init_platform
-commands 3
-  silent
-  echo [GDB_SCRIPT] Entered early_init_platform\n
-  continue
-end
-
-# Start execution
+# Run to first breakpoint
 continue
