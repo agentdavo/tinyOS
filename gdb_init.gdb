@@ -15,6 +15,17 @@ target remote localhost:1234
 echo [GDB_PROGRESS] Connected to QEMU target.\n
 
 # Key progress milestones
+# Break on kernel entry to check early state
+tbreak _start
+commands
+  silent
+  echo [GDB_PROGRESS] => At _start\n
+  # Show stack pointer and current core ID
+  info registers sp
+  p/x $mpidr_el1
+  continue
+end
+
 break hal::get_platform
 commands
   silent
@@ -30,24 +41,31 @@ commands
   continue
 end
 
+# Platform initialization points
 break hal::qemu_virt_arm64::PlatformQEMUVirtARM64::early_init_platform
 commands
   silent
   echo [GDB_PROGRESS] => Early platform init\n
+  info registers sp
+  p/x $x0
   continue
 end
 
-break init_scheduler
+break hal::qemu_virt_arm64::PlatformQEMUVirtARM64::early_init_core
 commands
   silent
-  echo [GDB_PROGRESS] => Scheduler initialized!\n
+  echo [GDB_PROGRESS] => Early core init\n
+  info registers sp
+  p/x $x0
   continue
 end
 
-break start_userland
+# Scheduler start
+break kernel::core::Scheduler::start_core_scheduler
 commands
   silent
-  echo [GDB_PROGRESS] => Userland starting!\n
+  echo [GDB_PROGRESS] => Scheduler started\n
+  info registers sp
   continue
 end
 
@@ -60,11 +78,21 @@ end
 #  continue
 #end
 
-# Exception or panic handler
-break unhandled_exception_loop
+# Exception or panic handlers
+break hal::qemu_virt_arm64::PlatformQEMUVirtARM64::panic
 commands
   silent
-  echo [GDB_PROGRESS] !!! Exception loop entered!\n
+  echo [GDB_PROGRESS] !!! PANIC called !!!\n
+  backtrace
+  info registers
+  continue
+end
+
+# Catch unexpected exceptions
+break unhandled_exception_entry_point
+commands
+  silent
+  echo [GDB_PROGRESS] !!! Unhandled exception !!!\n
   backtrace
   info registers
   continue
