@@ -10,7 +10,7 @@ MEMORY {
 }
 
 NUM_CORES = 4;
-CORE_STARTUP_STACK_SIZE = 0x4000;
+CORE_STARTUP_STACK_SIZE = 0x4000; /* 16KB per core for startup */
 
 PHDRS {
     text_ro PT_LOAD FLAGS(5); /* R-X */
@@ -24,7 +24,7 @@ SECTIONS
     /* Code + read-only data */
     .text : ALIGN(4K)
     {
-        KEEP(*(.text.boot))
+        KEEP(*(.text.boot)) /* Ensure _start is first */
         *(.text .text.*)
         *(.vectors)
     } > RAM : text_ro
@@ -34,14 +34,15 @@ SECTIONS
         *(.rodata .rodata.*)
     } > RAM : text_ro
 
-    /* Constructors/destructors */
+    /* Global Constructors */
 	.init_array : ALIGN(8) {
-		__init_array_start = .;
+		PROVIDE(__init_array_start = .);
 		KEEP (*(SORT_BY_INIT_PRIORITY(.init_array.*)))
 		KEEP (*(.init_array))
-		__init_array_end = .;
+		PROVIDE(__init_array_end = .);
 	} >RAM :text_ro
 
+    /* Global Destructors (though likely not used in a kernel without exit) */
     .fini_array : ALIGN(8)
     {
         PROVIDE(__fini_array_start = .);
@@ -50,46 +51,46 @@ SECTIONS
         PROVIDE(__fini_array_end = .);
     } > RAM : text_ro
 
-    /* Writable data */
+    /* Writable initialized data */
     .data : ALIGN(4K)
     {
         *(.data .data.*)
     } > RAM : data_rw
 
-    /* Uninitialized data (zeroed at runtime) */
-	.bss (NOLOAD) : ALIGN(4K) {
-		_bss_start = .;
+    /* Uninitialized data (zeroed at runtime by _start) */
+	.bss (NOLOAD) : ALIGN(4K) { /* NOLOAD means it doesn't take space in the ELF file */
+		PROVIDE(_bss_start = .);
 		*(.bss .bss.*)
 		*(COMMON)
-		. = ALIGN(16);
-		_bss_end = .;
-	} >RAM :data_rw
+		. = ALIGN(16); /* Ensure BSS end is well-aligned */
+		PROVIDE(_bss_end = .);
+	} >RAM :data_rw /* Mapped to RAM, RW permissions */
 
-    /* Per-core startup stacks (NOLOAD, filled by runtime) */
+    /* Per-core startup stacks (NOLOAD, addresses used by _start) */
 	.startup_stacks (NOLOAD) : ALIGN(16) {
-		_stacks_start = .;
+		PROVIDE(_stacks_start = .);
 		. = . + (NUM_CORES * CORE_STARTUP_STACK_SIZE);
-		_stacks_end = .;
-	} >RAM :data_rw
+		PROVIDE(_stacks_end = .); /* Define _stacks_end for completeness */
+	} >RAM :data_rw /* Mapped to RAM, RW permissions */
 
-    /* End of the image */
-    PROVIDE(_end = ALIGN(4K));
-    PROVIDE(end = _end);
+    /* End of the image marker */
+    PROVIDE(_end = ALIGN(4K)); /* Aligned end symbol */
+    PROVIDE(end = _end);       /* Common alias */
 
     /DISCARD/ : {
         *(.comment)
         *(.note.*)
         *(.eh_frame)
-        *(.ARM.exidx*)
-        *(.ARM.attributes)
-        *(.interp)
-        *(.gnu.version*)
-        *(.dynsym)
-        *(.dynstr)
-        *(.gnu.hash)
-        *(.rela.*)
-        *(.dynamic)
-        *(.got)
-        *(.plt)
+        *(.ARM.exidx*)      /* Exception handling unwind tables (ARM specific) */
+        *(.ARM.attributes)  /* ARM specific build attributes */
+        *(.interp)          /* Program interpreter (for dynamic linking, not used) */
+        *(.gnu.version*)    /* Versioning sections */
+        *(.dynsym)          /* Dynamic symbol table */
+        *(.dynstr)          /* Dynamic string table */
+        *(.gnu.hash)        /* GNU hash table for dynamic linking */
+        *(.rela.*)          /* Relocation sections for dynamic linking */
+        *(.dynamic)         /* Dynamic section */
+        *(.got)             /* Global Offset Table */
+        *(.plt)             /* Procedure Linkage Table */
     }
 }

@@ -16,8 +16,10 @@ ifeq ($(TARGET),arm64)
 	
     ASFLAGS = -mcpu=cortex-a53 -march=armv8-a -g3
 
-    LINKER_SCRIPT = ld/linker_arm64.ld # Define linker script path
-    LDFLAGS_NO_LIBS = -T $(LINKER_SCRIPT) -nostartfiles -Wl,--no-relax -nostdlib
+    LINKER_SCRIPT = ld/linker_arm64.ld
+    LDFLAGS_NO_LIBS = -T $(LINKER_SCRIPT) -nostartfiles -nostdlib \
+                      -Wl,--no-relax -Wl,-z,separate-code \
+					  -Wl,-z,now -Wl,-z,noexecstack
 	
     LIBS = -Wl,--start-group -lgcc -Wl,--end-group
 
@@ -58,7 +60,7 @@ $(TARGET_ELF_NAME): $(KERNEL_OBJ) $(LINKER_SCRIPT) # Add linker script as a prer
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 %.o: %.S
-	$(AS) $(ASFLAGS) -c -o $@ $<
+	$(AS) $(ASFLAGS) -x assembler-with-cpp -c -o $@ $<
 
 clean:
 	@echo "Cleaning up build files..."

@@ -1,112 +1,4 @@
-// === Makefile ===
-# SPDX-License-Identifier: MIT OR Apache-2.0
-# Makefile - Build automation for miniOS v1.7 (ARM64)
-# Bare-metal build with freestanding utilities
-
-TARGET ?= arm64
-
-ifeq ($(TARGET),arm64)
-    CC = aarch64-linux-gnu-g++
-    AS = aarch64-linux-gnu-gcc
-    LD = aarch64-linux-gnu-g++
-    OBJCOPY = aarch64-linux-gnu-objcopy
-
-    CFLAGS = -O2 -Wall -Wextra -fno-exceptions -fno-rtti -mcpu=cortex-a53 -march=armv8-a+simd -std=c++20 -I. -fno-PIE -Woverloaded-virtual -g3 -ffreestanding
-    ASFLAGS = -mcpu=cortex-a53 -march=armv8-a -g3
-
-    LINKER_SCRIPT = ld/linker_arm64.ld # Define linker script path
-    LDFLAGS_NO_LIBS = -T $(LINKER_SCRIPT) -nostartfiles -Wl,--no-relax -nostdlib # Base LDFLAGS
-    LIBS = -Wl,--start-group -lgcc -latomic -Wl,--end-group
-
-    QEMU_SYSTEM = qemu-system-aarch64
-    QEMU_ARGS = -M virt -cpu cortex-a53 -smp 4 -m 128M
-    KERNEL_OBJ = core.o hal.o util.o trace.o cli_minimal.o kernel_globals.o cpu_arm64.o hal_qemu_arm64.o cpp_runtime_stubs.o freestanding_stubs.o
-else
-    $(error Invalid TARGET: use 'arm64' or 'riscv64' - RISC-V settings need similar review)
-endif
-
-TARGET_ELF_NAME = miniOS_kernel.elf
-MAP_FILE_NAME = $(TARGET_ELF_NAME).map # Consistent map file name
-QEMU_KERNEL_OPT = -kernel
-SERIAL_LOG_FILE = serial_core0.log
-QEMU_SERIAL_CHARDEV = -chardev file,id=serial_chardev,path=$(SERIAL_LOG_FILE)
-QEMU_SERIAL_OPTS = -serial chardev:serial_chardev
-QEMU_DISPLAY_OPTS = -nographic
-QEMU_NET_ARGS = -netdev user,id=net0 -device virtio-net-device,netdev=net0
-DEBUG_PORT = 1234
-GDB_SCRIPT_FILE = gdb_init.gdb
-
-all: $(TARGET_ELF_NAME)
-    @echo "Build complete. ELF file: $(TARGET_ELF_NAME)"
-
-kernel: $(TARGET_ELF_NAME)
-
-$(TARGET_ELF_NAME): $(KERNEL_OBJ) $(LINKER_SCRIPT) # Add linker script as a prerequisite
-	@echo "--- Linking $(TARGET_ELF_NAME) ---"
-	@echo "LD: $(LD)"
-	@echo "Linker Script: $(LINKER_SCRIPT)"
-	@echo "LDFLAGS_NO_LIBS (base): $(LDFLAGS_NO_LIBS)"
-	@echo "KERNEL_OBJ: $(KERNEL_OBJ)"
-	@echo "LIBS: $(LIBS)"
-	$(LD) $(LDFLAGS_NO_LIBS) -Wl,-Map=$(MAP_FILE_NAME) -o $@ $(KERNEL_OBJ) $(LIBS)
-	@echo "--- Linking finished ---"
-
-%.o: %.cpp
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-%.o: %.S
-	$(AS) $(ASFLAGS) -c -o $@ $<
-
-clean:
-	@echo "Cleaning up build files..."
-	rm -f *.o $(TARGET_ELF_NAME) $(MAP_FILE_NAME) qemu.pid $(SERIAL_LOG_FILE)
-
-run: $(TARGET_ELF_NAME)
-	@echo "Running $(TARGET_ELF_NAME). Serial output will be in $(SERIAL_LOG_FILE)."
-	$(QEMU_SYSTEM) $(QEMU_ARGS) $(QEMU_KERNEL_OPT) $< \
-		$(QEMU_SERIAL_CHARDEV) $(QEMU_SERIAL_OPTS) \
-		$(QEMU_DISPLAY_OPTS) $(QEMU_NET_ARGS)
-
-.ONESHELL:
-debug: $(TARGET_ELF_NAME)
-	@echo "IMPORTANT: Manual QEMU cleanup might be needed if old instances are running on port $(DEBUG_PORT)."
-	@echo "           You can try: pkill -f \"$(QEMU_SYSTEM)\" or check processes manually."
-	@echo "           Serial output from kernel will be logged to: $(SERIAL_LOG_FILE)"
-	@rm -f $(SERIAL_LOG_FILE) qemu.pid # Also remove qemu.pid if it exists
-
-	@echo "Starting QEMU for debugging $(TARGET_ELF_NAME) on port $(DEBUG_PORT)..."
-	$(QEMU_SYSTEM) $(QEMU_ARGS) $(QEMU_KERNEL_OPT) $< \
-		-S -gdb tcp::$(DEBUG_PORT) \
-		$(QEMU_SERIAL_CHARDEV) $(QEMU_SERIAL_OPTS) \
-		$(QEMU_DISPLAY_OPTS) $(QEMU_NET_ARGS) &
-	echo $$! > qemu.pid
-
-	@echo "QEMU started (PID `cat qemu.pid`). Waiting for GDB connection (3s)...";
-	sleep 3;
-
-	@echo "Starting GDB with script $(GDB_SCRIPT_FILE) and connecting to localhost:$(DEBUG_PORT)..."
-	gdb-multiarch $< -x $(GDB_SCRIPT_FILE)
-
-	@echo "GDB session ended."
-	if [ -f qemu.pid ]; then \
-		QEMU_PID_VAL=`cat qemu.pid`; \
-		echo "Attempting to kill QEMU PID $$QEMU_PID_VAL..."; \
-		if ps -p $$QEMU_PID_VAL > /dev/null; then \
-            kill $$QEMU_PID_VAL; \
-            echo "QEMU PID $$QEMU_PID_VAL killed."; \
-        else \
-            echo "QEMU PID $$QEMU_PID_VAL already exited or was not found."; \
-        fi; \
-        rm -f qemu.pid; \
-    else \
-        echo "qemu.pid not found. Manual QEMU cleanup might be needed if it's still running."; \
-    fi
-	@echo "Serial log is in: $(SERIAL_LOG_FILE)"
-
-docs:
-	doxygen Doxyfile
-
-.PHONY: all kernel clean run debug docs// === core.hpp ===
+// === core.hpp ===
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /**
  * @file core.hpp
@@ -1043,132 +935,7 @@ namespace sync {
 }
 
 } // namespace hal
-} // namespace kernel// === audio.hpp ===
-// SPDX-License-Identifier: MIT OR Apache-2.0
-/**
- * @file audio.hpp
- * @brief Audio subsystem interfaces for miniOS v1.7.
- * @details
- * Defines interfaces for audio buffer management and processing, supporting low-latency
- * audio for network audio products. Updated in v1.7 for modularity and C++20 compatibility.
- *
- * @version 1.7
- * @see audio.cpp, core.hpp, hal.hpp
- */
-
-#ifndef AUDIO_HPP
-#define AUDIO_HPP
-
-#include "hal.hpp"
-#include <cstdint>
-
-namespace kernel {
-namespace audio {
-
-struct AudioBuffer {
-    void* data_raw_i2s = nullptr; // Raw I2S data
-    float* data_dsp_canonical = nullptr; // DSP-processed data
-    size_t size_bytes_raw_buffer = 0;
-    size_t samples_per_channel = 0;
-    uint8_t channels = 2;
-};
-
-} // namespace audio
-} // namespace kernel
-
-#endif // AUDIO_HPP// === audio.cpp ===
-// SPDX-License-Identifier: MIT OR Apache-2.0
-/**
- * @file audio.hpp
- * @brief Audio subsystem header for miniOS v1.7.
- * @details
- * Defines the audio processing subsystem, including buffer management, I2S interface,
- * and DSP integration. Supports multi-channel audio with DMA-driven I2S transfers.
- * Updated in v1.7 with improved error handling, clearer documentation, and modern
- * C++20 practices, retaining all v1.6 functionality.
- *
- * C++20 features:
- * - std::span for buffer handling
- * - std::unique_ptr for resource management
- * - std::string_view for string operations
- *
- * @version 1.7
- * @see audio.cpp, core.hpp, hal.hpp
- */
-
-#ifndef AUDIO_HPP
-#define AUDIO_HPP
-
-#include "core.hpp"
-#include "hal.hpp"
-#include <memory>
-#include <vector>
-#include <array>
-#include <string_view>
-
-// Forward declaration
-namespace dsp { class DSPGraph; }
-
-namespace audio {
-
-constexpr size_t MAX_AUDIO_SAMPLES_PER_BLOCK = 1024;
-
-struct AudioBuffer {
-    std::span<float> get_data() noexcept {
-        return std::span<float>(data.data(), data.size());
-    }
-    std::span<const float> get_data() const noexcept {
-        return std::span<const float>(data.data(), data.size());
-    }
-    std::array<float, MAX_AUDIO_SAMPLES_PER_BLOCK * kernel::core::MAX_AUDIO_CHANNELS> data;
-    uint32_t num_samples_per_channel = 0;
-    uint8_t num_channels = 0;
-    uint32_t sample_rate_hz = 0;
-};
-
-struct AudioConfig {
-    uint32_t sample_rate_hz;
-    size_t samples_per_block;
-    uint8_t num_channels;
-    uint8_t num_i2s_dma_buffers;
-    uint32_t i2s_rx_instance_id;
-    uint32_t i2s_tx_instance_id;
-};
-
-class AudioSystem {
-public:
-    AudioSystem() = default;
-    ~AudioSystem() = default;
-
-    bool init(const AudioConfig& config);
-    bool start();
-    void stop();
-
-    dsp::DSPGraph& get_dsp_graph();
-    const dsp::DSPGraph& get_dsp_graph() const;
-
-    AudioSystem(const AudioSystem&) = delete;
-    AudioSystem& operator=(const AudioSystem&) = delete;
-
-private:
-    static void i2s_rx_callback(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode, void* user_data);
-    static void i2s_tx_callback(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode, void* user_data);
-    static void dsp_thread(void* arg);
-
-    AudioConfig config_{};
-    bool is_running_ = false;
-    kernel::core::TCB* dsp_thread_tcb_ = nullptr;
-    std::unique_ptr<dsp::DSPGraph> dsp_graph_;
-    std::unique_ptr<kernel::core::FixedMemoryPool> audio_buffer_pool_;
-    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> i2s_rx_to_dsp_queue_;
-    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> dsp_to_app_rx_queue_;
-    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> app_tx_to_dsp_queue_;
-    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> dsp_to_i2s_tx_queue_;
-};
-
-} // namespace audio
-
-#endif // AUDIO_HPP// === util.hpp ===
+} // namespace kernel// === util.hpp ===
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /**
  * @file util.hpp
@@ -1660,7 +1427,132 @@ int k_snprintf(char* buffer, size_t bufsz, const char* format, ...) noexcept {
 }
 
 } // namespace util
-} // namespace kernel// === trace.hpp ===
+} // namespace kernel// === audio.hpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file audio.hpp
+ * @brief Audio subsystem interfaces for miniOS v1.7.
+ * @details
+ * Defines interfaces for audio buffer management and processing, supporting low-latency
+ * audio for network audio products. Updated in v1.7 for modularity and C++20 compatibility.
+ *
+ * @version 1.7
+ * @see audio.cpp, core.hpp, hal.hpp
+ */
+
+#ifndef AUDIO_HPP
+#define AUDIO_HPP
+
+#include "hal.hpp"
+#include <cstdint>
+
+namespace kernel {
+namespace audio {
+
+struct AudioBuffer {
+    void* data_raw_i2s = nullptr; // Raw I2S data
+    float* data_dsp_canonical = nullptr; // DSP-processed data
+    size_t size_bytes_raw_buffer = 0;
+    size_t samples_per_channel = 0;
+    uint8_t channels = 2;
+};
+
+} // namespace audio
+} // namespace kernel
+
+#endif // AUDIO_HPP// === audio.cpp ===
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file audio.hpp
+ * @brief Audio subsystem header for miniOS v1.7.
+ * @details
+ * Defines the audio processing subsystem, including buffer management, I2S interface,
+ * and DSP integration. Supports multi-channel audio with DMA-driven I2S transfers.
+ * Updated in v1.7 with improved error handling, clearer documentation, and modern
+ * C++20 practices, retaining all v1.6 functionality.
+ *
+ * C++20 features:
+ * - std::span for buffer handling
+ * - std::unique_ptr for resource management
+ * - std::string_view for string operations
+ *
+ * @version 1.7
+ * @see audio.cpp, core.hpp, hal.hpp
+ */
+
+#ifndef AUDIO_HPP
+#define AUDIO_HPP
+
+#include "core.hpp"
+#include "hal.hpp"
+#include <memory>
+#include <vector>
+#include <array>
+#include <string_view>
+
+// Forward declaration
+namespace dsp { class DSPGraph; }
+
+namespace audio {
+
+constexpr size_t MAX_AUDIO_SAMPLES_PER_BLOCK = 1024;
+
+struct AudioBuffer {
+    std::span<float> get_data() noexcept {
+        return std::span<float>(data.data(), data.size());
+    }
+    std::span<const float> get_data() const noexcept {
+        return std::span<const float>(data.data(), data.size());
+    }
+    std::array<float, MAX_AUDIO_SAMPLES_PER_BLOCK * kernel::core::MAX_AUDIO_CHANNELS> data;
+    uint32_t num_samples_per_channel = 0;
+    uint8_t num_channels = 0;
+    uint32_t sample_rate_hz = 0;
+};
+
+struct AudioConfig {
+    uint32_t sample_rate_hz;
+    size_t samples_per_block;
+    uint8_t num_channels;
+    uint8_t num_i2s_dma_buffers;
+    uint32_t i2s_rx_instance_id;
+    uint32_t i2s_tx_instance_id;
+};
+
+class AudioSystem {
+public:
+    AudioSystem() = default;
+    ~AudioSystem() = default;
+
+    bool init(const AudioConfig& config);
+    bool start();
+    void stop();
+
+    dsp::DSPGraph& get_dsp_graph();
+    const dsp::DSPGraph& get_dsp_graph() const;
+
+    AudioSystem(const AudioSystem&) = delete;
+    AudioSystem& operator=(const AudioSystem&) = delete;
+
+private:
+    static void i2s_rx_callback(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode, void* user_data);
+    static void i2s_tx_callback(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode, void* user_data);
+    static void dsp_thread(void* arg);
+
+    AudioConfig config_{};
+    bool is_running_ = false;
+    kernel::core::TCB* dsp_thread_tcb_ = nullptr;
+    std::unique_ptr<dsp::DSPGraph> dsp_graph_;
+    std::unique_ptr<kernel::core::FixedMemoryPool> audio_buffer_pool_;
+    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> i2s_rx_to_dsp_queue_;
+    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> dsp_to_app_rx_queue_;
+    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> app_tx_to_dsp_queue_;
+    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> dsp_to_i2s_tx_queue_;
+};
+
+} // namespace audio
+
+#endif // AUDIO_HPP// === trace.hpp ===
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /**
  * @file trace.hpp
@@ -1962,364 +1854,7 @@ void configure_memory_protection(core::TCB* tcb, bool enable_for_task) {
 }
 
 } // namespace kernel
-// === cpu_arm64.S ===
-/* SPDX-License-Identifier: MIT OR Apache-2.0 */
-/**
- * @file cpu_arm64.S
- * @brief ARM64 CPU specific assembly functions for miniOS v1.7.
- */
-
-    .equ STACK_SIZE_ASM, 0x4000   
-    .equ UART_BASE,    0x09000000
-    .equ UARTFR,       0x18
-    .equ UARTDR,       0x00
-    .equ UART_TXFF,    (1 << 5)  
-
-    .equ TCB_REGS_X0_OFFSET, (0*8)
-    .equ TCB_REGS_X30_OFFSET, (30*8)
-    .equ TCB_SP_OFFSET, (31*8)      
-    .equ TCB_PC_OFFSET, (31*8 + 8)  
-    .equ TCB_PSTATE_OFFSET, (31*8 + 16) 
-
-.extern __init_array_start
-.extern __init_array_end
-.extern _bss_start
-.extern _bss_end
-.extern _stacks_start
-.extern _stacks_end
-
-    .section .rodata
-.L_debug_start:     .asciz "[DEBUG] _start ENTRY\n"
-.L_debug_stack:     .asciz "[DEBUG] Stack set up\n"
-.L_debug_primary:   .asciz "[DEBUG] Primary core setup\n"
-.L_debug_vectors:   .asciz "[DEBUG] Exception vectors set\n"
-.L_debug_constructors: .asciz "[DEBUG] Calling constructors\n"
-.L_debug_bss:       .asciz "[DEBUG] BSS zeroed\n"
-.L_debug_kernel_main: .asciz "[DEBUG] Entering kernel_main\n"
-
-    .section .vectors, "ax", %progbits 
-    .align 11 
-.global exception_vectors 
-exception_vectors:
-    b       unhandled_exception_sp0_sync
-    .align 7 
-    b       unhandled_exception_sp0_irq
-    .align 7
-    b       unhandled_exception_sp0_fiq
-    .align 7
-    b       unhandled_exception_sp0_serror
-    .align 7
-    b       unhandled_exception_spx_sync
-    .align 7
-    b       current_el_spx_irq_entry
-    .align 7 
-    b       unhandled_exception_spx_fiq
-    .align 7
-    b       unhandled_exception_spx_serror
-    .align 7
-    b       unhandled_exception_lower_a64_sync
-    .align 7
-    b       unhandled_exception_lower_a64_irq
-    .align 7
-    b       unhandled_exception_lower_a64_fiq
-    .align 7
-    b       unhandled_exception_lower_a64_serror
-    .align 7
-    b       unhandled_exception_lower_a32_sync
-    .align 7
-    b       unhandled_exception_lower_a32_irq
-    .align 7
-    b       unhandled_exception_lower_a32_fiq
-    .align 7
-    b       unhandled_exception_lower_a32_serror
-    .align 7
-
-    .section .text.boot, "ax", %progbits
-    .global _start  
-_start:
-    /* Print "[DEBUG] _start ENTRY" */
-    stp     x0, x1, [sp, #-16]!
-    mov     x19, x0
-    adr     x0, .L_debug_start
-    bl      early_uart_puts
-    mov     x0, x19
-    ldp     x0, x1, [sp], #16
-
-    mrs     x0, mpidr_el1
-    and     x0, x0, #0xFF               // x0 = current core_id
-
-    ldr     x1, =_stacks_start          
-    mov     x2, #STACK_SIZE_ASM         
-    mul     x3, x0, x2                  // x3 = core_id * STACK_SIZE_ASM
-    add     x1, x1, x3                  // x1 = _stacks_start + offset
-    add     x1, x1, x2                  // x1 = stack top for this core
-    mov     sp, x1                      // Set stack pointer
-
-    /* Print "[DEBUG] Stack set up" */
-    stp     x0, x1, [sp, #-16]!
-    mov     x19, x0
-    adr     x0, .L_debug_stack
-    bl      early_uart_puts
-    mov     x0, x19
-    ldp     x0, x1, [sp], #16
-
-    cbz     x0, .L_primary_core_continue_setup 
-
-.L_secondary_core_spin:
-    dmb     sy
-    wfe
-    b       .L_secondary_core_spin
-
-.L_primary_core_continue_setup:
-    /* Print "[DEBUG] Primary core setup" */
-    stp     x0, x1, [sp, #-16]!
-    mov     x19, x0
-    adr     x0, .L_debug_primary
-    bl      early_uart_puts
-    mov     x0, x19
-    ldp     x0, x1, [sp], #16
-
-    ldr     x0, =exception_vectors
-    msr     vbar_el1, x0
-    isb 
-
-    /* Print "[DEBUG] Exception vectors set" */
-    stp     x0, x1, [sp, #-16]!
-    mov     x19, x0
-    adr     x0, .L_debug_vectors
-    bl      early_uart_puts
-    mov     x0, x19
-    ldp     x0, x1, [sp], #16
-
-    // ENABLE NEON/SIMD ACCESS for EL1 BEFORE C++ CONSTRUCTORS
-    mrs     x0, cpacr_el1
-    orr     x0, x0, #(3 << 20)    // Set FPEN to 0b11
-    msr     cpacr_el1, x0
-    isb                           // Synchronize context changes
-
-    /* Print "[DEBUG] Calling constructors" */
-    stp     x0, x1, [sp, #-16]!
-    mov     x19, x0
-    adr     x0, .L_debug_constructors
-    bl      early_uart_puts
-    mov     x0, x19
-    ldp     x0, x1, [sp], #16
-
-    bl      call_constructors 
-
-    /* Print "[DEBUG] BSS zeroed" */
-    stp     x0, x1, [sp, #-16]!
-    mov     x19, x0
-    adr     x0, .L_debug_bss
-    bl      early_uart_puts
-    mov     x0, x19
-    ldp     x0, x1, [sp], #16
-
-    ldr     x1, =_bss_start
-    ldr     x2, =_bss_end
-.L_bss_zero_loop:
-    cmp     x1, x2
-    b.ge    .L_bss_zero_done
-    str     xzr, [x1], #8
-    b       .L_bss_zero_loop
-.L_bss_zero_done:
-
-    /* Print "[DEBUG] Entering kernel_main" */
-    stp     x0, x1, [sp, #-16]!
-    mov     x19, x0
-    adr     x0, .L_debug_kernel_main
-    bl      early_uart_puts
-    mov     x0, x19
-    ldp     x0, x1, [sp], #16
-
-    bl      kernel_main
-
-    // After kernel_main, load initial thread context for core 0
-    ldr     x0, =kernel_g_per_cpu_data  // Address of kernel::core::g_per_cpu_data
-    ldr     x1, [x0, #0]                // Load g_per_cpu_data[0].current_thread (TCB*)
-    cbz     x1, .L_kernel_halt          // If null, halt
-
-    // Restore thread context from TCB
-    add     x2, x1, #TCB_SP_OFFSET      // Offset to sp in TCB
-    ldr     x3, [x2]                    // Load sp
-    mov     sp, x3                      // Set stack pointer
-    add     x2, x2, #8                  // Offset to pc
-    ldr     x3, [x2]                    // Load pc
-    add     x2, x2, #8                  // Offset to pstate
-    ldr     x4, [x2]                    // Load pstate
-    msr     spsr_el1, x4                // Set SPSR_EL1 (pstate)
-    mov     x30, x3                     // Set LR to pc (eret will use this)
-    // Restore registers x0-x30
-    ldp     x0, x1, [x1, #TCB_REGS_X0_OFFSET]
-    ldp     x2, x3, [x1, #TCB_REGS_X0_OFFSET + 16]
-    ldp     x4, x5, [x1, #TCB_REGS_X0_OFFSET + 32]
-    ldp     x6, x7, [x1, #TCB_REGS_X0_OFFSET + 48]
-    ldp     x8, x9, [x1, #TCB_REGS_X0_OFFSET + 64]
-    ldp     x10, x11, [x1, #TCB_REGS_X0_OFFSET + 80]
-    ldp     x12, x13, [x1, #TCB_REGS_X0_OFFSET + 96]
-    ldp     x14, x15, [x1, #TCB_REGS_X0_OFFSET + 112]
-    ldp     x16, x17, [x1, #TCB_REGS_X0_OFFSET + 128]
-    ldp     x18, x19, [x1, #TCB_REGS_X0_OFFSET + 144]
-    ldp     x20, x21, [x1, #TCB_REGS_X0_OFFSET + 160]
-    ldp     x22, x23, [x1, #TCB_REGS_X0_OFFSET + 176]
-    ldp     x24, x25, [x1, #TCB_REGS_X0_OFFSET + 192]
-    ldp     x26, x27, [x1, #TCB_REGS_X0_OFFSET + 208]
-    ldp     x28, x29, [x1, #TCB_REGS_X0_OFFSET + 224]
-    ldr     x30, [x1, #TCB_REGS_X30_OFFSET]  // Restore x30 (LR)
-    eret                                // Switch to thread context
-
-.L_kernel_halt:
-    wfi
-    b       .L_kernel_halt
-
-    .section .text
-    .align 2
-
-.global call_constructors
-call_constructors:
-    mov     x19, lr         
-    ldr     x0, =__init_array_start 
-    ldr     x1, =__init_array_end   
-.L_init_loop:
-    cmp     x0, x1          
-    b.ge    .L_init_done    
-    ldr     x2, [x0], #8    
-    cbz     x2, .L_init_loop 
-    blr     x2              
-    b       .L_init_loop    
-.L_init_done:
-    mov     lr, x19         
-    ret                     
-
-current_el_spx_irq_entry:
-    sub     sp, sp, #176                            
-    stp     x0, x1, [sp, #(0*16)]                   
-    stp     x2, x3, [sp, #(1*16)]                   
-    stp     x4, x5, [sp, #(2*16)]                   
-    stp     x6, x7, [sp, #(3*16)]
-    stp     x8, x9, [sp, #(4*16)]
-    stp     x10, x11, [sp, #(5*16)]
-    stp     x12, x13, [sp, #(6*16)]
-    stp     x14, x15, [sp, #(7*16)]
-    stp     x16, x17, [sp, #(8*16)]                 
-    mrs     x0, elr_el1                             
-    mrs     x1, spsr_el1                            
-    mov     x2, lr                                  
-    stp     x0, x1, [sp, #(9*16)]                   
-    str     x2, [sp, #(9*16 + 16)]                  
-    mrs     x0, mpidr_el1
-    and     x0, x0, #0xFF                           
-    bl      hal_irq_handler                         
-    ldr     x2, [sp, #(9*16 + 16)]                  
-    mov     lr, x2                                  
-    ldp     x0, x1, [sp, #(9*16)]                   
-    msr     elr_el1, x0                             
-    msr     spsr_el1, x1                            
-    ldp     x0, x1, [sp, #(0*16)]                   
-    ldp     x2, x3, [sp, #(1*16)]                   
-    ldp     x4, x5, [sp, #(2*16)]                   
-    ldp     x6, x7, [sp, #(3*16)]
-    ldp     x8, x9, [sp, #(4*16)]
-    ldp     x10, x11, [sp, #(5*16)]
-    ldp     x12, x13, [sp, #(6*16)]
-    ldp     x14, x15, [sp, #(7*16)]
-    ldp     x16, x17, [sp, #(8*16)]                 
-    add     sp, sp, #176                            
-    eret                                            
-
-unhandled_exception_loop:
-    stp     x0, x1, [sp, #-16]!
-    mov     x19, x0
-    ldr     x0, =UART_BASE
-    mov     w1, #'Z'
-.L_uart_Z_wait:  
-    ldr     w2, [x0, #UARTFR]
-    tst     w2, #UART_TXFF
-    b.ne    .L_uart_Z_wait
-    str     w1, [x0, #UARTDR]
-    mov     x0, x19
-    ldp     x19, x1, [sp], #16
-.unhandled_exc_loop_wfi:
-    wfi
-    b       .unhandled_exc_loop_wfi
-
-unhandled_exception_sp0_sync:   b unhandled_exception_loop
-unhandled_exception_sp0_irq:    b unhandled_exception_loop
-unhandled_exception_sp0_fiq:    b unhandled_exception_loop
-unhandled_exception_sp0_serror: b unhandled_exception_loop
-unhandled_exception_spx_sync:   b unhandled_exception_loop
-unhandled_exception_spx_fiq:    b unhandled_exception_loop
-unhandled_exception_spx_serror: b unhandled_exception_loop
-unhandled_exception_lower_a64_sync: b unhandled_exception_loop
-unhandled_exception_lower_a64_irq:  b unhandled_exception_loop
-unhandled_exception_lower_a64_fiq:  b unhandled_exception_loop
-unhandled_exception_lower_a64_serror:b unhandled_exception_loop
-unhandled_exception_lower_a32_sync: b unhandled_exception_loop
-unhandled_exception_lower_a32_irq:  b unhandled_exception_loop
-unhandled_exception_lower_a32_fiq:  b unhandled_exception_loop
-unhandled_exception_lower_a32_serror:b unhandled_exception_loop
-
-.global cpu_context_switch_impl
-cpu_context_switch_impl:
-    // x0 = old_tcb, x1 = new_tcb
-    // If old_tcb is null (x0 == 0), skip saving context
-    cbz     x0, .L_restore_new_context
-
-    // Save old TCB context
-    // Save x0-x30
-    stp     x0, x1, [x0, #TCB_REGS_X0_OFFSET]
-    stp     x2, x3, [x0, #TCB_REGS_X0_OFFSET + 16]
-    stp     x4, x5, [x0, #TCB_REGS_X0_OFFSET + 32]
-    stp     x6, x7, [x0, #TCB_REGS_X0_OFFSET + 48]
-    stp     x8, x9, [x0, #TCB_REGS_X0_OFFSET + 64]
-    stp     x10, x11, [x0, #TCB_REGS_X0_OFFSET + 80]
-    stp     x12, x13, [x0, #TCB_REGS_X0_OFFSET + 96]
-    stp     x14, x15, [x0, #TCB_REGS_X0_OFFSET + 112]
-    stp     x16, x17, [x0, #TCB_REGS_X0_OFFSET + 128]
-    stp     x18, x19, [x0, #TCB_REGS_X0_OFFSET + 144]
-    stp     x20, x21, [x0, #TCB_REGS_X0_OFFSET + 160]
-    stp     x22, x23, [x0, #TCB_REGS_X0_OFFSET + 176]
-    stp     x24, x25, [x0, #TCB_REGS_X0_OFFSET + 192]
-    stp     x26, x27, [x0, #TCB_REGS_X0_OFFSET + 208]
-    stp     x28, x29, [x0, #TCB_REGS_X0_OFFSET + 224]
-    str     x30, [x0, #TCB_REGS_X30_OFFSET]
-    // Save SP
-    mov     x2, sp
-    str     x2, [x0, #TCB_SP_OFFSET]
-    // Save PC (use caller’s LR as PC)
-    str     x30, [x0, #TCB_PC_OFFSET]
-    // Save PSTATE (SPSR_EL1)
-    mrs     x2, spsr_el1
-    str     x2, [x0, #TCB_PSTATE_OFFSET]
-
-.L_restore_new_context:
-    // Restore new TCB context
-    // Load SP
-    ldr     x2, [x1, #TCB_SP_OFFSET]
-    mov     sp, x2
-    // Load PC into x30
-    ldr     x3, [x1, #TCB_PC_OFFSET]
-    // Load PSTATE
-    ldr     x4, [x1, #TCB_PSTATE_OFFSET]
-    msr     spsr_el1, x4
-    // Load x0-x30
-    ldp     x0, x2, [x1, #TCB_REGS_X0_OFFSET]  // Load x0, x2 (x1 will be loaded later)
-    ldp     x4, x5, [x1, #TCB_REGS_X0_OFFSET + 16]
-    ldp     x6, x7, [x1, #TCB_REGS_X0_OFFSET + 32]
-    ldp     x8, x9, [x1, #TCB_REGS_X0_OFFSET + 48]
-    ldp     x10, x11, [x1, #TCB_REGS_X0_OFFSET + 64]
-    ldp     x12, x13, [x1, #TCB_REGS_X0_OFFSET + 80]
-    ldp     x14, x15, [x1, #TCB_REGS_X0_OFFSET + 96]
-    ldp     x16, x17, [x1, #TCB_REGS_X0_OFFSET + 112]
-    ldp     x18, x19, [x1, #TCB_REGS_X0_OFFSET + 128]
-    ldp     x20, x21, [x1, #TCB_REGS_X0_OFFSET + 144]
-    ldp     x22, x23, [x1, #TCB_REGS_X0_OFFSET + 160]
-    ldp     x24, x25, [x1, #TCB_REGS_X0_OFFSET + 176]
-    ldp     x26, x27, [x1, #TCB_REGS_X0_OFFSET + 192]
-    ldp     x28, x29, [x1, #TCB_REGS_X0_OFFSET + 208]
-    ldp     x1, x30, [x1, #TCB_REGS_X0_OFFSET + 224]  // Load x1, x30
-    mov     x30, x3  // Set LR to PC
-    eret// === hal_qemu_arm64.cpp ===
+// === hal_qemu_arm64.cpp ===
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /**
  * @file hal_qemu_arm64.cpp
@@ -2340,6 +1875,7 @@ cpu_context_switch_impl:
 extern "C" void early_uart_puts(const char* str);
 
 namespace hal::qemu_virt_arm64 {
+
 PlatformQEMUVirtARM64 g_platform_instance;
 
 inline void mmio_write32(uint64_t addr, uint32_t value) {
@@ -2858,6 +2394,26 @@ namespace std {
     const nothrow_t nothrow = nothrow_t(); // Explicit constructor call
 }
 
+namespace std {
+    [[noreturn]] void terminate() noexcept {
+        if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+            kernel::g_platform->get_uart_ops()->puts("PANIC: std::terminate() called!\n");
+        }
+        for (;;) asm volatile("wfi");
+    }
+}
+
+extern "C" [[noreturn]] void _ZSt24__throw_out_of_range_fmtPKcz(const char*, ...) {
+    if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
+        kernel::g_platform->get_uart_ops()->puts("PANIC: std::out_of_range thrown!\n");
+    }
+    for (;;) asm volatile("wfi");
+}
+
+extern "C" void __gxx_personality_v0() { for (;;) asm volatile("wfi"); }
+extern "C" void __cxa_deleted_virtual() { for (;;) asm volatile("wfi"); }
+extern "C" unsigned long __getauxval(unsigned long type) { (void)type; return 0; }
+
 void* operator new(size_t size) noexcept { 
     kernel::core::ScopedLock lock(g_simple_heap_lock); 
     size = (size + 15) & ~static_cast<size_t>(15); 
@@ -2972,6 +2528,15 @@ int memcmp(const void* ptr1, const void* ptr2, size_t count) {
         }
     }
     return 0;
+}
+
+void* memchr(const void* s, int c, size_t n) {
+    const unsigned char* p = static_cast<const unsigned char*>(s);
+    unsigned char ch = static_cast<unsigned char>(c);
+    for (size_t i = 0; i < n; ++i) {
+        if (p[i] == ch) return (void*)(p + i);
+    }
+    return nullptr;
 }
 
 size_t strlen(const char* str) {
@@ -3137,35 +2702,379 @@ uint8_t __aarch64_swp1_rel(volatile uint8_t* mem, uint8_t val) {
     return old_val;
 }
 
-} // extern "C"// === ld/linker_rv64.ld ===
-/* === ld/linker_arm64.ld === */
+} // extern "C"// === cpu_arm64.S ===
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
+/**
+ * @file cpu_arm64.S
+ * @brief ARM64 CPU specific assembly functions for miniOS v1.7.
+ */
 
+    .equ STACK_SIZE_ASM, 0x4000   
+    .equ UART_BASE,    0x09000000
+    .equ UARTFR,       0x18
+    .equ UARTDR,       0x00
+    .equ UART_TXFF,    (1 << 5)  
+
+    .equ TCB_REGS_X0_OFFSET, (0*8)
+    .equ TCB_REGS_X30_OFFSET, (30*8)
+    .equ TCB_SP_OFFSET, (31*8)      
+    .equ TCB_PC_OFFSET, (31*8 + 8)  
+    .equ TCB_PSTATE_OFFSET, (31*8 + 16) 
+
+.extern __init_array_start
+.extern __init_array_end
+.extern _bss_start
+.extern _bss_end
+.extern _stacks_start
+.extern _stacks_end
+
+    .section .rodata
+.L_debug_start:     .asciz "[DEBUG] _start ENTRY\n"
+.L_debug_stack:     .asciz "[DEBUG] Stack set up\n"
+.L_debug_primary:   .asciz "[DEBUG] Primary core setup\n"
+.L_debug_vectors:   .asciz "[DEBUG] Exception vectors set\n"
+.L_debug_constructors: .asciz "[DEBUG] Calling constructors\n"
+.L_debug_bss:       .asciz "[DEBUG] BSS zeroed\n"
+.L_debug_kernel_main: .asciz "[DEBUG] Entering kernel_main\n"
+
+    .section .vectors, "ax", %progbits 
+    .align 11 
+.global exception_vectors 
+exception_vectors:
+    b       unhandled_exception_sp0_sync
+    .align 7 
+    b       unhandled_exception_sp0_irq
+    .align 7
+    b       unhandled_exception_sp0_fiq
+    .align 7
+    b       unhandled_exception_sp0_serror
+    .align 7
+    b       unhandled_exception_spx_sync
+    .align 7
+    b       current_el_spx_irq_entry
+    .align 7 
+    b       unhandled_exception_spx_fiq
+    .align 7
+    b       unhandled_exception_spx_serror
+    .align 7
+    b       unhandled_exception_lower_a64_sync
+    .align 7
+    b       unhandled_exception_lower_a64_irq
+    .align 7
+    b       unhandled_exception_lower_a64_fiq
+    .align 7
+    b       unhandled_exception_lower_a64_serror
+    .align 7
+    b       unhandled_exception_lower_a32_sync
+    .align 7
+    b       unhandled_exception_lower_a32_irq
+    .align 7
+    b       unhandled_exception_lower_a32_fiq
+    .align 7
+    b       unhandled_exception_lower_a32_serror
+    .align 7
+
+    .section .text.boot, "ax", %progbits
+    .global _start  
+_start:
+    /* Print "[DEBUG] _start ENTRY" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_start
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    mrs     x0, mpidr_el1
+    and     x0, x0, #0xFF               // x0 = current core_id
+
+    ldr     x1, =_stacks_start          
+    mov     x2, #STACK_SIZE_ASM         
+    mul     x3, x0, x2                  // x3 = core_id * STACK_SIZE_ASM
+    add     x1, x1, x3                  // x1 = _stacks_start + offset
+    add     x1, x1, x2                  // x1 = stack top for this core
+    mov     sp, x1                      // Set stack pointer
+
+    /* Print "[DEBUG] Stack set up" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_stack
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    cbz     x0, .L_primary_core_continue_setup 
+
+.L_secondary_core_spin:
+    dmb     sy
+    wfe
+    b       .L_secondary_core_spin
+
+.L_primary_core_continue_setup:
+    /* Print "[DEBUG] Primary core setup" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_primary
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    ldr     x0, =exception_vectors
+    msr     vbar_el1, x0
+    isb 
+
+    /* Print "[DEBUG] Exception vectors set" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_vectors
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    // ENABLE NEON/SIMD ACCESS for EL1 BEFORE C++ CONSTRUCTORS
+    mrs     x0, cpacr_el1
+    orr     x0, x0, #(3 << 20)    // Set FPEN to 0b11
+    msr     cpacr_el1, x0
+    isb                           // Synchronize context changes
+
+    /* Print "[DEBUG] Calling constructors" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_constructors
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    bl      call_constructors 
+
+    /* Print "[DEBUG] BSS zeroed" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_bss
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    ldr     x1, =_bss_start
+    ldr     x2, =_bss_end
+.L_bss_zero_loop:
+    cmp     x1, x2
+    b.ge    .L_bss_zero_done
+    str     xzr, [x1], #8
+    b       .L_bss_zero_loop
+.L_bss_zero_done:
+
+    /* Print "[DEBUG] Entering kernel_main" */
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    adr     x0, .L_debug_kernel_main
+    bl      early_uart_puts
+    mov     x0, x19
+    ldp     x0, x1, [sp], #16
+
+    bl      kernel_main
+
+    // After kernel_main, load initial thread context for core 0
+    ldr     x0, =kernel_g_per_cpu_data  // Address of kernel::core::g_per_cpu_data
+    ldr     x1, [x0, #0]                // Load g_per_cpu_data[0].current_thread (TCB*)
+    cbz     x1, .L_kernel_halt          // If null, halt
+
+    // Restore thread context from TCB
+    add     x2, x1, #TCB_SP_OFFSET      // Offset to sp in TCB
+    ldr     x3, [x2]                    // Load sp
+    mov     sp, x3                      // Set stack pointer
+    add     x2, x2, #8                  // Offset to pc
+    ldr     x3, [x2]                    // Load pc
+    add     x2, x2, #8                  // Offset to pstate
+    ldr     x4, [x2]                    // Load pstate
+    msr     spsr_el1, x4                // Set SPSR_EL1 (pstate)
+    mov     x30, x3                     // Set LR to pc (eret will use this)
+    // Restore registers x0-x30
+    ldp     x0, x1, [x1, #TCB_REGS_X0_OFFSET]
+    ldp     x2, x3, [x1, #TCB_REGS_X0_OFFSET + 16]
+    ldp     x4, x5, [x1, #TCB_REGS_X0_OFFSET + 32]
+    ldp     x6, x7, [x1, #TCB_REGS_X0_OFFSET + 48]
+    ldp     x8, x9, [x1, #TCB_REGS_X0_OFFSET + 64]
+    ldp     x10, x11, [x1, #TCB_REGS_X0_OFFSET + 80]
+    ldp     x12, x13, [x1, #TCB_REGS_X0_OFFSET + 96]
+    ldp     x14, x15, [x1, #TCB_REGS_X0_OFFSET + 112]
+    ldp     x16, x17, [x1, #TCB_REGS_X0_OFFSET + 128]
+    ldp     x18, x19, [x1, #TCB_REGS_X0_OFFSET + 144]
+    ldp     x20, x21, [x1, #TCB_REGS_X0_OFFSET + 160]
+    ldp     x22, x23, [x1, #TCB_REGS_X0_OFFSET + 176]
+    ldp     x24, x25, [x1, #TCB_REGS_X0_OFFSET + 192]
+    ldp     x26, x27, [x1, #TCB_REGS_X0_OFFSET + 208]
+    ldp     x28, x29, [x1, #TCB_REGS_X0_OFFSET + 224]
+    ldr     x30, [x1, #TCB_REGS_X30_OFFSET]  // Restore x30 (LR)
+    eret                                // Switch to thread context
+
+.L_kernel_halt:
+    wfi
+    b       .L_kernel_halt
+
+    .section .text
+    .align 2
+
+.global call_constructors
+call_constructors:
+    mov     x19, lr         
+    ldr     x0, =__init_array_start 
+    ldr     x1, =__init_array_end   
+.L_init_loop:
+    cmp     x0, x1          
+    b.ge    .L_init_done    
+    ldr     x2, [x0], #8    
+    cbz     x2, .L_init_loop 
+    blr     x2              
+    b       .L_init_loop    
+.L_init_done:
+    mov     lr, x19         
+    ret                     
+
+current_el_spx_irq_entry:
+    sub     sp, sp, #176                            
+    stp     x0, x1, [sp, #(0*16)]                   
+    stp     x2, x3, [sp, #(1*16)]                   
+    stp     x4, x5, [sp, #(2*16)]                   
+    stp     x6, x7, [sp, #(3*16)]
+    stp     x8, x9, [sp, #(4*16)]
+    stp     x10, x11, [sp, #(5*16)]
+    stp     x12, x13, [sp, #(6*16)]
+    stp     x14, x15, [sp, #(7*16)]
+    stp     x16, x17, [sp, #(8*16)]                 
+    mrs     x0, elr_el1                             
+    mrs     x1, spsr_el1                            
+    mov     x2, lr                                  
+    stp     x0, x1, [sp, #(9*16)]                   
+    str     x2, [sp, #(9*16 + 16)]                  
+    mrs     x0, mpidr_el1
+    and     x0, x0, #0xFF                           
+    bl      hal_irq_handler                         
+    ldr     x2, [sp, #(9*16 + 16)]                  
+    mov     lr, x2                                  
+    ldp     x0, x1, [sp, #(9*16)]                   
+    msr     elr_el1, x0                             
+    msr     spsr_el1, x1                            
+    ldp     x0, x1, [sp, #(0*16)]                   
+    ldp     x2, x3, [sp, #(1*16)]                   
+    ldp     x4, x5, [sp, #(2*16)]                   
+    ldp     x6, x7, [sp, #(3*16)]
+    ldp     x8, x9, [sp, #(4*16)]
+    ldp     x10, x11, [sp, #(5*16)]
+    ldp     x12, x13, [sp, #(6*16)]
+    ldp     x14, x15, [sp, #(7*16)]
+    ldp     x16, x17, [sp, #(8*16)]                 
+    add     sp, sp, #176                            
+    eret                                            
+
+unhandled_exception_loop:
+    stp     x0, x1, [sp, #-16]!
+    mov     x19, x0
+    ldr     x0, =UART_BASE
+    mov     w1, #'Z'
+.L_uart_Z_wait:  
+    ldr     w2, [x0, #UARTFR]
+    tst     w2, #UART_TXFF
+    b.ne    .L_uart_Z_wait
+    str     w1, [x0, #UARTDR]
+    mov     x0, x19
+    ldp     x19, x1, [sp], #16
+.unhandled_exc_loop_wfi:
+    wfi
+    b       .unhandled_exc_loop_wfi
+
+unhandled_exception_sp0_sync:   b unhandled_exception_loop
+unhandled_exception_sp0_irq:    b unhandled_exception_loop
+unhandled_exception_sp0_fiq:    b unhandled_exception_loop
+unhandled_exception_sp0_serror: b unhandled_exception_loop
+unhandled_exception_spx_sync:   b unhandled_exception_loop
+unhandled_exception_spx_fiq:    b unhandled_exception_loop
+unhandled_exception_spx_serror: b unhandled_exception_loop
+unhandled_exception_lower_a64_sync: b unhandled_exception_loop
+unhandled_exception_lower_a64_irq:  b unhandled_exception_loop
+unhandled_exception_lower_a64_fiq:  b unhandled_exception_loop
+unhandled_exception_lower_a64_serror:b unhandled_exception_loop
+unhandled_exception_lower_a32_sync: b unhandled_exception_loop
+unhandled_exception_lower_a32_irq:  b unhandled_exception_loop
+unhandled_exception_lower_a32_fiq:  b unhandled_exception_loop
+unhandled_exception_lower_a32_serror:b unhandled_exception_loop
+
+.global cpu_context_switch_impl
+cpu_context_switch_impl:
+    // x0 = old_tcb, x1 = new_tcb
+    // If old_tcb is null (x0 == 0), skip saving context
+    cbz     x0, .L_restore_new_context
+
+    // Save old TCB context
+    // Save x0-x30
+    stp     x0, x1, [x0, #TCB_REGS_X0_OFFSET]
+    stp     x2, x3, [x0, #TCB_REGS_X0_OFFSET + 16]
+    stp     x4, x5, [x0, #TCB_REGS_X0_OFFSET + 32]
+    stp     x6, x7, [x0, #TCB_REGS_X0_OFFSET + 48]
+    stp     x8, x9, [x0, #TCB_REGS_X0_OFFSET + 64]
+    stp     x10, x11, [x0, #TCB_REGS_X0_OFFSET + 80]
+    stp     x12, x13, [x0, #TCB_REGS_X0_OFFSET + 96]
+    stp     x14, x15, [x0, #TCB_REGS_X0_OFFSET + 112]
+    stp     x16, x17, [x0, #TCB_REGS_X0_OFFSET + 128]
+    stp     x18, x19, [x0, #TCB_REGS_X0_OFFSET + 144]
+    stp     x20, x21, [x0, #TCB_REGS_X0_OFFSET + 160]
+    stp     x22, x23, [x0, #TCB_REGS_X0_OFFSET + 176]
+    stp     x24, x25, [x0, #TCB_REGS_X0_OFFSET + 192]
+    stp     x26, x27, [x0, #TCB_REGS_X0_OFFSET + 208]
+    stp     x28, x29, [x0, #TCB_REGS_X0_OFFSET + 224]
+    str     x30, [x0, #TCB_REGS_X30_OFFSET]
+    // Save SP
+    mov     x2, sp
+    str     x2, [x0, #TCB_SP_OFFSET]
+    // Save PC (use caller’s LR as PC)
+    str     x30, [x0, #TCB_PC_OFFSET]
+    // Save PSTATE (SPSR_EL1)
+    mrs     x2, spsr_el1
+    str     x2, [x0, #TCB_PSTATE_OFFSET]
+
+.L_restore_new_context:
+    // Restore new TCB context
+    // Load SP
+    ldr     x2, [x1, #TCB_SP_OFFSET]
+    mov     sp, x2
+    // Load PC into x30
+    ldr     x3, [x1, #TCB_PC_OFFSET]
+    // Load PSTATE
+    ldr     x4, [x1, #TCB_PSTATE_OFFSET]
+    msr     spsr_el1, x4
+    // Load x0-x30
+    ldp     x0, x2, [x1, #TCB_REGS_X0_OFFSET]  // Load x0, x2 (x1 will be loaded later)
+    ldp     x4, x5, [x1, #TCB_REGS_X0_OFFSET + 16]
+    ldp     x6, x7, [x1, #TCB_REGS_X0_OFFSET + 32]
+    ldp     x8, x9, [x1, #TCB_REGS_X0_OFFSET + 48]
+    ldp     x10, x11, [x1, #TCB_REGS_X0_OFFSET + 64]
+    ldp     x12, x13, [x1, #TCB_REGS_X0_OFFSET + 80]
+    ldp     x14, x15, [x1, #TCB_REGS_X0_OFFSET + 96]
+    ldp     x16, x17, [x1, #TCB_REGS_X0_OFFSET + 112]
+    ldp     x18, x19, [x1, #TCB_REGS_X0_OFFSET + 128]
+    ldp     x20, x21, [x1, #TCB_REGS_X0_OFFSET + 144]
+    ldp     x22, x23, [x1, #TCB_REGS_X0_OFFSET + 160]
+    ldp     x24, x25, [x1, #TCB_REGS_X0_OFFSET + 176]
+    ldp     x26, x27, [x1, #TCB_REGS_X0_OFFSET + 192]
+    ldp     x28, x29, [x1, #TCB_REGS_X0_OFFSET + 208]
+    ldp     x1, x30, [x1, #TCB_REGS_X0_OFFSET + 224]  // Load x1, x30
+    mov     x30, x3  // Set LR to PC
+    eret// === ld/linker_rv64.ld ===
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+/* linker_arm64.ld: Linker script for miniOS v1.7 on ARM64 QEMU virt platform */
+
+OUTPUT_FORMAT("elf64-littleaarch64")
+OUTPUT_ARCH(aarch64)
 ENTRY(_start)
 
-/* Attempt to define symbols globally and absolutely before SECTIONS block */
-/* Their values will be calculated by the linker based on section placements */
-/* Mark them as ABSOLUTE here. */
-__init_array_start = 0; /* Placeholder, actual value set by .init_array section */
-__init_array_end = 0;   /* Placeholder */
-_bss_start = 0;         /* Placeholder */
-_bss_end = 0;           /* Placeholder */
-_stacks_start = 0;      /* Placeholder */
-_stacks_end = 0;        /* Placeholder */
-_end = 0;               /* Placeholder */
-end = 0;                /* Placeholder */
-
-
-MEMORY
-{
-    RAM (rx) : ORIGIN = 0x40000000, LENGTH = 128M
+MEMORY {
+    RAM (rwx) : ORIGIN = 0x40000000, LENGTH = 128M
 }
 
 NUM_CORES = 4;
 CORE_STARTUP_STACK_SIZE = 0x4000;
 
-PHDRS
-{
+PHDRS {
     text_ro PT_LOAD FLAGS(5); /* R-X */
     data_rw PT_LOAD FLAGS(6); /* RW- */
 }
@@ -3174,72 +3083,75 @@ SECTIONS
 {
     . = ORIGIN(RAM);
 
+    /* Code + read-only data */
     .text : ALIGN(4K)
     {
         KEEP(*(.text.boot))
         *(.text .text.*)
-        *(.glue_7)
-        *(.glue_7t)
-    } > RAM AT>RAM :text_ro
+        *(.vectors)
+    } > RAM : text_ro
 
     .rodata : ALIGN(4K)
     {
         *(.rodata .rodata.*)
-    } > RAM AT>RAM :text_ro
+    } > RAM : text_ro
 
-    .init_array : ALIGN(8)
-    {
-        __init_array_start = ABSOLUTE(.) ; /* Assign value here */
-        KEEP (*(SORT_BY_INIT_PRIORITY(.init_array.*)))
-        KEEP (*(.init_array))
-        __init_array_end = ABSOLUTE(.) ;   /* Assign value here */
-    } > RAM AT>RAM :text_ro
+    /* Constructors/destructors */
+	.init_array : ALIGN(8) {
+		__init_array_start = .;
+		KEEP (*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+		KEEP (*(.init_array))
+		__init_array_end = .;
+	} >RAM :text_ro
 
     .fini_array : ALIGN(8)
     {
-        /* __fini_array_start = ABSOLUTE(.) ; Not strictly needed if unused */
-        KEEP (*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
-        KEEP (*(.fini_array))
-        /* __fini_array_end = ABSOLUTE(.) ; Not strictly needed if unused */
-    } > RAM AT>RAM :text_ro
+        PROVIDE(__fini_array_start = .);
+        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+        KEEP(*(.fini_array))
+        PROVIDE(__fini_array_end = .);
+    } > RAM : text_ro
 
+    /* Writable data */
     .data : ALIGN(4K)
     {
         *(.data .data.*)
-    } > RAM AT>RAM :data_rw
+    } > RAM : data_rw
 
-    .bss (NOLOAD) : ALIGN(4K)
-    {
-        _bss_start = ABSOLUTE(.) ; /* Assign value here */
-        *(.bss .bss.*)
-        *(COMMON)
-        . = ALIGN(16);
-        _bss_end = ABSOLUTE(.) ;   /* Assign value here */
-    } > RAM :data_rw
+    /* Uninitialized data (zeroed at runtime) */
+	.bss (NOLOAD) : ALIGN(4K) {
+		_bss_start = .;
+		*(.bss .bss.*)
+		*(COMMON)
+		. = ALIGN(16);
+		_bss_end = .;
+	} >RAM :data_rw
 
-    .startup_stacks (NOLOAD) : ALIGN(16)
-    {
-        _stacks_start = ABSOLUTE(.) ; /* Assign value here */
-        . = . + (NUM_CORES * CORE_STARTUP_STACK_SIZE);
-        _stacks_end = ABSOLUTE(.) ;   /* Assign value here */
-    } > RAM :data_rw
+    /* Per-core startup stacks (NOLOAD, filled by runtime) */
+	.startup_stacks (NOLOAD) : ALIGN(16) {
+		_stacks_start = .;
+		. = . + (NUM_CORES * CORE_STARTUP_STACK_SIZE);
+		_stacks_end = .;
+	} >RAM :data_rw
 
-    _end = ALIGN(4K); /* Assign value here */
-    end = _end;
+    /* End of the image */
+    PROVIDE(_end = ALIGN(4K));
+    PROVIDE(end = _end);
 
-
-    /DISCARD/ :
-    {
+    /DISCARD/ : {
         *(.comment)
-        *(.note.gnu.build-id)
+        *(.note.*)
         *(.eh_frame)
-        *(.ARM.exidx)
+        *(.ARM.exidx*)
         *(.ARM.attributes)
+        *(.interp)
+        *(.gnu.version*)
+        *(.dynsym)
+        *(.dynstr)
+        *(.gnu.hash)
+        *(.rela.*)
+        *(.dynamic)
+        *(.got)
+        *(.plt)
     }
 }
-
-/*
-  The PROVIDE statements at the end are removed as we are trying to define
-  them globally at the top and then assign values within SECTIONS.
-  If the top-level definitions are respected, PROVIDE becomes redundant for these.
-*/

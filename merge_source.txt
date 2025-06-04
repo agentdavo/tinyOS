@@ -5,13 +5,15 @@
   echo "// === hal.cpp ==="; cat hal.cpp
   echo "// === util.hpp ==="; cat util.hpp
   echo "// === util.cpp ==="; cat util.cpp
+  echo "// === audio.hpp ==="; cat audio.hpp
+  echo "// === audio.cpp ==="; cat audio.cpp
   echo "// === trace.hpp ==="; cat trace.hpp
   echo "// === trace.cpp ==="; cat trace.cpp
   echo "// === cli_minimal.cpp ==="; cat cli_minimal.cpp
   echo "// === kernel_globals.cpp ==="; cat kernel_globals.cpp
-  echo "// === cpu_arm64.S ==="; cat cpu_arm64.S
   echo "// === hal_qemu_arm64.cpp ==="; cat hal_qemu_arm64.cpp
   echo "// === cpp_runtime_stubs.cpp ==="; cat cpp_runtime_stubs.cpp
   echo "// === freestanding_stubs.cpp ==="; cat freestanding_stubs.cpp
+  echo "// === cpu_arm64.S ==="; cat cpu_arm64.S
   echo "// === ld/linker_rv64.ld ==="; cat ld/linker_rv64.ld
 ) > kernel_all_code.txt
