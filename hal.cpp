@@ -18,8 +18,7 @@ extern "C" {
 namespace kernel {
 namespace hal {
 
-static ::hal::qemu_virt_arm64::PlatformQEMUVirtARM64 g_platform_instance;
-Platform* get_platform() { return &g_platform_instance; }
+Platform* get_platform() { return &::hal::qemu_virt_arm64::g_platform_instance; }
 
 void cpu_context_switch(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb) {
     if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {

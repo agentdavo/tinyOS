@@ -26,6 +26,15 @@ commands
   continue
 end
 
+# Break when global constructors are invoked to verify stack is valid
+tbreak call_constructors
+commands
+  silent
+  echo [GDB_PROGRESS] => call_constructors\n
+  info registers sp
+  continue
+end
+
 break hal::get_platform
 commands
   silent
