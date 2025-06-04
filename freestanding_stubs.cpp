@@ -110,9 +110,25 @@ int strncmp(const char* lhs, const char* rhs, size_t count) {
 }
 
 constexpr uint64_t EARLY_UART_BASE_ADDR = 0x09000000;
-constexpr uint32_t EARLY_UART_FR_REG = 0x18;
-constexpr uint32_t EARLY_UART_DR_REG = 0x00;
+constexpr uint32_t EARLY_UART_DR_REG  = 0x00;
+constexpr uint32_t EARLY_UART_FR_REG  = 0x18;
+constexpr uint32_t EARLY_UART_IBRD_REG = 0x24;
+constexpr uint32_t EARLY_UART_FBRD_REG = 0x28;
+constexpr uint32_t EARLY_UART_LCRH_REG = 0x2C;
+constexpr uint32_t EARLY_UART_CR_REG  = 0x30;
+constexpr uint32_t EARLY_UART_IMSC_REG = 0x38;
+constexpr uint32_t EARLY_UART_ICR_REG  = 0x44;
 constexpr uint32_t EARLY_UART_TXFF_FLAG = (1 << 5);
+
+extern "C" void early_uart_init() {
+    volatile uint32_t* base = reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR);
+    base[EARLY_UART_CR_REG / 4] = 0;          // Disable UART
+    base[EARLY_UART_ICR_REG / 4] = 0x7FF;     // Clear interrupts
+    base[EARLY_UART_IBRD_REG / 4] = 13;       // 115200 baud for 24MHz clock
+    base[EARLY_UART_FBRD_REG / 4] = 2;
+    base[EARLY_UART_LCRH_REG / 4] = (3 << 5); // 8N1
+    base[EARLY_UART_CR_REG / 4] = (1 << 9) | (1 << 8) | 1; // Enable UART, TX, RX
+}
 
 void early_uart_puts(const char* str) {
     if (!str) return;

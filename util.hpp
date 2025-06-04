@@ -25,7 +25,8 @@ extern "C" {
     int strncmp(const char* lhs, const char* rhs, size_t count);
     char* strcpy(char* dest, const char* src);
     char* strncpy(char* dest, const char* src, size_t count);
-	void early_uart_puts(const char* str);
+    void early_uart_init();
+    void early_uart_puts(const char* str);
 }
 
 
