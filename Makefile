@@ -24,7 +24,7 @@ ifeq ($(TARGET),arm64)
     LIBS = -Wl,--start-group -lgcc -Wl,--end-group
 
     QEMU_SYSTEM = qemu-system-aarch64
-    QEMU_ARGS = -M virt -cpu cortex-a53 -smp 4 -m 128M
+    QEMU_ARGS = -M virt -cpu max -smp 4 -m 128M
     KERNEL_OBJ = core.o hal.o util.o trace.o cli_minimal.o kernel_globals.o cpu_arm64.o hal_qemu_arm64.o cpp_runtime_stubs.o freestanding_stubs.o
 else
     $(error Invalid TARGET: use 'arm64' or 'riscv64' - RISC-V settings need similar review)

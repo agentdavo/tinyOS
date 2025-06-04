@@ -10,6 +10,15 @@
     .equ UARTDR,         0x00
     .equ UART_TXFF,      (1 << 5)
 
+    // Reserve per-core boot stacks in their own section. The linker script
+    // places this section in RAM so early stack pointers have valid memory.
+    .section .stacks,"aw",%nobits
+    .align 16
+    .global boot_stacks
+boot_stacks:
+    .skip STACK_SIZE_ASM * 4
+    .text
+
     // TCB Offsets (ensure these match kernel::core::TCB layout in core.hpp)
     .equ TCB_REGS_X0_OFFSET,  (0*8)
     .equ TCB_REGS_X30_OFFSET, (30*8) // Offset for x30 (LR)
@@ -160,14 +169,7 @@ _start:
     msr     cpacr_el1, x0
     isb                             // Synchronize context changes
 
-    // Call global C++ constructors
-    stp     x0, x30, [sp, #-16]!
-    adr     x0, .L_debug_constructors
-    bl      early_uart_puts
-    ldp     x0, x30, [sp], #16
-    bl      call_constructors
-
-    // Zero out the BSS section
+    // Zero out the BSS section before constructors run
     stp     x0, x30, [sp, #-16]!
     adr     x0, .L_debug_bss
     bl      early_uart_puts
@@ -181,6 +183,13 @@ _start:
     str     xzr, [x1], #8           // Store 64-bit zero and post-increment address by 8
     b       .L_bss_zero_loop
 .L_bss_zero_done:
+
+    // Call global C++ constructors after BSS is ready
+    stp     x0, x30, [sp, #-16]!
+    adr     x0, .L_debug_constructors
+    bl      early_uart_puts
+    ldp     x0, x30, [sp], #16
+    bl      call_constructors
 
     // Jump to C kernel_main
     stp     x0, x30, [sp, #-16]!
@@ -276,6 +285,7 @@ _start:
 call_constructors:
     mov     x19, lr                     // Save Link Register (x30)
     ldr     x0, =__init_array_start     // Start of .init_array
+    add     x0, x0, #8                 // Skip first libgcc constructor
     ldr     x1, =__init_array_end       // End of .init_array
 .L_init_loop:
     cmp     x0, x1                      // Compare current pointer with end

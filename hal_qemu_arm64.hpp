@@ -223,6 +223,8 @@ private:
     WatchdogDriver watchdog_driver_;
 };
 
+extern PlatformQEMUVirtARM64 g_platform_instance;
+
 } // namespace hal::qemu_virt_arm64
 
 #endif // HAL_QEMU_ARM64_HPP

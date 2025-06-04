@@ -29,6 +29,7 @@ SECTIONS {
     .stacks : {
         _stacks_start = .;
         *(.stacks)
+        /* boot_stacks reserves the required memory */
         _stacks_end = .;
     } > RAM
 
