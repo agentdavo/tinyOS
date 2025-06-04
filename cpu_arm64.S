@@ -10,6 +10,15 @@
     .equ UARTDR,         0x00
     .equ UART_TXFF,      (1 << 5)
 
+    // Reserve per-core boot stacks in their own section. The linker script
+    // places this section in RAM so early stack pointers have valid memory.
+    .section .stacks,"aw",%nobits
+    .align 16
+    .global boot_stacks
+boot_stacks:
+    .skip STACK_SIZE_ASM * 4
+    .text
+
     // TCB Offsets (ensure these match kernel::core::TCB layout in core.hpp)
     .equ TCB_REGS_X0_OFFSET,  (0*8)
     .equ TCB_REGS_X30_OFFSET, (30*8) // Offset for x30 (LR)
@@ -28,6 +37,7 @@
 .extern kernel_main            // Defined in core.cpp
 .extern hal_irq_handler        // Defined in hal.cpp
 .extern early_uart_puts        // Defined in freestanding_stubs.cpp
+.extern early_uart_init        // Defined in freestanding_stubs.cpp
 
     .section .rodata
 .L_debug_start:         .asciz "[DEBUG] _start ENTRY\n"
@@ -96,25 +106,29 @@ exception_vectors:
     .section .text.boot, "ax", %progbits
     .global _start
 _start:
-    // Save x0 (potential DTB pointer) and lr (x30) before calling early_uart_puts
-    stp     x0, x30, [sp, #-16]!
-    mov     x19, x0 // Preserve x0 (DTB ptr or core_id based on bootloader)
-    adr     x0, .L_debug_start
-    bl      early_uart_puts
-    mov     x0, x19 // Restore original x0
-    ldp     x0, x30, [sp], #16
-
-    // Determine current core ID
+    // Determine current core ID early so we can set up a stack before
+    // calling C functions which expect a valid stack pointer.
     mrs     x1, mpidr_el1
     and     x1, x1, #0xFF               // x1 = current core_id (Aff0)
+    mov     x21, x1                     // Preserve core_id for later checks
 
     // Set up stack pointer for the current core
-    // Stack grows downwards. SP should point to the top (highest address) of the stack area.
     ldr     x2, =_stacks_start          // Base address of all stacks
     mov     x3, #STACK_SIZE_ASM         // Size of one core's stack
     mul     x4, x1, x3                  // Offset = core_id * stack_size
     add     x2, x2, x4                  // Address of current core's stack bottom
     add     sp, x2, x3                  // SP = current core's stack top
+
+    // Now the stack is valid, so early UART routines can be called safely.
+    bl      early_uart_init
+    stp     x0, x30, [sp, #-16]!        // Save x0 (DTB pointer) and LR
+    mov     x19, x0                     // Preserve x0 across call
+    adr     x0, .L_debug_start
+    bl      early_uart_puts
+    mov     x0, x19                     // Restore original x0
+    ldp     x0, x30, [sp], #16
+
+    mov     x1, x21                     // Restore preserved core_id
 
     stp     x1, x30, [sp, #-16]! // Save core_id and LR
     adr     x0, .L_debug_stack
@@ -155,14 +169,7 @@ _start:
     msr     cpacr_el1, x0
     isb                             // Synchronize context changes
 
-    // Call global C++ constructors
-    stp     x0, x30, [sp, #-16]!
-    adr     x0, .L_debug_constructors
-    bl      early_uart_puts
-    ldp     x0, x30, [sp], #16
-    bl      call_constructors
-
-    // Zero out the BSS section
+    // Zero out the BSS section before constructors run
     stp     x0, x30, [sp, #-16]!
     adr     x0, .L_debug_bss
     bl      early_uart_puts
@@ -176,6 +183,13 @@ _start:
     str     xzr, [x1], #8           // Store 64-bit zero and post-increment address by 8
     b       .L_bss_zero_loop
 .L_bss_zero_done:
+
+    // Call global C++ constructors after BSS is ready
+    stp     x0, x30, [sp, #-16]!
+    adr     x0, .L_debug_constructors
+    bl      early_uart_puts
+    ldp     x0, x30, [sp], #16
+    bl      call_constructors
 
     // Jump to C kernel_main
     stp     x0, x30, [sp, #-16]!
@@ -271,6 +285,7 @@ _start:
 call_constructors:
     mov     x19, lr                     // Save Link Register (x30)
     ldr     x0, =__init_array_start     // Start of .init_array
+    add     x0, x0, #8                 // Skip first libgcc constructor
     ldr     x1, =__init_array_end       // End of .init_array
 .L_init_loop:
     cmp     x0, x1                      // Compare current pointer with end
@@ -336,6 +351,7 @@ current_el_spx_irq_entry:
     eret                                            // Return from exception
 
 // Generic unhandled exception handler
+    .global unhandled_exception_entry_point
 unhandled_exception_entry_point:
     // Minimal state save if possible, then call a simple debug output loop.
     // This handler might be entered with a bad stack or in a bad state.
