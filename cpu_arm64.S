@@ -285,7 +285,6 @@ _start:
 call_constructors:
     mov     x19, lr                     // Save Link Register (x30)
     ldr     x0, =__init_array_start     // Start of .init_array
-    add     x0, x0, #8                 // Skip first libgcc constructor
     ldr     x1, =__init_array_end       // End of .init_array
 .L_init_loop:
     cmp     x0, x1                      // Compare current pointer with end
