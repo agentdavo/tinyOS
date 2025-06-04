@@ -28,6 +28,7 @@
 .extern kernel_main            // Defined in core.cpp
 .extern hal_irq_handler        // Defined in hal.cpp
 .extern early_uart_puts        // Defined in freestanding_stubs.cpp
+.extern early_uart_init        // Defined in freestanding_stubs.cpp
 
     .section .rodata
 .L_debug_start:         .asciz "[DEBUG] _start ENTRY\n"
@@ -96,25 +97,29 @@ exception_vectors:
     .section .text.boot, "ax", %progbits
     .global _start
 _start:
-    // Save x0 (potential DTB pointer) and lr (x30) before calling early_uart_puts
-    stp     x0, x30, [sp, #-16]!
-    mov     x19, x0 // Preserve x0 (DTB ptr or core_id based on bootloader)
-    adr     x0, .L_debug_start
-    bl      early_uart_puts
-    mov     x0, x19 // Restore original x0
-    ldp     x0, x30, [sp], #16
-
-    // Determine current core ID
+    // Determine current core ID early so we can set up a stack before
+    // calling C functions which expect a valid stack pointer.
     mrs     x1, mpidr_el1
     and     x1, x1, #0xFF               // x1 = current core_id (Aff0)
+    mov     x21, x1                     // Preserve core_id for later checks
 
     // Set up stack pointer for the current core
-    // Stack grows downwards. SP should point to the top (highest address) of the stack area.
     ldr     x2, =_stacks_start          // Base address of all stacks
     mov     x3, #STACK_SIZE_ASM         // Size of one core's stack
     mul     x4, x1, x3                  // Offset = core_id * stack_size
     add     x2, x2, x4                  // Address of current core's stack bottom
     add     sp, x2, x3                  // SP = current core's stack top
+
+    // Now the stack is valid, so early UART routines can be called safely.
+    bl      early_uart_init
+    stp     x0, x30, [sp, #-16]!        // Save x0 (DTB pointer) and LR
+    mov     x19, x0                     // Preserve x0 across call
+    adr     x0, .L_debug_start
+    bl      early_uart_puts
+    mov     x0, x19                     // Restore original x0
+    ldp     x0, x30, [sp], #16
+
+    mov     x1, x21                     // Restore preserved core_id
 
     stp     x1, x30, [sp, #-16]! // Save core_id and LR
     adr     x0, .L_debug_stack

@@ -46,6 +46,8 @@ break hal::qemu_virt_arm64::PlatformQEMUVirtARM64::early_init_platform
 commands
   silent
   echo [GDB_PROGRESS] => Early platform init\n
+  info registers sp
+  p/x $x0
   continue
 end
 
@@ -53,6 +55,8 @@ break hal::qemu_virt_arm64::PlatformQEMUVirtARM64::early_init_core
 commands
   silent
   echo [GDB_PROGRESS] => Early core init\n
+  info registers sp
+  p/x $x0
   continue
 end
 
@@ -61,6 +65,7 @@ break kernel::core::Scheduler::start_core_scheduler
 commands
   silent
   echo [GDB_PROGRESS] => Scheduler started\n
+  info registers sp
   continue
 end
 
