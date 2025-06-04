@@ -1,0 +1,6 @@
+[DEBUG] _start ENTRY
+[DEBUG] Stack set up
+[DEBUG] Primary core setup
+[DEBUG] Exception vectors set
+[DEBUG] BSS zeroed
+[DEBUG] Calling constructors

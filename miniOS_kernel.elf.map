@@ -294,1141 +294,1141 @@ END GROUP
 
 .text           0x0000000040000000     0xb800
  *(.text.boot)
- .text.boot     0x0000000040000000      0x188 cpu_arm64.o
+ .text.boot     0x0000000040000000      0x190 cpu_arm64.o
                 0x0000000040000000                _start
  *(.text .text.*)
- .text          0x0000000040000188        0x0 core.o
+ .text          0x0000000040000190        0x0 core.o
  .text._ZSt23__is_constant_evaluatedv
-                0x0000000040000188        0x8 core.o
-                0x0000000040000188                std::__is_constant_evaluated()
+                0x0000000040000190        0x8 core.o
+                0x0000000040000190                std::__is_constant_evaluated()
  .text._ZNSt11char_traitsIcE6lengthEPKc
-                0x0000000040000190       0x40 core.o
-                0x0000000040000190                std::char_traits<char>::length(char const*)
+                0x0000000040000198       0x40 core.o
+                0x0000000040000198                std::char_traits<char>::length(char const*)
  .text._ZStanSt12memory_orderSt23__memory_order_modifier
-                0x00000000400001d0       0x20 core.o
-                0x00000000400001d0                std::operator&(std::memory_order, std::__memory_order_modifier)
+                0x00000000400001d8       0x20 core.o
+                0x00000000400001d8                std::operator&(std::memory_order, std::__memory_order_modifier)
  .text._ZSt32__is_valid_cmpexch_failure_orderSt12memory_order
-                0x00000000400001f0       0x48 core.o
-                0x00000000400001f0                std::__is_valid_cmpexch_failure_order(std::memory_order)
+                0x00000000400001f8       0x48 core.o
+                0x00000000400001f8                std::__is_valid_cmpexch_failure_order(std::memory_order)
  .text._ZNSt6atomicIbEC2Eb
-                0x0000000040000238       0x28 core.o
-                0x0000000040000238                std::atomic<bool>::atomic(bool)
-                0x0000000040000238                std::atomic<bool>::atomic(bool)
+                0x0000000040000240       0x28 core.o
+                0x0000000040000240                std::atomic<bool>::atomic(bool)
+                0x0000000040000240                std::atomic<bool>::atomic(bool)
  .text._ZNSt6atomicIbE5storeEbSt12memory_order
-                0x0000000040000260       0xf4 core.o
-                0x0000000040000260                std::atomic<bool>::store(bool, std::memory_order)
+                0x0000000040000268       0xf4 core.o
+                0x0000000040000268                std::atomic<bool>::store(bool, std::memory_order)
  .text._ZNKSt6atomicIbE4loadESt12memory_order
-                0x0000000040000354       0xb8 core.o
-                0x0000000040000354                std::atomic<bool>::load(std::memory_order) const
+                0x000000004000035c       0xb8 core.o
+                0x000000004000035c                std::atomic<bool>::load(std::memory_order) const
  .text._ZNSt6atomicIbE8exchangeEbSt12memory_order
-                0x000000004000040c       0x58 core.o
-                0x000000004000040c                std::atomic<bool>::exchange(bool, std::memory_order)
+                0x0000000040000414       0x58 core.o
+                0x0000000040000414                std::atomic<bool>::exchange(bool, std::memory_order)
  .text._ZNSt6atomicIbE23compare_exchange_strongERbbSt12memory_orderS2_
-                0x0000000040000464       0xdc core.o
-                0x0000000040000464                std::atomic<bool>::compare_exchange_strong(bool&, bool, std::memory_order, std::memory_order)
+                0x000000004000046c       0xdc core.o
+                0x000000004000046c                std::atomic<bool>::compare_exchange_strong(bool&, bool, std::memory_order, std::memory_order)
  .text._ZNSt6atomicImEC2Em
-                0x0000000040000540       0x28 core.o
-                0x0000000040000540                std::atomic<unsigned long>::atomic(unsigned long)
-                0x0000000040000540                std::atomic<unsigned long>::atomic(unsigned long)
+                0x0000000040000548       0x28 core.o
+                0x0000000040000548                std::atomic<unsigned long>::atomic(unsigned long)
+                0x0000000040000548                std::atomic<unsigned long>::atomic(unsigned long)
  .text._ZN6kernel4core10ScopedLockC2ERNS0_8SpinlockE
-                0x0000000040000568       0x34 core.o
-                0x0000000040000568                kernel::core::ScopedLock::ScopedLock(kernel::core::Spinlock&)
-                0x0000000040000568                kernel::core::ScopedLock::ScopedLock(kernel::core::Spinlock&)
+                0x0000000040000570       0x34 core.o
+                0x0000000040000570                kernel::core::ScopedLock::ScopedLock(kernel::core::Spinlock&)
+                0x0000000040000570                kernel::core::ScopedLock::ScopedLock(kernel::core::Spinlock&)
  .text._ZN6kernel4core10ScopedLockD2Ev
-                0x000000004000059c       0x24 core.o
-                0x000000004000059c                kernel::core::ScopedLock::~ScopedLock()
-                0x000000004000059c                kernel::core::ScopedLock::~ScopedLock()
+                0x00000000400005a4       0x24 core.o
+                0x00000000400005a4                kernel::core::ScopedLock::~ScopedLock()
+                0x00000000400005a4                kernel::core::ScopedLock::~ScopedLock()
  .text._ZN6kernel4core13ScopedISRLockC2ERNS0_8SpinlockE
-                0x00000000400005c0       0x34 core.o
-                0x00000000400005c0                kernel::core::ScopedISRLock::ScopedISRLock(kernel::core::Spinlock&)
-                0x00000000400005c0                kernel::core::ScopedISRLock::ScopedISRLock(kernel::core::Spinlock&)
+                0x00000000400005c8       0x34 core.o
+                0x00000000400005c8                kernel::core::ScopedISRLock::ScopedISRLock(kernel::core::Spinlock&)
+                0x00000000400005c8                kernel::core::ScopedISRLock::ScopedISRLock(kernel::core::Spinlock&)
  .text._ZN6kernel4core13ScopedISRLockD2Ev
-                0x00000000400005f4       0x24 core.o
-                0x00000000400005f4                kernel::core::ScopedISRLock::~ScopedISRLock()
-                0x00000000400005f4                kernel::core::ScopedISRLock::~ScopedISRLock()
+                0x00000000400005fc       0x24 core.o
+                0x00000000400005fc                kernel::core::ScopedISRLock::~ScopedISRLock()
+                0x00000000400005fc                kernel::core::ScopedISRLock::~ScopedISRLock()
  .text._ZN6kernel4core9Scheduler10set_policyEPNS0_15SchedulerPolicyE
-                0x0000000040000618       0x24 core.o
-                0x0000000040000618                kernel::core::Scheduler::set_policy(kernel::core::SchedulerPolicy*)
+                0x0000000040000620       0x24 core.o
+                0x0000000040000620                kernel::core::Scheduler::set_policy(kernel::core::SchedulerPolicy*)
  .text._ZNK6kernel4core9Scheduler20get_num_active_tasksEv
-                0x000000004000063c       0xa8 core.o
-                0x000000004000063c                kernel::core::Scheduler::get_num_active_tasks() const
+                0x0000000040000644       0xa8 core.o
+                0x0000000040000644                kernel::core::Scheduler::get_num_active_tasks() const
  .text._ZN6kernel4core9Scheduler25get_global_scheduler_lockEv
-                0x00000000400006e4       0x18 core.o
-                0x00000000400006e4                kernel::core::Scheduler::get_global_scheduler_lock()
+                0x00000000400006ec       0x18 core.o
+                0x00000000400006ec                kernel::core::Scheduler::get_global_scheduler_lock()
  .text._ZN6kernel4util7kmemsetEPvim
-                0x00000000400006fc       0x2c core.o
-                0x00000000400006fc                kernel::util::kmemset(void*, int, unsigned long)
+                0x0000000040000704       0x2c core.o
+                0x0000000040000704                kernel::util::kmemset(void*, int, unsigned long)
  .text._ZN5trace12TraceManager4initEv
-                0x0000000040000728       0x20 core.o
-                0x0000000040000728                trace::TraceManager::init()
+                0x0000000040000730       0x20 core.o
+                0x0000000040000730                trace::TraceManager::init()
  .text._ZN5trace12TraceManager11set_enabledEb
-                0x0000000040000748       0x2c core.o
-                0x0000000040000748                trace::TraceManager::set_enabled(bool)
+                0x0000000040000750       0x2c core.o
+                0x0000000040000750                trace::TraceManager::set_enabled(bool)
  .text._ZNK5trace12TraceManager10is_enabledEv
-                0x0000000040000774       0x24 core.o
-                0x0000000040000774                trace::TraceManager::is_enabled() const
+                0x000000004000077c       0x24 core.o
+                0x000000004000077c                trace::TraceManager::is_enabled() const
  .text._ZN6kernel4core15FixedMemoryPoolC2Ev
-                0x0000000040000798       0x5c core.o
-                0x0000000040000798                kernel::core::FixedMemoryPool::FixedMemoryPool()
-                0x0000000040000798                kernel::core::FixedMemoryPool::FixedMemoryPool()
+                0x00000000400007a0       0x5c core.o
+                0x00000000400007a0                kernel::core::FixedMemoryPool::FixedMemoryPool()
+                0x00000000400007a0                kernel::core::FixedMemoryPool::FixedMemoryPool()
  .text._ZN6kernel4core3TCBC2Ev
-                0x00000000400007f4       0x40 core.o
-                0x00000000400007f4                kernel::core::TCB::TCB()
-                0x00000000400007f4                kernel::core::TCB::TCB()
+                0x00000000400007fc       0x40 core.o
+                0x00000000400007fc                kernel::core::TCB::TCB()
+                0x00000000400007fc                kernel::core::TCB::TCB()
  .text._ZNSt5arrayIN6kernel4core3TCBELm16EEC2Ev
-                0x0000000040000834       0x4c core.o
-                0x0000000040000834                std::array<kernel::core::TCB, 16ul>::array()
-                0x0000000040000834                std::array<kernel::core::TCB, 16ul>::array()
+                0x000000004000083c       0x4c core.o
+                0x000000004000083c                std::array<kernel::core::TCB, 16ul>::array()
+                0x000000004000083c                std::array<kernel::core::TCB, 16ul>::array()
  .text._ZNSt13__atomic_baseIbEC1Eb
-                0x0000000040000880       0x24 core.o
-                0x0000000040000880                std::__atomic_base<bool>::__atomic_base(bool)
+                0x0000000040000888       0x24 core.o
+                0x0000000040000888                std::__atomic_base<bool>::__atomic_base(bool)
  .text._ZN6kernel4core8SpinlockC2Ev
-                0x00000000400008a4       0x48 core.o
-                0x00000000400008a4                kernel::core::Spinlock::Spinlock()
-                0x00000000400008a4                kernel::core::Spinlock::Spinlock()
+                0x00000000400008ac       0x48 core.o
+                0x00000000400008ac                kernel::core::Spinlock::Spinlock()
+                0x00000000400008ac                kernel::core::Spinlock::Spinlock()
  .text._ZN6kernel4core8Spinlock16acquire_isr_safeEv
-                0x00000000400008ec       0x78 core.o
-                0x00000000400008ec                kernel::core::Spinlock::acquire_isr_safe()
+                0x00000000400008f4       0x78 core.o
+                0x00000000400008f4                kernel::core::Spinlock::acquire_isr_safe()
  .text._ZN6kernel4core8Spinlock16release_isr_safeEv
-                0x0000000040000964       0x28 core.o
-                0x0000000040000964                kernel::core::Spinlock::release_isr_safe()
+                0x000000004000096c       0x28 core.o
+                0x000000004000096c                kernel::core::Spinlock::release_isr_safe()
  .text._ZN6kernel4core8Spinlock15acquire_generalEv
-                0x000000004000098c       0xd8 core.o
-                0x000000004000098c                kernel::core::Spinlock::acquire_general()
+                0x0000000040000994       0xd8 core.o
+                0x0000000040000994                kernel::core::Spinlock::acquire_general()
  .text._ZN6kernel4core8Spinlock15release_generalEv
-                0x0000000040000a64       0x28 core.o
-                0x0000000040000a64                kernel::core::Spinlock::release_general()
+                0x0000000040000a6c       0x28 core.o
+                0x0000000040000a6c                kernel::core::Spinlock::release_general()
  .text._ZN6kernel4core15FixedMemoryPool4initEPvmmm
-                0x0000000040000a8c      0x1b4 core.o
-                0x0000000040000a8c                kernel::core::FixedMemoryPool::init(void*, unsigned long, unsigned long, unsigned long)
+                0x0000000040000a94      0x1b4 core.o
+                0x0000000040000a94                kernel::core::FixedMemoryPool::init(void*, unsigned long, unsigned long, unsigned long)
  .text._ZN6kernel4core15FixedMemoryPool8allocateEv
-                0x0000000040000c40       0x90 core.o
-                0x0000000040000c40                kernel::core::FixedMemoryPool::allocate()
+                0x0000000040000c48       0x90 core.o
+                0x0000000040000c48                kernel::core::FixedMemoryPool::allocate()
  .text._ZN6kernel4core15FixedMemoryPool10free_blockEPv
-                0x0000000040000cd0       0x8c core.o
-                0x0000000040000cd0                kernel::core::FixedMemoryPool::free_block(void*)
+                0x0000000040000cd8       0x8c core.o
+                0x0000000040000cd8                kernel::core::FixedMemoryPool::free_block(void*)
  .text._ZN6kernel4core9EDFPolicy16select_next_taskEjPNS0_3TCBE
-                0x0000000040000d5c      0x208 core.o
-                0x0000000040000d5c                kernel::core::EDFPolicy::select_next_task(unsigned int, kernel::core::TCB*)
+                0x0000000040000d64      0x208 core.o
+                0x0000000040000d64                kernel::core::EDFPolicy::select_next_task(unsigned int, kernel::core::TCB*)
  .text._ZN6kernel4core9EDFPolicy18add_to_ready_queueEPNS0_3TCBEj
-                0x0000000040000f64      0x150 core.o
-                0x0000000040000f64                kernel::core::EDFPolicy::add_to_ready_queue(kernel::core::TCB*, unsigned int)
+                0x0000000040000f6c      0x150 core.o
+                0x0000000040000f6c                kernel::core::EDFPolicy::add_to_ready_queue(kernel::core::TCB*, unsigned int)
  .text._ZNSt5arrayIN6kernel4core8SpinlockELm4EEC2Ev
-                0x00000000400010b4       0x4c core.o
-                0x00000000400010b4                std::array<kernel::core::Spinlock, 4ul>::array()
-                0x00000000400010b4                std::array<kernel::core::Spinlock, 4ul>::array()
+                0x00000000400010bc       0x4c core.o
+                0x00000000400010bc                std::array<kernel::core::Spinlock, 4ul>::array()
+                0x00000000400010bc                std::array<kernel::core::Spinlock, 4ul>::array()
  .text._ZN6kernel4core9SchedulerC2Ev
-                0x0000000040001100       0xc0 core.o
-                0x0000000040001100                kernel::core::Scheduler::Scheduler()
-                0x0000000040001100                kernel::core::Scheduler::Scheduler()
+                0x0000000040001108       0xc0 core.o
+                0x0000000040001108                kernel::core::Scheduler::Scheduler()
+                0x0000000040001108                kernel::core::Scheduler::Scheduler()
  .text._ZN6kernel4core15SchedulerPolicyD2Ev
-                0x00000000400011c0       0x24 core.o
-                0x00000000400011c0                kernel::core::SchedulerPolicy::~SchedulerPolicy()
-                0x00000000400011c0                kernel::core::SchedulerPolicy::~SchedulerPolicy()
+                0x00000000400011c8       0x24 core.o
+                0x00000000400011c8                kernel::core::SchedulerPolicy::~SchedulerPolicy()
+                0x00000000400011c8                kernel::core::SchedulerPolicy::~SchedulerPolicy()
  .text._ZN6kernel4core15SchedulerPolicyD0Ev
-                0x00000000400011e4       0x28 core.o
-                0x00000000400011e4                kernel::core::SchedulerPolicy::~SchedulerPolicy()
+                0x00000000400011ec       0x28 core.o
+                0x00000000400011ec                kernel::core::SchedulerPolicy::~SchedulerPolicy()
  .text._ZN6kernel4core9SchedulerD2Ev
-                0x000000004000120c       0x38 core.o
-                0x000000004000120c                kernel::core::Scheduler::~Scheduler()
-                0x000000004000120c                kernel::core::Scheduler::~Scheduler()
+                0x0000000040001214       0x38 core.o
+                0x0000000040001214                kernel::core::Scheduler::~Scheduler()
+                0x0000000040001214                kernel::core::Scheduler::~Scheduler()
  .text._ZN6kernel4core9Scheduler13create_threadEPFvPvEPKviiPKcbm
-                0x0000000040001244      0x43c core.o
-                0x0000000040001244                kernel::core::Scheduler::create_thread(void (*)(void*), void const*, int, int, char const*, bool, unsigned long)
+                0x000000004000124c      0x43c core.o
+                0x000000004000124c                kernel::core::Scheduler::create_thread(void (*)(void*), void const*, int, int, char const*, bool, unsigned long)
  .text._ZN6kernel4core9Scheduler20start_core_schedulerEj
-                0x0000000040001680      0x230 core.o
-                0x0000000040001680                kernel::core::Scheduler::start_core_scheduler(unsigned int)
+                0x0000000040001688      0x230 core.o
+                0x0000000040001688                kernel::core::Scheduler::start_core_scheduler(unsigned int)
  .text._ZN6kernel4core9Scheduler15preemptive_tickEj
-                0x00000000400018b0       0x74 core.o
-                0x00000000400018b0                kernel::core::Scheduler::preemptive_tick(unsigned int)
+                0x00000000400018b8       0x74 core.o
+                0x00000000400018b8                kernel::core::Scheduler::preemptive_tick(unsigned int)
  .text._ZN6kernel4core9Scheduler5yieldEj
-                0x0000000040001924       0x90 core.o
-                0x0000000040001924                kernel::core::Scheduler::yield(unsigned int)
+                0x000000004000192c       0x90 core.o
+                0x000000004000192c                kernel::core::Scheduler::yield(unsigned int)
  .text._ZN6kernel4core9Scheduler16signal_event_isrEPNS0_3TCBE
-                0x00000000400019b4       0x40 core.o
-                0x00000000400019b4                kernel::core::Scheduler::signal_event_isr(kernel::core::TCB*)
+                0x00000000400019bc       0x40 core.o
+                0x00000000400019bc                kernel::core::Scheduler::signal_event_isr(kernel::core::TCB*)
  .text._ZN6kernel4core9Scheduler14wait_for_eventEPNS0_3TCBE
-                0x00000000400019f4       0x70 core.o
-                0x00000000400019f4                kernel::core::Scheduler::wait_for_event(kernel::core::TCB*)
+                0x00000000400019fc       0x70 core.o
+                0x00000000400019fc                kernel::core::Scheduler::wait_for_event(kernel::core::TCB*)
  .text._ZN6kernel4core9Scheduler31pop_highest_priority_ready_taskEj
-                0x0000000040001a64      0x1b0 core.o
-                0x0000000040001a64                kernel::core::Scheduler::pop_highest_priority_ready_task(unsigned int)
+                0x0000000040001a6c      0x1b0 core.o
+                0x0000000040001a6c                kernel::core::Scheduler::pop_highest_priority_ready_task(unsigned int)
  .text._ZN6kernel4core9Scheduler8scheduleEjb
-                0x0000000040001c14      0x2c0 core.o
-                0x0000000040001c14                kernel::core::Scheduler::schedule(unsigned int, bool)
+                0x0000000040001c1c      0x2c0 core.o
+                0x0000000040001c1c                kernel::core::Scheduler::schedule(unsigned int, bool)
  .text._ZN6kernel4core9Scheduler16idle_thread_funcEPv
-                0x0000000040001ed4       0xc4 core.o
-                0x0000000040001ed4                kernel::core::Scheduler::idle_thread_func(void*)
+                0x0000000040001edc       0xc4 core.o
+                0x0000000040001edc                kernel::core::Scheduler::idle_thread_func(void*)
  .text._ZN6kernel4core9Scheduler16thread_bootstrapEPNS0_3TCBE
-                0x0000000040001f98      0x268 core.o
-                0x0000000040001f98                kernel::core::Scheduler::thread_bootstrap(kernel::core::TCB*)
+                0x0000000040001fa0      0x268 core.o
+                0x0000000040001fa0                kernel::core::Scheduler::thread_bootstrap(kernel::core::TCB*)
  .text._ZNSt13__atomic_baseImEC2Em
-                0x0000000040002200       0x24 core.o
-                0x0000000040002200                std::__atomic_base<unsigned long>::__atomic_base(unsigned long)
+                0x0000000040002208       0x24 core.o
+                0x0000000040002208                std::__atomic_base<unsigned long>::__atomic_base(unsigned long)
  .text._ZN6kernel11trace_eventEPKcmm
-                0x0000000040002224      0x208 core.o
-                0x0000000040002224                kernel::trace_event(char const*, unsigned long, unsigned long)
+                0x000000004000222c      0x208 core.o
+                0x000000004000222c                kernel::trace_event(char const*, unsigned long, unsigned long)
  .text._ZN6kernel17dump_trace_bufferEPNS_3hal13UARTDriverOpsE
-                0x000000004000242c      0x374 core.o
-                0x000000004000242c                kernel::dump_trace_buffer(kernel::hal::UARTDriverOps*)
+                0x0000000040002434      0x374 core.o
+                0x0000000040002434                kernel::dump_trace_buffer(kernel::hal::UARTDriverOps*)
  .text._ZN6kernel16get_kernel_statsEPNS_3hal13UARTDriverOpsE
-                0x00000000400027a0      0x244 core.o
-                0x00000000400027a0                kernel::get_kernel_stats(kernel::hal::UARTDriverOps*)
+                0x00000000400027a8      0x244 core.o
+                0x00000000400027a8                kernel::get_kernel_stats(kernel::hal::UARTDriverOps*)
  .text._ZN6kernel4core15SchedulerPolicyC2Ev
-                0x00000000400029e4       0x24 core.o
-                0x00000000400029e4                kernel::core::SchedulerPolicy::SchedulerPolicy()
-                0x00000000400029e4                kernel::core::SchedulerPolicy::SchedulerPolicy()
+                0x00000000400029ec       0x24 core.o
+                0x00000000400029ec                kernel::core::SchedulerPolicy::SchedulerPolicy()
+                0x00000000400029ec                kernel::core::SchedulerPolicy::SchedulerPolicy()
  .text._ZN6kernel4core9EDFPolicyC2Ev
-                0x0000000040002a08       0x30 core.o
-                0x0000000040002a08                kernel::core::EDFPolicy::EDFPolicy()
-                0x0000000040002a08                kernel::core::EDFPolicy::EDFPolicy()
+                0x0000000040002a10       0x30 core.o
+                0x0000000040002a10                kernel::core::EDFPolicy::EDFPolicy()
+                0x0000000040002a10                kernel::core::EDFPolicy::EDFPolicy()
  .text.kernel_main
-                0x0000000040002a38      0x470 core.o
-                0x0000000040002a38                kernel_main
+                0x0000000040002a40      0x470 core.o
+                0x0000000040002a40                kernel_main
  .text._ZN9__gnu_cxx11char_traitsIcE6lengthEPKc
-                0x0000000040002ea8       0x5c core.o
-                0x0000000040002ea8                __gnu_cxx::char_traits<char>::length(char const*)
+                0x0000000040002eb0       0x5c core.o
+                0x0000000040002eb0                __gnu_cxx::char_traits<char>::length(char const*)
  .text._ZNSt5arrayIN6kernel4core8SpinlockELm4EEixEm
-                0x0000000040002f04       0x24 core.o
-                0x0000000040002f04                std::array<kernel::core::Spinlock, 4ul>::operator[](unsigned long)
+                0x0000000040002f0c       0x24 core.o
+                0x0000000040002f0c                std::array<kernel::core::Spinlock, 4ul>::operator[](unsigned long)
  .text._ZNSt5arrayIS_IPN6kernel4core3TCBELm16EELm4EEixEm
-                0x0000000040002f28       0x24 core.o
-                0x0000000040002f28                std::array<std::array<kernel::core::TCB*, 16ul>, 4ul>::operator[](unsigned long)
+                0x0000000040002f30       0x24 core.o
+                0x0000000040002f30                std::array<std::array<kernel::core::TCB*, 16ul>, 4ul>::operator[](unsigned long)
  .text._ZNSt5arrayIPN6kernel4core3TCBELm16EEixEm
-                0x0000000040002f4c       0x24 core.o
-                0x0000000040002f4c                std::array<kernel::core::TCB*, 16ul>::operator[](unsigned long)
+                0x0000000040002f54       0x24 core.o
+                0x0000000040002f54                std::array<kernel::core::TCB*, 16ul>::operator[](unsigned long)
  .text._ZNSt5arrayIN6kernel4core3TCBELm16EEixEm
-                0x0000000040002f70       0x28 core.o
-                0x0000000040002f70                std::array<kernel::core::TCB, 16ul>::operator[](unsigned long)
+                0x0000000040002f78       0x28 core.o
+                0x0000000040002f78                std::array<kernel::core::TCB, 16ul>::operator[](unsigned long)
  .text._ZNSt5arrayIS_IhLm4096EELm16EEixEm
-                0x0000000040002f98       0x24 core.o
-                0x0000000040002f98                std::array<std::array<unsigned char, 4096ul>, 16ul>::operator[](unsigned long)
+                0x0000000040002fa0       0x24 core.o
+                0x0000000040002fa0                std::array<std::array<unsigned char, 4096ul>, 16ul>::operator[](unsigned long)
  .text._ZNSt17basic_string_viewIcSt11char_traitsIcEEC2EPKc
-                0x0000000040002fbc       0x3c core.o
-                0x0000000040002fbc                std::basic_string_view<char, std::char_traits<char> >::basic_string_view(char const*)
-                0x0000000040002fbc                std::basic_string_view<char, std::char_traits<char> >::basic_string_view(char const*)
+                0x0000000040002fc4       0x3c core.o
+                0x0000000040002fc4                std::basic_string_view<char, std::char_traits<char> >::basic_string_view(char const*)
+                0x0000000040002fc4                std::basic_string_view<char, std::char_traits<char> >::basic_string_view(char const*)
  .text._ZNSt5arrayIN6kernel4core10PerCPUDataELm4EEixEm
-                0x0000000040002ff8       0x24 core.o
-                0x0000000040002ff8                std::array<kernel::core::PerCPUData, 4ul>::operator[](unsigned long)
+                0x0000000040003000       0x24 core.o
+                0x0000000040003000                std::array<kernel::core::PerCPUData, 4ul>::operator[](unsigned long)
  .text._ZNSt5arrayISt6atomicImELm4EEixEm
-                0x000000004000301c       0x24 core.o
-                0x000000004000301c                std::array<std::atomic<unsigned long>, 4ul>::operator[](unsigned long)
+                0x0000000040003024       0x24 core.o
+                0x0000000040003024                std::array<std::atomic<unsigned long>, 4ul>::operator[](unsigned long)
  .text._ZNSt5arrayIN6kernel4core10TraceEntryELm1024EEixEm
-                0x0000000040003040       0x28 core.o
-                0x0000000040003040                std::array<kernel::core::TraceEntry, 1024ul>::operator[](unsigned long)
+                0x0000000040003048       0x28 core.o
+                0x0000000040003048                std::array<kernel::core::TraceEntry, 1024ul>::operator[](unsigned long)
  .text._ZN9__gnu_cxx11char_traitsIcE2eqERKcS3_
-                0x0000000040003068       0x30 core.o
-                0x0000000040003068                __gnu_cxx::char_traits<char>::eq(char const&, char const&)
+                0x0000000040003070       0x30 core.o
+                0x0000000040003070                __gnu_cxx::char_traits<char>::eq(char const&, char const&)
  .text._ZN6kernel4core9EDFPolicyD2Ev
-                0x0000000040003098       0x30 core.o
-                0x0000000040003098                kernel::core::EDFPolicy::~EDFPolicy()
-                0x0000000040003098                kernel::core::EDFPolicy::~EDFPolicy()
+                0x00000000400030a0       0x30 core.o
+                0x00000000400030a0                kernel::core::EDFPolicy::~EDFPolicy()
+                0x00000000400030a0                kernel::core::EDFPolicy::~EDFPolicy()
  .text._ZN6kernel4core9EDFPolicyD0Ev
-                0x00000000400030c8       0x28 core.o
-                0x00000000400030c8                kernel::core::EDFPolicy::~EDFPolicy()
+                0x00000000400030d0       0x28 core.o
+                0x00000000400030d0                kernel::core::EDFPolicy::~EDFPolicy()
  .text._Z41__static_initialization_and_destruction_0v
-                0x00000000400030f0       0x2c core.o
+                0x00000000400030f8       0x2c core.o
  .text._GLOBAL__sub_I_kernel_g_per_cpu_data
-                0x000000004000311c       0x14 core.o
- .text          0x0000000040003130        0x0 hal.o
+                0x0000000040003124       0x14 core.o
+ .text          0x0000000040003138        0x0 hal.o
  .text._ZN6kernel3hal12get_platformEv
-                0x0000000040003130        0xc hal.o
-                0x0000000040003130                kernel::hal::get_platform()
+                0x0000000040003138        0xc hal.o
+                0x0000000040003138                kernel::hal::get_platform()
  .text._ZN6kernel3hal18cpu_context_switchEPNS_4core3TCBES3_
-                0x000000004000313c      0x1b4 hal.o
-                0x000000004000313c                kernel::hal::cpu_context_switch(kernel::core::TCB*, kernel::core::TCB*)
+                0x0000000040003144      0x1b4 hal.o
+                0x0000000040003144                kernel::hal::cpu_context_switch(kernel::core::TCB*, kernel::core::TCB*)
  .text.hal_irq_handler
-                0x00000000400032f0      0x1f0 hal.o
-                0x00000000400032f0                hal_irq_handler
+                0x00000000400032f8      0x1f0 hal.o
+                0x00000000400032f8                hal_irq_handler
  .text._ZN6kernel3hal4sync11barrier_dmbEv
-                0x00000000400034e0        0xc hal.o
-                0x00000000400034e0                kernel::hal::sync::barrier_dmb()
+                0x00000000400034e8        0xc hal.o
+                0x00000000400034e8                kernel::hal::sync::barrier_dmb()
  .text._ZN6kernel3hal4sync11barrier_dsbEv
-                0x00000000400034ec        0xc hal.o
-                0x00000000400034ec                kernel::hal::sync::barrier_dsb()
+                0x00000000400034f4        0xc hal.o
+                0x00000000400034f4                kernel::hal::sync::barrier_dsb()
  .text._ZN6kernel3hal4sync11barrier_isbEv
-                0x00000000400034f8        0xc hal.o
-                0x00000000400034f8                kernel::hal::sync::barrier_isb()
- .text._Z41__static_initialization_and_destruction_0v
-                0x0000000040003504       0x3c hal.o
- .text._GLOBAL__sub_I__ZN6kernel3hal12get_platformEv
-                0x0000000040003540       0x14 hal.o
- .text          0x0000000040003554        0x0 util.o
+                0x0000000040003500        0xc hal.o
+                0x0000000040003500                kernel::hal::sync::barrier_isb()
+ .text          0x000000004000350c        0x0 util.o
  .text._ZNSt11char_traitsIcE4findEPKcmRS1_
-                0x0000000040003554       0x74 util.o
-                0x0000000040003554                std::char_traits<char>::find(char const*, unsigned long, char const&)
+                0x000000004000350c       0x74 util.o
+                0x000000004000350c                std::char_traits<char>::find(char const*, unsigned long, char const&)
  .text._ZSt24__throw_out_of_range_fmtPKcz
-                0x00000000400035c8       0x4c util.o
+                0x0000000040003580       0x4c util.o
  .text._ZSt10__sv_checkmmPKc
-                0x0000000040003614       0x48 util.o
-                0x0000000040003614                std::__sv_check(unsigned long, unsigned long, char const*)
+                0x00000000400035cc       0x48 util.o
+                0x00000000400035cc                std::__sv_check(unsigned long, unsigned long, char const*)
  .text._ZNSt14numeric_limitsIiE3minEv
-                0x000000004000365c        0x8 util.o
-                0x000000004000365c                std::numeric_limits<int>::min()
+                0x0000000040003614        0x8 util.o
+                0x0000000040003614                std::numeric_limits<int>::min()
  .text._ZNSt14numeric_limitsIiE3maxEv
-                0x0000000040003664        0x8 util.o
-                0x0000000040003664                std::numeric_limits<int>::max()
+                0x000000004000361c        0x8 util.o
+                0x000000004000361c                std::numeric_limits<int>::max()
  .text._ZNSt14numeric_limitsIjE3maxEv
-                0x000000004000366c        0x8 util.o
-                0x000000004000366c                std::numeric_limits<unsigned int>::max()
+                0x0000000040003624        0x8 util.o
+                0x0000000040003624                std::numeric_limits<unsigned int>::max()
  .text._ZNSt14numeric_limitsIlE3minEv
-                0x0000000040003674        0x8 util.o
-                0x0000000040003674                std::numeric_limits<long>::min()
+                0x000000004000362c        0x8 util.o
+                0x000000004000362c                std::numeric_limits<long>::min()
  .text._ZNKSt8__detail16__extent_storageILm18446744073709551615EE9_M_extentEv
-                0x000000004000367c       0x18 util.o
-                0x000000004000367c                std::__detail::__extent_storage<18446744073709551615ul>::_M_extent() const
+                0x0000000040003634       0x18 util.o
+                0x0000000040003634                std::__detail::__extent_storage<18446744073709551615ul>::_M_extent() const
  .text._ZN6kernel4util7kmemcpyEPvPKvm
-                0x0000000040003694       0x2c util.o
-                0x0000000040003694                kernel::util::kmemcpy(void*, void const*, unsigned long)
+                0x000000004000364c       0x2c util.o
+                0x000000004000364c                kernel::util::kmemcpy(void*, void const*, unsigned long)
  .text._ZN6kernel4util7kstrlenEPKc
-                0x00000000400036c0       0x34 util.o
-                0x00000000400036c0                kernel::util::kstrlen(char const*)
+                0x0000000040003678       0x34 util.o
+                0x0000000040003678                kernel::util::kstrlen(char const*)
  .text._ZN6kernel4util7isspaceEc
-                0x00000000400036f4       0x64 util.o
-                0x00000000400036f4                kernel::util::isspace(char)
+                0x00000000400036ac       0x64 util.o
+                0x00000000400036ac                kernel::util::isspace(char)
  .text._ZN6kernel4util7isdigitEc
-                0x0000000040003758       0x34 util.o
-                0x0000000040003758                kernel::util::isdigit(char)
+                0x0000000040003710       0x34 util.o
+                0x0000000040003710                kernel::util::isdigit(char)
  .text._ZN6kernel4util11safe_strcpyEPcPKcm
-                0x000000004000378c       0xd4 util.o
-                0x000000004000378c                kernel::util::safe_strcpy(char*, char const*, unsigned long)
+                0x0000000040003744       0xd4 util.o
+                0x0000000040003744                kernel::util::safe_strcpy(char*, char const*, unsigned long)
  .text._ZN6kernel4util7kstrcatEPcPKcm
-                0x0000000040003860       0xf8 util.o
-                0x0000000040003860                kernel::util::kstrcat(char*, char const*, unsigned long)
+                0x0000000040003818       0xf8 util.o
+                0x0000000040003818                kernel::util::kstrcat(char*, char const*, unsigned long)
  .text._ZN6kernel4util7isalphaEc
-                0x0000000040003958       0x4c util.o
-                0x0000000040003958                kernel::util::isalpha(char)
+                0x0000000040003910       0x4c util.o
+                0x0000000040003910                kernel::util::isalpha(char)
  .text._ZN6kernel4util7isalnumEc
-                0x00000000400039a4       0x50 util.o
-                0x00000000400039a4                kernel::util::isalnum(char)
+                0x000000004000395c       0x50 util.o
+                0x000000004000395c                kernel::util::isalnum(char)
  .text._ZN6kernel4util7toupperEi
-                0x00000000400039f4       0x40 util.o
-                0x00000000400039f4                kernel::util::toupper(int)
+                0x00000000400039ac       0x40 util.o
+                0x00000000400039ac                kernel::util::toupper(int)
  .text._ZN6kernel4util7tolowerEi
-                0x0000000040003a34       0x40 util.o
-                0x0000000040003a34                kernel::util::tolower(int)
+                0x00000000400039ec       0x40 util.o
+                0x00000000400039ec                kernel::util::tolower(int)
  .text._ZN6kernel4util12str_to_int32ESt17basic_string_viewIcSt11char_traitsIcEERi
-                0x0000000040003a74      0x3f8 util.o
-                0x0000000040003a74                kernel::util::str_to_int32(std::basic_string_view<char, std::char_traits<char> >, int&)
+                0x0000000040003a2c      0x3f8 util.o
+                0x0000000040003a2c                kernel::util::str_to_int32(std::basic_string_view<char, std::char_traits<char> >, int&)
  .text._ZN6kernel4util13str_to_uint32ESt17basic_string_viewIcSt11char_traitsIcEERj
-                0x0000000040003e6c      0x2d8 util.o
-                0x0000000040003e6c                kernel::util::str_to_uint32(std::basic_string_view<char, std::char_traits<char> >, unsigned int&)
+                0x0000000040003e24      0x2d8 util.o
+                0x0000000040003e24                kernel::util::str_to_uint32(std::basic_string_view<char, std::char_traits<char> >, unsigned int&)
  .text._ZN6kernel4util12str_to_floatESt17basic_string_viewIcSt11char_traitsIcEERf
-                0x0000000040004144       0x20 util.o
-                0x0000000040004144                kernel::util::str_to_float(std::basic_string_view<char, std::char_traits<char> >, float&)
+                0x00000000400040fc       0x20 util.o
+                0x00000000400040fc                kernel::util::str_to_float(std::basic_string_view<char, std::char_traits<char> >, float&)
  .text._ZN6kernel4utilL11reverse_strEPci
-                0x0000000040004164       0x9c util.o
+                0x000000004000411c       0x9c util.o
  .text._ZN6kernel4utilL24num_to_str_base_internalEmPcmib
-                0x0000000040004200      0x330 util.o
+                0x00000000400041b8      0x330 util.o
  .text._ZN6kernel4util10int_to_strEiPcmi
-                0x0000000040004530       0x38 util.o
-                0x0000000040004530                kernel::util::int_to_str(int, char*, unsigned long, int)
+                0x00000000400044e8       0x38 util.o
+                0x00000000400044e8                kernel::util::int_to_str(int, char*, unsigned long, int)
  .text._ZN6kernel4util11uint_to_strEjPcmi
-                0x0000000040004568       0x38 util.o
-                0x0000000040004568                kernel::util::uint_to_str(unsigned int, char*, unsigned long, int)
+                0x0000000040004520       0x38 util.o
+                0x0000000040004520                kernel::util::uint_to_str(unsigned int, char*, unsigned long, int)
  .text._ZN6kernel4util13uint64_to_strEmPcmi
-                0x00000000400045a0       0x38 util.o
-                0x00000000400045a0                kernel::util::uint64_to_str(unsigned long, char*, unsigned long, int)
+                0x0000000040004558       0x38 util.o
+                0x0000000040004558                kernel::util::uint64_to_str(unsigned long, char*, unsigned long, int)
  .text._ZN6kernel4util17uint64_to_hex_strEmPcmb
-                0x00000000400045d8      0x100 util.o
-                0x00000000400045d8                kernel::util::uint64_to_hex_str(unsigned long, char*, unsigned long, bool)
+                0x0000000040004590      0x100 util.o
+                0x0000000040004590                kernel::util::uint64_to_hex_str(unsigned long, char*, unsigned long, bool)
  .text._ZNKSt4spanIcLm18446744073709551615EE4dataEv
-                0x00000000400046d8       0x18 util.o
-                0x00000000400046d8                std::span<char, 18446744073709551615ul>::data() const
+                0x0000000040004690       0x18 util.o
+                0x0000000040004690                std::span<char, 18446744073709551615ul>::data() const
  .text._ZNKSt4spanIcLm18446744073709551615EE4sizeEv
-                0x00000000400046f0       0x20 util.o
-                0x00000000400046f0                std::span<char, 18446744073709551615ul>::size() const
+                0x00000000400046a8       0x20 util.o
+                0x00000000400046a8                std::span<char, 18446744073709551615ul>::size() const
  .text._ZNKSt4spanIcLm18446744073709551615EE5emptyEv
-                0x0000000040004710       0x28 util.o
-                0x0000000040004710                std::span<char, 18446744073709551615ul>::empty() const
+                0x00000000400046c8       0x28 util.o
+                0x00000000400046c8                std::span<char, 18446744073709551615ul>::empty() const
  .text._ZN6kernel4util18uint32_to_ipv4_strEjSt4spanIcLm18446744073709551615EE
-                0x0000000040004738      0x224 util.o
-                0x0000000040004738                kernel::util::uint32_to_ipv4_str(unsigned int, std::span<char, 18446744073709551615ul>)
+                0x00000000400046f0      0x224 util.o
+                0x00000000400046f0                kernel::util::uint32_to_ipv4_str(unsigned int, std::span<char, 18446744073709551615ul>)
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE17find_first_not_ofEPKcm
-                0x000000004000495c       0x38 util.o
-                0x000000004000495c                std::basic_string_view<char, std::char_traits<char> >::find_first_not_of(char const*, unsigned long) const
+                0x0000000040004914       0x38 util.o
+                0x0000000040004914                std::basic_string_view<char, std::char_traits<char> >::find_first_not_of(char const*, unsigned long) const
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE17find_first_not_ofEPKcmm
-                0x0000000040004994       0x88 util.o
-                0x0000000040004994                std::basic_string_view<char, std::char_traits<char> >::find_first_not_of(char const*, unsigned long, unsigned long) const
+                0x000000004000494c       0x88 util.o
+                0x000000004000494c                std::basic_string_view<char, std::char_traits<char> >::find_first_not_of(char const*, unsigned long, unsigned long) const
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE16find_last_not_ofEPKcm
-                0x0000000040004a1c       0x38 util.o
-                0x0000000040004a1c                std::basic_string_view<char, std::char_traits<char> >::find_last_not_of(char const*, unsigned long) const
+                0x00000000400049d4       0x38 util.o
+                0x00000000400049d4                std::basic_string_view<char, std::char_traits<char> >::find_last_not_of(char const*, unsigned long) const
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE16find_last_not_ofEPKcmm
-                0x0000000040004a54       0xd4 util.o
-                0x0000000040004a54                std::basic_string_view<char, std::char_traits<char> >::find_last_not_of(char const*, unsigned long, unsigned long) const
+                0x0000000040004a0c       0xd4 util.o
+                0x0000000040004a0c                std::basic_string_view<char, std::char_traits<char> >::find_last_not_of(char const*, unsigned long, unsigned long) const
  .text._ZN6kernel4util14ipv4_to_uint32ESt17basic_string_viewIcSt11char_traitsIcEERj
-                0x0000000040004b28      0x29c util.o
-                0x0000000040004b28                kernel::util::ipv4_to_uint32(std::basic_string_view<char, std::char_traits<char> >, unsigned int&)
+                0x0000000040004ae0      0x29c util.o
+                0x0000000040004ae0                kernel::util::ipv4_to_uint32(std::basic_string_view<char, std::char_traits<char> >, unsigned int&)
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE6lengthEv
-                0x0000000040004dc4       0x18 util.o
-                0x0000000040004dc4                std::basic_string_view<char, std::char_traits<char> >::length() const
+                0x0000000040004d7c       0x18 util.o
+                0x0000000040004d7c                std::basic_string_view<char, std::char_traits<char> >::length() const
  .text._ZN6kernel4util14get_next_tokenERSt17basic_string_viewIcSt11char_traitsIcEEc
-                0x0000000040004ddc      0x218 util.o
-                0x0000000040004ddc                kernel::util::get_next_token(std::basic_string_view<char, std::char_traits<char> >&, char)
+                0x0000000040004d94      0x218 util.o
+                0x0000000040004d94                kernel::util::get_next_token(std::basic_string_view<char, std::char_traits<char> >&, char)
  .text._ZN6kernel4util11k_vsnprintfEPcmPKcSt9__va_list
-                0x0000000040004ff4      0x7a4 util.o
-                0x0000000040004ff4                kernel::util::k_vsnprintf(char*, unsigned long, char const*, std::__va_list)
+                0x0000000040004fac      0x7a4 util.o
+                0x0000000040004fac                kernel::util::k_vsnprintf(char*, unsigned long, char const*, std::__va_list)
  .text._ZN6kernel4util10k_snprintfEPcmPKcz
-                0x0000000040005798       0xa8 util.o
-                0x0000000040005798                kernel::util::k_snprintf(char*, unsigned long, char const*, ...)
+                0x0000000040005750       0xa8 util.o
+                0x0000000040005750                kernel::util::k_snprintf(char*, unsigned long, char const*, ...)
  .text._ZN9__gnu_cxx11char_traitsIcE4findEPKcmRS2_
-                0x0000000040005840       0x78 util.o
-                0x0000000040005840                __gnu_cxx::char_traits<char>::find(char const*, unsigned long, char const&)
+                0x00000000400057f8       0x78 util.o
+                0x00000000400057f8                __gnu_cxx::char_traits<char>::find(char const*, unsigned long, char const&)
  .text._ZNSt17basic_string_viewIcSt11char_traitsIcEEC2EPKcm
-                0x00000000400058b8       0x34 util.o
-                0x00000000400058b8                std::basic_string_view<char, std::char_traits<char> >::basic_string_view(char const*, unsigned long)
-                0x00000000400058b8                std::basic_string_view<char, std::char_traits<char> >::basic_string_view(char const*, unsigned long)
+                0x0000000040005870       0x34 util.o
+                0x0000000040005870                std::basic_string_view<char, std::char_traits<char> >::basic_string_view(char const*, unsigned long)
+                0x0000000040005870                std::basic_string_view<char, std::char_traits<char> >::basic_string_view(char const*, unsigned long)
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE5emptyEv
-                0x00000000400058ec       0x24 util.o
-                0x00000000400058ec                std::basic_string_view<char, std::char_traits<char> >::empty() const
+                0x00000000400058a4       0x24 util.o
+                0x00000000400058a4                std::basic_string_view<char, std::char_traits<char> >::empty() const
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEEixEm
-                0x0000000040005910       0x64 util.o
-                0x0000000040005910                std::basic_string_view<char, std::char_traits<char> >::operator[](unsigned long) const
+                0x00000000400058c8       0x64 util.o
+                0x00000000400058c8                std::basic_string_view<char, std::char_traits<char> >::operator[](unsigned long) const
  .text._ZN6kernel4util3minImEERKT_S4_S4_
-                0x0000000040005974       0x38 util.o
-                0x0000000040005974                unsigned long const& kernel::util::min<unsigned long>(unsigned long const&, unsigned long const&)
+                0x000000004000592c       0x38 util.o
+                0x000000004000592c                unsigned long const& kernel::util::min<unsigned long>(unsigned long const&, unsigned long const&)
  .text._ZNKSt4spanIcLm18446744073709551615EEixEm
-                0x00000000400059ac       0x68 util.o
-                0x00000000400059ac                std::span<char, 18446744073709551615ul>::operator[](unsigned long) const
+                0x0000000040005964       0x68 util.o
+                0x0000000040005964                std::span<char, 18446744073709551615ul>::operator[](unsigned long) const
  .text._ZNKSt4spanIcLm18446744073709551615EE4backEv
-                0x0000000040005a14       0x74 util.o
-                0x0000000040005a14                std::span<char, 18446744073709551615ul>::back() const
+                0x00000000400059cc       0x74 util.o
+                0x00000000400059cc                std::span<char, 18446744073709551615ul>::back() const
  .text._ZNSt17basic_string_viewIcSt11char_traitsIcEE13remove_prefixEm
-                0x0000000040005a88       0x88 util.o
-                0x0000000040005a88                std::basic_string_view<char, std::char_traits<char> >::remove_prefix(unsigned long)
+                0x0000000040005a40       0x88 util.o
+                0x0000000040005a40                std::basic_string_view<char, std::char_traits<char> >::remove_prefix(unsigned long)
  .text._ZSt3minImERKT_S2_S2_
-                0x0000000040005b10       0x38 util.o
-                0x0000000040005b10                unsigned long const& std::min<unsigned long>(unsigned long const&, unsigned long const&)
+                0x0000000040005ac8       0x38 util.o
+                0x0000000040005ac8                unsigned long const& std::min<unsigned long>(unsigned long const&, unsigned long const&)
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE6substrEmm
-                0x0000000040005b48       0x88 util.o
-                0x0000000040005b48                std::basic_string_view<char, std::char_traits<char> >::substr(unsigned long, unsigned long) const
+                0x0000000040005b00       0x88 util.o
+                0x0000000040005b00                std::basic_string_view<char, std::char_traits<char> >::substr(unsigned long, unsigned long) const
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE5beginEv
-                0x0000000040005bd0       0x18 util.o
-                0x0000000040005bd0                std::basic_string_view<char, std::char_traits<char> >::begin() const
+                0x0000000040005b88       0x18 util.o
+                0x0000000040005b88                std::basic_string_view<char, std::char_traits<char> >::begin() const
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE3endEv
-                0x0000000040005be8       0x24 util.o
-                0x0000000040005be8                std::basic_string_view<char, std::char_traits<char> >::end() const
+                0x0000000040005ba0       0x24 util.o
+                0x0000000040005ba0                std::basic_string_view<char, std::char_traits<char> >::end() const
  .text._ZNSt17basic_string_viewIcSt11char_traitsIcEEC2Ev
-                0x0000000040005c0c       0x24 util.o
-                0x0000000040005c0c                std::basic_string_view<char, std::char_traits<char> >::basic_string_view()
-                0x0000000040005c0c                std::basic_string_view<char, std::char_traits<char> >::basic_string_view()
+                0x0000000040005bc4       0x24 util.o
+                0x0000000040005bc4                std::basic_string_view<char, std::char_traits<char> >::basic_string_view()
+                0x0000000040005bc4                std::basic_string_view<char, std::char_traits<char> >::basic_string_view()
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE4sizeEv
-                0x0000000040005c30       0x18 util.o
-                0x0000000040005c30                std::basic_string_view<char, std::char_traits<char> >::size() const
- .text          0x0000000040005c48        0x0 trace.o
+                0x0000000040005be8       0x18 util.o
+                0x0000000040005be8                std::basic_string_view<char, std::char_traits<char> >::size() const
+ .text          0x0000000040005c00        0x0 trace.o
  .text._ZN5trace10TraceEventC2Ev
-                0x0000000040005c48       0x24 trace.o
-                0x0000000040005c48                trace::TraceEvent::TraceEvent()
-                0x0000000040005c48                trace::TraceEvent::TraceEvent()
+                0x0000000040005c00       0x24 trace.o
+                0x0000000040005c00                trace::TraceEvent::TraceEvent()
+                0x0000000040005c00                trace::TraceEvent::TraceEvent()
  .text._ZNSt5arrayIN5trace10TraceEventELm64EEC2Ev
-                0x0000000040005c6c       0x4c trace.o
-                0x0000000040005c6c                std::array<trace::TraceEvent, 64ul>::array()
-                0x0000000040005c6c                std::array<trace::TraceEvent, 64ul>::array()
+                0x0000000040005c24       0x4c trace.o
+                0x0000000040005c24                std::array<trace::TraceEvent, 64ul>::array()
+                0x0000000040005c24                std::array<trace::TraceEvent, 64ul>::array()
  .text._ZN5trace12TraceManagerC2Ev
-                0x0000000040005cb8       0x40 trace.o
-                0x0000000040005cb8                trace::TraceManager::TraceManager()
-                0x0000000040005cb8                trace::TraceManager::TraceManager()
+                0x0000000040005c70       0x40 trace.o
+                0x0000000040005c70                trace::TraceManager::TraceManager()
+                0x0000000040005c70                trace::TraceManager::TraceManager()
  .text._ZN5trace12TraceManager12record_eventEPKN6kernel4core3TCBENS_9EventTypeESt17basic_string_viewIcSt11char_traitsIcEEm
-                0x0000000040005cf8      0x170 trace.o
-                0x0000000040005cf8                trace::TraceManager::record_event(kernel::core::TCB const*, trace::EventType, std::basic_string_view<char, std::char_traits<char> >, unsigned long)
+                0x0000000040005cb0      0x170 trace.o
+                0x0000000040005cb0                trace::TraceManager::record_event(kernel::core::TCB const*, trace::EventType, std::basic_string_view<char, std::char_traits<char> >, unsigned long)
  .text._ZNK5trace12TraceManager10dump_traceEPN6kernel3hal13UARTDriverOpsE
-                0x0000000040005e68      0x4f8 trace.o
-                0x0000000040005e68                trace::TraceManager::dump_trace(kernel::hal::UARTDriverOps*) const
+                0x0000000040005e20      0x4f8 trace.o
+                0x0000000040005e20                trace::TraceManager::dump_trace(kernel::hal::UARTDriverOps*) const
  .text._ZNSt17basic_string_viewIcSt11char_traitsIcEEC1Ev
-                0x0000000040006360       0x24 trace.o
+                0x0000000040006318       0x24 trace.o
  .text._ZN5trace12TraceManager11clear_traceEv
-                0x0000000040006384      0x148 trace.o
-                0x0000000040006384                trace::TraceManager::clear_trace()
+                0x000000004000633c      0x148 trace.o
+                0x000000004000633c                trace::TraceManager::clear_trace()
  .text._ZNKSt17basic_string_viewIcSt11char_traitsIcEE4dataEv
-                0x00000000400064cc       0x18 trace.o
-                0x00000000400064cc                std::basic_string_view<char, std::char_traits<char> >::data() const
+                0x0000000040006484       0x18 trace.o
+                0x0000000040006484                std::basic_string_view<char, std::char_traits<char> >::data() const
  .text._ZNSt13__atomic_baseIbEC2Eb
-                0x00000000400064e4       0x24 trace.o
-                0x00000000400064e4                std::__atomic_base<bool>::__atomic_base(bool)
+                0x000000004000649c       0x24 trace.o
+                0x000000004000649c                std::__atomic_base<bool>::__atomic_base(bool)
  .text._ZNSt13__atomic_baseImEC2Em
-                0x0000000040006508       0x24 trace.o
-                0x0000000040006508                std::__atomic_base<unsigned long>::__atomic_base(unsigned long)
+                0x00000000400064c0       0x24 trace.o
+                0x00000000400064c0                std::__atomic_base<unsigned long>::__atomic_base(unsigned long)
  .text._ZNSt5arrayIN5trace10TraceEventELm64EEixEm
-                0x000000004000652c       0x28 trace.o
-                0x000000004000652c                std::array<trace::TraceEvent, 64ul>::operator[](unsigned long)
+                0x00000000400064e4       0x28 trace.o
+                0x00000000400064e4                std::array<trace::TraceEvent, 64ul>::operator[](unsigned long)
  .text._ZNKSt5arrayIN5trace10TraceEventELm64EEixEm
-                0x0000000040006554       0x28 trace.o
-                0x0000000040006554                std::array<trace::TraceEvent, 64ul>::operator[](unsigned long) const
+                0x000000004000650c       0x28 trace.o
+                0x000000004000650c                std::array<trace::TraceEvent, 64ul>::operator[](unsigned long) const
  .text._ZNSt5arrayIN5trace10TraceEventELm64EE5beginEv
-                0x000000004000657c       0x1c trace.o
-                0x000000004000657c                std::array<trace::TraceEvent, 64ul>::begin()
+                0x0000000040006534       0x1c trace.o
+                0x0000000040006534                std::array<trace::TraceEvent, 64ul>::begin()
  .text._ZNSt5arrayIN5trace10TraceEventELm64EE3endEv
-                0x0000000040006598       0x20 trace.o
-                0x0000000040006598                std::array<trace::TraceEvent, 64ul>::end()
+                0x0000000040006550       0x20 trace.o
+                0x0000000040006550                std::array<trace::TraceEvent, 64ul>::end()
  .text._Z41__static_initialization_and_destruction_0v
-                0x00000000400065b8       0x20 trace.o
+                0x0000000040006570       0x20 trace.o
  .text._GLOBAL__sub_I__ZN5trace15g_trace_managerE
-                0x00000000400065d8       0x14 trace.o
- .text          0x00000000400065ec        0x0 cli_minimal.o
+                0x0000000040006590       0x14 trace.o
+ .text          0x00000000400065a4        0x0 cli_minimal.o
  .text._ZN3cliL13trace_commandEPKcPN6kernel3hal13UARTDriverOpsE
-                0x00000000400065ec       0x24 cli_minimal.o
+                0x00000000400065a4       0x24 cli_minimal.o
  .text._ZN3cliL13stats_commandEPKcPN6kernel3hal13UARTDriverOpsE
-                0x0000000040006610       0x24 cli_minimal.o
+                0x00000000400065c8       0x24 cli_minimal.o
  .text._ZN3cli3CLI16register_commandEPKcPFiS2_PN6kernel3hal13UARTDriverOpsEES2_
-                0x0000000040006634       0x1c cli_minimal.o
-                0x0000000040006634                cli::CLI::register_command(char const*, int (*)(char const*, kernel::hal::UARTDriverOps*), char const*)
+                0x00000000400065ec       0x1c cli_minimal.o
+                0x00000000400065ec                cli::CLI::register_command(char const*, int (*)(char const*, kernel::hal::UARTDriverOps*), char const*)
  .text._ZN3cli3CLIC2Ev
-                0x0000000040006650       0x50 cli_minimal.o
-                0x0000000040006650                cli::CLI::CLI()
-                0x0000000040006650                cli::CLI::CLI()
+                0x0000000040006608       0x50 cli_minimal.o
+                0x0000000040006608                cli::CLI::CLI()
+                0x0000000040006608                cli::CLI::CLI()
  .text._Z41__static_initialization_and_destruction_0v
-                0x00000000400066a0       0x20 cli_minimal.o
+                0x0000000040006658       0x20 cli_minimal.o
  .text._GLOBAL__sub_I__ZN3cli5g_cliE
-                0x00000000400066c0       0x14 cli_minimal.o
- .text          0x00000000400066d4        0x0 kernel_globals.o
+                0x0000000040006678       0x14 cli_minimal.o
+ .text          0x000000004000668c        0x0 kernel_globals.o
  .text._ZN6kernel27configure_memory_protectionEPNS_4core3TCBEb
-                0x00000000400066d4       0x18 kernel_globals.o
-                0x00000000400066d4                kernel::configure_memory_protection(kernel::core::TCB*, bool)
+                0x000000004000668c       0x18 kernel_globals.o
+                0x000000004000668c                kernel::configure_memory_protection(kernel::core::TCB*, bool)
  .text._Z41__static_initialization_and_destruction_0v
-                0x00000000400066ec       0x2c kernel_globals.o
+                0x00000000400066a4       0x2c kernel_globals.o
  .text._GLOBAL__sub_I__ZN6kernel10g_platformE
-                0x0000000040006718       0x14 kernel_globals.o
- *fill*         0x000000004000672c        0x4 
- .text          0x0000000040006730      0x1a0 cpu_arm64.o
-                0x0000000040006730                call_constructors
-                0x00000000400067e4                unhandled_exception_entry_point
-                0x00000000400067f8                cpu_context_switch_impl
- .text          0x00000000400068d0        0x0 hal_qemu_arm64.o
+                0x00000000400066d0       0x14 kernel_globals.o
+ *fill*         0x00000000400066e4        0x4 
+ .text          0x00000000400066e8      0x1a8 cpu_arm64.o
+                0x00000000400066e8                call_constructors
+                0x00000000400067a0                unhandled_exception_entry_point
+                0x00000000400067b4                cpu_context_switch_impl
+ .text          0x0000000040006890        0x0 hal_qemu_arm64.o
  .text._ZSt17__size_to_integerm
-                0x00000000400068d0       0x14 hal_qemu_arm64.o
-                0x00000000400068d0                std::__size_to_integer(unsigned long)
+                0x0000000040006890       0x14 hal_qemu_arm64.o
+                0x0000000040006890                std::__size_to_integer(unsigned long)
  .text._ZNK6kernel3hal3i2s6Format32get_bytes_per_sample_per_channelEv
-                0x00000000400068e4       0x4c hal_qemu_arm64.o
-                0x00000000400068e4                kernel::hal::i2s::Format::get_bytes_per_sample_per_channel() const
+                0x00000000400068a4       0x4c hal_qemu_arm64.o
+                0x00000000400068a4                kernel::hal::i2s::Format::get_bytes_per_sample_per_channel() const
  .text._ZNK6kernel3hal3i2s6Format19get_bytes_per_frameEv
-                0x0000000040006930       0x30 hal_qemu_arm64.o
-                0x0000000040006930                kernel::hal::i2s::Format::get_bytes_per_frame() const
+                0x00000000400068f0       0x30 hal_qemu_arm64.o
+                0x00000000400068f0                kernel::hal::i2s::Format::get_bytes_per_frame() const
  .text._ZN6kernel3hal13UARTDriverOpsC2Ev
-                0x0000000040006960       0x24 hal_qemu_arm64.o
-                0x0000000040006960                kernel::hal::UARTDriverOps::UARTDriverOps()
-                0x0000000040006960                kernel::hal::UARTDriverOps::UARTDriverOps()
+                0x0000000040006920       0x24 hal_qemu_arm64.o
+                0x0000000040006920                kernel::hal::UARTDriverOps::UARTDriverOps()
+                0x0000000040006920                kernel::hal::UARTDriverOps::UARTDriverOps()
  .text._ZN6kernel3hal13UARTDriverOpsD2Ev
-                0x0000000040006984       0x24 hal_qemu_arm64.o
-                0x0000000040006984                kernel::hal::UARTDriverOps::~UARTDriverOps()
-                0x0000000040006984                kernel::hal::UARTDriverOps::~UARTDriverOps()
+                0x0000000040006944       0x24 hal_qemu_arm64.o
+                0x0000000040006944                kernel::hal::UARTDriverOps::~UARTDriverOps()
+                0x0000000040006944                kernel::hal::UARTDriverOps::~UARTDriverOps()
  .text._ZN6kernel3hal13UARTDriverOpsD0Ev
-                0x00000000400069a8       0x28 hal_qemu_arm64.o
-                0x00000000400069a8                kernel::hal::UARTDriverOps::~UARTDriverOps()
+                0x0000000040006968       0x28 hal_qemu_arm64.o
+                0x0000000040006968                kernel::hal::UARTDriverOps::~UARTDriverOps()
  .text._ZN3hal15qemu_virt_arm6410UARTDriverC2Ev
-                0x00000000400069d0       0x48 hal_qemu_arm64.o
-                0x00000000400069d0                hal::qemu_virt_arm64::UARTDriver::UARTDriver()
-                0x00000000400069d0                hal::qemu_virt_arm64::UARTDriver::UARTDriver()
+                0x0000000040006990       0x48 hal_qemu_arm64.o
+                0x0000000040006990                hal::qemu_virt_arm64::UARTDriver::UARTDriver()
+                0x0000000040006990                hal::qemu_virt_arm64::UARTDriver::UARTDriver()
  .text._ZN6kernel3hal16IRQControllerOpsC2Ev
-                0x0000000040006a18       0x24 hal_qemu_arm64.o
-                0x0000000040006a18                kernel::hal::IRQControllerOps::IRQControllerOps()
-                0x0000000040006a18                kernel::hal::IRQControllerOps::IRQControllerOps()
+                0x00000000400069d8       0x24 hal_qemu_arm64.o
+                0x00000000400069d8                kernel::hal::IRQControllerOps::IRQControllerOps()
+                0x00000000400069d8                kernel::hal::IRQControllerOps::IRQControllerOps()
  .text._ZN6kernel3hal16IRQControllerOpsD2Ev
-                0x0000000040006a3c       0x24 hal_qemu_arm64.o
-                0x0000000040006a3c                kernel::hal::IRQControllerOps::~IRQControllerOps()
-                0x0000000040006a3c                kernel::hal::IRQControllerOps::~IRQControllerOps()
+                0x00000000400069fc       0x24 hal_qemu_arm64.o
+                0x00000000400069fc                kernel::hal::IRQControllerOps::~IRQControllerOps()
+                0x00000000400069fc                kernel::hal::IRQControllerOps::~IRQControllerOps()
  .text._ZN6kernel3hal16IRQControllerOpsD0Ev
-                0x0000000040006a60       0x28 hal_qemu_arm64.o
-                0x0000000040006a60                kernel::hal::IRQControllerOps::~IRQControllerOps()
+                0x0000000040006a20       0x28 hal_qemu_arm64.o
+                0x0000000040006a20                kernel::hal::IRQControllerOps::~IRQControllerOps()
  .text._ZN3hal15qemu_virt_arm6413IRQControllerC2Ev
-                0x0000000040006a88       0x48 hal_qemu_arm64.o
-                0x0000000040006a88                hal::qemu_virt_arm64::IRQController::IRQController()
-                0x0000000040006a88                hal::qemu_virt_arm64::IRQController::IRQController()
+                0x0000000040006a48       0x48 hal_qemu_arm64.o
+                0x0000000040006a48                hal::qemu_virt_arm64::IRQController::IRQController()
+                0x0000000040006a48                hal::qemu_virt_arm64::IRQController::IRQController()
  .text._ZN6kernel3hal12I2SDriverOpsC2Ev
-                0x0000000040006ad0       0x24 hal_qemu_arm64.o
-                0x0000000040006ad0                kernel::hal::I2SDriverOps::I2SDriverOps()
-                0x0000000040006ad0                kernel::hal::I2SDriverOps::I2SDriverOps()
+                0x0000000040006a90       0x24 hal_qemu_arm64.o
+                0x0000000040006a90                kernel::hal::I2SDriverOps::I2SDriverOps()
+                0x0000000040006a90                kernel::hal::I2SDriverOps::I2SDriverOps()
  .text._ZN6kernel3hal12I2SDriverOpsD2Ev
-                0x0000000040006af4       0x24 hal_qemu_arm64.o
-                0x0000000040006af4                kernel::hal::I2SDriverOps::~I2SDriverOps()
-                0x0000000040006af4                kernel::hal::I2SDriverOps::~I2SDriverOps()
+                0x0000000040006ab4       0x24 hal_qemu_arm64.o
+                0x0000000040006ab4                kernel::hal::I2SDriverOps::~I2SDriverOps()
+                0x0000000040006ab4                kernel::hal::I2SDriverOps::~I2SDriverOps()
  .text._ZN6kernel3hal12I2SDriverOpsD0Ev
-                0x0000000040006b18       0x28 hal_qemu_arm64.o
-                0x0000000040006b18                kernel::hal::I2SDriverOps::~I2SDriverOps()
+                0x0000000040006ad8       0x28 hal_qemu_arm64.o
+                0x0000000040006ad8                kernel::hal::I2SDriverOps::~I2SDriverOps()
  .text._ZN3hal15qemu_virt_arm649I2SDriver15I2SInstanceDataC2Ev
-                0x0000000040006b40       0x2c hal_qemu_arm64.o
-                0x0000000040006b40                hal::qemu_virt_arm64::I2SDriver::I2SInstanceData::I2SInstanceData()
-                0x0000000040006b40                hal::qemu_virt_arm64::I2SDriver::I2SInstanceData::I2SInstanceData()
+                0x0000000040006b00       0x2c hal_qemu_arm64.o
+                0x0000000040006b00                hal::qemu_virt_arm64::I2SDriver::I2SInstanceData::I2SInstanceData()
+                0x0000000040006b00                hal::qemu_virt_arm64::I2SDriver::I2SInstanceData::I2SInstanceData()
  .text._ZNSt5arrayIN3hal15qemu_virt_arm649I2SDriver15I2SInstanceDataELm2EEC2Ev
-                0x0000000040006b6c       0x4c hal_qemu_arm64.o
-                0x0000000040006b6c                std::array<hal::qemu_virt_arm64::I2SDriver::I2SInstanceData, 2ul>::array()
-                0x0000000040006b6c                std::array<hal::qemu_virt_arm64::I2SDriver::I2SInstanceData, 2ul>::array()
+                0x0000000040006b2c       0x4c hal_qemu_arm64.o
+                0x0000000040006b2c                std::array<hal::qemu_virt_arm64::I2SDriver::I2SInstanceData, 2ul>::array()
+                0x0000000040006b2c                std::array<hal::qemu_virt_arm64::I2SDriver::I2SInstanceData, 2ul>::array()
  .text._ZN3hal15qemu_virt_arm649I2SDriverC2Ev
-                0x0000000040006bb8       0x54 hal_qemu_arm64.o
-                0x0000000040006bb8                hal::qemu_virt_arm64::I2SDriver::I2SDriver()
-                0x0000000040006bb8                hal::qemu_virt_arm64::I2SDriver::I2SDriver()
+                0x0000000040006b78       0x54 hal_qemu_arm64.o
+                0x0000000040006b78                hal::qemu_virt_arm64::I2SDriver::I2SDriver()
+                0x0000000040006b78                hal::qemu_virt_arm64::I2SDriver::I2SDriver()
  .text._ZN6kernel3hal9MemoryOpsC2Ev
-                0x0000000040006c0c       0x24 hal_qemu_arm64.o
-                0x0000000040006c0c                kernel::hal::MemoryOps::MemoryOps()
-                0x0000000040006c0c                kernel::hal::MemoryOps::MemoryOps()
+                0x0000000040006bcc       0x24 hal_qemu_arm64.o
+                0x0000000040006bcc                kernel::hal::MemoryOps::MemoryOps()
+                0x0000000040006bcc                kernel::hal::MemoryOps::MemoryOps()
  .text._ZN6kernel3hal9MemoryOpsD2Ev
-                0x0000000040006c30       0x24 hal_qemu_arm64.o
-                0x0000000040006c30                kernel::hal::MemoryOps::~MemoryOps()
-                0x0000000040006c30                kernel::hal::MemoryOps::~MemoryOps()
+                0x0000000040006bf0       0x24 hal_qemu_arm64.o
+                0x0000000040006bf0                kernel::hal::MemoryOps::~MemoryOps()
+                0x0000000040006bf0                kernel::hal::MemoryOps::~MemoryOps()
  .text._ZN6kernel3hal9MemoryOpsD0Ev
-                0x0000000040006c54       0x28 hal_qemu_arm64.o
-                0x0000000040006c54                kernel::hal::MemoryOps::~MemoryOps()
+                0x0000000040006c14       0x28 hal_qemu_arm64.o
+                0x0000000040006c14                kernel::hal::MemoryOps::~MemoryOps()
  .text._ZN3hal15qemu_virt_arm649MemoryOpsC2Ev
-                0x0000000040006c7c       0x48 hal_qemu_arm64.o
-                0x0000000040006c7c                hal::qemu_virt_arm64::MemoryOps::MemoryOps()
-                0x0000000040006c7c                hal::qemu_virt_arm64::MemoryOps::MemoryOps()
+                0x0000000040006c3c       0x48 hal_qemu_arm64.o
+                0x0000000040006c3c                hal::qemu_virt_arm64::MemoryOps::MemoryOps()
+                0x0000000040006c3c                hal::qemu_virt_arm64::MemoryOps::MemoryOps()
  .text._ZN6kernel3hal3net16NetworkDriverOpsC2Ev
-                0x0000000040006cc4       0x24 hal_qemu_arm64.o
-                0x0000000040006cc4                kernel::hal::net::NetworkDriverOps::NetworkDriverOps()
-                0x0000000040006cc4                kernel::hal::net::NetworkDriverOps::NetworkDriverOps()
+                0x0000000040006c84       0x24 hal_qemu_arm64.o
+                0x0000000040006c84                kernel::hal::net::NetworkDriverOps::NetworkDriverOps()
+                0x0000000040006c84                kernel::hal::net::NetworkDriverOps::NetworkDriverOps()
  .text._ZN6kernel3hal3net16NetworkDriverOpsD2Ev
-                0x0000000040006ce8       0x24 hal_qemu_arm64.o
-                0x0000000040006ce8                kernel::hal::net::NetworkDriverOps::~NetworkDriverOps()
-                0x0000000040006ce8                kernel::hal::net::NetworkDriverOps::~NetworkDriverOps()
+                0x0000000040006ca8       0x24 hal_qemu_arm64.o
+                0x0000000040006ca8                kernel::hal::net::NetworkDriverOps::~NetworkDriverOps()
+                0x0000000040006ca8                kernel::hal::net::NetworkDriverOps::~NetworkDriverOps()
  .text._ZN6kernel3hal3net16NetworkDriverOpsD0Ev
-                0x0000000040006d0c       0x28 hal_qemu_arm64.o
-                0x0000000040006d0c                kernel::hal::net::NetworkDriverOps::~NetworkDriverOps()
+                0x0000000040006ccc       0x28 hal_qemu_arm64.o
+                0x0000000040006ccc                kernel::hal::net::NetworkDriverOps::~NetworkDriverOps()
  .text._ZN3hal15qemu_virt_arm6413NetworkDriverC2Ev
-                0x0000000040006d34       0x60 hal_qemu_arm64.o
-                0x0000000040006d34                hal::qemu_virt_arm64::NetworkDriver::NetworkDriver()
-                0x0000000040006d34                hal::qemu_virt_arm64::NetworkDriver::NetworkDriver()
+                0x0000000040006cf4       0x60 hal_qemu_arm64.o
+                0x0000000040006cf4                hal::qemu_virt_arm64::NetworkDriver::NetworkDriver()
+                0x0000000040006cf4                hal::qemu_virt_arm64::NetworkDriver::NetworkDriver()
  .text._ZN6kernel3hal8PowerOpsC2Ev
-                0x0000000040006d94       0x24 hal_qemu_arm64.o
-                0x0000000040006d94                kernel::hal::PowerOps::PowerOps()
-                0x0000000040006d94                kernel::hal::PowerOps::PowerOps()
+                0x0000000040006d54       0x24 hal_qemu_arm64.o
+                0x0000000040006d54                kernel::hal::PowerOps::PowerOps()
+                0x0000000040006d54                kernel::hal::PowerOps::PowerOps()
  .text._ZN6kernel3hal8PowerOpsD2Ev
-                0x0000000040006db8       0x24 hal_qemu_arm64.o
-                0x0000000040006db8                kernel::hal::PowerOps::~PowerOps()
-                0x0000000040006db8                kernel::hal::PowerOps::~PowerOps()
+                0x0000000040006d78       0x24 hal_qemu_arm64.o
+                0x0000000040006d78                kernel::hal::PowerOps::~PowerOps()
+                0x0000000040006d78                kernel::hal::PowerOps::~PowerOps()
  .text._ZN6kernel3hal8PowerOpsD0Ev
-                0x0000000040006ddc       0x28 hal_qemu_arm64.o
-                0x0000000040006ddc                kernel::hal::PowerOps::~PowerOps()
+                0x0000000040006d9c       0x28 hal_qemu_arm64.o
+                0x0000000040006d9c                kernel::hal::PowerOps::~PowerOps()
  .text._ZN3hal15qemu_virt_arm648PowerOpsC2Ev
-                0x0000000040006e04       0x48 hal_qemu_arm64.o
-                0x0000000040006e04                hal::qemu_virt_arm64::PowerOps::PowerOps()
-                0x0000000040006e04                hal::qemu_virt_arm64::PowerOps::PowerOps()
+                0x0000000040006dc4       0x48 hal_qemu_arm64.o
+                0x0000000040006dc4                hal::qemu_virt_arm64::PowerOps::PowerOps()
+                0x0000000040006dc4                hal::qemu_virt_arm64::PowerOps::PowerOps()
  .text._ZN6kernel3hal4gpio13GPIODriverOpsC2Ev
-                0x0000000040006e4c       0x24 hal_qemu_arm64.o
-                0x0000000040006e4c                kernel::hal::gpio::GPIODriverOps::GPIODriverOps()
-                0x0000000040006e4c                kernel::hal::gpio::GPIODriverOps::GPIODriverOps()
+                0x0000000040006e0c       0x24 hal_qemu_arm64.o
+                0x0000000040006e0c                kernel::hal::gpio::GPIODriverOps::GPIODriverOps()
+                0x0000000040006e0c                kernel::hal::gpio::GPIODriverOps::GPIODriverOps()
  .text._ZN6kernel3hal4gpio13GPIODriverOpsD2Ev
-                0x0000000040006e70       0x24 hal_qemu_arm64.o
-                0x0000000040006e70                kernel::hal::gpio::GPIODriverOps::~GPIODriverOps()
-                0x0000000040006e70                kernel::hal::gpio::GPIODriverOps::~GPIODriverOps()
+                0x0000000040006e30       0x24 hal_qemu_arm64.o
+                0x0000000040006e30                kernel::hal::gpio::GPIODriverOps::~GPIODriverOps()
+                0x0000000040006e30                kernel::hal::gpio::GPIODriverOps::~GPIODriverOps()
  .text._ZN6kernel3hal4gpio13GPIODriverOpsD0Ev
-                0x0000000040006e94       0x28 hal_qemu_arm64.o
-                0x0000000040006e94                kernel::hal::gpio::GPIODriverOps::~GPIODriverOps()
+                0x0000000040006e54       0x28 hal_qemu_arm64.o
+                0x0000000040006e54                kernel::hal::gpio::GPIODriverOps::~GPIODriverOps()
  .text._ZN3hal15qemu_virt_arm6410GPIODriverC2Ev
-                0x0000000040006ebc       0x48 hal_qemu_arm64.o
-                0x0000000040006ebc                hal::qemu_virt_arm64::GPIODriver::GPIODriver()
-                0x0000000040006ebc                hal::qemu_virt_arm64::GPIODriver::GPIODriver()
+                0x0000000040006e7c       0x48 hal_qemu_arm64.o
+                0x0000000040006e7c                hal::qemu_virt_arm64::GPIODriver::GPIODriver()
+                0x0000000040006e7c                hal::qemu_virt_arm64::GPIODriver::GPIODriver()
  .text._ZN6kernel3hal11WatchdogOpsC2Ev
-                0x0000000040006f04       0x24 hal_qemu_arm64.o
-                0x0000000040006f04                kernel::hal::WatchdogOps::WatchdogOps()
-                0x0000000040006f04                kernel::hal::WatchdogOps::WatchdogOps()
+                0x0000000040006ec4       0x24 hal_qemu_arm64.o
+                0x0000000040006ec4                kernel::hal::WatchdogOps::WatchdogOps()
+                0x0000000040006ec4                kernel::hal::WatchdogOps::WatchdogOps()
  .text._ZN6kernel3hal11WatchdogOpsD2Ev
-                0x0000000040006f28       0x24 hal_qemu_arm64.o
-                0x0000000040006f28                kernel::hal::WatchdogOps::~WatchdogOps()
-                0x0000000040006f28                kernel::hal::WatchdogOps::~WatchdogOps()
+                0x0000000040006ee8       0x24 hal_qemu_arm64.o
+                0x0000000040006ee8                kernel::hal::WatchdogOps::~WatchdogOps()
+                0x0000000040006ee8                kernel::hal::WatchdogOps::~WatchdogOps()
  .text._ZN6kernel3hal11WatchdogOpsD0Ev
-                0x0000000040006f4c       0x28 hal_qemu_arm64.o
-                0x0000000040006f4c                kernel::hal::WatchdogOps::~WatchdogOps()
+                0x0000000040006f0c       0x28 hal_qemu_arm64.o
+                0x0000000040006f0c                kernel::hal::WatchdogOps::~WatchdogOps()
  .text._ZN3hal15qemu_virt_arm6414WatchdogDriverC2Ev
-                0x0000000040006f74       0x48 hal_qemu_arm64.o
-                0x0000000040006f74                hal::qemu_virt_arm64::WatchdogDriver::WatchdogDriver()
-                0x0000000040006f74                hal::qemu_virt_arm64::WatchdogDriver::WatchdogDriver()
+                0x0000000040006f34       0x48 hal_qemu_arm64.o
+                0x0000000040006f34                hal::qemu_virt_arm64::WatchdogDriver::WatchdogDriver()
+                0x0000000040006f34                hal::qemu_virt_arm64::WatchdogDriver::WatchdogDriver()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6419dummy_vtable_anchorEv
-                0x0000000040006fbc       0x14 hal_qemu_arm64.o
-                0x0000000040006fbc                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::dummy_vtable_anchor()
+                0x0000000040006f7c       0x14 hal_qemu_arm64.o
+                0x0000000040006f7c                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::dummy_vtable_anchor()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6412get_uart_opsEv
-                0x0000000040006fd0       0x18 hal_qemu_arm64.o
-                0x0000000040006fd0                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_uart_ops()
+                0x0000000040006f90       0x18 hal_qemu_arm64.o
+                0x0000000040006f90                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_uart_ops()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6411get_irq_opsEv
-                0x0000000040006fe8       0x18 hal_qemu_arm64.o
-                0x0000000040006fe8                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_irq_ops()
+                0x0000000040006fa8       0x18 hal_qemu_arm64.o
+                0x0000000040006fa8                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_irq_ops()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6413get_timer_opsEv
-                0x0000000040007000       0x18 hal_qemu_arm64.o
-                0x0000000040007000                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_timer_ops()
+                0x0000000040006fc0       0x18 hal_qemu_arm64.o
+                0x0000000040006fc0                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_timer_ops()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6411get_dma_opsEv
-                0x0000000040007018       0x18 hal_qemu_arm64.o
-                0x0000000040007018                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_dma_ops()
+                0x0000000040006fd8       0x18 hal_qemu_arm64.o
+                0x0000000040006fd8                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_dma_ops()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6411get_i2s_opsEv
-                0x0000000040007030       0x18 hal_qemu_arm64.o
-                0x0000000040007030                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_i2s_ops()
+                0x0000000040006ff0       0x18 hal_qemu_arm64.o
+                0x0000000040006ff0                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_i2s_ops()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6411get_mem_opsEv
-                0x0000000040007048       0x18 hal_qemu_arm64.o
-                0x0000000040007048                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_mem_ops()
+                0x0000000040007008       0x18 hal_qemu_arm64.o
+                0x0000000040007008                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_mem_ops()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6411get_net_opsEv
-                0x0000000040007060       0x18 hal_qemu_arm64.o
-                0x0000000040007060                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_net_ops()
+                0x0000000040007020       0x18 hal_qemu_arm64.o
+                0x0000000040007020                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_net_ops()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6413get_power_opsEv
-                0x0000000040007078       0x18 hal_qemu_arm64.o
-                0x0000000040007078                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_power_ops()
+                0x0000000040007038       0x18 hal_qemu_arm64.o
+                0x0000000040007038                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_power_ops()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6412get_gpio_opsEv
-                0x0000000040007090       0x18 hal_qemu_arm64.o
-                0x0000000040007090                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_gpio_ops()
+                0x0000000040007050       0x18 hal_qemu_arm64.o
+                0x0000000040007050                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_gpio_ops()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6416get_watchdog_opsEv
-                0x00000000400070a8       0x18 hal_qemu_arm64.o
-                0x00000000400070a8                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_watchdog_ops()
+                0x0000000040007068       0x18 hal_qemu_arm64.o
+                0x0000000040007068                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_watchdog_ops()
  .text._ZN3hal15qemu_virt_arm6412mmio_write32Emj
-                0x00000000400070c0       0x24 hal_qemu_arm64.o
-                0x00000000400070c0                hal::qemu_virt_arm64::mmio_write32(unsigned long, unsigned int)
+                0x0000000040007080       0x24 hal_qemu_arm64.o
+                0x0000000040007080                hal::qemu_virt_arm64::mmio_write32(unsigned long, unsigned int)
  .text._ZN3hal15qemu_virt_arm6411mmio_read32Em
-                0x00000000400070e4       0x18 hal_qemu_arm64.o
-                0x00000000400070e4                hal::qemu_virt_arm64::mmio_read32(unsigned long)
+                0x00000000400070a4       0x18 hal_qemu_arm64.o
+                0x00000000400070a4                hal::qemu_virt_arm64::mmio_read32(unsigned long)
  .text._ZN3hal15qemu_virt_arm6422write_sysreg_cntp_tvalEm
-                0x00000000400070fc       0x1c hal_qemu_arm64.o
-                0x00000000400070fc                hal::qemu_virt_arm64::write_sysreg_cntp_tval(unsigned long)
+                0x00000000400070bc       0x1c hal_qemu_arm64.o
+                0x00000000400070bc                hal::qemu_virt_arm64::write_sysreg_cntp_tval(unsigned long)
  .text._ZN3hal15qemu_virt_arm6421write_sysreg_cntp_ctlEm
-                0x0000000040007118       0x1c hal_qemu_arm64.o
-                0x0000000040007118                hal::qemu_virt_arm64::write_sysreg_cntp_ctl(unsigned long)
+                0x00000000400070d8       0x1c hal_qemu_arm64.o
+                0x00000000400070d8                hal::qemu_virt_arm64::write_sysreg_cntp_ctl(unsigned long)
  .text._ZN3hal15qemu_virt_arm6418read_sysreg_cntpctEv
-                0x0000000040007134       0x18 hal_qemu_arm64.o
-                0x0000000040007134                hal::qemu_virt_arm64::read_sysreg_cntpct()
+                0x00000000400070f4       0x18 hal_qemu_arm64.o
+                0x00000000400070f4                hal::qemu_virt_arm64::read_sysreg_cntpct()
  .text._ZN3hal15qemu_virt_arm6418read_sysreg_cntfrqEv
-                0x000000004000714c       0x18 hal_qemu_arm64.o
-                0x000000004000714c                hal::qemu_virt_arm64::read_sysreg_cntfrq()
+                0x000000004000710c       0x18 hal_qemu_arm64.o
+                0x000000004000710c                hal::qemu_virt_arm64::read_sysreg_cntfrq()
  .text._ZN3hal15qemu_virt_arm6410UARTDriver14write_uart_regEjj
-                0x0000000040007164       0x34 hal_qemu_arm64.o
-                0x0000000040007164                hal::qemu_virt_arm64::UARTDriver::write_uart_reg(unsigned int, unsigned int)
+                0x0000000040007124       0x34 hal_qemu_arm64.o
+                0x0000000040007124                hal::qemu_virt_arm64::UARTDriver::write_uart_reg(unsigned int, unsigned int)
  .text._ZN3hal15qemu_virt_arm6410UARTDriver13read_uart_regEj
-                0x0000000040007198       0x28 hal_qemu_arm64.o
-                0x0000000040007198                hal::qemu_virt_arm64::UARTDriver::read_uart_reg(unsigned int)
+                0x0000000040007158       0x28 hal_qemu_arm64.o
+                0x0000000040007158                hal::qemu_virt_arm64::UARTDriver::read_uart_reg(unsigned int)
  .text._ZN3hal15qemu_virt_arm6410UARTDriver4putcEc
-                0x00000000400071c0       0x5c hal_qemu_arm64.o
-                0x00000000400071c0                hal::qemu_virt_arm64::UARTDriver::putc(char)
+                0x0000000040007180       0x5c hal_qemu_arm64.o
+                0x0000000040007180                hal::qemu_virt_arm64::UARTDriver::putc(char)
  .text._ZN3hal15qemu_virt_arm6410UARTDriver4putsEPKc
-                0x000000004000721c       0x98 hal_qemu_arm64.o
-                0x000000004000721c                hal::qemu_virt_arm64::UARTDriver::puts(char const*)
+                0x00000000400071dc       0x98 hal_qemu_arm64.o
+                0x00000000400071dc                hal::qemu_virt_arm64::UARTDriver::puts(char const*)
  .text._ZN3hal15qemu_virt_arm6410UARTDriver19uart_put_uint64_hexEm
-                0x00000000400072b4       0xb4 hal_qemu_arm64.o
-                0x00000000400072b4                hal::qemu_virt_arm64::UARTDriver::uart_put_uint64_hex(unsigned long)
+                0x0000000040007274       0xb4 hal_qemu_arm64.o
+                0x0000000040007274                hal::qemu_virt_arm64::UARTDriver::uart_put_uint64_hex(unsigned long)
  .text._ZN3hal15qemu_virt_arm6410UARTDriver13getc_blockingEv
-                0x0000000040007368       0x50 hal_qemu_arm64.o
-                0x0000000040007368                hal::qemu_virt_arm64::UARTDriver::getc_blocking()
+                0x0000000040007328       0x50 hal_qemu_arm64.o
+                0x0000000040007328                hal::qemu_virt_arm64::UARTDriver::getc_blocking()
  .text._ZN3hal15qemu_virt_arm6413IRQController14write_gicd_regEjj
-                0x00000000400073b8       0x34 hal_qemu_arm64.o
-                0x00000000400073b8                hal::qemu_virt_arm64::IRQController::write_gicd_reg(unsigned int, unsigned int)
+                0x0000000040007378       0x34 hal_qemu_arm64.o
+                0x0000000040007378                hal::qemu_virt_arm64::IRQController::write_gicd_reg(unsigned int, unsigned int)
  .text._ZN3hal15qemu_virt_arm6413IRQController13read_gicd_regEj
-                0x00000000400073ec       0x28 hal_qemu_arm64.o
-                0x00000000400073ec                hal::qemu_virt_arm64::IRQController::read_gicd_reg(unsigned int)
+                0x00000000400073ac       0x28 hal_qemu_arm64.o
+                0x00000000400073ac                hal::qemu_virt_arm64::IRQController::read_gicd_reg(unsigned int)
  .text._ZN3hal15qemu_virt_arm6413IRQController14write_gicc_regEmj
-                0x0000000040007414       0x34 hal_qemu_arm64.o
-                0x0000000040007414                hal::qemu_virt_arm64::IRQController::write_gicc_reg(unsigned long, unsigned int)
+                0x00000000400073d4       0x34 hal_qemu_arm64.o
+                0x00000000400073d4                hal::qemu_virt_arm64::IRQController::write_gicc_reg(unsigned long, unsigned int)
  .text._ZN3hal15qemu_virt_arm6413IRQController13read_gicc_regEm
-                0x0000000040007448       0x28 hal_qemu_arm64.o
-                0x0000000040007448                hal::qemu_virt_arm64::IRQController::read_gicc_reg(unsigned long)
+                0x0000000040007408       0x28 hal_qemu_arm64.o
+                0x0000000040007408                hal::qemu_virt_arm64::IRQController::read_gicc_reg(unsigned long)
  .text._ZN3hal15qemu_virt_arm6413IRQController16enable_core_irqsEjj
-                0x0000000040007470       0x40 hal_qemu_arm64.o
-                0x0000000040007470                hal::qemu_virt_arm64::IRQController::enable_core_irqs(unsigned int, unsigned int)
+                0x0000000040007430       0x40 hal_qemu_arm64.o
+                0x0000000040007430                hal::qemu_virt_arm64::IRQController::enable_core_irqs(unsigned int, unsigned int)
  .text._ZN3hal15qemu_virt_arm6413IRQController17disable_core_irqsEj
-                0x00000000400074b0       0x3c hal_qemu_arm64.o
-                0x00000000400074b0                hal::qemu_virt_arm64::IRQController::disable_core_irqs(unsigned int)
+                0x0000000040007470       0x3c hal_qemu_arm64.o
+                0x0000000040007470                hal::qemu_virt_arm64::IRQController::disable_core_irqs(unsigned int)
  .text._ZN3hal15qemu_virt_arm6413IRQController16init_distributorEv
-                0x00000000400074ec      0x12c hal_qemu_arm64.o
-                0x00000000400074ec                hal::qemu_virt_arm64::IRQController::init_distributor()
+                0x00000000400074ac      0x12c hal_qemu_arm64.o
+                0x00000000400074ac                hal::qemu_virt_arm64::IRQController::init_distributor()
  .text._ZN3hal15qemu_virt_arm6413IRQController18init_cpu_interfaceEj
-                0x0000000040007618       0x64 hal_qemu_arm64.o
-                0x0000000040007618                hal::qemu_virt_arm64::IRQController::init_cpu_interface(unsigned int)
+                0x00000000400075d8       0x64 hal_qemu_arm64.o
+                0x00000000400075d8                hal::qemu_virt_arm64::IRQController::init_cpu_interface(unsigned int)
  .text._ZN3hal15qemu_virt_arm6413IRQController7ack_irqEj
-                0x000000004000767c       0x24 hal_qemu_arm64.o
-                0x000000004000767c                hal::qemu_virt_arm64::IRQController::ack_irq(unsigned int)
+                0x000000004000763c       0x24 hal_qemu_arm64.o
+                0x000000004000763c                hal::qemu_virt_arm64::IRQController::ack_irq(unsigned int)
  .text._ZN3hal15qemu_virt_arm6413IRQController7end_irqEjj
-                0x00000000400076a0       0x30 hal_qemu_arm64.o
-                0x00000000400076a0                hal::qemu_virt_arm64::IRQController::end_irq(unsigned int, unsigned int)
+                0x0000000040007660       0x30 hal_qemu_arm64.o
+                0x0000000040007660                hal::qemu_virt_arm64::IRQController::end_irq(unsigned int, unsigned int)
  .text._ZN3hal15qemu_virt_arm6413IRQController15enable_irq_lineEj
-                0x00000000400076d0       0x4c hal_qemu_arm64.o
-                0x00000000400076d0                hal::qemu_virt_arm64::IRQController::enable_irq_line(unsigned int)
+                0x0000000040007690       0x4c hal_qemu_arm64.o
+                0x0000000040007690                hal::qemu_virt_arm64::IRQController::enable_irq_line(unsigned int)
  .text._ZN3hal15qemu_virt_arm6413IRQController16disable_irq_lineEj
-                0x000000004000771c       0x4c hal_qemu_arm64.o
-                0x000000004000771c                hal::qemu_virt_arm64::IRQController::disable_irq_line(unsigned int)
+                0x00000000400076dc       0x4c hal_qemu_arm64.o
+                0x00000000400076dc                hal::qemu_virt_arm64::IRQController::disable_irq_line(unsigned int)
  .text._ZN3hal15qemu_virt_arm6413IRQController16set_irq_priorityEjh
-                0x0000000040007768       0x94 hal_qemu_arm64.o
-                0x0000000040007768                hal::qemu_virt_arm64::IRQController::set_irq_priority(unsigned int, unsigned char)
+                0x0000000040007728       0x94 hal_qemu_arm64.o
+                0x0000000040007728                hal::qemu_virt_arm64::IRQController::set_irq_priority(unsigned int, unsigned char)
  .text._ZN6kernel3hal14TimerDriverOpsC2Ev
-                0x00000000400077fc       0x24 hal_qemu_arm64.o
-                0x00000000400077fc                kernel::hal::TimerDriverOps::TimerDriverOps()
-                0x00000000400077fc                kernel::hal::TimerDriverOps::TimerDriverOps()
+                0x00000000400077bc       0x24 hal_qemu_arm64.o
+                0x00000000400077bc                kernel::hal::TimerDriverOps::TimerDriverOps()
+                0x00000000400077bc                kernel::hal::TimerDriverOps::TimerDriverOps()
  .text._ZN6kernel3hal14TimerDriverOpsD2Ev
-                0x0000000040007820       0x24 hal_qemu_arm64.o
-                0x0000000040007820                kernel::hal::TimerDriverOps::~TimerDriverOps()
-                0x0000000040007820                kernel::hal::TimerDriverOps::~TimerDriverOps()
+                0x00000000400077e0       0x24 hal_qemu_arm64.o
+                0x00000000400077e0                kernel::hal::TimerDriverOps::~TimerDriverOps()
+                0x00000000400077e0                kernel::hal::TimerDriverOps::~TimerDriverOps()
  .text._ZN6kernel3hal14TimerDriverOpsD0Ev
-                0x0000000040007844       0x28 hal_qemu_arm64.o
-                0x0000000040007844                kernel::hal::TimerDriverOps::~TimerDriverOps()
+                0x0000000040007804       0x28 hal_qemu_arm64.o
+                0x0000000040007804                kernel::hal::TimerDriverOps::~TimerDriverOps()
  .text._ZN3hal15qemu_virt_arm6411TimerDriverC2Ev
-                0x000000004000786c       0xb0 hal_qemu_arm64.o
-                0x000000004000786c                hal::qemu_virt_arm64::TimerDriver::TimerDriver()
-                0x000000004000786c                hal::qemu_virt_arm64::TimerDriver::TimerDriver()
+                0x000000004000782c       0xb0 hal_qemu_arm64.o
+                0x000000004000782c                hal::qemu_virt_arm64::TimerDriver::TimerDriver()
+                0x000000004000782c                hal::qemu_virt_arm64::TimerDriver::TimerDriver()
  .text._ZN3hal15qemu_virt_arm6411TimerDriver28init_system_timer_propertiesEm
-                0x000000004000791c       0x4c hal_qemu_arm64.o
-                0x000000004000791c                hal::qemu_virt_arm64::TimerDriver::init_system_timer_properties(unsigned long)
+                0x00000000400078dc       0x4c hal_qemu_arm64.o
+                0x00000000400078dc                hal::qemu_virt_arm64::TimerDriver::init_system_timer_properties(unsigned long)
  .text._ZN3hal15qemu_virt_arm6411TimerDriver25init_core_timer_interruptEj
-                0x0000000040007968       0x7c hal_qemu_arm64.o
-                0x0000000040007968                hal::qemu_virt_arm64::TimerDriver::init_core_timer_interrupt(unsigned int)
+                0x0000000040007928       0x7c hal_qemu_arm64.o
+                0x0000000040007928                hal::qemu_virt_arm64::TimerDriver::init_core_timer_interrupt(unsigned int)
  .text._ZN3hal15qemu_virt_arm6411TimerDriver24ack_core_timer_interruptEj
-                0x00000000400079e4       0x5c hal_qemu_arm64.o
-                0x00000000400079e4                hal::qemu_virt_arm64::TimerDriver::ack_core_timer_interrupt(unsigned int)
+                0x00000000400079a4       0x5c hal_qemu_arm64.o
+                0x00000000400079a4                hal::qemu_virt_arm64::TimerDriver::ack_core_timer_interrupt(unsigned int)
  .text._ZN3hal15qemu_virt_arm6411TimerDriver18add_software_timerEPN6kernel3hal5timer13SoftwareTimerE
-                0x0000000040007a40       0x70 hal_qemu_arm64.o
-                0x0000000040007a40                hal::qemu_virt_arm64::TimerDriver::add_software_timer(kernel::hal::timer::SoftwareTimer*)
+                0x0000000040007a00       0x70 hal_qemu_arm64.o
+                0x0000000040007a00                hal::qemu_virt_arm64::TimerDriver::add_software_timer(kernel::hal::timer::SoftwareTimer*)
  .text._ZN3hal15qemu_virt_arm6411TimerDriver21remove_software_timerEPN6kernel3hal5timer13SoftwareTimerE
-                0x0000000040007ab0       0xf4 hal_qemu_arm64.o
-                0x0000000040007ab0                hal::qemu_virt_arm64::TimerDriver::remove_software_timer(kernel::hal::timer::SoftwareTimer*)
+                0x0000000040007a70       0xf4 hal_qemu_arm64.o
+                0x0000000040007a70                hal::qemu_virt_arm64::TimerDriver::remove_software_timer(kernel::hal::timer::SoftwareTimer*)
  .text._ZN3hal15qemu_virt_arm6411TimerDriver18get_system_time_usEv
-                0x0000000040007ba4       0x4c hal_qemu_arm64.o
-                0x0000000040007ba4                hal::qemu_virt_arm64::TimerDriver::get_system_time_us()
+                0x0000000040007b64       0x4c hal_qemu_arm64.o
+                0x0000000040007b64                hal::qemu_virt_arm64::TimerDriver::get_system_time_us()
  .text._ZN3hal15qemu_virt_arm6411TimerDriver24hardware_timer_irq_firedEj
-                0x0000000040007bf0      0x12c hal_qemu_arm64.o
-                0x0000000040007bf0                hal::qemu_virt_arm64::TimerDriver::hardware_timer_irq_fired(unsigned int)
+                0x0000000040007bb0      0x12c hal_qemu_arm64.o
+                0x0000000040007bb0                hal::qemu_virt_arm64::TimerDriver::hardware_timer_irq_fired(unsigned int)
  .text._ZN6kernel3hal16DMAControllerOpsC2Ev
-                0x0000000040007d1c       0x24 hal_qemu_arm64.o
-                0x0000000040007d1c                kernel::hal::DMAControllerOps::DMAControllerOps()
-                0x0000000040007d1c                kernel::hal::DMAControllerOps::DMAControllerOps()
+                0x0000000040007cdc       0x24 hal_qemu_arm64.o
+                0x0000000040007cdc                kernel::hal::DMAControllerOps::DMAControllerOps()
+                0x0000000040007cdc                kernel::hal::DMAControllerOps::DMAControllerOps()
  .text._ZN6kernel3hal16DMAControllerOpsD2Ev
-                0x0000000040007d40       0x24 hal_qemu_arm64.o
-                0x0000000040007d40                kernel::hal::DMAControllerOps::~DMAControllerOps()
-                0x0000000040007d40                kernel::hal::DMAControllerOps::~DMAControllerOps()
+                0x0000000040007d00       0x24 hal_qemu_arm64.o
+                0x0000000040007d00                kernel::hal::DMAControllerOps::~DMAControllerOps()
+                0x0000000040007d00                kernel::hal::DMAControllerOps::~DMAControllerOps()
  .text._ZN6kernel3hal16DMAControllerOpsD0Ev
-                0x0000000040007d64       0x28 hal_qemu_arm64.o
-                0x0000000040007d64                kernel::hal::DMAControllerOps::~DMAControllerOps()
+                0x0000000040007d24       0x28 hal_qemu_arm64.o
+                0x0000000040007d24                kernel::hal::DMAControllerOps::~DMAControllerOps()
  .text._ZN3hal15qemu_virt_arm6413DMAControllerC2Ev
-                0x0000000040007d8c       0x68 hal_qemu_arm64.o
-                0x0000000040007d8c                hal::qemu_virt_arm64::DMAController::DMAController()
-                0x0000000040007d8c                hal::qemu_virt_arm64::DMAController::DMAController()
+                0x0000000040007d4c       0x68 hal_qemu_arm64.o
+                0x0000000040007d4c                hal::qemu_virt_arm64::DMAController::DMAController()
+                0x0000000040007d4c                hal::qemu_virt_arm64::DMAController::DMAController()
  .text._ZN3hal15qemu_virt_arm6413DMAController15request_channelEv
-                0x0000000040007df4       0xbc hal_qemu_arm64.o
-                0x0000000040007df4                hal::qemu_virt_arm64::DMAController::request_channel()
+                0x0000000040007db4       0xbc hal_qemu_arm64.o
+                0x0000000040007db4                hal::qemu_virt_arm64::DMAController::request_channel()
  .text._ZN3hal15qemu_virt_arm6413DMAController28configure_and_start_transferEiRKN6kernel3hal3dma14TransferConfigEPFvibPvES8_
-                0x0000000040007eb0      0x154 hal_qemu_arm64.o
-                0x0000000040007eb0                hal::qemu_virt_arm64::DMAController::configure_and_start_transfer(int, kernel::hal::dma::TransferConfig const&, void (*)(int, bool, void*), void*)
+                0x0000000040007e70      0x154 hal_qemu_arm64.o
+                0x0000000040007e70                hal::qemu_virt_arm64::DMAController::configure_and_start_transfer(int, kernel::hal::dma::TransferConfig const&, void (*)(int, bool, void*), void*)
  .text._ZN3hal15qemu_virt_arm6413DMAController15release_channelEi
-                0x0000000040008004       0x6c hal_qemu_arm64.o
-                0x0000000040008004                hal::qemu_virt_arm64::DMAController::release_channel(int)
+                0x0000000040007fc4       0x6c hal_qemu_arm64.o
+                0x0000000040007fc4                hal::qemu_virt_arm64::DMAController::release_channel(int)
  .text._ZN3hal15qemu_virt_arm649I2SDriver4initEjN6kernel3hal3i2s4ModeERKNS4_6FormatEmhPFvjPNS2_5audio11AudioBufferES5_PvESC_
-                0x0000000040008070      0x14c hal_qemu_arm64.o
-                0x0000000040008070                hal::qemu_virt_arm64::I2SDriver::init(unsigned int, kernel::hal::i2s::Mode, kernel::hal::i2s::Format const&, unsigned long, unsigned char, void (*)(unsigned int, kernel::audio::AudioBuffer*, kernel::hal::i2s::Mode, void*), void*)
+                0x0000000040008030      0x14c hal_qemu_arm64.o
+                0x0000000040008030                hal::qemu_virt_arm64::I2SDriver::init(unsigned int, kernel::hal::i2s::Mode, kernel::hal::i2s::Format const&, unsigned long, unsigned char, void (*)(unsigned int, kernel::audio::AudioBuffer*, kernel::hal::i2s::Mode, void*), void*)
  .text._ZN3hal15qemu_virt_arm649I2SDriver5startEj
-                0x00000000400081bc       0xf8 hal_qemu_arm64.o
-                0x00000000400081bc                hal::qemu_virt_arm64::I2SDriver::start(unsigned int)
+                0x000000004000817c       0xf8 hal_qemu_arm64.o
+                0x000000004000817c                hal::qemu_virt_arm64::I2SDriver::start(unsigned int)
  .text._ZN3hal15qemu_virt_arm649I2SDriver4stopEj
-                0x00000000400082b4       0xf0 hal_qemu_arm64.o
-                0x00000000400082b4                hal::qemu_virt_arm64::I2SDriver::stop(unsigned int)
+                0x0000000040008274       0xf0 hal_qemu_arm64.o
+                0x0000000040008274                hal::qemu_virt_arm64::I2SDriver::stop(unsigned int)
  .text._ZN6kernel5audio11AudioBufferC2Ev
-                0x00000000400083a4       0x40 hal_qemu_arm64.o
-                0x00000000400083a4                kernel::audio::AudioBuffer::AudioBuffer()
-                0x00000000400083a4                kernel::audio::AudioBuffer::AudioBuffer()
+                0x0000000040008364       0x40 hal_qemu_arm64.o
+                0x0000000040008364                kernel::audio::AudioBuffer::AudioBuffer()
+                0x0000000040008364                kernel::audio::AudioBuffer::AudioBuffer()
  .text._ZN3hal15qemu_virt_arm649I2SDriver21get_buffer_for_app_txEj
-                0x00000000400083e4      0x258 hal_qemu_arm64.o
-                0x00000000400083e4                hal::qemu_virt_arm64::I2SDriver::get_buffer_for_app_tx(unsigned int)
+                0x00000000400083a4      0x258 hal_qemu_arm64.o
+                0x00000000400083a4                hal::qemu_virt_arm64::I2SDriver::get_buffer_for_app_tx(unsigned int)
  .text._ZN3hal15qemu_virt_arm649I2SDriver29submit_filled_buffer_to_hw_txEjPN6kernel5audio11AudioBufferE
-                0x000000004000863c      0x100 hal_qemu_arm64.o
-                0x000000004000863c                hal::qemu_virt_arm64::I2SDriver::submit_filled_buffer_to_hw_tx(unsigned int, kernel::audio::AudioBuffer*)
+                0x00000000400085fc      0x100 hal_qemu_arm64.o
+                0x00000000400085fc                hal::qemu_virt_arm64::I2SDriver::submit_filled_buffer_to_hw_tx(unsigned int, kernel::audio::AudioBuffer*)
  .text._ZN3hal15qemu_virt_arm649I2SDriver33release_processed_buffer_to_hw_rxEjPN6kernel5audio11AudioBufferE
-                0x000000004000873c       0x78 hal_qemu_arm64.o
-                0x000000004000873c                hal::qemu_virt_arm64::I2SDriver::release_processed_buffer_to_hw_rx(unsigned int, kernel::audio::AudioBuffer*)
+                0x00000000400086fc       0x78 hal_qemu_arm64.o
+                0x00000000400086fc                hal::qemu_virt_arm64::I2SDriver::release_processed_buffer_to_hw_rx(unsigned int, kernel::audio::AudioBuffer*)
  .text._ZN3hal15qemu_virt_arm649I2SDriver31convert_hw_format_to_dsp_formatEPN6kernel5audio11AudioBufferERKNS2_3hal3i2s6FormatE
-                0x00000000400087b4       0xe4 hal_qemu_arm64.o
-                0x00000000400087b4                hal::qemu_virt_arm64::I2SDriver::convert_hw_format_to_dsp_format(kernel::audio::AudioBuffer*, kernel::hal::i2s::Format const&)
+                0x0000000040008774       0xe4 hal_qemu_arm64.o
+                0x0000000040008774                hal::qemu_virt_arm64::I2SDriver::convert_hw_format_to_dsp_format(kernel::audio::AudioBuffer*, kernel::hal::i2s::Format const&)
  .text._ZN3hal15qemu_virt_arm649I2SDriver31convert_dsp_format_to_hw_formatEPN6kernel5audio11AudioBufferERKNS2_3hal3i2s6FormatE
-                0x0000000040008898      0x130 hal_qemu_arm64.o
-                0x0000000040008898                hal::qemu_virt_arm64::I2SDriver::convert_dsp_format_to_hw_format(kernel::audio::AudioBuffer*, kernel::hal::i2s::Format const&)
+                0x0000000040008858      0x130 hal_qemu_arm64.o
+                0x0000000040008858                hal::qemu_virt_arm64::I2SDriver::convert_dsp_format_to_hw_format(kernel::audio::AudioBuffer*, kernel::hal::i2s::Format const&)
  .text._ZN3hal15qemu_virt_arm649MemoryOps17flush_cache_rangeEPKvm
-                0x00000000400089c8       0x94 hal_qemu_arm64.o
-                0x00000000400089c8                hal::qemu_virt_arm64::MemoryOps::flush_cache_range(void const*, unsigned long)
+                0x0000000040008988       0x94 hal_qemu_arm64.o
+                0x0000000040008988                hal::qemu_virt_arm64::MemoryOps::flush_cache_range(void const*, unsigned long)
  .text._ZN3hal15qemu_virt_arm649MemoryOps22invalidate_cache_rangeEPKvm
-                0x0000000040008a5c       0x94 hal_qemu_arm64.o
-                0x0000000040008a5c                hal::qemu_virt_arm64::MemoryOps::invalidate_cache_range(void const*, unsigned long)
+                0x0000000040008a1c       0x94 hal_qemu_arm64.o
+                0x0000000040008a1c                hal::qemu_virt_arm64::MemoryOps::invalidate_cache_range(void const*, unsigned long)
  .text._ZN3hal15qemu_virt_arm6413NetworkDriver14init_interfaceEi
-                0x0000000040008af0       0x24 hal_qemu_arm64.o
-                0x0000000040008af0                hal::qemu_virt_arm64::NetworkDriver::init_interface(int)
+                0x0000000040008ab0       0x24 hal_qemu_arm64.o
+                0x0000000040008ab0                hal::qemu_virt_arm64::NetworkDriver::init_interface(int)
  .text._ZN3hal15qemu_virt_arm6413NetworkDriver11send_packetEiPKhm
-                0x0000000040008b14       0x44 hal_qemu_arm64.o
-                0x0000000040008b14                hal::qemu_virt_arm64::NetworkDriver::send_packet(int, unsigned char const*, unsigned long)
+                0x0000000040008ad4       0x44 hal_qemu_arm64.o
+                0x0000000040008ad4                hal::qemu_virt_arm64::NetworkDriver::send_packet(int, unsigned char const*, unsigned long)
  .text._ZN3hal15qemu_virt_arm6413NetworkDriver24register_packet_receiverEPFviPKhmPvES4_
-                0x0000000040008b58       0x34 hal_qemu_arm64.o
-                0x0000000040008b58                hal::qemu_virt_arm64::NetworkDriver::register_packet_receiver(void (*)(int, unsigned char const*, unsigned long, void*), void*)
+                0x0000000040008b18       0x34 hal_qemu_arm64.o
+                0x0000000040008b18                hal::qemu_virt_arm64::NetworkDriver::register_packet_receiver(void (*)(int, unsigned char const*, unsigned long, void*), void*)
  .text._ZN3hal15qemu_virt_arm648PowerOps16enter_idle_stateEj
-                0x0000000040008b8c       0x1c hal_qemu_arm64.o
-                0x0000000040008b8c                hal::qemu_virt_arm64::PowerOps::enter_idle_state(unsigned int)
+                0x0000000040008b4c       0x1c hal_qemu_arm64.o
+                0x0000000040008b4c                hal::qemu_virt_arm64::PowerOps::enter_idle_state(unsigned int)
  .text._ZN3hal15qemu_virt_arm648PowerOps17set_cpu_frequencyEjj
-                0x0000000040008ba8       0x1c hal_qemu_arm64.o
-                0x0000000040008ba8                hal::qemu_virt_arm64::PowerOps::set_cpu_frequency(unsigned int, unsigned int)
+                0x0000000040008b68       0x1c hal_qemu_arm64.o
+                0x0000000040008b68                hal::qemu_virt_arm64::PowerOps::set_cpu_frequency(unsigned int, unsigned int)
  .text._ZN3hal15qemu_virt_arm6410GPIODriver9init_bankEj
-                0x0000000040008bc4       0x18 hal_qemu_arm64.o
-                0x0000000040008bc4                hal::qemu_virt_arm64::GPIODriver::init_bank(unsigned int)
+                0x0000000040008b84       0x18 hal_qemu_arm64.o
+                0x0000000040008b84                hal::qemu_virt_arm64::GPIODriver::init_bank(unsigned int)
  .text._ZN3hal15qemu_virt_arm6410GPIODriver13configure_pinEjjN6kernel3hal4gpio7PinModeE
-                0x0000000040008bdc       0x20 hal_qemu_arm64.o
-                0x0000000040008bdc                hal::qemu_virt_arm64::GPIODriver::configure_pin(unsigned int, unsigned int, kernel::hal::gpio::PinMode)
+                0x0000000040008b9c       0x20 hal_qemu_arm64.o
+                0x0000000040008b9c                hal::qemu_virt_arm64::GPIODriver::configure_pin(unsigned int, unsigned int, kernel::hal::gpio::PinMode)
  .text._ZN3hal15qemu_virt_arm6410GPIODriver13set_pin_stateEjjN6kernel3hal4gpio8PinStateE
-                0x0000000040008bfc       0x20 hal_qemu_arm64.o
-                0x0000000040008bfc                hal::qemu_virt_arm64::GPIODriver::set_pin_state(unsigned int, unsigned int, kernel::hal::gpio::PinState)
+                0x0000000040008bbc       0x20 hal_qemu_arm64.o
+                0x0000000040008bbc                hal::qemu_virt_arm64::GPIODriver::set_pin_state(unsigned int, unsigned int, kernel::hal::gpio::PinState)
  .text._ZN3hal15qemu_virt_arm6410GPIODriver14read_pin_stateEjj
-                0x0000000040008c1c       0x1c hal_qemu_arm64.o
-                0x0000000040008c1c                hal::qemu_virt_arm64::GPIODriver::read_pin_state(unsigned int, unsigned int)
+                0x0000000040008bdc       0x1c hal_qemu_arm64.o
+                0x0000000040008bdc                hal::qemu_virt_arm64::GPIODriver::read_pin_state(unsigned int, unsigned int)
  .text._ZN3hal15qemu_virt_arm6410GPIODriver16enable_interruptEjjb
-                0x0000000040008c38       0x20 hal_qemu_arm64.o
-                0x0000000040008c38                hal::qemu_virt_arm64::GPIODriver::enable_interrupt(unsigned int, unsigned int, bool)
+                0x0000000040008bf8       0x20 hal_qemu_arm64.o
+                0x0000000040008bf8                hal::qemu_virt_arm64::GPIODriver::enable_interrupt(unsigned int, unsigned int, bool)
  .text._ZN3hal15qemu_virt_arm6414WatchdogDriver14start_watchdogEj
-                0x0000000040008c58       0x6c hal_qemu_arm64.o
-                0x0000000040008c58                hal::qemu_virt_arm64::WatchdogDriver::start_watchdog(unsigned int)
+                0x0000000040008c18       0x6c hal_qemu_arm64.o
+                0x0000000040008c18                hal::qemu_virt_arm64::WatchdogDriver::start_watchdog(unsigned int)
  .text._ZN3hal15qemu_virt_arm6414WatchdogDriver14reset_watchdogEv
-                0x0000000040008cc4       0x60 hal_qemu_arm64.o
-                0x0000000040008cc4                hal::qemu_virt_arm64::WatchdogDriver::reset_watchdog()
+                0x0000000040008c84       0x60 hal_qemu_arm64.o
+                0x0000000040008c84                hal::qemu_virt_arm64::WatchdogDriver::reset_watchdog()
  .text._ZN3hal15qemu_virt_arm6414WatchdogDriver13stop_watchdogEv
-                0x0000000040008d24       0x28 hal_qemu_arm64.o
-                0x0000000040008d24                hal::qemu_virt_arm64::WatchdogDriver::stop_watchdog()
+                0x0000000040008ce4       0x28 hal_qemu_arm64.o
+                0x0000000040008ce4                hal::qemu_virt_arm64::WatchdogDriver::stop_watchdog()
  .text._ZN6kernel3hal8PlatformC2Ev
-                0x0000000040008d4c       0x24 hal_qemu_arm64.o
-                0x0000000040008d4c                kernel::hal::Platform::Platform()
-                0x0000000040008d4c                kernel::hal::Platform::Platform()
+                0x0000000040008d0c       0x24 hal_qemu_arm64.o
+                0x0000000040008d0c                kernel::hal::Platform::Platform()
+                0x0000000040008d0c                kernel::hal::Platform::Platform()
  .text._ZN6kernel3hal8PlatformD2Ev
-                0x0000000040008d70       0x24 hal_qemu_arm64.o
-                0x0000000040008d70                kernel::hal::Platform::~Platform()
-                0x0000000040008d70                kernel::hal::Platform::~Platform()
+                0x0000000040008d30       0x24 hal_qemu_arm64.o
+                0x0000000040008d30                kernel::hal::Platform::~Platform()
+                0x0000000040008d30                kernel::hal::Platform::~Platform()
  .text._ZN6kernel3hal8PlatformD0Ev
-                0x0000000040008d94       0x28 hal_qemu_arm64.o
-                0x0000000040008d94                kernel::hal::Platform::~Platform()
+                0x0000000040008d54       0x28 hal_qemu_arm64.o
+                0x0000000040008d54                kernel::hal::Platform::~Platform()
  .text._ZN3hal15qemu_virt_arm6410UARTDriverD2Ev
-                0x0000000040008dbc       0x30 hal_qemu_arm64.o
-                0x0000000040008dbc                hal::qemu_virt_arm64::UARTDriver::~UARTDriver()
-                0x0000000040008dbc                hal::qemu_virt_arm64::UARTDriver::~UARTDriver()
+                0x0000000040008d7c       0x30 hal_qemu_arm64.o
+                0x0000000040008d7c                hal::qemu_virt_arm64::UARTDriver::~UARTDriver()
+                0x0000000040008d7c                hal::qemu_virt_arm64::UARTDriver::~UARTDriver()
  .text._ZN3hal15qemu_virt_arm6410UARTDriverD0Ev
-                0x0000000040008dec       0x28 hal_qemu_arm64.o
-                0x0000000040008dec                hal::qemu_virt_arm64::UARTDriver::~UARTDriver()
+                0x0000000040008dac       0x28 hal_qemu_arm64.o
+                0x0000000040008dac                hal::qemu_virt_arm64::UARTDriver::~UARTDriver()
  .text._ZN3hal15qemu_virt_arm6413IRQControllerD2Ev
-                0x0000000040008e14       0x30 hal_qemu_arm64.o
-                0x0000000040008e14                hal::qemu_virt_arm64::IRQController::~IRQController()
-                0x0000000040008e14                hal::qemu_virt_arm64::IRQController::~IRQController()
+                0x0000000040008dd4       0x30 hal_qemu_arm64.o
+                0x0000000040008dd4                hal::qemu_virt_arm64::IRQController::~IRQController()
+                0x0000000040008dd4                hal::qemu_virt_arm64::IRQController::~IRQController()
  .text._ZN3hal15qemu_virt_arm6413IRQControllerD0Ev
-                0x0000000040008e44       0x28 hal_qemu_arm64.o
-                0x0000000040008e44                hal::qemu_virt_arm64::IRQController::~IRQController()
+                0x0000000040008e04       0x28 hal_qemu_arm64.o
+                0x0000000040008e04                hal::qemu_virt_arm64::IRQController::~IRQController()
  .text._ZN3hal15qemu_virt_arm6411TimerDriverD2Ev
-                0x0000000040008e6c       0x30 hal_qemu_arm64.o
-                0x0000000040008e6c                hal::qemu_virt_arm64::TimerDriver::~TimerDriver()
-                0x0000000040008e6c                hal::qemu_virt_arm64::TimerDriver::~TimerDriver()
+                0x0000000040008e2c       0x30 hal_qemu_arm64.o
+                0x0000000040008e2c                hal::qemu_virt_arm64::TimerDriver::~TimerDriver()
+                0x0000000040008e2c                hal::qemu_virt_arm64::TimerDriver::~TimerDriver()
  .text._ZN3hal15qemu_virt_arm6411TimerDriverD0Ev
-                0x0000000040008e9c       0x28 hal_qemu_arm64.o
-                0x0000000040008e9c                hal::qemu_virt_arm64::TimerDriver::~TimerDriver()
+                0x0000000040008e5c       0x28 hal_qemu_arm64.o
+                0x0000000040008e5c                hal::qemu_virt_arm64::TimerDriver::~TimerDriver()
  .text._ZN3hal15qemu_virt_arm6413DMAControllerD2Ev
-                0x0000000040008ec4       0x30 hal_qemu_arm64.o
-                0x0000000040008ec4                hal::qemu_virt_arm64::DMAController::~DMAController()
-                0x0000000040008ec4                hal::qemu_virt_arm64::DMAController::~DMAController()
+                0x0000000040008e84       0x30 hal_qemu_arm64.o
+                0x0000000040008e84                hal::qemu_virt_arm64::DMAController::~DMAController()
+                0x0000000040008e84                hal::qemu_virt_arm64::DMAController::~DMAController()
  .text._ZN3hal15qemu_virt_arm6413DMAControllerD0Ev
-                0x0000000040008ef4       0x28 hal_qemu_arm64.o
-                0x0000000040008ef4                hal::qemu_virt_arm64::DMAController::~DMAController()
+                0x0000000040008eb4       0x28 hal_qemu_arm64.o
+                0x0000000040008eb4                hal::qemu_virt_arm64::DMAController::~DMAController()
  .text._ZN3hal15qemu_virt_arm649I2SDriverD2Ev
-                0x0000000040008f1c       0x30 hal_qemu_arm64.o
-                0x0000000040008f1c                hal::qemu_virt_arm64::I2SDriver::~I2SDriver()
-                0x0000000040008f1c                hal::qemu_virt_arm64::I2SDriver::~I2SDriver()
+                0x0000000040008edc       0x30 hal_qemu_arm64.o
+                0x0000000040008edc                hal::qemu_virt_arm64::I2SDriver::~I2SDriver()
+                0x0000000040008edc                hal::qemu_virt_arm64::I2SDriver::~I2SDriver()
  .text._ZN3hal15qemu_virt_arm649I2SDriverD0Ev
-                0x0000000040008f4c       0x28 hal_qemu_arm64.o
-                0x0000000040008f4c                hal::qemu_virt_arm64::I2SDriver::~I2SDriver()
+                0x0000000040008f0c       0x28 hal_qemu_arm64.o
+                0x0000000040008f0c                hal::qemu_virt_arm64::I2SDriver::~I2SDriver()
  .text._ZN3hal15qemu_virt_arm649MemoryOpsD2Ev
-                0x0000000040008f74       0x30 hal_qemu_arm64.o
-                0x0000000040008f74                hal::qemu_virt_arm64::MemoryOps::~MemoryOps()
-                0x0000000040008f74                hal::qemu_virt_arm64::MemoryOps::~MemoryOps()
+                0x0000000040008f34       0x30 hal_qemu_arm64.o
+                0x0000000040008f34                hal::qemu_virt_arm64::MemoryOps::~MemoryOps()
+                0x0000000040008f34                hal::qemu_virt_arm64::MemoryOps::~MemoryOps()
  .text._ZN3hal15qemu_virt_arm649MemoryOpsD0Ev
-                0x0000000040008fa4       0x28 hal_qemu_arm64.o
-                0x0000000040008fa4                hal::qemu_virt_arm64::MemoryOps::~MemoryOps()
+                0x0000000040008f64       0x28 hal_qemu_arm64.o
+                0x0000000040008f64                hal::qemu_virt_arm64::MemoryOps::~MemoryOps()
  .text._ZN3hal15qemu_virt_arm6413NetworkDriverD2Ev
-                0x0000000040008fcc       0x30 hal_qemu_arm64.o
-                0x0000000040008fcc                hal::qemu_virt_arm64::NetworkDriver::~NetworkDriver()
-                0x0000000040008fcc                hal::qemu_virt_arm64::NetworkDriver::~NetworkDriver()
+                0x0000000040008f8c       0x30 hal_qemu_arm64.o
+                0x0000000040008f8c                hal::qemu_virt_arm64::NetworkDriver::~NetworkDriver()
+                0x0000000040008f8c                hal::qemu_virt_arm64::NetworkDriver::~NetworkDriver()
  .text._ZN3hal15qemu_virt_arm6413NetworkDriverD0Ev
-                0x0000000040008ffc       0x28 hal_qemu_arm64.o
-                0x0000000040008ffc                hal::qemu_virt_arm64::NetworkDriver::~NetworkDriver()
+                0x0000000040008fbc       0x28 hal_qemu_arm64.o
+                0x0000000040008fbc                hal::qemu_virt_arm64::NetworkDriver::~NetworkDriver()
  .text._ZN3hal15qemu_virt_arm648PowerOpsD2Ev
-                0x0000000040009024       0x30 hal_qemu_arm64.o
-                0x0000000040009024                hal::qemu_virt_arm64::PowerOps::~PowerOps()
-                0x0000000040009024                hal::qemu_virt_arm64::PowerOps::~PowerOps()
+                0x0000000040008fe4       0x30 hal_qemu_arm64.o
+                0x0000000040008fe4                hal::qemu_virt_arm64::PowerOps::~PowerOps()
+                0x0000000040008fe4                hal::qemu_virt_arm64::PowerOps::~PowerOps()
  .text._ZN3hal15qemu_virt_arm648PowerOpsD0Ev
-                0x0000000040009054       0x28 hal_qemu_arm64.o
-                0x0000000040009054                hal::qemu_virt_arm64::PowerOps::~PowerOps()
+                0x0000000040009014       0x28 hal_qemu_arm64.o
+                0x0000000040009014                hal::qemu_virt_arm64::PowerOps::~PowerOps()
  .text._ZN3hal15qemu_virt_arm6410GPIODriverD2Ev
-                0x000000004000907c       0x30 hal_qemu_arm64.o
-                0x000000004000907c                hal::qemu_virt_arm64::GPIODriver::~GPIODriver()
-                0x000000004000907c                hal::qemu_virt_arm64::GPIODriver::~GPIODriver()
+                0x000000004000903c       0x30 hal_qemu_arm64.o
+                0x000000004000903c                hal::qemu_virt_arm64::GPIODriver::~GPIODriver()
+                0x000000004000903c                hal::qemu_virt_arm64::GPIODriver::~GPIODriver()
  .text._ZN3hal15qemu_virt_arm6410GPIODriverD0Ev
-                0x00000000400090ac       0x28 hal_qemu_arm64.o
-                0x00000000400090ac                hal::qemu_virt_arm64::GPIODriver::~GPIODriver()
+                0x000000004000906c       0x28 hal_qemu_arm64.o
+                0x000000004000906c                hal::qemu_virt_arm64::GPIODriver::~GPIODriver()
  .text._ZN3hal15qemu_virt_arm6414WatchdogDriverD2Ev
-                0x00000000400090d4       0x30 hal_qemu_arm64.o
-                0x00000000400090d4                hal::qemu_virt_arm64::WatchdogDriver::~WatchdogDriver()
-                0x00000000400090d4                hal::qemu_virt_arm64::WatchdogDriver::~WatchdogDriver()
+                0x0000000040009094       0x30 hal_qemu_arm64.o
+                0x0000000040009094                hal::qemu_virt_arm64::WatchdogDriver::~WatchdogDriver()
+                0x0000000040009094                hal::qemu_virt_arm64::WatchdogDriver::~WatchdogDriver()
  .text._ZN3hal15qemu_virt_arm6414WatchdogDriverD0Ev
-                0x0000000040009104       0x28 hal_qemu_arm64.o
-                0x0000000040009104                hal::qemu_virt_arm64::WatchdogDriver::~WatchdogDriver()
+                0x00000000400090c4       0x28 hal_qemu_arm64.o
+                0x00000000400090c4                hal::qemu_virt_arm64::WatchdogDriver::~WatchdogDriver()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM64C2Ev
-                0x000000004000912c      0x18c hal_qemu_arm64.o
-                0x000000004000912c                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::PlatformQEMUVirtARM64()
-                0x000000004000912c                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::PlatformQEMUVirtARM64()
+                0x00000000400090ec      0x18c hal_qemu_arm64.o
+                0x00000000400090ec                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::PlatformQEMUVirtARM64()
+                0x00000000400090ec                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::PlatformQEMUVirtARM64()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM64D2Ev
-                0x00000000400092b8       0xb4 hal_qemu_arm64.o
-                0x00000000400092b8                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::~PlatformQEMUVirtARM64()
-                0x00000000400092b8                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::~PlatformQEMUVirtARM64()
+                0x0000000040009278       0xb4 hal_qemu_arm64.o
+                0x0000000040009278                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::~PlatformQEMUVirtARM64()
+                0x0000000040009278                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::~PlatformQEMUVirtARM64()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM64D0Ev
-                0x000000004000936c       0x28 hal_qemu_arm64.o
-                0x000000004000936c                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::~PlatformQEMUVirtARM64()
+                0x000000004000932c       0x28 hal_qemu_arm64.o
+                0x000000004000932c                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::~PlatformQEMUVirtARM64()
  .text._ZNK3hal15qemu_virt_arm6421PlatformQEMUVirtARM6411get_core_idEv
-                0x0000000040009394       0x20 hal_qemu_arm64.o
-                0x0000000040009394                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_core_id() const
+                0x0000000040009354       0x20 hal_qemu_arm64.o
+                0x0000000040009354                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_core_id() const
  .text._ZNK3hal15qemu_virt_arm6421PlatformQEMUVirtARM6413get_num_coresEv
-                0x00000000400093b4       0x14 hal_qemu_arm64.o
-                0x00000000400093b4                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_num_cores() const
+                0x0000000040009374       0x14 hal_qemu_arm64.o
+                0x0000000040009374                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::get_num_cores() const
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6419early_init_platformEv
-                0x00000000400093c8      0x13c hal_qemu_arm64.o
-                0x00000000400093c8                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::early_init_platform()
+                0x0000000040009388      0x13c hal_qemu_arm64.o
+                0x0000000040009388                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::early_init_platform()
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6415early_init_coreEj
-                0x0000000040009504      0x144 hal_qemu_arm64.o
-                0x0000000040009504                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::early_init_core(unsigned int)
+                0x00000000400094c4      0x144 hal_qemu_arm64.o
+                0x00000000400094c4                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::early_init_core(unsigned int)
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM645panicEPKcS3_i
-                0x0000000040009648       0xb8 hal_qemu_arm64.o
-                0x0000000040009648                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::panic(char const*, char const*, int)
+                0x0000000040009608       0xb8 hal_qemu_arm64.o
+                0x0000000040009608                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::panic(char const*, char const*, int)
  .text._ZN3hal15qemu_virt_arm6421PlatformQEMUVirtARM6413reboot_systemEv
-                0x0000000040009700       0x44 hal_qemu_arm64.o
-                0x0000000040009700                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::reboot_system()
+                0x00000000400096c0       0x44 hal_qemu_arm64.o
+                0x00000000400096c0                hal::qemu_virt_arm64::PlatformQEMUVirtARM64::reboot_system()
  .text._ZN3hal12get_platformEv
-                0x0000000040009744       0x5c hal_qemu_arm64.o
-                0x0000000040009744                hal::get_platform()
+                0x0000000040009704       0x5c hal_qemu_arm64.o
+                0x0000000040009704                hal::get_platform()
  .text._ZNSt5arrayIbLm8EE4fillERKb
-                0x00000000400097a0       0x44 hal_qemu_arm64.o
-                0x00000000400097a0                std::array<bool, 8ul>::fill(bool const&)
+                0x0000000040009760       0x44 hal_qemu_arm64.o
+                0x0000000040009760                std::array<bool, 8ul>::fill(bool const&)
  .text._ZNSt5arrayIbLm8EEixEm
-                0x00000000400097e4       0x20 hal_qemu_arm64.o
-                0x00000000400097e4                std::array<bool, 8ul>::operator[](unsigned long)
+                0x00000000400097a4       0x20 hal_qemu_arm64.o
+                0x00000000400097a4                std::array<bool, 8ul>::operator[](unsigned long)
  .text._ZNSt5arrayIN3hal15qemu_virt_arm649I2SDriver15I2SInstanceDataELm2EEixEm
-                0x0000000040009804       0x24 hal_qemu_arm64.o
-                0x0000000040009804                std::array<hal::qemu_virt_arm64::I2SDriver::I2SInstanceData, 2ul>::operator[](unsigned long)
+                0x00000000400097c4       0x24 hal_qemu_arm64.o
+                0x00000000400097c4                std::array<hal::qemu_virt_arm64::I2SDriver::I2SInstanceData, 2ul>::operator[](unsigned long)
  .text._ZN6kernel4util3minIfEERKT_S4_S4_
-                0x0000000040009828       0x3c hal_qemu_arm64.o
-                0x0000000040009828                float const& kernel::util::min<float>(float const&, float const&)
+                0x00000000400097e8       0x3c hal_qemu_arm64.o
+                0x00000000400097e8                float const& kernel::util::min<float>(float const&, float const&)
  .text._ZN6kernel4util3maxIfEERKT_S4_S4_
-                0x0000000040009864       0x3c hal_qemu_arm64.o
-                0x0000000040009864                float const& kernel::util::max<float>(float const&, float const&)
+                0x0000000040009824       0x3c hal_qemu_arm64.o
+                0x0000000040009824                float const& kernel::util::max<float>(float const&, float const&)
  .text._ZNSt5arrayIbLm8EE5beginEv
-                0x00000000400098a0       0x1c hal_qemu_arm64.o
-                0x00000000400098a0                std::array<bool, 8ul>::begin()
+                0x0000000040009860       0x1c hal_qemu_arm64.o
+                0x0000000040009860                std::array<bool, 8ul>::begin()
  .text._ZSt6fill_nIPbmbET_S1_T0_RKT1_
-                0x00000000400098bc       0x48 hal_qemu_arm64.o
-                0x00000000400098bc                bool* std::fill_n<bool*, unsigned long, bool>(bool*, unsigned long, bool const&)
+                0x000000004000987c       0x48 hal_qemu_arm64.o
+                0x000000004000987c                bool* std::fill_n<bool*, unsigned long, bool>(bool*, unsigned long, bool const&)
  .text._ZSt10__fill_n_aIPbmbET_S1_T0_RKT1_St26random_access_iterator_tag
-                0x0000000040009904       0x5c hal_qemu_arm64.o
-                0x0000000040009904                bool* std::__fill_n_a<bool*, unsigned long, bool>(bool*, unsigned long, bool const&, std::random_access_iterator_tag)
+                0x00000000400098c4       0x5c hal_qemu_arm64.o
+                0x00000000400098c4                bool* std::__fill_n_a<bool*, unsigned long, bool>(bool*, unsigned long, bool const&, std::random_access_iterator_tag)
  .text._ZSt8__fill_aIPbbEvT_S1_RKT0_
-                0x0000000040009960       0x30 hal_qemu_arm64.o
-                0x0000000040009960                void std::__fill_a<bool*, bool>(bool*, bool*, bool const&)
+                0x0000000040009920       0x30 hal_qemu_arm64.o
+                0x0000000040009920                void std::__fill_a<bool*, bool>(bool*, bool*, bool const&)
  .text._ZSt9__fill_a1IPbbEN9__gnu_cxx11__enable_ifIXsrSt11__is_scalarIT0_E7__valueEvE6__typeET_S8_RKS4_
-                0x0000000040009990       0x58 hal_qemu_arm64.o
-                0x0000000040009990                __gnu_cxx::__enable_if<std::__is_scalar<bool>::__value, void>::__type std::__fill_a1<bool*, bool>(bool*, bool*, bool const&)
+                0x0000000040009950       0x58 hal_qemu_arm64.o
+                0x0000000040009950                __gnu_cxx::__enable_if<std::__is_scalar<bool>::__value, void>::__type std::__fill_a1<bool*, bool>(bool*, bool*, bool const&)
  .text._Z41__static_initialization_and_destruction_0v
-                0x00000000400099e8       0x3c hal_qemu_arm64.o
+                0x00000000400099a8       0x3c hal_qemu_arm64.o
  .text._GLOBAL__sub_I__ZN3hal15qemu_virt_arm6419g_platform_instanceE
-                0x0000000040009a24       0x14 hal_qemu_arm64.o
- .text          0x0000000040009a38        0x0 cpp_runtime_stubs.o
+                0x00000000400099e4       0x14 hal_qemu_arm64.o
+ .text          0x00000000400099f8        0x0 cpp_runtime_stubs.o
  .text._ZL15basic_halt_loopv
-                0x0000000040009a38        0x8 cpp_runtime_stubs.o
+                0x00000000400099f8        0x8 cpp_runtime_stubs.o
  .text._ZL14heap_panic_oomv
-                0x0000000040009a40       0xa8 cpp_runtime_stubs.o
+                0x0000000040009a00       0xa8 cpp_runtime_stubs.o
  .text._ZSt9terminatev
-                0x0000000040009ae8       0xac cpp_runtime_stubs.o
-                0x0000000040009ae8                std::terminate()
+                0x0000000040009aa8       0xac cpp_runtime_stubs.o
+                0x0000000040009aa8                std::terminate()
  .text._ZSt24__throw_out_of_range_fmtPKcz
-                0x0000000040009b94       0xec cpp_runtime_stubs.o
-                0x0000000040009b94                std::__throw_out_of_range_fmt(char const*, ...)
+                0x0000000040009b54       0xec cpp_runtime_stubs.o
+                0x0000000040009b54                std::__throw_out_of_range_fmt(char const*, ...)
  .text.__gxx_personality_v0
-                0x0000000040009c80        0x8 cpp_runtime_stubs.o
-                0x0000000040009c80                __gxx_personality_v0
+                0x0000000040009c40        0x8 cpp_runtime_stubs.o
+                0x0000000040009c40                __gxx_personality_v0
  .text.__cxa_deleted_virtual
-                0x0000000040009c88        0x8 cpp_runtime_stubs.o
-                0x0000000040009c88                __cxa_deleted_virtual
+                0x0000000040009c48        0x8 cpp_runtime_stubs.o
+                0x0000000040009c48                __cxa_deleted_virtual
  .text.__getauxval
-                0x0000000040009c90       0x14 cpp_runtime_stubs.o
-                0x0000000040009c90                __getauxval
- .text._Znwm    0x0000000040009ca4       0xac cpp_runtime_stubs.o
-                0x0000000040009ca4                operator new(unsigned long)
- .text._Znam    0x0000000040009d50       0x1c cpp_runtime_stubs.o
-                0x0000000040009d50                operator new[](unsigned long)
+                0x0000000040009c50       0x14 cpp_runtime_stubs.o
+                0x0000000040009c50                __getauxval
+ .text._Znwm    0x0000000040009c64       0xac cpp_runtime_stubs.o
+                0x0000000040009c64                operator new(unsigned long)
+ .text._Znam    0x0000000040009d10       0x1c cpp_runtime_stubs.o
+                0x0000000040009d10                operator new[](unsigned long)
  .text._ZnwmRKSt9nothrow_t
-                0x0000000040009d6c       0xb4 cpp_runtime_stubs.o
-                0x0000000040009d6c                operator new(unsigned long, std::nothrow_t const&)
+                0x0000000040009d2c       0xb4 cpp_runtime_stubs.o
+                0x0000000040009d2c                operator new(unsigned long, std::nothrow_t const&)
  .text._ZnamRKSt9nothrow_t
-                0x0000000040009e20       0x28 cpp_runtime_stubs.o
-                0x0000000040009e20                operator new[](unsigned long, std::nothrow_t const&)
- .text._ZdlPv   0x0000000040009e48       0x14 cpp_runtime_stubs.o
-                0x0000000040009e48                operator delete(void*)
- .text._ZdaPv   0x0000000040009e5c       0x14 cpp_runtime_stubs.o
-                0x0000000040009e5c                operator delete[](void*)
- .text._ZdlPvm  0x0000000040009e70       0x18 cpp_runtime_stubs.o
-                0x0000000040009e70                operator delete(void*, unsigned long)
- .text._ZdaPvm  0x0000000040009e88       0x18 cpp_runtime_stubs.o
-                0x0000000040009e88                operator delete[](void*, unsigned long)
+                0x0000000040009de0       0x28 cpp_runtime_stubs.o
+                0x0000000040009de0                operator new[](unsigned long, std::nothrow_t const&)
+ .text._ZdlPv   0x0000000040009e08       0x14 cpp_runtime_stubs.o
+                0x0000000040009e08                operator delete(void*)
+ .text._ZdaPv   0x0000000040009e1c       0x14 cpp_runtime_stubs.o
+                0x0000000040009e1c                operator delete[](void*)
+ .text._ZdlPvm  0x0000000040009e30       0x18 cpp_runtime_stubs.o
+                0x0000000040009e30                operator delete(void*, unsigned long)
+ .text._ZdaPvm  0x0000000040009e48       0x18 cpp_runtime_stubs.o
+                0x0000000040009e48                operator delete[](void*, unsigned long)
  .text.__cxa_pure_virtual
-                0x0000000040009ea0       0xa8 cpp_runtime_stubs.o
-                0x0000000040009ea0                __cxa_pure_virtual
+                0x0000000040009e60       0xa8 cpp_runtime_stubs.o
+                0x0000000040009e60                __cxa_pure_virtual
  .text.__cxa_atexit
-                0x0000000040009f48       0x1c cpp_runtime_stubs.o
-                0x0000000040009f48                __cxa_atexit
+                0x0000000040009f08       0x1c cpp_runtime_stubs.o
+                0x0000000040009f08                __cxa_atexit
  .text.__cxa_guard_acquire
-                0x0000000040009f64       0x6c cpp_runtime_stubs.o
-                0x0000000040009f64                __cxa_guard_acquire
+                0x0000000040009f24       0x6c cpp_runtime_stubs.o
+                0x0000000040009f24                __cxa_guard_acquire
  .text.__cxa_guard_release
-                0x0000000040009fd0       0x3c cpp_runtime_stubs.o
-                0x0000000040009fd0                __cxa_guard_release
+                0x0000000040009f90       0x3c cpp_runtime_stubs.o
+                0x0000000040009f90                __cxa_guard_release
  .text.__cxa_guard_abort
-                0x000000004000a00c       0x14 cpp_runtime_stubs.o
-                0x000000004000a00c                __cxa_guard_abort
+                0x0000000040009fcc       0x14 cpp_runtime_stubs.o
+                0x0000000040009fcc                __cxa_guard_abort
  .text._Unwind_Resume
-                0x000000004000a020       0xa8 cpp_runtime_stubs.o
-                0x000000004000a020                _Unwind_Resume
+                0x0000000040009fe0       0xa8 cpp_runtime_stubs.o
+                0x0000000040009fe0                _Unwind_Resume
  .text._Z41__static_initialization_and_destruction_0v
-                0x000000004000a0c8       0x2c cpp_runtime_stubs.o
+                0x000000004000a088       0x2c cpp_runtime_stubs.o
  .text._GLOBAL__sub_I___dso_handle
-                0x000000004000a0f4       0x14 cpp_runtime_stubs.o
- .text          0x000000004000a108        0x0 freestanding_stubs.o
- .text.memcpy   0x000000004000a108       0x70 freestanding_stubs.o
-                0x000000004000a108                memcpy
- .text.memset   0x000000004000a178       0x64 freestanding_stubs.o
-                0x000000004000a178                memset
- .text.memcmp   0x000000004000a1dc       0xb0 freestanding_stubs.o
-                0x000000004000a1dc                memcmp
- .text.memchr   0x000000004000a28c       0x7c freestanding_stubs.o
-                0x000000004000a28c                memchr
- .text.strlen   0x000000004000a308       0x54 freestanding_stubs.o
-                0x000000004000a308                strlen
- .text.strcpy   0x000000004000a35c       0x84 freestanding_stubs.o
-                0x000000004000a35c                strcpy
- .text.strncpy  0x000000004000a3e0       0xd0 freestanding_stubs.o
-                0x000000004000a3e0                strncpy
- .text.strcmp   0x000000004000a4b0       0xb4 freestanding_stubs.o
-                0x000000004000a4b0                strcmp
- .text.strncmp  0x000000004000a564      0x150 freestanding_stubs.o
-                0x000000004000a564                strncmp
+                0x000000004000a0b4       0x14 cpp_runtime_stubs.o
+ .text          0x000000004000a0c8        0x0 freestanding_stubs.o
+ .text.memcpy   0x000000004000a0c8       0x70 freestanding_stubs.o
+                0x000000004000a0c8                memcpy
+ .text.memset   0x000000004000a138       0x64 freestanding_stubs.o
+                0x000000004000a138                memset
+ .text.memcmp   0x000000004000a19c       0xb0 freestanding_stubs.o
+                0x000000004000a19c                memcmp
+ .text.memchr   0x000000004000a24c       0x7c freestanding_stubs.o
+                0x000000004000a24c                memchr
+ .text.strlen   0x000000004000a2c8       0x54 freestanding_stubs.o
+                0x000000004000a2c8                strlen
+ .text.strcpy   0x000000004000a31c       0x84 freestanding_stubs.o
+                0x000000004000a31c                strcpy
+ .text.strncpy  0x000000004000a3a0       0xd0 freestanding_stubs.o
+                0x000000004000a3a0                strncpy
+ .text.strcmp   0x000000004000a470       0xb4 freestanding_stubs.o
+                0x000000004000a470                strcmp
+ .text.strncmp  0x000000004000a524      0x150 freestanding_stubs.o
+                0x000000004000a524                strncmp
+ .text.early_uart_init
+                0x000000004000a674       0x74 freestanding_stubs.o
+                0x000000004000a674                early_uart_init
  .text.early_uart_puts
-                0x000000004000a6b4       0xc4 freestanding_stubs.o
-                0x000000004000a6b4                early_uart_puts
+                0x000000004000a6e8       0xc4 freestanding_stubs.o
+                0x000000004000a6e8                early_uart_puts
  .text.__aarch64_cas1_acq
-                0x000000004000a778       0x50 freestanding_stubs.o
-                0x000000004000a778                __aarch64_cas1_acq
+                0x000000004000a7ac       0x50 freestanding_stubs.o
+                0x000000004000a7ac                __aarch64_cas1_acq
  .text.__aarch64_ldadd8_relax
-                0x000000004000a7c8       0x48 freestanding_stubs.o
-                0x000000004000a7c8                __aarch64_ldadd8_relax
+                0x000000004000a7fc       0x48 freestanding_stubs.o
+                0x000000004000a7fc                __aarch64_ldadd8_relax
  .text.__aarch64_swp1_rel
-                0x000000004000a810       0x40 freestanding_stubs.o
-                0x000000004000a810                __aarch64_swp1_rel
- .text          0x000000004000a850       0x34 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(cas_1_4.o)
-                0x000000004000a850                __aarch64_cas1_acq_rel
+                0x000000004000a844       0x40 freestanding_stubs.o
+                0x000000004000a844                __aarch64_swp1_rel
  *fill*         0x000000004000a884        0xc 
- .text          0x000000004000a890       0x2c /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(swp_1_4.o)
-                0x000000004000a890                __aarch64_swp1_acq_rel
- *fill*         0x000000004000a8bc        0x4 
- .text          0x000000004000a8c0       0x30 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(ldadd_8_4.o)
-                0x000000004000a8c0                __aarch64_ldadd8_acq_rel
- .text          0x000000004000a8f0        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
- .text.startup  0x000000004000a8f0       0x2c /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
+ .text          0x000000004000a890       0x34 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(cas_1_4.o)
+                0x000000004000a890                __aarch64_cas1_acq_rel
+ *fill*         0x000000004000a8c4        0xc 
+ .text          0x000000004000a8d0       0x2c /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(swp_1_4.o)
+                0x000000004000a8d0                __aarch64_swp1_acq_rel
+ *fill*         0x000000004000a8fc        0x4 
+ .text          0x000000004000a900       0x30 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(ldadd_8_4.o)
+                0x000000004000a900                __aarch64_ldadd8_acq_rel
+ .text          0x000000004000a930        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
+ .text.startup  0x000000004000a930       0x2c /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
  *(.vectors)
- *fill*         0x000000004000a91c      0x6e4 
+ *fill*         0x000000004000a95c      0x6a4 
  .vectors       0x000000004000b000      0x800 cpu_arm64.o
                 0x000000004000b000                exception_vectors
 
 .plt            0x000000004000b800        0x0
  .plt           0x000000004000b800        0x0 core.o
 
-.rodata         0x000000004000b800     0x208c
+.rodata         0x000000004000b800     0x20a4
  *(.rodata .rodata.*)
  .rodata._ZN6kernel4coreL11MAX_THREADSE
                 0x000000004000b800        0x8 core.o
@@ -1775,373 +1775,385 @@ END GROUP
  *fill*         0x000000004000d871        0x7 
  .rodata._ZL20EARLY_UART_BASE_ADDR
                 0x000000004000d878        0x8 freestanding_stubs.o
- .rodata._ZL17EARLY_UART_FR_REG
-                0x000000004000d880        0x4 freestanding_stubs.o
  .rodata._ZL17EARLY_UART_DR_REG
+                0x000000004000d880        0x4 freestanding_stubs.o
+ .rodata._ZL17EARLY_UART_FR_REG
                 0x000000004000d884        0x4 freestanding_stubs.o
- .rodata._ZL20EARLY_UART_TXFF_FLAG
+ .rodata._ZL19EARLY_UART_IBRD_REG
                 0x000000004000d888        0x4 freestanding_stubs.o
+ .rodata._ZL19EARLY_UART_FBRD_REG
+                0x000000004000d88c        0x4 freestanding_stubs.o
+ .rodata._ZL19EARLY_UART_LCRH_REG
+                0x000000004000d890        0x4 freestanding_stubs.o
+ .rodata._ZL17EARLY_UART_CR_REG
+                0x000000004000d894        0x4 freestanding_stubs.o
+ .rodata._ZL19EARLY_UART_IMSC_REG
+                0x000000004000d898        0x4 freestanding_stubs.o
+ .rodata._ZL18EARLY_UART_ICR_REG
+                0x000000004000d89c        0x4 freestanding_stubs.o
+ .rodata._ZL20EARLY_UART_TXFF_FLAG
+                0x000000004000d8a0        0x4 freestanding_stubs.o
 
-.eh_frame       0x000000004000d890     0x2894
- .eh_frame      0x000000004000d890      0x8b0 core.o
- .eh_frame      0x000000004000e140       0xd8 hal.o
-                                        0x128 (size before relaxing)
- .eh_frame      0x000000004000e218      0x608 util.o
+.eh_frame       0x000000004000d8a8     0x286c
+ .eh_frame      0x000000004000d8a8      0x8b0 core.o
+ .eh_frame      0x000000004000e158       0x98 hal.o
+                                         0xe8 (size before relaxing)
+ .eh_frame      0x000000004000e1f0      0x608 util.o
                                         0x688 (size before relaxing)
- .eh_frame      0x000000004000e820      0x1c8 trace.o
+ .eh_frame      0x000000004000e7f8      0x1c8 trace.o
                                         0x2d0 (size before relaxing)
- .eh_frame      0x000000004000e9e8       0xb8 cli_minimal.o
+ .eh_frame      0x000000004000e9c0       0xb8 cli_minimal.o
                                          0xd0 (size before relaxing)
- .eh_frame      0x000000004000eaa0       0x58 kernel_globals.o
+ .eh_frame      0x000000004000ea78       0x58 kernel_globals.o
                                          0x70 (size before relaxing)
- .eh_frame      0x000000004000eaf8     0x1218 hal_qemu_arm64.o
+ .eh_frame      0x000000004000ead0     0x1218 hal_qemu_arm64.o
                                        0x1268 (size before relaxing)
- .eh_frame      0x000000004000fd10      0x270 cpp_runtime_stubs.o
+ .eh_frame      0x000000004000fce8      0x270 cpp_runtime_stubs.o
                                         0x2c0 (size before relaxing)
- .eh_frame      0x000000004000ff80      0x138 freestanding_stubs.o
-                                        0x150 (size before relaxing)
- .eh_frame      0x00000000400100b8       0x18 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(cas_1_4.o)
+ .eh_frame      0x000000004000ff58      0x150 freestanding_stubs.o
+                                        0x168 (size before relaxing)
+ .eh_frame      0x00000000400100a8       0x18 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(cas_1_4.o)
                                          0x28 (size before relaxing)
- .eh_frame      0x00000000400100d0       0x18 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(swp_1_4.o)
+ .eh_frame      0x00000000400100c0       0x18 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(swp_1_4.o)
                                          0x28 (size before relaxing)
- .eh_frame      0x00000000400100e8       0x18 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(ldadd_8_4.o)
+ .eh_frame      0x00000000400100d8       0x18 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(ldadd_8_4.o)
                                          0x28 (size before relaxing)
- .eh_frame      0x0000000040010100       0x24 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
+ .eh_frame      0x00000000400100f0       0x24 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
                                          0x38 (size before relaxing)
 
-.interp         0x0000000040010124       0x1b
- .interp        0x0000000040010124       0x1b core.o
+.interp         0x0000000040010114       0x1b
+ .interp        0x0000000040010114       0x1b core.o
 
 .note.gnu.build-id
-                0x0000000040010140       0x24
+                0x0000000040010130       0x24
  .note.gnu.build-id
-                0x0000000040010140       0x24 core.o
+                0x0000000040010130       0x24 core.o
 
-.gnu.version_d  0x0000000040010168        0x0
+.gnu.version_d  0x0000000040010158        0x0
  .gnu.version_d
-                0x0000000040010168        0x0 core.o
+                0x0000000040010158        0x0 core.o
 
-.gnu.version    0x0000000040010164        0x0
- .gnu.version   0x0000000040010164        0x0 core.o
+.gnu.version    0x0000000040010154        0x0
+ .gnu.version   0x0000000040010154        0x0 core.o
 
-.gnu.version_r  0x0000000040010168        0x0
+.gnu.version_r  0x0000000040010158        0x0
  .gnu.version_r
-                0x0000000040010168        0x0 core.o
+                0x0000000040010158        0x0 core.o
 
-.dynsym         0x0000000040010168       0x48
- .dynsym        0x0000000040010168       0x48 core.o
+.dynsym         0x0000000040010158       0x48
+ .dynsym        0x0000000040010158       0x48 core.o
 
-.dynstr         0x00000000400101b0        0x1
- .dynstr        0x00000000400101b0        0x1 core.o
+.dynstr         0x00000000400101a0        0x1
+ .dynstr        0x00000000400101a0        0x1 core.o
 
-.gnu.hash       0x00000000400101b8       0x1c
- .gnu.hash      0x00000000400101b8       0x1c core.o
+.gnu.hash       0x00000000400101a8       0x1c
+ .gnu.hash      0x00000000400101a8       0x1c core.o
 
-.eh_frame_hdr   0x00000000400101d4      0xb44
- .eh_frame_hdr  0x00000000400101d4      0xb44 core.o
-                0x00000000400101d4                __GNU_EH_FRAME_HDR
+.eh_frame_hdr   0x00000000400101c4      0xb3c
+ .eh_frame_hdr  0x00000000400101c4      0xb3c core.o
+                0x00000000400101c4                __GNU_EH_FRAME_HDR
 
-.rela.dyn       0x0000000040010d18      0xfd8
- .rela.got      0x0000000040010d18        0x0 core.o
- .rela.plt      0x0000000040010d18        0x0 core.o
- .rela.bss      0x0000000040010d18        0x0 core.o
+.rela.dyn       0x0000000040010d00      0xfc0
+ .rela.got      0x0000000040010d00        0x0 core.o
+ .rela.plt      0x0000000040010d00        0x0 core.o
+ .rela.bss      0x0000000040010d00        0x0 core.o
  .rela.data.rel.ro
-                0x0000000040010d18        0x0 core.o
- .rela.ifunc    0x0000000040010d18        0x0 core.o
+                0x0000000040010d00        0x0 core.o
+ .rela.ifunc    0x0000000040010d00        0x0 core.o
  .rela.rodata.kernel_g_per_cpu_data
-                0x0000000040010d18       0x18 core.o
+                0x0000000040010d00       0x18 core.o
  .rela.rodata._ZTVN6kernel4core9EDFPolicyE
-                0x0000000040010d30       0x60 core.o
+                0x0000000040010d18       0x60 core.o
  .rela.rodata._ZTVN6kernel4core15SchedulerPolicyE
-                0x0000000040010d90       0x30 core.o
+                0x0000000040010d78       0x30 core.o
  .rela.init_array
-                0x0000000040010dc0       0xa8 core.o
- .rela.text     0x0000000040010e68       0x30 core.o
+                0x0000000040010da8       0x90 core.o
+ .rela.text     0x0000000040010e38       0x30 core.o
  .rela.text.boot
-                0x0000000040010e98       0x78 core.o
+                0x0000000040010e68       0x78 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm6421PlatformQEMUVirtARM64E
-                0x0000000040010f10      0x1c8 core.o
+                0x0000000040010ee0      0x1c8 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm6414WatchdogDriverE
-                0x00000000400110d8       0x78 core.o
+                0x00000000400110a8       0x78 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm6410GPIODriverE
-                0x0000000040011150       0xa8 core.o
+                0x0000000040011120       0xa8 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm648PowerOpsE
-                0x00000000400111f8       0x60 core.o
+                0x00000000400111c8       0x60 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm6413NetworkDriverE
-                0x0000000040011258       0x78 core.o
+                0x0000000040011228       0x78 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm649MemoryOpsE
-                0x00000000400112d0       0x60 core.o
+                0x00000000400112a0       0x60 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm649I2SDriverE
-                0x0000000040011330       0xf0 core.o
+                0x0000000040011300       0xf0 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm6413DMAControllerE
-                0x0000000040011420       0x78 core.o
+                0x00000000400113f0       0x78 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm6411TimerDriverE
-                0x0000000040011498       0xd8 core.o
+                0x0000000040011468       0xd8 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm6413IRQControllerE
-                0x0000000040011570      0x108 core.o
+                0x0000000040011540      0x108 core.o
  .rela.rodata._ZTVN3hal15qemu_virt_arm6410UARTDriverE
-                0x0000000040011678       0x90 core.o
+                0x0000000040011648       0x90 core.o
  .rela.rodata._ZTVN6kernel3hal8PlatformE
-                0x0000000040011708      0x180 core.o
+                0x00000000400116d8      0x180 core.o
  .rela.rodata._ZTVN6kernel3hal11WatchdogOpsE
-                0x0000000040011888       0x48 core.o
+                0x0000000040011858       0x48 core.o
  .rela.rodata._ZTVN6kernel3hal8PowerOpsE
-                0x00000000400118d0       0x30 core.o
+                0x00000000400118a0       0x30 core.o
  .rela.rodata._ZTVN6kernel3hal4gpio13GPIODriverOpsE
-                0x0000000040011900       0x78 core.o
+                0x00000000400118d0       0x78 core.o
  .rela.rodata._ZTVN6kernel3hal3net16NetworkDriverOpsE
-                0x0000000040011978       0x48 core.o
+                0x0000000040011948       0x48 core.o
  .rela.rodata._ZTVN6kernel3hal14TimerDriverOpsE
-                0x00000000400119c0       0xa8 core.o
+                0x0000000040011990       0xa8 core.o
  .rela.rodata._ZTVN6kernel3hal12I2SDriverOpsE
-                0x0000000040011a68       0xc0 core.o
+                0x0000000040011a38       0xc0 core.o
  .rela.rodata._ZTVN6kernel3hal16DMAControllerOpsE
-                0x0000000040011b28       0x48 core.o
+                0x0000000040011af8       0x48 core.o
  .rela.rodata._ZTVN6kernel3hal16IRQControllerOpsE
-                0x0000000040011b70       0xd8 core.o
+                0x0000000040011b40       0xd8 core.o
  .rela.rodata._ZTVN6kernel3hal13UARTDriverOpsE
-                0x0000000040011c48       0x60 core.o
+                0x0000000040011c18       0x60 core.o
  .rela.rodata._ZTVN6kernel3hal9MemoryOpsE
-                0x0000000040011ca8       0x30 core.o
+                0x0000000040011c78       0x30 core.o
  .rela.init_array.00090
-                0x0000000040011cd8       0x18 core.o
+                0x0000000040011ca8       0x18 core.o
 
-.data           0x0000000040011cf0        0x0
+.data           0x0000000040011cc0        0x0
  *(.data .data.*)
- .data          0x0000000040011cf0        0x0 core.o
- .data.rel.ro   0x0000000040011cf0        0x0 core.o
- .data          0x0000000040011cf0        0x0 hal.o
- .data          0x0000000040011cf0        0x0 util.o
- .data          0x0000000040011cf0        0x0 trace.o
- .data          0x0000000040011cf0        0x0 cli_minimal.o
- .data          0x0000000040011cf0        0x0 kernel_globals.o
- .data          0x0000000040011cf0        0x0 cpu_arm64.o
- .data          0x0000000040011cf0        0x0 hal_qemu_arm64.o
- .data          0x0000000040011cf0        0x0 cpp_runtime_stubs.o
- .data          0x0000000040011cf0        0x0 freestanding_stubs.o
- .data          0x0000000040011cf0        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(cas_1_4.o)
- .data          0x0000000040011cf0        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(swp_1_4.o)
- .data          0x0000000040011cf0        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(ldadd_8_4.o)
- .data          0x0000000040011cf0        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
+ .data          0x0000000040011cc0        0x0 core.o
+ .data.rel.ro   0x0000000040011cc0        0x0 core.o
+ .data          0x0000000040011cc0        0x0 hal.o
+ .data          0x0000000040011cc0        0x0 util.o
+ .data          0x0000000040011cc0        0x0 trace.o
+ .data          0x0000000040011cc0        0x0 cli_minimal.o
+ .data          0x0000000040011cc0        0x0 kernel_globals.o
+ .data          0x0000000040011cc0        0x0 cpu_arm64.o
+ .data          0x0000000040011cc0        0x0 hal_qemu_arm64.o
+ .data          0x0000000040011cc0        0x0 cpp_runtime_stubs.o
+ .data          0x0000000040011cc0        0x0 freestanding_stubs.o
+ .data          0x0000000040011cc0        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(cas_1_4.o)
+ .data          0x0000000040011cc0        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(swp_1_4.o)
+ .data          0x0000000040011cc0        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(ldadd_8_4.o)
+ .data          0x0000000040011cc0        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
 
-.dynamic        0x0000000040011cf0      0x140
- .dynamic       0x0000000040011cf0      0x140 core.o
-                0x0000000040011cf0                _DYNAMIC
+.dynamic        0x0000000040011cc0      0x140
+ .dynamic       0x0000000040011cc0      0x140 core.o
+                0x0000000040011cc0                _DYNAMIC
 
-.got            0x0000000040011e30        0x8
- .got           0x0000000040011e30        0x8 core.o
-                0x0000000040011e30                _GLOBAL_OFFSET_TABLE_
+.got            0x0000000040011e00        0x8
+ .got           0x0000000040011e00        0x8 core.o
+                0x0000000040011e00                _GLOBAL_OFFSET_TABLE_
 
-.got.plt        0x0000000040011e38       0x18
- .got.plt       0x0000000040011e38       0x18 core.o
+.got.plt        0x0000000040011e08       0x18
+ .got.plt       0x0000000040011e08       0x18 core.o
 
-.bss            0x0000000040011e80    0x2d699
-                0x0000000040011e80                _bss_start = .
+.bss            0x0000000040011e40    0x2d5c9
+                0x0000000040011e40                _bss_start = .
  *(.bss .bss.*)
- .bss           0x0000000040011e80        0x0 core.o
+ .bss           0x0000000040011e40        0x0 core.o
  .bss._ZN6kernel4core29g_software_timer_obj_pool_memE
-                0x0000000040011e80      0xe00 core.o
-                0x0000000040011e80                kernel::core::g_software_timer_obj_pool_mem
+                0x0000000040011e40      0xe00 core.o
+                0x0000000040011e40                kernel::core::g_software_timer_obj_pool_mem
  .bss._ZN6kernel4core25g_software_timer_obj_poolE
-                0x0000000040012c80       0x40 core.o
-                0x0000000040012c80                kernel::core::g_software_timer_obj_pool
+                0x0000000040012c40       0x40 core.o
+                0x0000000040012c40                kernel::core::g_software_timer_obj_pool
  .bss._ZN6kernel4core14g_trace_bufferE
-                0x0000000040012cc0     0xa000 core.o
-                0x0000000040012cc0                kernel::core::g_trace_buffer
+                0x0000000040012c80     0xa000 core.o
+                0x0000000040012c80                kernel::core::g_trace_buffer
  .bss._ZN6kernel4core22g_trace_overflow_countE
-                0x000000004001ccc0       0x20 core.o
-                0x000000004001ccc0                kernel::core::g_trace_overflow_count
+                0x000000004001cc80       0x20 core.o
+                0x000000004001cc80                kernel::core::g_trace_overflow_count
  .bss._ZN6kernel4core13g_task_stacksE
-                0x000000004001cce0    0x10000 core.o
-                0x000000004001cce0                kernel::core::g_task_stacks
+                0x000000004001cca0    0x10000 core.o
+                0x000000004001cca0                kernel::core::g_task_stacks
  .bss._ZN6kernel4core11g_task_tfdsE
-                0x000000004002cce0     0x1780 core.o
-                0x000000004002cce0                kernel::core::g_task_tfds
- *fill*         0x000000004002e460       0x20 
+                0x000000004002cca0     0x1780 core.o
+                0x000000004002cca0                kernel::core::g_task_tfds
+ *fill*         0x000000004002e420       0x20 
  .bss._ZN6kernel4core14g_per_cpu_dataE
-                0x000000004002e480       0x40 core.o
-                0x000000004002e480                kernel::core::g_per_cpu_data
+                0x000000004002e440       0x40 core.o
+                0x000000004002e440                kernel::core::g_per_cpu_data
  .bss._ZN6kernel4core8Spinlock13next_lock_id_E
-                0x000000004002e4c0        0x4 core.o
-                0x000000004002e4c0                kernel::core::Spinlock::next_lock_id_
- *fill*         0x000000004002e4c4        0x4 
+                0x000000004002e480        0x4 core.o
+                0x000000004002e480                kernel::core::Spinlock::next_lock_id_
+ *fill*         0x000000004002e484        0x4 
  .bss._ZZN6kernel11trace_eventEPKcmmE18g_legacy_trace_idx
-                0x000000004002e4c8        0x8 core.o
+                0x000000004002e488        0x8 core.o
  .bss._ZZ11kernel_mainE18scheduler_instance
-                0x000000004002e4d0      0x238 core.o
+                0x000000004002e490      0x238 core.o
  .bss._ZGVZ11kernel_mainE18scheduler_instance
-                0x000000004002e708        0x8 core.o
- .bss           0x000000004002e710        0x0 hal.o
- .bss._ZN6kernel3halL19g_platform_instanceE
-                0x000000004002e710       0xd8 hal.o
- .bss           0x000000004002e7e8        0x0 util.o
- .bss           0x000000004002e7e8        0x0 trace.o
+                0x000000004002e6c8        0x8 core.o
+ .bss           0x000000004002e6d0        0x0 hal.o
+ .bss           0x000000004002e6d0        0x0 util.o
+ .bss           0x000000004002e6d0        0x0 trace.o
  .bss._ZN5trace15g_trace_managerE
-                0x000000004002e7e8      0xc10 trace.o
-                0x000000004002e7e8                trace::g_trace_manager
- .bss           0x000000004002f3f8        0x0 cli_minimal.o
+                0x000000004002e6d0      0xc10 trace.o
+                0x000000004002e6d0                trace::g_trace_manager
+ .bss           0x000000004002f2e0        0x0 cli_minimal.o
  .bss._ZN3cli5g_cliE
-                0x000000004002f3f8        0x1 cli_minimal.o
-                0x000000004002f3f8                cli::g_cli
- .bss           0x000000004002f3f9        0x0 kernel_globals.o
- *fill*         0x000000004002f3f9        0x7 
+                0x000000004002f2e0        0x1 cli_minimal.o
+                0x000000004002f2e0                cli::g_cli
+ .bss           0x000000004002f2e1        0x0 kernel_globals.o
+ *fill*         0x000000004002f2e1        0x7 
  .bss._ZN6kernel10g_platformE
-                0x000000004002f400        0x8 kernel_globals.o
-                0x000000004002f400                kernel::g_platform
+                0x000000004002f2e8        0x8 kernel_globals.o
+                0x000000004002f2e8                kernel::g_platform
  .bss._ZN6kernel15g_scheduler_ptrE
-                0x000000004002f408        0x8 kernel_globals.o
-                0x000000004002f408                kernel::g_scheduler_ptr
+                0x000000004002f2f0        0x8 kernel_globals.o
+                0x000000004002f2f0                kernel::g_scheduler_ptr
  .bss._ZN6kernel12g_trace_lockE
-                0x000000004002f410        0x8 kernel_globals.o
-                0x000000004002f410                kernel::g_trace_lock
+                0x000000004002f2f8        0x8 kernel_globals.o
+                0x000000004002f2f8                kernel::g_trace_lock
  .bss._ZN6kernel18g_irq_handler_lockE
-                0x000000004002f418        0x8 kernel_globals.o
-                0x000000004002f418                kernel::g_irq_handler_lock
- .bss           0x000000004002f420        0x0 cpu_arm64.o
- .bss           0x000000004002f420        0x0 hal_qemu_arm64.o
+                0x000000004002f300        0x8 kernel_globals.o
+                0x000000004002f300                kernel::g_irq_handler_lock
+ .bss           0x000000004002f308        0x0 cpu_arm64.o
+ .bss           0x000000004002f308        0x0 hal_qemu_arm64.o
  .bss._ZN3hal15qemu_virt_arm6419g_platform_instanceE
-                0x000000004002f420       0xd8 hal_qemu_arm64.o
-                0x000000004002f420                hal::qemu_virt_arm64::g_platform_instance
- .bss           0x000000004002f4f8        0x0 cpp_runtime_stubs.o
+                0x000000004002f308       0xd8 hal_qemu_arm64.o
+                0x000000004002f308                hal::qemu_virt_arm64::g_platform_instance
+ .bss           0x000000004002f3e0        0x0 cpp_runtime_stubs.o
  .bss.__dso_handle
-                0x000000004002f4f8        0x8 cpp_runtime_stubs.o
-                0x000000004002f4f8                __dso_handle
+                0x000000004002f3e0        0x8 cpp_runtime_stubs.o
+                0x000000004002f3e0                __dso_handle
+ *fill*         0x000000004002f3e8        0x8 
  .bss._ZL18simple_kernel_heap
-                0x000000004002f500    0x10000 cpp_runtime_stubs.o
+                0x000000004002f3f0    0x10000 cpp_runtime_stubs.o
  .bss._ZL22simple_kernel_heap_ptr
-                0x000000004003f500        0x8 cpp_runtime_stubs.o
+                0x000000004003f3f0        0x8 cpp_runtime_stubs.o
  .bss._ZL18g_simple_heap_lock
-                0x000000004003f508        0x8 cpp_runtime_stubs.o
+                0x000000004003f3f8        0x8 cpp_runtime_stubs.o
  .bss._ZL16g_cxa_guard_lock
-                0x000000004003f510        0x8 cpp_runtime_stubs.o
- .bss           0x000000004003f518        0x0 freestanding_stubs.o
- .bss           0x000000004003f518        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(cas_1_4.o)
- .bss           0x000000004003f518        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(swp_1_4.o)
- .bss           0x000000004003f518        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(ldadd_8_4.o)
- .bss           0x000000004003f518        0x1 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
-                0x000000004003f518                __aarch64_have_lse_atomics
+                0x000000004003f400        0x8 cpp_runtime_stubs.o
+ .bss           0x000000004003f408        0x0 freestanding_stubs.o
+ .bss           0x000000004003f408        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(cas_1_4.o)
+ .bss           0x000000004003f408        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(swp_1_4.o)
+ .bss           0x000000004003f408        0x0 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(ldadd_8_4.o)
+ .bss           0x000000004003f408        0x1 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
+                0x000000004003f408                __aarch64_have_lse_atomics
  *(COMMON)
-                0x000000004003f519                _bss_end = .
+                0x000000004003f409                _bss_end = .
 
-.dynbss         0x000000004003f519        0x0
- .dynbss        0x000000004003f519        0x0 core.o
+.dynbss         0x000000004003f409        0x0
+ .dynbss        0x000000004003f409        0x0 core.o
 
-.stacks         0x000000004003f519        0x0
-                0x000000004003f519                _stacks_start = .
+.stacks         0x0000000040040000    0x10000
+                0x0000000040040000                _stacks_start = .
  *(.stacks)
-                0x000000004003f519                _stacks_end = .
+ .stacks        0x0000000040040000    0x10000 cpu_arm64.o
+                0x0000000040040000                boot_stacks
+                0x0000000040050000                _stacks_end = .
 
-.init_array     0x000000004003f520       0x40
-                0x000000004003f520                __init_array_start = .
+.init_array     0x0000000040050000       0x38
+                0x0000000040050000                __init_array_start = .
  *(SORT_BY_INIT_PRIORITY(.init_array.*))
  .init_array.00090
-                0x000000004003f520        0x8 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
+                0x0000000040050000        0x8 /usr/lib/gcc-cross/aarch64-linux-gnu/13/libgcc.a(lse-init.o)
  *(.init_array)
- .init_array    0x000000004003f528        0x8 core.o
- .init_array    0x000000004003f530        0x8 hal.o
- .init_array    0x000000004003f538        0x8 trace.o
- .init_array    0x000000004003f540        0x8 cli_minimal.o
- .init_array    0x000000004003f548        0x8 kernel_globals.o
- .init_array    0x000000004003f550        0x8 hal_qemu_arm64.o
- .init_array    0x000000004003f558        0x8 cpp_runtime_stubs.o
-                0x000000004003f560                __init_array_end = .
-                0x000000004003f560                _end = .
+ .init_array    0x0000000040050008        0x8 core.o
+ .init_array    0x0000000040050010        0x8 trace.o
+ .init_array    0x0000000040050018        0x8 cli_minimal.o
+ .init_array    0x0000000040050020        0x8 kernel_globals.o
+ .init_array    0x0000000040050028        0x8 hal_qemu_arm64.o
+ .init_array    0x0000000040050030        0x8 cpp_runtime_stubs.o
+                0x0000000040050038                __init_array_end = .
+                0x0000000040050038                _end = .
 OUTPUT(miniOS_kernel.elf elf64-littleaarch64)
 LOAD linker stubs
 
-.debug_info     0x0000000000000000    0x272e3
+.debug_info     0x0000000000000000    0x272cd
  .debug_info    0x0000000000000000     0x9259 core.o
- .debug_info    0x0000000000009259     0x41a2 hal.o
- .debug_info    0x000000000000d3fb     0x3e1e util.o
- .debug_info    0x0000000000011219     0x47b8 trace.o
- .debug_info    0x00000000000159d1     0x26e2 cli_minimal.o
- .debug_info    0x00000000000180b3     0x3b84 kernel_globals.o
- .debug_info    0x000000000001bc37       0x23 cpu_arm64.o
- .debug_info    0x000000000001bc5a     0x8641 hal_qemu_arm64.o
- .debug_info    0x000000000002429b     0x27ba cpp_runtime_stubs.o
- .debug_info    0x0000000000026a55      0x88e freestanding_stubs.o
+ .debug_info    0x0000000000009259     0x40dc hal.o
+ .debug_info    0x000000000000d335     0x3e1e util.o
+ .debug_info    0x0000000000011153     0x47b8 trace.o
+ .debug_info    0x000000000001590b     0x26e2 cli_minimal.o
+ .debug_info    0x0000000000017fed     0x3b84 kernel_globals.o
+ .debug_info    0x000000000001bb71       0x23 cpu_arm64.o
+ .debug_info    0x000000000001bb94     0x8644 hal_qemu_arm64.o
+ .debug_info    0x00000000000241d8     0x27ba cpp_runtime_stubs.o
+ .debug_info    0x0000000000026992      0x93b freestanding_stubs.o
 
-.debug_abbrev   0x0000000000000000     0x4e3f
+.debug_abbrev   0x0000000000000000     0x4db5
  .debug_abbrev  0x0000000000000000      0xe7a core.o
- .debug_abbrev  0x0000000000000e7a      0x9a9 hal.o
- .debug_abbrev  0x0000000000001823      0x6d0 util.o
- .debug_abbrev  0x0000000000001ef3      0x9eb trace.o
- .debug_abbrev  0x00000000000028de      0x700 cli_minimal.o
- .debug_abbrev  0x0000000000002fde      0x752 kernel_globals.o
- .debug_abbrev  0x0000000000003730       0x12 cpu_arm64.o
- .debug_abbrev  0x0000000000003742      0xcc1 hal_qemu_arm64.o
- .debug_abbrev  0x0000000000004403      0x8ec cpp_runtime_stubs.o
- .debug_abbrev  0x0000000000004cef      0x150 freestanding_stubs.o
+ .debug_abbrev  0x0000000000000e7a      0x918 hal.o
+ .debug_abbrev  0x0000000000001792      0x6d0 util.o
+ .debug_abbrev  0x0000000000001e62      0x9eb trace.o
+ .debug_abbrev  0x000000000000284d      0x700 cli_minimal.o
+ .debug_abbrev  0x0000000000002f4d      0x752 kernel_globals.o
+ .debug_abbrev  0x000000000000369f       0x12 cpu_arm64.o
+ .debug_abbrev  0x00000000000036b1      0xcc7 hal_qemu_arm64.o
+ .debug_abbrev  0x0000000000004378      0x8ec cpp_runtime_stubs.o
+ .debug_abbrev  0x0000000000004c64      0x151 freestanding_stubs.o
 
-.debug_aranges  0x0000000000000000     0x18d0
+.debug_aranges  0x0000000000000000     0x18c0
  .debug_aranges
                 0x0000000000000000      0x4a0 core.o
  .debug_aranges
-                0x00000000000004a0       0xc0 hal.o
+                0x00000000000004a0       0xa0 hal.o
  .debug_aranges
-                0x0000000000000560      0x3c0 util.o
+                0x0000000000000540      0x3c0 util.o
  .debug_aranges
-                0x0000000000000920      0x1b0 trace.o
+                0x0000000000000900      0x1b0 trace.o
  .debug_aranges
-                0x0000000000000ad0       0x80 cli_minimal.o
+                0x0000000000000ab0       0x80 cli_minimal.o
  .debug_aranges
-                0x0000000000000b50       0x50 kernel_globals.o
+                0x0000000000000b30       0x50 kernel_globals.o
  .debug_aranges
-                0x0000000000000ba0       0x50 cpu_arm64.o
+                0x0000000000000b80       0x50 cpu_arm64.o
  .debug_aranges
-                0x0000000000000bf0      0xa40 hal_qemu_arm64.o
+                0x0000000000000bd0      0xa40 hal_qemu_arm64.o
  .debug_aranges
-                0x0000000000001630      0x1b0 cpp_runtime_stubs.o
+                0x0000000000001610      0x1b0 cpp_runtime_stubs.o
  .debug_aranges
-                0x00000000000017e0       0xf0 freestanding_stubs.o
+                0x00000000000017c0      0x100 freestanding_stubs.o
 
 .debug_rnglists
-                0x0000000000000000      0xfb5
+                0x0000000000000000      0xfab
  .debug_rnglists
                 0x0000000000000000      0x2f3 core.o
  .debug_rnglists
-                0x00000000000002f3       0x73 hal.o
+                0x00000000000002f3       0x5f hal.o
  .debug_rnglists
-                0x0000000000000366      0x287 util.o
+                0x0000000000000352      0x287 util.o
  .debug_rnglists
-                0x00000000000005ed      0x10b trace.o
+                0x00000000000005d9      0x10b trace.o
  .debug_rnglists
-                0x00000000000006f8       0x49 cli_minimal.o
+                0x00000000000006e4       0x49 cli_minimal.o
  .debug_rnglists
-                0x0000000000000741       0x2b kernel_globals.o
+                0x000000000000072d       0x2b kernel_globals.o
  .debug_rnglists
-                0x000000000000076c       0x2e cpu_arm64.o
+                0x0000000000000758       0x2e cpu_arm64.o
  .debug_rnglists
-                0x000000000000079a      0x678 hal_qemu_arm64.o
+                0x0000000000000786      0x678 hal_qemu_arm64.o
  .debug_rnglists
-                0x0000000000000e12      0x10e cpp_runtime_stubs.o
+                0x0000000000000dfe      0x10e cpp_runtime_stubs.o
  .debug_rnglists
-                0x0000000000000f20       0x95 freestanding_stubs.o
+                0x0000000000000f0c       0x9f freestanding_stubs.o
 
-.debug_line     0x0000000000000000     0x6296
+.debug_line     0x0000000000000000     0x6298
  .debug_line    0x0000000000000000     0x172a core.o
- .debug_line    0x000000000000172a      0x30d hal.o
- .debug_line    0x0000000000001a37     0x15f4 util.o
- .debug_line    0x000000000000302b      0x73d trace.o
- .debug_line    0x0000000000003768      0x195 cli_minimal.o
- .debug_line    0x00000000000038fd      0x134 kernel_globals.o
- .debug_line    0x0000000000003a31      0x150 cpu_arm64.o
- .debug_line    0x0000000000003b81     0x1da3 hal_qemu_arm64.o
- .debug_line    0x0000000000005924      0x50c cpp_runtime_stubs.o
- .debug_line    0x0000000000005e30      0x466 freestanding_stubs.o
+ .debug_line    0x000000000000172a      0x2cb hal.o
+ .debug_line    0x00000000000019f5     0x15f4 util.o
+ .debug_line    0x0000000000002fe9      0x73d trace.o
+ .debug_line    0x0000000000003726      0x195 cli_minimal.o
+ .debug_line    0x00000000000038bb      0x134 kernel_globals.o
+ .debug_line    0x00000000000039ef      0x154 cpu_arm64.o
+ .debug_line    0x0000000000003b43     0x1da3 hal_qemu_arm64.o
+ .debug_line    0x00000000000058e6      0x50c cpp_runtime_stubs.o
+ .debug_line    0x0000000000005df2      0x4a6 freestanding_stubs.o
 
-.debug_str      0x0000000000000000    0x10219
- .debug_str     0x0000000000000000    0x10219 core.o
+.debug_str      0x0000000000000000    0x10227
+ .debug_str     0x0000000000000000    0x10227 core.o
                                        0x8e1c (size before relaxing)
- .debug_str     0x0000000000010219     0x4717 hal.o
- .debug_str     0x0000000000010219     0x3c84 util.o
- .debug_str     0x0000000000010219     0x4605 trace.o
- .debug_str     0x0000000000010219     0x1e3e cli_minimal.o
- .debug_str     0x0000000000010219     0x3fde kernel_globals.o
- .debug_str     0x0000000000010219       0x30 cpu_arm64.o
- .debug_str     0x0000000000010219     0x76e2 hal_qemu_arm64.o
- .debug_str     0x0000000000010219     0x2113 cpp_runtime_stubs.o
- .debug_str     0x0000000000010219      0x49d freestanding_stubs.o
+ .debug_str     0x0000000000010227     0x45fa hal.o
+ .debug_str     0x0000000000010227     0x3c84 util.o
+ .debug_str     0x0000000000010227     0x4605 trace.o
+ .debug_str     0x0000000000010227     0x1e3e cli_minimal.o
+ .debug_str     0x0000000000010227     0x3fde kernel_globals.o
+ .debug_str     0x0000000000010227       0x30 cpu_arm64.o
+ .debug_str     0x0000000000010227     0x76e2 hal_qemu_arm64.o
+ .debug_str     0x0000000000010227     0x2113 cpp_runtime_stubs.o
+ .debug_str     0x0000000000010227      0x527 freestanding_stubs.o
 
 .debug_line_str
                 0x0000000000000000      0x3c8

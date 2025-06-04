@@ -26,12 +26,16 @@ commands
   continue
 end
 
-# Break when global constructors are invoked to verify stack is valid
+# Break when global constructors are invoked. Use this spot to inspect
+# the HAL platform instance before its constructor runs so we know the
+# object is still zeroed out.
 tbreak call_constructors
 commands
   silent
   echo [GDB_PROGRESS] => call_constructors\n
   info registers sp
+  printf "[DEBUG] g_platform_instance at %p\n", &hal::qemu_virt_arm64::g_platform_instance
+  printf "[DEBUG] vtable before ctor: %p\n", *(void**)&hal::qemu_virt_arm64::g_platform_instance
   continue
 end
 
@@ -42,11 +46,14 @@ commands
   continue
 end
 
+# After constructors run, stop in kernel_main to verify that the
+# platform instance was initialized (vtable should be non-zero).
 break kernel_main
 commands
   silent
   echo [GDB_PROGRESS] => Entered kernel_main()\n
   print kernel::g_platform
+  printf "[DEBUG] g_platform_instance vtable now: %p\n", *(void**)&hal::qemu_virt_arm64::g_platform_instance
   continue
 end
 
