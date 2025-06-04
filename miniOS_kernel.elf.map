@@ -791,6 +791,7 @@ END GROUP
  *fill*         0x000000004000672c        0x4 
  .text          0x0000000040006730      0x1a0 cpu_arm64.o
                 0x0000000040006730                call_constructors
+                0x00000000400067e4                unhandled_exception_entry_point
                 0x00000000400067f8                cpu_context_switch_impl
  .text          0x00000000400068d0        0x0 hal_qemu_arm64.o
  .text._ZSt17__size_to_integerm

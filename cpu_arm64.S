@@ -336,6 +336,7 @@ current_el_spx_irq_entry:
     eret                                            // Return from exception
 
 // Generic unhandled exception handler
+    .global unhandled_exception_entry_point
 unhandled_exception_entry_point:
     // Minimal state save if possible, then call a simple debug output loop.
     // This handler might be entered with a bad stack or in a bad state.
