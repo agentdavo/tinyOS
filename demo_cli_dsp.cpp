@@ -167,8 +167,8 @@ private:
             uart_ops->puts("Usage: confignet <ip> <port> <channels>\n");
             return 1;
         }
-        uint32_t ip_addr;
-        if (!kernel::util::ipv4_to_uint32(ip_str, ip_addr)) {
+        net::IPv4Addr ip_addr;
+        if (!net::from_string(ip_str, ip_addr)) {
             uart_ops->puts("Invalid IP address\n");
             return 1;
         }

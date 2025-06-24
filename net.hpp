@@ -25,6 +25,9 @@ struct IPv4Addr {
     uint32_t addr;
 };
 
+bool from_string(std::string_view ip_str, IPv4Addr& out) noexcept;
+void to_string(char* buf, size_t bufsz, IPv4Addr addr) noexcept;
+
 struct Packet {
     IPv4Addr dst_ip;
     uint16_t dst_port;

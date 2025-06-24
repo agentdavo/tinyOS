@@ -681,8 +681,8 @@ void NetworkAudioSinkSource::configure(const char* args, kernel::hal::UARTDriver
             return; 
         }
 
-        if (!kernel::util::ipv4_to_uint32(ip_str_val, remote_target_ip_.addr)) {
-            if (uart_ops) uart_ops->puts("Invalid IP address string.\n"); 
+        if (!net::from_string(ip_str_val, remote_target_ip_)) {
+            if (uart_ops) uart_ops->puts("Invalid IP address string.\n");
             return;
         }
         if (port_val <= 0 || port_val > 65535) { 

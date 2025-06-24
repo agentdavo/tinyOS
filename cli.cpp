@@ -184,7 +184,12 @@ int cli_net_ping_command(const char* args, kernel::hal::UARTDriverOps* uart_ops)
         uart_ops->puts("Usage: ping <ip>\n");
         return -1;
     }
-    kernel::g_net_manager.ping(target_ip, 3, uart_ops);
+    net::IPv4Addr ip{};
+    if (!net::from_string(target_ip, ip)) {
+        uart_ops->puts("Invalid IP address\n");
+        return -1;
+    }
+    kernel::g_net_manager.ping(ip, 3, uart_ops);
     return 0;
 }
 
@@ -379,7 +384,7 @@ int cli_net_send_udp_command(const char* args, kernel::hal::UARTDriverOps* uart_
     }
 
     net::IPv4Addr addr;
-    if (!addr.from_string(ip)) {
+    if (!net::from_string(ip, addr)) {
         uart_ops->puts("Invalid IP address\n");
         return -1;
     }
