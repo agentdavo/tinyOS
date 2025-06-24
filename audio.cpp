@@ -1,92 +1,128 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /**
- * @file audio.hpp
- * @brief Audio subsystem header for miniOS v1.7.
- * @details
- * Defines the audio processing subsystem, including buffer management, I2S interface,
- * and DSP integration. Supports multi-channel audio with DMA-driven I2S transfers.
- * Updated in v1.7 with improved error handling, clearer documentation, and modern
- * C++20 practices, retaining all v1.6 functionality.
- *
- * C++20 features:
- * - std::span for buffer handling
- * - std::unique_ptr for resource management
- * - std::string_view for string operations
- *
- * @version 1.7
- * @see audio.cpp, core.hpp, hal.hpp
+ * @file audio.cpp
+ * @brief Audio subsystem implementation for miniOS v1.7.
  */
 
-#ifndef AUDIO_HPP
-#define AUDIO_HPP
+#include "audio.hpp"
+#include "dsp.hpp"
+#include "miniOS.hpp"
+#include "util.hpp"
 
-#include "core.hpp"
-#include "hal.hpp"
-#include <memory>
-#include <vector>
-#include <array>
-#include <string_view>
-
-// Forward declaration
-namespace dsp { class DSPGraph; }
-
+namespace kernel {
 namespace audio {
 
-constexpr size_t MAX_AUDIO_SAMPLES_PER_BLOCK = 1024;
-
-struct AudioBuffer {
-    std::span<float> get_data() noexcept {
-        return std::span<float>(data.data(), data.size());
+bool AudioSystem::init(const AudioConfig& cfg) {
+    if (!g_platform || !g_platform->get_i2s_ops() || is_running_) {
+        return false;
     }
-    std::span<const float> get_data() const noexcept {
-        return std::span<const float>(data.data(), data.size());
+
+    config_ = cfg;
+
+    hal::i2s::Format fmt{cfg.sample_rate_hz, cfg.num_channels,
+                         hal::i2s::BitDepth::BITS_16};
+    auto* i2s = g_platform->get_i2s_ops();
+
+    if (!i2s->init(cfg.i2s_rx_instance_id, hal::i2s::Mode::MASTER_RX, fmt,
+                   cfg.samples_per_block, cfg.num_i2s_dma_buffers,
+                   &AudioSystem::i2s_rx_callback, this)) {
+        return false;
     }
-    std::array<float, MAX_AUDIO_SAMPLES_PER_BLOCK * kernel::core::MAX_AUDIO_CHANNELS> data;
-    uint32_t num_samples_per_channel = 0;
-    uint8_t num_channels = 0;
-    uint32_t sample_rate_hz = 0;
-};
+    if (!i2s->init(cfg.i2s_tx_instance_id, hal::i2s::Mode::MASTER_TX, fmt,
+                   cfg.samples_per_block, cfg.num_i2s_dma_buffers,
+                   &AudioSystem::i2s_tx_callback, this)) {
+        return false;
+    }
 
-struct AudioConfig {
-    uint32_t sample_rate_hz;
-    size_t samples_per_block;
-    uint8_t num_channels;
-    uint8_t num_i2s_dma_buffers;
-    uint32_t i2s_rx_instance_id;
-    uint32_t i2s_tx_instance_id;
-};
+    dsp_graph_ = std::make_unique<dsp::DSPGraph>();
+    i2s_rx_to_dsp_queue_ = std::make_unique<core::SPSCQueue<AudioBuffer, 16>>();
+    dsp_to_app_rx_queue_ = std::make_unique<core::SPSCQueue<AudioBuffer, 16>>();
+    app_tx_to_dsp_queue_ = std::make_unique<core::SPSCQueue<AudioBuffer, 16>>();
+    dsp_to_i2s_tx_queue_ = std::make_unique<core::SPSCQueue<AudioBuffer, 16>>();
 
-class AudioSystem {
-public:
-    AudioSystem() = default;
-    ~AudioSystem() = default;
+    return true;
+}
 
-    bool init(const AudioConfig& config);
-    bool start();
-    void stop();
+bool AudioSystem::start() {
+    if (is_running_ || !g_platform || !g_platform->get_i2s_ops() || !dsp_graph_) {
+        return false;
+    }
+    auto* i2s = g_platform->get_i2s_ops();
+    if (!i2s->start(config_.i2s_rx_instance_id) ||
+        !i2s->start(config_.i2s_tx_instance_id)) {
+        return false;
+    }
 
-    dsp::DSPGraph& get_dsp_graph();
-    const dsp::DSPGraph& get_dsp_graph() const;
+    if (!g_scheduler_ptr) return false;
+    dsp_thread_tcb_ = g_scheduler_ptr->create_thread(&AudioSystem::dsp_thread,
+                                                     this, 3, 0, "DSP");
+    if (!dsp_thread_tcb_) return false;
 
-    AudioSystem(const AudioSystem&) = delete;
-    AudioSystem& operator=(const AudioSystem&) = delete;
+    is_running_ = true;
+    return true;
+}
 
-private:
-    static void i2s_rx_callback(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode, void* user_data);
-    static void i2s_tx_callback(uint32_t instance_id, AudioBuffer* buffer, kernel::hal::i2s::Mode mode, void* user_data);
-    static void dsp_thread(void* arg);
+void AudioSystem::stop() {
+    is_running_ = false;
+    if (g_platform && g_platform->get_i2s_ops()) {
+        auto* i2s = g_platform->get_i2s_ops();
+        i2s->stop(config_.i2s_rx_instance_id);
+        i2s->stop(config_.i2s_tx_instance_id);
+    }
+}
 
-    AudioConfig config_{};
-    bool is_running_ = false;
-    kernel::core::TCB* dsp_thread_tcb_ = nullptr;
-    std::unique_ptr<dsp::DSPGraph> dsp_graph_;
-    std::unique_ptr<kernel::core::FixedMemoryPool> audio_buffer_pool_;
-    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> i2s_rx_to_dsp_queue_;
-    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> dsp_to_app_rx_queue_;
-    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> app_tx_to_dsp_queue_;
-    std::unique_ptr<kernel::core::SPSCQueue<AudioBuffer, 16>> dsp_to_i2s_tx_queue_;
-};
+dsp::DSPGraph& AudioSystem::get_dsp_graph() { return *dsp_graph_; }
+const dsp::DSPGraph& AudioSystem::get_dsp_graph() const { return *dsp_graph_; }
+
+void AudioSystem::i2s_rx_callback(uint32_t instance_id, AudioBuffer* buf,
+                                  hal::i2s::Mode, void* user_data) {
+    auto* self = static_cast<AudioSystem*>(user_data);
+    if (!self || !buf) return;
+    if (!self->i2s_rx_to_dsp_queue_->enqueue(buf)) {
+        if (g_platform && g_platform->get_i2s_ops()) {
+            g_platform->get_i2s_ops()->release_processed_buffer_to_hw_rx(instance_id, buf);
+        }
+    }
+}
+
+void AudioSystem::i2s_tx_callback(uint32_t instance_id, AudioBuffer* buf,
+                                  hal::i2s::Mode, void*) {
+    if (g_platform && g_platform->get_i2s_ops()) {
+        g_platform->get_i2s_ops()->release_processed_buffer_to_hw_rx(instance_id, buf);
+    }
+}
+
+void AudioSystem::dsp_thread(void* arg) {
+    auto* self = static_cast<AudioSystem*>(arg);
+    if (!self) return;
+
+    auto* i2s = g_platform ? g_platform->get_i2s_ops() : nullptr;
+    hal::i2s::Format fmt{self->config_.sample_rate_hz, self->config_.num_channels,
+                         hal::i2s::BitDepth::BITS_16};
+
+    while (self->is_running_) {
+        AudioBuffer* buf = self->i2s_rx_to_dsp_queue_->dequeue();
+        if (!buf) {
+            if (g_scheduler_ptr && g_platform)
+                g_scheduler_ptr->yield(g_platform->get_core_id());
+            continue;
+        }
+        if (i2s) {
+            i2s->convert_hw_format_to_dsp_format(buf, fmt);
+        }
+        std::span<float> span(buf->data_dsp_canonical,
+                              buf->samples_per_channel * buf->channels);
+        self->dsp_graph_->process(span);
+        if (i2s) {
+            i2s->convert_dsp_format_to_hw_format(buf, fmt);
+            i2s->submit_filled_buffer_to_hw_tx(self->config_.i2s_tx_instance_id, buf);
+        } else {
+            if (g_platform && g_platform->get_i2s_ops())
+                g_platform->get_i2s_ops()->release_processed_buffer_to_hw_rx(self->config_.i2s_rx_instance_id, buf);
+        }
+    }
+}
 
 } // namespace audio
+} // namespace kernel
 
-#endif // AUDIO_HPP
