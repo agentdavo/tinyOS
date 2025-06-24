@@ -145,6 +145,20 @@ private:
         }
         return true;
     }
+
+    static bool test_str_to_float_valid(kernel::UARTDriverOps*) {
+        float val = 0.0f;
+        bool ok1 = kernel::util::str_to_float("123.5", val) && val > 123.49f && val < 123.51f;
+        bool ok2 = kernel::util::str_to_float("-1.5e2", val) && val > -150.1f && val < -149.9f;
+        return ok1 && ok2;
+    }
+
+    static bool test_str_to_float_invalid(kernel::UARTDriverOps*) {
+        float val = 0.0f;
+        bool bad1 = !kernel::util::str_to_float("abc", val);
+        bool bad2 = !kernel::util::str_to_float("1e50", val);
+        return bad1 && bad2;
+    }
 };
 
 TestFramework TestFramework::test_framework_;
@@ -156,6 +170,8 @@ void register_tests() {
     tf.register_test({"audio_pipeline", test_audio_pipeline, "Test audio pipeline"});
     tf.register_test({"network_socket", test_network_socket, "Test UDP socket creation"});
     tf.register_test({"gpio_pin", test_gpio_pin, "Test GPIO pin operations"});
+    tf.register_test({"str_to_float_valid", test_str_to_float_valid, "Parse valid floats"});
+    tf.register_test({"str_to_float_invalid", test_str_to_float_invalid, "Reject invalid floats"});
 }
 
 } // namespace test
