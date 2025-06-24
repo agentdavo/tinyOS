@@ -35,7 +35,10 @@ constexpr size_t DEFAULT_STACK_SIZE = 4096;
 constexpr size_t MAX_SOFTWARE_TIMERS = 64;
 constexpr size_t MAX_LOCKS = 32; 
 constexpr size_t NET_MAX_PACKET_SIZE = 1500; 
-constexpr size_t MAX_AUDIO_CHANNELS = 2; 
+constexpr size_t MAX_AUDIO_CHANNELS = 2;
+// GPIO configuration
+constexpr size_t GPIO_BANKS = 4;
+constexpr size_t GPIO_PINS_PER_BANK = 32;
 
 // Forward declarations
 struct PerCPUData; // Forward declaration
