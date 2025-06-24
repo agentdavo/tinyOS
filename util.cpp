@@ -126,9 +126,83 @@ bool str_to_uint32(std::string_view input, uint32_t& out_val) noexcept {
 }
 
 bool str_to_float(std::string_view input, float& out_val) noexcept {
-    (void)input; 
-    out_val = 0.0f; 
-    return false; 
+    if (input.empty()) return false;
+
+    size_t i = 0;
+    while (i < input.size() && isspace(input[i])) i++;
+
+    bool negative = false;
+    if (i < input.size()) {
+        if (input[i] == '-') { negative = true; i++; }
+        else if (input[i] == '+') { i++; }
+    }
+
+    double integer_part = 0.0;
+    bool found_digits = false;
+    while (i < input.size() && isdigit(input[i])) {
+        found_digits = true;
+        integer_part = integer_part * 10.0 + static_cast<double>(input[i] - '0');
+        i++;
+    }
+
+    double fractional_part = 0.0;
+    double divisor = 1.0;
+    if (i < input.size() && input[i] == '.') {
+        i++;
+        while (i < input.size() && isdigit(input[i])) {
+            found_digits = true;
+            fractional_part = fractional_part * 10.0 + static_cast<double>(input[i] - '0');
+            divisor *= 10.0;
+            i++;
+        }
+    }
+    if (!found_digits) return false;
+
+    double result = integer_part + fractional_part / divisor;
+
+    if (i < input.size() && (input[i] == 'e' || input[i] == 'E')) {
+        i++;
+        bool exp_negative = false;
+        if (i < input.size()) {
+            if (input[i] == '-') { exp_negative = true; i++; }
+            else if (input[i] == '+') { i++; }
+        }
+        if (i == input.size() || !isdigit(input[i])) return false;
+        int exp_val = 0;
+        while (i < input.size() && isdigit(input[i])) {
+            exp_val = exp_val * 10 + (input[i] - '0');
+            if (exp_val > 1000) return false; // prevent huge loops
+            i++;
+        }
+        if (exp_negative) exp_val = -exp_val;
+
+        double pow10 = 1.0;
+        int abs_exp = exp_val < 0 ? -exp_val : exp_val;
+        for (int k = 0; k < abs_exp; ++k) {
+            pow10 *= 10.0;
+            if (pow10 > std::numeric_limits<float>::max()) return false;
+        }
+        if (exp_val < 0) result /= pow10; else result *= pow10;
+    }
+
+    while (i < input.size() && isspace(input[i])) i++;
+    if (i != input.size()) return false;
+
+    if (negative) result = -result;
+
+    if (result != result ||
+        result > std::numeric_limits<float>::max() ||
+        result < -std::numeric_limits<float>::max()) {
+        return false;
+    }
+
+    out_val = static_cast<float>(result);
+    if (out_val != out_val ||
+        out_val == std::numeric_limits<float>::infinity() ||
+        out_val == -std::numeric_limits<float>::infinity()) {
+        return false;
+    }
+    return true;
 }
 
 static char* reverse_str(char* str, int length) {
