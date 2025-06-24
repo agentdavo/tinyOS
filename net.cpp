@@ -21,10 +21,22 @@
 #include "util.hpp"
 #include <cstring>
 #include <algorithm>
+#include <span>
 
 namespace net {
 
 NetManager g_net_manager;
+
+bool from_string(std::string_view ip_str, IPv4Addr& out) noexcept {
+    uint32_t val;
+    if (!kernel::util::ipv4_to_uint32(ip_str, val)) return false;
+    out.addr = val;
+    return true;
+}
+
+void to_string(char* buf, size_t bufsz, IPv4Addr addr) noexcept {
+    kernel::util::uint32_to_ipv4_str(addr.addr, std::span<char>(buf, bufsz));
+}
 
 bool NetManager::is_valid_socket(int socket_idx) const {
     return socket_idx >= 0 && socket_idx < static_cast<int>(MAX_SOCKETS) && sockets_[socket_idx].active;
@@ -143,9 +155,7 @@ void NetManager::list_sockets(kernel::hal::UARTDriverOps* uart_ops) const {
             uart_ops->puts(": ");
             uart_ops->puts(sockets_[i].is_tcp ? "TCP" : "UDP");
             uart_ops->puts(", IP=");
-            uint32_t ip = sockets_[i].local_ip.addr;
-            kernel::util::k_snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
-                          (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
+            to_string(buf, sizeof(buf), sockets_[i].local_ip);
             uart_ops->puts(buf);
             uart_ops->puts(", Port=");
             kernel::util::k_snprintf(buf, sizeof(buf), "%u", sockets_[i].local_port);
