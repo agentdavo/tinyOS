@@ -3,6 +3,7 @@
 # Bare-metal build with freestanding utilities
 
 TARGET ?= arm64
+ENABLE_TRACE ?= 1
 
 ifeq ($(TARGET),arm64)
     CC = aarch64-linux-gnu-g++
@@ -13,6 +14,7 @@ ifeq ($(TARGET),arm64)
     CFLAGS  = -g -O0
     CFLAGS += -Wall -Wextra -fno-exceptions -fno-rtti -mcpu=cortex-a53 -march=armv8-a+simd -std=c++20 -I. -fno-PIE -Woverloaded-virtual -ffreestanding
     CFLAGS += -ffunction-sections -fdata-sections -fno-stack-protector -fno-omit-frame-pointer -Wshadow -Wcast-align -Wdouble-promotion
+    CFLAGS += -DTRACE_DEFAULT_ENABLED=$(ENABLE_TRACE)
 	
     ASFLAGS = -mcpu=cortex-a53 -march=armv8-a -g3
 

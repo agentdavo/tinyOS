@@ -20,6 +20,10 @@
 #ifndef TRACE_HPP
 #define TRACE_HPP
 
+#ifndef TRACE_DEFAULT_ENABLED
+#define TRACE_DEFAULT_ENABLED 1
+#endif
+
 #include "core.hpp"
 #include "hal.hpp"
 #include <span>

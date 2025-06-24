@@ -391,6 +391,13 @@ void get_kernel_stats(hal::UARTDriverOps* uart_ops) {
 }
 
 extern "C" void kernel_main() {
+    trace::g_trace_manager.init();
+#if TRACE_DEFAULT_ENABLED
+    trace::g_trace_manager.set_enabled(true);
+#else
+    trace::g_trace_manager.set_enabled(false);
+#endif
+
     early_uart_puts("[DEBUG] Entering kernel_main\n");
     g_platform = hal::get_platform();
     early_uart_puts("[DEBUG] Got platform\n");
@@ -419,8 +426,6 @@ extern "C" void kernel_main() {
                                               alignof(hal::timer::SoftwareTimer))) {
         g_platform->panic("Failed to init software timer pool", __FILE__, __LINE__); return;
     }
-    trace::g_trace_manager.init();
-    trace::g_trace_manager.set_enabled(true);
 
     for (uint32_t i = 0; i < g_platform->get_num_cores(); ++i) {
         char idle_name[core::MAX_NAME_LENGTH];

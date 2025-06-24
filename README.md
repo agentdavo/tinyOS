@@ -71,7 +71,10 @@ miniOS/
    ```bash
    make
    ```
-   Produces `miniOS.bin`.
+   Produces `miniOS.bin`. Set `ENABLE_TRACE=0` to disable tracing at compile time:
+   ```bash
+   make ENABLE_TRACE=0
+   ```
 3. **Run in QEMU**:
    ```bash
    make run
