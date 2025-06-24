@@ -30,8 +30,11 @@ GPIOManager::GPIOManager() : gpio_ops_(nullptr), initialized_(false) {
     for (auto& bank : banks_) {
         for (auto& pin : bank.pin_output_enabled) pin = false;
         for (auto& pin : bank.pin_state) pin = false;
-        for (auto& intr : bank.interrupt_enabled) intr = false;
-        for (auto& edge : bank.interrupt_rising_edge) edge = false;
+        for (size_t i = 0; i < MAX_INTERRUPTS; ++i) {
+            bank.interrupt_enabled[i] = false;
+            bank.interrupt_rising_edge[i] = false;
+            bank.interrupt_pins[i] = 0;
+        }
         bank.interrupt_count = 0;
     }
 }

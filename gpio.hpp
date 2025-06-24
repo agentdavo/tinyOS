@@ -18,6 +18,8 @@
 
 namespace gpio {
 
+constexpr size_t MAX_INTERRUPTS = 64;
+
 class GPIOManager {
 public:
     GPIOManager() = default;
