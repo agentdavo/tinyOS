@@ -619,44 +619,97 @@ void PitchShifterDSP::reset() {
 }
 
 // --- CrossoverDSP ---
-CrossoverDSP::CrossoverDSP(std::string_view name, uint8_t num_ways)
-    : DSPNode(name), num_output_ways_(num_ways > 0 && num_ways <= MAX_CROSSOVER_BANDS_OUTPUT ? num_ways : 2),
-      selected_band_output_idx_(0) {
-    if (num_output_ways_ < 2) num_output_ways_ = 2; 
-    for(size_t i=0; i < static_cast<size_t>(num_output_ways_) - 1; ++i) {
-        split_points_[i].cutoff_hz.start(1000.0f * (i+1), 0, sample_rate_);
-        split_points_[i].filter_type = CrossoverFilterType::LINKWITZ_RILEY;
-        split_points_[i].order = 4; // Default LR4 (24dB/oct)
-        update_split_filter_coeffs(i);
-    }
-    temp_processing_buffer_.resize(4096);
+CrossoverDSP::CrossoverDSP(std::string_view name) : DSPNode(name) {
+    bands_.resize(2); // default to 2 bands
     reset();
 }
-void CrossoverDSP::process(std::span<float> buffer) { (void)buffer; /* Placeholder */ }
-void CrossoverDSP::configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) { (void)args; (void)uart_ops; /* Placeholder */ }
-void CrossoverDSP::ramp_params() {
-    for(size_t i=0; i < static_cast<size_t>(num_output_ways_) - 1; ++i) {
-        if(split_points_[i].cutoff_hz.is_active()) {
-            split_points_[i].cutoff_hz.next();
-            update_split_filter_coeffs(i);
+
+static void apply_iir_stages(std::span<float> buffer,
+                             const std::vector<FilterStage>& stages,
+                             std::vector<std::array<float,2>>& state) {
+    if (stages.empty()) return;
+    if (state.size() != stages.size()) state.assign(stages.size(), {0.0f,0.0f});
+    for (size_t s = 0; s < stages.size(); ++s) {
+        const auto& st = stages[s];
+        auto& st_state = state[s];
+        for (float& sample : buffer) {
+            float wn = sample - st.a_coeffs[1]*st_state[0] - st.a_coeffs[2]*st_state[1];
+            float yn = st.b_coeffs[0]*wn + st.b_coeffs[1]*st_state[0] + st.b_coeffs[2]*st_state[1];
+            st_state[1] = st_state[0];
+            st_state[0] = wn;
+            sample = yn;
         }
     }
 }
-void CrossoverDSP::reset() {
-    for(auto& split : split_points_) {
-        for(auto& stage : split.lp_stages) stage.z_state.fill(0.0f);
-        for(auto& stage : split.hp_stages) stage.z_state.fill(0.0f);
+
+void CrossoverDSP::process(std::span<float> buffer) {
+    if (bands_.empty() || buffer.empty()) return;
+    size_t num_bands = bands_.size();
+    size_t samples_per_band = buffer.size() / num_bands;
+    if (samples_per_band == 0) return;
+
+    if (work_buffer_.size() < samples_per_band)
+        work_buffer_.resize(samples_per_band);
+    std::memcpy(work_buffer_.data(), buffer.data(), samples_per_band*sizeof(float));
+
+    for (size_t b = 0; b < num_bands; ++b) {
+        auto& band = bands_[b];
+        std::span<float> out(buffer.data() + b*samples_per_band, samples_per_band);
+        if (!band.enabled) {
+            std::fill(out.begin(), out.end(), 0.0f);
+            continue;
+        }
+        std::memcpy(out.data(), work_buffer_.data(), samples_per_band*sizeof(float));
+        if (!band.lowpass_stages.empty()) {
+            apply_iir_stages(out, band.lowpass_stages, band.lp_state);
+        } else if (!band.highpass_stages.empty()) {
+            apply_iir_stages(out, band.highpass_stages, band.hp_state);
+        }
     }
 }
-void CrossoverDSP::update_split_filter_coeffs(size_t split_idx) { 
-    if(split_idx >= static_cast<size_t>(num_output_ways_) - 1) return;
-    BandSplitPoint& sp = split_points_[split_idx];
-    std::string_view type_str = (sp.filter_type == CrossoverFilterType::LINKWITZ_RILEY) ? "linkwitz" :
-                                (sp.filter_type == CrossoverFilterType::BUTTERWORTH) ? "butterworth" : "bessel";
-    generate_crossover_coeffs(type_str, sp.order, sp.cutoff_hz.get_current(), sample_rate_, 
-                             sp.lp_stages, false);
-    generate_crossover_coeffs(type_str, sp.order, sp.cutoff_hz.get_current(), sample_rate_, 
-                             sp.hp_stages, true);
+
+void CrossoverDSP::configure(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
+    if (!args) {
+        if (uart_ops) uart_ops->puts("Usage: band <idx> <type> <lowpass|highpass> <order> <cutoff>\n");
+        return;
+    }
+    const char* p = args;
+    while (*p) {
+        while (*p == '\n' || *p == ' ' || *p == '\t') ++p;
+        if (!*p) break;
+        int idx = 0, order = 0;
+        char type_str[16] = {0};
+        char mode_str[16] = {0};
+        float cutoff = 0.0f;
+        int consumed = std::sscanf(p, "band %d %15s %15s %d %f", &idx, type_str, mode_str, &order, &cutoff);
+        if (consumed == 5 && idx >= 0) {
+            if (static_cast<size_t>(idx) >= bands_.size()) bands_.resize(idx+1);
+            bool is_highpass = std::string_view(mode_str) == "highpass";
+            Band& band = bands_[idx];
+            if (is_highpass) {
+                band.highpass_stages.clear();
+                generate_crossover_coeffs(type_str, order, cutoff, sample_rate_, band.highpass_stages, true);
+                band.hp_state.assign(band.highpass_stages.size(), {0.0f,0.0f});
+            } else {
+                band.lowpass_stages.clear();
+                generate_crossover_coeffs(type_str, order, cutoff, sample_rate_, band.lowpass_stages, false);
+                band.lp_state.assign(band.lowpass_stages.size(), {0.0f,0.0f});
+            }
+            band.enabled = true;
+        } else if (uart_ops) {
+            uart_ops->puts("Invalid crossover args\n");
+            return;
+        }
+        const char* nl = std::strchr(p, '\n');
+        if (nl) p = nl + 1; else break;
+    }
+}
+
+void CrossoverDSP::reset() {
+    for (auto& band : bands_) {
+        for (auto& st : band.lp_state) st = {0.0f,0.0f};
+        for (auto& st : band.hp_state) st = {0.0f,0.0f};
+    }
 }
 
 // --- NetworkAudioSinkSource ---
