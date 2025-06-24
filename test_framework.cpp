@@ -95,12 +95,13 @@ private:
     }
 
     static bool test_dsp_crossover(kernel::UARTDriverOps* uart_ops) {
-        kernel::CrossoverDSP crossover("test_cross");
-        std::array<float, 256> buffer = {};
-        buffer[0] = 1.0f;
+        kernel::dsp::CrossoverDSP crossover("test_cross");
+        crossover.configure("band 0 butterworth lowpass 2 1000\nband 1 butterworth highpass 2 1000", uart_ops);
+        std::array<float, 16> buffer{};
+        buffer[0] = 1.0f; // impulse in input region
         crossover.process(std::span<float>(buffer));
-        if (buffer[0] == 1.0f) {
-            uart_ops->puts("Crossover did not process input\n");
+        if (buffer[0] == 1.0f || buffer[8] == 0.0f) {
+            uart_ops->puts("Crossover processing failed\n");
             return false;
         }
         return true;

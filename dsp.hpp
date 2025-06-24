@@ -308,9 +308,12 @@ class CrossoverDSP : public DSPNode {
     struct Band {
         std::vector<FilterStage> lowpass_stages;
         std::vector<FilterStage> highpass_stages;
+        std::vector<std::array<float, 2>> lp_state;
+        std::vector<std::array<float, 2>> hp_state;
         bool enabled = false;
     };
     std::vector<Band> bands_;
+    std::vector<float> work_buffer_;
 public:
     explicit CrossoverDSP(std::string_view name);
     void process(std::span<float> buffer) override;
