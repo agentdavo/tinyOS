@@ -27,7 +27,7 @@ FixedMemoryPool g_software_timer_obj_pool;
 std::array<TraceEntry, TRACE_BUFFER_SIZE> g_trace_buffer;
 std::array<std::atomic<size_t>, MAX_CORES> g_trace_overflow_count{}; 
 alignas(16) std::array<std::array<uint8_t, DEFAULT_STACK_SIZE>, MAX_THREADS> g_task_stacks;
-std::array<TCB, MAX_THREADS> g_task_tfds;
+std::array<TCB, MAX_THREADS> g_task_tcbs;
 alignas(64) std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
 uint32_t Spinlock::next_lock_id_ = 0;
 
@@ -159,12 +159,12 @@ TCB* Scheduler::create_thread(void (*fn)(void*), const void* arg, int prio, int 
     if (num_active_tasks_.load(std::memory_order_relaxed) >= MAX_THREADS) return nullptr;
     size_t tcb_idx = MAX_THREADS;
     for (size_t i = 0; i < MAX_THREADS; ++i) {
-        if (g_task_tfds[i].state == TCB::State::INACTIVE || g_task_tfds[i].state == TCB::State::ZOMBIE) {
+        if (g_task_tcbs[i].state == TCB::State::INACTIVE || g_task_tcbs[i].state == TCB::State::ZOMBIE) {
             tcb_idx = i; break;
         }
     }
     if (tcb_idx == MAX_THREADS) return nullptr;
-    TCB& tcb = g_task_tfds[tcb_idx];
+    TCB& tcb = g_task_tcbs[tcb_idx];
     kernel::util::kmemset(&tcb, 0, sizeof(TCB));
     tcb.entry_point = fn; tcb.arg_ptr = const_cast<void*>(arg);
     tcb.priority = (prio >= 0 && static_cast<size_t>(prio) < MAX_PRIORITY_LEVELS) ? prio : 0;
