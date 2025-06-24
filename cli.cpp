@@ -10,10 +10,9 @@
  * @see cli.hpp, core.hpp, hal.hpp, audio.hpp, dsp.hpp, fs.hpp, gpio.hpp, net.hpp
  */
 
+#include "miniOS.hpp" // Include kernel core first
+#include "util.hpp"   // For kernel::util functions
 #include "cli.hpp"
-#include "core.hpp"
-#include "hal.hpp"
-#include "miniOS.hpp"
 #include "audio.hpp"
 #include "dsp.hpp"
 #include "fs.hpp"
@@ -101,8 +100,8 @@ int cli_gpio_config(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
         return -1;
     }
 
-    if (bank < 0 || static_cast<size_t>(bank) >= kernel::core::GPIO_BANKS ||
-        pin < 0 || static_cast<size_t>(pin) >= kernel::core::GPIO_PINS_PER_BANK) {
+    if (bank < 0 || static_cast<size_t>(bank) >= GPIO_BANKS ||
+        pin < 0 || static_cast<size_t>(pin) >= GPIO_PINS_PER_BANK) {
         uart_ops->puts("Invalid bank or pin\n");
         return -1;
     }
@@ -130,8 +129,8 @@ int cli_gpio_read(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
         return -1;
     }
 
-    if (bank < 0 || static_cast<size_t>(bank) >= kernel::core::GPIO_BANKS ||
-        pin < 0 || static_cast<size_t>(pin) >= kernel::core::GPIO_PINS_PER_BANK) {
+    if (bank < 0 || static_cast<size_t>(bank) >= GPIO_BANKS ||
+        pin < 0 || static_cast<size_t>(pin) >= GPIO_PINS_PER_BANK) {
         uart_ops->puts("Invalid bank or pin\n");
         return -1;
     }
@@ -151,8 +150,8 @@ int cli_gpio_write(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
         return -1;
     }
 
-    if (bank < 0 || static_cast<size_t>(bank) >= kernel::core::GPIO_BANKS ||
-        pin < 0 || static_cast<size_t>(pin) >= kernel::core::GPIO_PINS_PER_BANK) {
+    if (bank < 0 || static_cast<size_t>(bank) >= GPIO_BANKS ||
+        pin < 0 || static_cast<size_t>(pin) >= GPIO_PINS_PER_BANK) {
         uart_ops->puts("Invalid bank or pin\n");
         return -1;
     }
@@ -223,8 +222,8 @@ int cli_net_jitter(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
 }
 
 int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    char type_str[kernel::core::MAX_NAME_LENGTH] = {0};
-    char name_str[kernel::core::MAX_NAME_LENGTH] = {0};
+    char type_str[MAX_NAME_LENGTH] = {0};
+    char name_str[MAX_NAME_LENGTH] = {0};
     if (std::sscanf(args, "dsp_add %31s %31s", type_str, name_str) != 2) {
         uart_ops->puts("Usage: dsp_add <type> <name>\n");
         return -1;
@@ -275,7 +274,7 @@ int cli_dsp_add(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
 }
 
 int cli_dsp_remove(const char* args, kernel::hal::UARTDriverOps* uart_ops) {
-    char name[kernel::core::MAX_NAME_LENGTH] = {0};
+    char name[MAX_NAME_LENGTH] = {0};
     if (std::sscanf(args, "dsp_remove %31s", name) != 1) {
         uart_ops->puts("Usage: dsp_remove <name>\n");
         return -1;

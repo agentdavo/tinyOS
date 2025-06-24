@@ -16,6 +16,11 @@
 #include <cstdint>  // For uintptr_t
 #include <cstddef>  // For size_t
 
+// Convenient global aliases for common kernel constants
+inline constexpr size_t MAX_NAME_LENGTH = kernel::core::MAX_NAME_LENGTH;
+inline constexpr size_t GPIO_BANKS = kernel::hal::gpio::NUM_BANKS;
+inline constexpr size_t GPIO_PINS_PER_BANK = kernel::hal::gpio::PINS_PER_BANK;
+
 // Global kernel variables (defined in kernel_globals.cpp)
 namespace kernel {
     extern hal::Platform* g_platform;
