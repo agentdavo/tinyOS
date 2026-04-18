@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# EtherCAT runtime topology: explicit role and motion-axis ownership.
+# `slave` is the discovery-order slot on the selected master.
+
+binding	role=coupler	master=0	slave=0	name=main_coupler
+binding	role=din	master=0	slave=1	name=machine_din
+binding	role=dout	master=0	slave=2	name=machine_dout
+binding	role=ain	master=0	slave=3	name=machine_ain
+binding	role=encoder	master=0	slave=4	axis=0	axis_name=X	name=x_scale
+binding	role=servo	master=0	slave=5	axis=0	axis_name=X	channel=0	name=x_servo
+binding	role=servo	master=0	slave=6	axis=1	axis_name=Y	channel=0	name=y_servo
+binding	role=servo	master=0	slave=7	axis=2	axis_name=Z	channel=0	name=z_servo
+binding	role=servo	master=1	slave=0	axis=16	axis_name=C	channel=1	name=main_spindle
+binding	role=servo	master=1	slave=1	axis=17	axis_name=B	channel=1	name=tool_spindle

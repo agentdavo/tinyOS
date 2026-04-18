@@ -1,0 +1,14 @@
+# Kinematic chain configuration for mill-turn (2-channel) machine
+# Format: name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis
+#
+# Channel 0 (mill): X(0), Y(0), Z(0) - linear axes
+# Channel 1 (lathe): X(1), Z(1), C(1), B(1) - rotary + linear on separate turret
+
+name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis
+base,Fixed,-1,0,0,0,0,0,0,0,0,none,0,-1
+X,Linear,base,1,0,0,0,0,0,0,500,box,0,0
+Y,Linear,X,0,1,0,0,0,0,0,400,box,0,1
+Z,Linear,Y,0,0,1,0,0,0,0,300,box,0,2
+C,Rotary,Z,0,0,1,0,0.1,0,0,360,table,1,16
+B,Rotary,C,0,1,0,0,0.15,0,-120,120,pivot,1,17
+spindle,Fixed,B,0,0,0,0,0.25,0,0,0,spindle,1,18

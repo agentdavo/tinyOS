@@ -1,0 +1,240 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/**
+ * @file core.hpp
+ * @brief Core kernel types and constants for miniOS v1.7.
+ * @details
+ * Defines essential kernel types (TCB, Scheduler, Spinlock) and global constants
+ * for the miniOS RTOS. Designed to be dependency-free except for standard headers.
+ *
+ * @version 1.7
+ * @see core.cpp, hal.hpp
+ */
+
+#ifndef CORE_HPP
+#define CORE_HPP
+
+#include <cstdint>
+#include <cstddef>
+#include <span>
+#include <string_view>
+#include <optional>
+#include <atomic>
+#include <array>
+#include <concepts>
+
+namespace kernel {
+namespace core {
+
+// Global constants
+constexpr size_t MAX_THREADS = 16;
+constexpr size_t MAX_NAME_LENGTH = 32;
+constexpr size_t MAX_CORES = 4;
+constexpr size_t MAX_PRIORITY_LEVELS = 16;
+constexpr size_t TRACE_BUFFER_SIZE = 1024; 
+// EtherCAT code allocates 1514-byte frame buffers on the stack; 4 KB was too
+// tight for the motion + EC threads at -O0. Bump to 16 KB.
+constexpr size_t DEFAULT_STACK_SIZE = 16384;
+constexpr size_t MAX_SOFTWARE_TIMERS = 64;
+constexpr size_t MAX_LOCKS = 32; 
+constexpr size_t NET_MAX_PACKET_SIZE = 1500; 
+constexpr size_t MAX_AUDIO_CHANNELS = 2;
+// GPIO configuration
+constexpr size_t GPIO_BANKS = 4;
+constexpr size_t GPIO_PINS_PER_BANK = 32;
+
+// Stack-painting controls used by Scheduler::create_thread + TCB::stack_used_bytes.
+// At thread creation we fill the whole stack region with STACK_PAINT_BYTE; at
+// `top` time we count unbroken pattern bytes from the base up to estimate
+// high-water-mark usage. Toggle STACK_PAINT to false to disable.
+constexpr bool    STACK_PAINT      = true;
+constexpr uint8_t STACK_PAINT_BYTE = 0xAA;
+// The lowest few bytes of every stack get touched by the initial entry path
+// regardless of whether the thread runs (compiler-emitted prologue, our
+// thread_bootstrap setup, etc). Skip them so they don't count as "used" and
+// give every brand-new thread a misleading non-zero watermark.
+constexpr size_t  STACK_PAINT_SKIP_BOTTOM = 16;
+
+// Forward declarations
+struct PerCPUData; // Forward declaration
+
+alignas(64) extern std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
+
+class Spinlock {
+    std::atomic<bool> lock_flag_{false};
+    uint32_t lock_id_;
+    static uint32_t next_lock_id_;
+public:
+    Spinlock() noexcept;
+    void acquire_isr_safe() noexcept;
+    void release_isr_safe() noexcept;
+    void acquire_general() noexcept;
+    void release_general() noexcept;
+    uint32_t get_id() const noexcept { return lock_id_; }
+};
+
+class ScopedLock {
+    Spinlock& lock_;
+public:
+    explicit ScopedLock(Spinlock& l) noexcept : lock_(l) { lock_.acquire_general(); }
+    ~ScopedLock() { lock_.release_general(); }
+    ScopedLock(const ScopedLock&) = delete;
+    ScopedLock& operator=(const ScopedLock&) = delete;
+};
+
+class ScopedISRLock {
+    Spinlock& lock_;
+public:
+    explicit ScopedISRLock(Spinlock& l) noexcept : lock_(l) { lock_.acquire_isr_safe(); }
+    ~ScopedISRLock() { lock_.release_isr_safe(); }
+    ScopedISRLock(const ScopedISRLock&) = delete;
+    ScopedISRLock& operator=(const ScopedISRLock&) = delete;
+};
+
+class FixedMemoryPool {
+    struct Block { Block* next; };
+    Block* free_head_ = nullptr;
+    uint8_t* pool_memory_start_ = nullptr;
+    size_t block_storage_size_ = 0; 
+    size_t header_actual_size_ = 0; 
+    size_t user_data_offset_ = 0;   
+    size_t num_total_blocks_ = 0;
+    size_t num_free_blocks_ = 0;
+    Spinlock pool_lock_;
+public:
+    FixedMemoryPool() = default;
+    bool init(void* base, size_t num_blocks, size_t blk_sz_user, size_t align_user_data);
+    void* allocate();
+    void free_block(void* ptr);
+    size_t get_free_count() const noexcept { ScopedLock lock(const_cast<Spinlock&>(pool_lock_)); return num_free_blocks_; }
+    size_t get_total_count() const noexcept { return num_total_blocks_; }
+};
+
+template<typename T, size_t Capacity>
+class SPSCQueue {
+    static_assert(Capacity > 0 && (Capacity & (Capacity - 1)) == 0, "Capacity must be a power of 2");
+    std::array<T*, Capacity> items_;
+    alignas(64) std::atomic<size_t> head_{0}; 
+    alignas(64) std::atomic<size_t> tail_{0};
+public:
+    SPSCQueue() = default;
+    bool enqueue(T* item) noexcept;
+    T* dequeue() noexcept;
+    bool is_empty() const noexcept { return head_.load(std::memory_order_acquire) == tail_.load(std::memory_order_acquire); }
+    bool is_full() const noexcept {
+        size_t next_tail = (tail_.load(std::memory_order_acquire) + 1) & (Capacity - 1);
+        return next_tail == head_.load(std::memory_order_acquire);
+    }
+    size_t count() const noexcept {
+        return (tail_.load(std::memory_order_relaxed) - head_.load(std::memory_order_relaxed) + Capacity) & (Capacity - 1);
+    }
+};
+
+// TCB is laid out to match the byte offsets used by cpu_arm64.S (TCB_REGS_X0_OFFSET
+// etc). Do not reorder or insert members without updating the .S. Member order is
+// intentionally public to assembly via offsets; C++ access is restricted to the
+// scheduler and its policies.
+struct TCB {
+    uint64_t regs[31];
+    uint64_t sp;
+    uint64_t pc;
+    uint64_t pstate;
+    void (*entry_point)(void*);
+    void* arg_ptr;
+    uint8_t* stack_base;
+    size_t stack_size;
+    enum class State { INACTIVE, READY, RUNNING, BLOCKED, ZOMBIE } state = State::INACTIVE;
+    int priority;
+    int core_affinity;
+    uint32_t cpu_id_running_on;
+    char name[MAX_NAME_LENGTH];
+    TCB* next_in_q = nullptr;
+    std::atomic<bool> event_flag{false};
+    uint64_t deadline_us = 0;
+
+    // Walk the stack from base up, counting unbroken STACK_PAINT_BYTE bytes
+    // (skipping STACK_PAINT_SKIP_BOTTOM). Returns stack_size - unused. If
+    // STACK_PAINT is disabled or the stack pointer is null, returns 0.
+    size_t stack_used_bytes() const noexcept {
+        if (!STACK_PAINT || !stack_base || stack_size == 0) return 0;
+        size_t skip = (STACK_PAINT_SKIP_BOTTOM < stack_size) ? STACK_PAINT_SKIP_BOTTOM : stack_size;
+        size_t unused = skip;
+        for (size_t i = skip; i < stack_size; ++i) {
+            if (stack_base[i] != STACK_PAINT_BYTE) break;
+            ++unused;
+        }
+        return (unused < stack_size) ? (stack_size - unused) : 0;
+    }
+};
+
+struct TraceEntry { 
+    uint64_t timestamp_us;
+    uint32_t core_id;
+    const char* event_str; 
+    uintptr_t arg1, arg2;
+};
+
+struct PerCPUData {
+    TCB* current_thread = nullptr; 
+    TCB* idle_thread = nullptr;    
+};
+
+// Declare g_per_cpu_data after PerCPUData definition
+alignas(64) extern std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
+
+// Storage for all thread control blocks. The scheduler hands them out from
+// this pool; CLI introspection (e.g. `top`) walks the array.
+extern std::array<TCB, MAX_THREADS> g_task_tcbs;
+
+// Software-timer object pool (used by hal::timer::SoftwareTimer allocations).
+// Exposed for CLI introspection (`top` reports free/total).
+extern uint8_t g_software_timer_obj_pool_mem[];
+extern FixedMemoryPool g_software_timer_obj_pool;
+
+class SchedulerPolicy {
+public:
+    virtual ~SchedulerPolicy() = default;
+    virtual TCB* select_next_task(uint32_t core_id, TCB* current_task) = 0;
+    virtual void add_to_ready_queue(TCB* tcb, uint32_t core_id) = 0;
+};
+
+class EDFPolicy : public SchedulerPolicy {
+public:
+    TCB* select_next_task(uint32_t core_id, TCB* current_task) override;
+    void add_to_ready_queue(TCB* tcb, uint32_t core_id) override;
+};
+
+class Scheduler {
+    std::array<std::array<TCB*, MAX_PRIORITY_LEVELS>, MAX_CORES> ready_qs_ = {};
+    std::atomic<size_t> num_active_tasks_{0}; 
+    Spinlock scheduler_global_lock_;          
+    std::array<Spinlock, MAX_CORES> per_core_locks_; 
+    SchedulerPolicy* policy_ = nullptr;
+public:
+    Scheduler();
+    ~Scheduler();
+    void set_policy(SchedulerPolicy* p) noexcept { policy_ = p; }
+    TCB* create_thread(void (*fn)(void*), const void* arg, int prio, int affinity, const char* name, bool is_idle = false, uint64_t deadline_us = 0);
+    void start_core_scheduler(uint32_t core_id); 
+    void preemptive_tick(uint32_t core_id);      
+    void yield(uint32_t core_id);                
+    void signal_event_isr(TCB* tcb);             
+    void wait_for_event(TCB* tcb);               
+    size_t get_num_active_tasks() const noexcept { return num_active_tasks_.load(std::memory_order_relaxed); }
+    Spinlock& get_global_scheduler_lock() noexcept { return scheduler_global_lock_; }
+friend class EDFPolicy; 
+private:
+    TCB* pop_highest_priority_ready_task(uint32_t current_core_id);
+    void schedule(uint32_t core_id, bool is_preemption);
+public:
+    static void idle_thread_func(void* arg); 
+private:
+    static void thread_bootstrap(TCB* self); 
+};
+
+} // namespace core
+} // namespace kernel
+
+// Define kernel_g_per_cpu_data to alias g_per_cpu_data for C linkage
+extern "C" kernel::core::PerCPUData* const kernel_g_per_cpu_data;
+
+#endif // CORE_HPP

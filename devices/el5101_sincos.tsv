@@ -1,0 +1,37 @@
+# Beckhoff EL5101 — 1-channel sincos encoder interface.
+# Source: ethercat/esi/Beckhoff EL5xxx.xml (ProductCode #x13ed3052, Rev #x3f90000)
+# Role: Sincos analog encoder support for servo drives requiring high-resolution
+#       position feedback. Sincos provides sinusoidal A/B signals with absolute
+#       position reference via EnDat or Hiperface protocol.
+#
+# Specification:
+#   - 1 channel, 5V encoder supply
+#   - EBus current: 130 mA
+#   - Supports sincos (analog), SSI (absolute), and incremental encoders
+#   - BiSS-C interface for absolute encoders
+#   - Resolution: up to 32-bit position
+#
+# PDO mapping (TxPDO 0x1A00):
+#   0x6000:01 Status (16b) - Encoder status bits
+#   0x6000:11 Position (32b) - Current position in counts
+#   0x6000:12 Speed (16b) - Current speed in rpm
+#   0x6000:14 Torque (16b) - Motor torque (when using motor feedback)
+
+device	type=encoder	name=EL5101	vid=0x00000002	pid=0x13ed3052	rev_min=0x3f90000	profile=5001	channels=1	dc_assign=0x0300	sync_modes=DC-Sync|SM-Sync	ebus_current_ma=130	features=sincos|ssi|biss
+
+# === PDO mapping ===
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x01	bits=16	pin=status	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x11	bits=32	pin=position	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x12	bits=16	pin=speed	type=i16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x14	bits=16	pin=torque	type=i16
+
+# === SDO configuration ===
+sdo_init	0x8000	0x01	8	0	Encoder Type: 0=Sincos, 1=SSI, 2=BiSS-C
+sdo_init	0x8000	0x02	8	0	Protocol: 0=EnDat, 1=Hiperface, 2=BiSS-C
+sdo_init	0x8000	0x06	8	10	Clock frequency (10 = 1 MHz)
+sdo_init	0x8000	0x07	8	0	Code: 0=Binary, 1=Gray
+
+# === Object Dictionary defaults ===
+od	0x1018	0x01	32	u32	ro	2	Vendor ID (Beckhoff)
+od	0x1018	0x02	32	u32	ro	0x13ed3052	Product Code (EL5101)
+od	0x6000	0x00	16	u16	ro	0	Statusword

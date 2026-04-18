@@ -1,0 +1,33 @@
+# Beckhoff EL5021 — 1-channel sincos encoder interface.
+# Source: ethercat/esi/Beckhoff EL5xxx.xml (ProductCode #x139d3052, Rev #x00100000)
+# Role: Sin/Cos analog encoder for high-resolution position feedback.
+#       Note: EL5021 is sincos, not incremental - use EL5101 for incremental.
+#
+# Specification:
+#   - 1 channel, 5V encoder supply (via internal reference)
+#   - EBus current: 100 mA
+#   - Supports sincos analog signals with index pulse
+#   - Resolution: 32-bit position counter
+#
+# PDO mapping (TxPDO 0x1A00):
+#   0x6000:01 Status (16b) - Encoder status bits
+#   0x6000:11 Position (32b) - Current position in counts
+#   0x6000:12 Speed (16b) - Current speed
+#   Index pulse is included in position when available
+
+device	type=encoder	name=EL5021	vid=0x00000002	pid=0x139d3052	rev_min=0x00100000	profile=5001	channels=1	dc_assign=0x0300	sync_modes=DC-Sync|SM-Sync	ebus_current_ma=100	features=sincos
+
+# === PDO mapping ===
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x01	bits=16	pin=status	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x11	bits=32	pin=position	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x12	bits=16	pin=speed	type=i16
+
+# === SDO configuration ===
+sdo_init	0x8000	0x01	8	0	Encoder Type: 0=Sincos
+sdo_init	0x8000	0x06	8	5	Clock frequency: 5 = 2 MHz
+sdo_init	0x8000	0x07	8	0	Code: 0=Binary
+
+# === Object Dictionary defaults ===
+od	0x1018	0x01	32	u32	ro	2	Vendor ID (Beckhoff)
+od	0x1018	0x02	32	u32	ro	0x139d3052	Product Code (EL5021)
+od	0x6000	0x00	16	u16	ro	0	Statusword

@@ -1,0 +1,30 @@
+solid miniOS_demo_tetra
+  facet normal 0.0 -1.0 0.0
+    outer loop
+      vertex 0.0 0.0 0.0
+      vertex 1.0 0.0 0.0
+      vertex 0.5 0.0 0.866
+    endloop
+  endfacet
+  facet normal 0.0 0.707 -0.707
+    outer loop
+      vertex 0.0 0.0 0.0
+      vertex 0.5 0.816 0.289
+      vertex 1.0 0.0 0.0
+    endloop
+  endfacet
+  facet normal 0.816 0.408 0.408
+    outer loop
+      vertex 1.0 0.0 0.0
+      vertex 0.5 0.816 0.289
+      vertex 0.5 0.0 0.866
+    endloop
+  endfacet
+  facet normal -0.816 0.408 0.408
+    outer loop
+      vertex 0.0 0.0 0.0
+      vertex 0.5 0.0 0.866
+      vertex 0.5 0.816 0.289
+    endloop
+  endfacet
+endsolid miniOS_demo_tetra

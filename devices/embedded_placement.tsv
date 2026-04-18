@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Runtime thread/NIC placement.
+# Defaults preserve the current RT-oriented split. Change these values to move
+# GUI, motion, EtherCAT masters, and NIC IRQ routing between cores.
+
+placement	key=cli_core	value=0
+placement	key=uart_io_core	value=0
+placement	key=ui_core	value=0
+placement	key=hmi_irq_core	value=0
+placement	key=motion_core	value=1
+placement	key=gcode_core	value=0
+placement	key=macro_core	value=0
+placement	key=ladder_core	value=0
+placement	key=probe_core	value=0
+placement	key=bus_config_core	value=0
+placement	key=ec_a_core	value=2
+placement	key=ec_b_core	value=3
+placement	key=fake_slave_core	value=3
+placement	key=hmi_nic	value=0
+placement	key=ec_a_nic	value=1
+placement	key=ec_b_nic	value=2
+placement	key=fake_slave_nic	value=2

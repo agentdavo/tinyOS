@@ -1,0 +1,34 @@
+# Beckhoff EL1809 — 16-channel digital input, 24 V DC, 3 ms filter.
+# Source: devices/ethercat/esi/Beckhoff EL1xxx.xml (ProductCode=#x07113052).
+#
+# No mailbox: the terminal has a single SyncManager (SM0 Inputs) and does
+# NOT support CoE. Identity probing via 0x1018 upload_sdo fails — the
+# terminal is treated as a coupler-class device by `bus_config` (no SDO
+# init, no DC, no PDO re-assign). PDO mapping is Fixed per ESI.
+#
+# Process data — 16 TxPDOs (Sm=0, Fixed=1):
+#   0x1A00 Channel 1 -> 0x6000:01 (Input, 1 bit)
+#   0x1A01 Channel 2 -> 0x6010:01
+#   ... 0x1A0F Channel 16 -> 0x60F0:01
+# Total TxPDO image = 16 × 1 bit = 2 bytes (byte-packed in order).
+
+device	type=digital_input	name=EL1809	vid=0x00000002	pid=0x07113052	ebus_current_ma=100	cycle_min_us=0	cycle_quant_us=0	channels=16
+
+# Fixed PDO mapping per ESI. Declared for completeness; since no CoE is
+# available we don't program these — the terminal ships with this layout.
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x01	bits=1	pin=di_ch01	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A01	entry=0x6010	sub=0x01	bits=1	pin=di_ch02	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A02	entry=0x6020	sub=0x01	bits=1	pin=di_ch03	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A03	entry=0x6030	sub=0x01	bits=1	pin=di_ch04	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A04	entry=0x6040	sub=0x01	bits=1	pin=di_ch05	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A05	entry=0x6050	sub=0x01	bits=1	pin=di_ch06	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A06	entry=0x6060	sub=0x01	bits=1	pin=di_ch07	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A07	entry=0x6070	sub=0x01	bits=1	pin=di_ch08	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A08	entry=0x6080	sub=0x01	bits=1	pin=di_ch09	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A09	entry=0x6090	sub=0x01	bits=1	pin=di_ch10	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A0A	entry=0x60A0	sub=0x01	bits=1	pin=di_ch11	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A0B	entry=0x60B0	sub=0x01	bits=1	pin=di_ch12	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A0C	entry=0x60C0	sub=0x01	bits=1	pin=di_ch13	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A0D	entry=0x60D0	sub=0x01	bits=1	pin=di_ch14	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A0E	entry=0x60E0	sub=0x01	bits=1	pin=di_ch15	type=bool
+pdo	slave=0	sm=0	dir=tx	pdo=0x1A0F	entry=0x60F0	sub=0x01	bits=1	pin=di_ch16	type=bool

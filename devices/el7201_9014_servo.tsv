@@ -1,0 +1,57 @@
+# Beckhoff EL7201-9014 — 1-channel compact servo drive terminal, resolver.
+# Source: ethercat/esi/Beckhoff EL72xx.xml (ProductCode #x1c213052).
+#
+# Relation to the rest of the EL72xx family:
+#   EL7201  2.8 A / 50 V — resolver feedback (this file)
+#   EL7211  4.5 A / 50 V — OCT / Hiperface DSL absolute feedback
+#   EL7221  8.0 A / 50 V — OCT / Hiperface DSL absolute feedback
+# All three share the DS402 profile, the same SM layout, the same
+# `AssignActivate = 0x0700` DC programming, and the same CSP PDO pair
+# (0x1600 / 0x1A00) once `0x8012:08 = 1` selects the DS402 profile. The
+# only runtime differences are the current rating and the feedback source
+# — the EL7201 must load resolver-specific scaling from 0x8060 (FB
+# Resolver settings) instead of pulling from OCT's electronic nameplate.
+#
+# The -9014 suffix is the CE-approved variant with STO input; all three
+# base models have -9014 revisions.
+
+device	type=servo	name=EL7201-9014	vid=0x00000002	pid=0x1c213052	rev_min=0x001a2336	profile=CiA-402|MDP742	ebus_current_ma=120	dc_assign=0x0700	cycle_min_us=125	cycle_quant_us=125	sync_modes=DC-Sync|SM-Sync	features=resolver,STO,motor_brake,2x_end_pos
+
+# === Pre-Op SDO initialisation ===
+sdo_init	0x60C2	0x01	8	25	ITP value: 25 × 10^-5 s = 250 µs
+sdo_init	0x60C2	0x02	8	-5	ITP index: 10^-5 seconds
+sdo_init	0x6060	0x00	8	0x08	Modes of Operation = CSP (DS402 profile)
+sdo_init	0x6072	0x00	16	1000	Max torque = 100.0 %
+sdo_init	0x8012	0x08	8	1	DRV Feature: profile = DS402 (CiA-402)
+
+# === PDO mapping — CSP (DS402 profile, 0x1600 / 0x1A00) ===
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x6040	sub=0x00	bits=16	pin=controlword	type=u16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x6060	sub=0x00	bits=8	pin=modes_of_operation	type=i8
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x607A	sub=0x00	bits=32	pin=target_position	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6041	sub=0x00	bits=16	pin=statusword	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6061	sub=0x00	bits=8	pin=modes_of_operation_display	type=i8
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6064	sub=0x00	bits=32	pin=position_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x603F	sub=0x00	bits=16	pin=error_code	type=u16
+
+# === CSV fallback (0x1601 / 0x1A01) ===
+pdo	slave=0	sm=2	dir=rx	pdo=0x1601	entry=0x6040	sub=0x00	bits=16	pin=controlword	type=u16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1601	entry=0x60FF	sub=0x00	bits=32	pin=target_velocity	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6041	sub=0x00	bits=16	pin=statusword	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6064	sub=0x00	bits=32	pin=position_actual	type=i32
+
+# === OD defaults ===
+od	0x1018	0x01	32	u32	ro	2	Vendor ID (Beckhoff)
+od	0x1018	0x02	32	u32	ro	0x1c213052	Product Code (EL7201-9014)
+od	0x6040	0x00	16	u16	rw	0	Controlword
+od	0x6041	0x00	16	u16	ro	0	Statusword
+od	0x6060	0x00	8	i8	rw	8	Modes of Operation (default CSP)
+od	0x6061	0x00	8	i8	ro	0	Modes of Operation Display
+od	0x6064	0x00	32	i32	ro	0	Position actual value
+od	0x607A	0x00	32	i32	rw	0	Target position
+od	0x6072	0x00	16	u16	rw	1000	Max torque (permille)
+od	0x60C2	0x01	8	u8	rw	25	Interpolation time period value
+od	0x60C2	0x02	8	i8	rw	-5	Interpolation time period index
+od	0x60FF	0x00	32	i32	rw	0	Target velocity
+# Resolver-specific (EL7201 only) — poles + scaling stored in 0x8060.
+od	0x8060	0x00	8	u8	rw	-	FB Resolver: number of poles (motor-specific)
+od	0x8012	0x08	8	u8	rw	1	Feature select: profile (0 MDP742, 1 DS402)

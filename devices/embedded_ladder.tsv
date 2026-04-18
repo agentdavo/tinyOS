@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+rung	id=door_interlock	type=bool	lhs=door_closed	compare=eq	rhs=0	out=cycle_inhibit	true=1	false=0
+rung	id=toolpod_interlock	type=bool	lhs=toolpod_locked	compare=eq	rhs=0	out=cycle_inhibit	true=1	false=0
+rung	id=drawer_open_feedback	type=bool	lhs=drawer_open_cmd	compare=eq	rhs=1	out=drawer_open_fb	true=1	false=0
+rung	id=drawer_closed_feedback	type=bool	lhs=drawer_close_cmd	compare=eq	rhs=1	out=drawer_closed_fb	true=1	false=0
+rung	id=measure_done_reset	type=bool	lhs=tool_measure_request	compare=eq	rhs=0	out=tool_measure_done	true=0	false=1

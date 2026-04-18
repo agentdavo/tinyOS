@@ -1,0 +1,2260 @@
+<!DOCTYPE html>
+<!--
+  miniOS Machine / Kinematic-Chain Editor
+  SPDX-License-Identifier: MIT OR Apache-2.0
+
+  Purpose:
+    Visual editor for the two TSV files the kernel reads at boot:
+      devices/kinematic_*.tsv      (parsed by render::kinematic::load_chain_from_tsv)
+      devices/embedded_toolpods.tsv (parsed by machine::toolpods::Service::load_tsv)
+
+    Round-trips both files byte-identical where possible, drives a live
+    Three.js preview of the resulting forward-kinematics chain, and can
+    ingest Wavefront .obj files (enforcing the kernel's 4096v / 8192i cap
+    from render/obj_importer.hpp).
+
+  Schema:
+    Kinematic TSV — 14 or 15 columns, plus optional 15th "obj_file":
+      name, type, parent, dir_x, dir_y, dir_z, off_x, off_y, off_z,
+      min, max, mesh, channel, motion_axis [, obj_file]
+    Existing 14-col files still load; the editor always saves 15 cols
+    (empty trailing cell for rows with no OBJ).
+
+    Toolpods TSV — line-based, key=value:
+      pod    id=.. title=.. axis=.. motion=linear|rotary clamp_required=0|1
+      station pod=.. index=.. position=.. physical_tool=.. virtual_tool=..
+              x=.. y=.. z=.. a=.. name=..
+
+  Round-trip philosophy (mirrors tools/ui_editor):
+    - Comments and blank lines hang off the "following" record.
+    - Field order for toolpods is preserved via __order per record.
+    - Kinematic rows are positional, so we just emit 15 comma-separated
+      cells in the fixed schema order.
+
+  Keyboard shortcuts:
+    Delete / Backspace   remove selected axis / pod / station
+    Ctrl+S               save both TSVs
+    Ctrl+Z / Ctrl+Y      undo / redo
+    F                    frame the viewport on the chain
+    T                    run "test cycle" sweep
+    Escape               clear selection
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>miniOS Machine Editor</title>
+<style>
+  :root {
+    --bg:#0f172a; --panel:#1e293b; --panel2:#111827; --border:#334155;
+    --ink:#e2e8f0; --muted:#94a3b8; --accent:#2563eb; --bad:#dc2626;
+    --ok:#059669; --warn:#f59e0b; --pink:#db2777;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; height:100%; background:var(--bg); color:var(--ink);
+    font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; font-size:13px; }
+  button, select, input[type=text], input[type=number] {
+    background:var(--panel); color:var(--ink); border:1px solid var(--border);
+    padding:4px 8px; border-radius:3px; font:inherit;
+  }
+  button { cursor:pointer; }
+  button:hover { background:var(--border); }
+  button.primary { background:var(--accent); border-color:var(--accent); }
+  button.warn { background:var(--warn); border-color:var(--warn); color:#111; }
+  button.bad { background:var(--bad); border-color:var(--bad); }
+  .invalid { border-color:var(--bad)!important; background:#4c1d1d!important; }
+  .flagged { outline:2px solid var(--pink); }
+
+  #app { display:grid; grid-template-rows: 44px 1fr; height:100%; }
+
+  /* topbar */
+  #topbar { display:flex; align-items:center; gap:8px; padding:6px 10px;
+    background:var(--panel2); border-bottom:1px solid var(--border); }
+  #topbar .sep { width:1px; height:24px; background:var(--border); margin:0 4px; }
+  #status { color:var(--muted); font-size:11px; margin-left:auto; white-space:nowrap; }
+
+  /* layout */
+  #main { display:grid; grid-template-columns: 260px 1fr 340px; height:100%;
+    overflow:hidden; min-height:0; }
+  #left, #right { background:var(--panel2); overflow-y:auto; padding:8px; min-height:0; }
+  #left { border-right:1px solid var(--border); }
+  #right { border-left:1px solid var(--border); }
+  #centre { display:grid; grid-template-rows: 1fr 160px; min-height:0; min-width:0; }
+  #viewport { position:relative; background:#020617; overflow:hidden; }
+  #viewport canvas { display:block; width:100%; height:100%; }
+  #viewport.drag-over { outline:3px dashed var(--accent); outline-offset:-6px; }
+  #dro { background:var(--panel2); border-top:1px solid var(--border); overflow:auto;
+    padding:6px 8px; font-family: ui-monospace, Menlo, monospace; font-size:11px; }
+  #dro table { width:100%; border-collapse:collapse; }
+  #dro th, #dro td { padding:2px 6px; text-align:left; border-bottom:1px solid var(--border);
+    white-space:nowrap; }
+  #dro th { color:var(--muted); font-weight:normal; font-size:10px; text-transform:uppercase; }
+  #dro tr.flagged td { background:#4a1d45; }
+  #dro input[type=range] { width:140px; vertical-align:middle; }
+  #dro .num { font-variant-numeric: tabular-nums; color:#9ccfff; }
+
+  /* left panel */
+  h4 { margin:4px 0 6px; font-size:11px; color:var(--muted);
+    text-transform:uppercase; letter-spacing:0.05em; }
+  #tree { list-style:none; margin:0; padding:0; }
+  #tree li { padding:3px 4px; border-radius:3px; cursor:pointer; user-select:none; }
+  #tree li.sel { background:var(--accent); }
+  #tree li:hover { background:var(--border); }
+  #tree .type { color:var(--muted); font-size:10px; margin-left:6px; }
+  #tree .dragging { opacity:0.4; }
+  #tree li.drop-above { border-top:2px solid var(--accent); }
+  #tree li.drop-below { border-bottom:2px solid var(--accent); }
+  #tree li.drop-child { background:#1e3a8a; }
+  #podlist { list-style:none; margin:0; padding:0; }
+  #podlist li { padding:3px 4px; border-radius:3px; cursor:pointer; }
+  #podlist li.sel { background:var(--accent); }
+  #podlist li.station { padding-left:20px; font-size:11px; color:var(--muted); }
+  #podlist li.station.sel { color:var(--ink); }
+
+  /* inspector */
+  .row { display:grid; grid-template-columns: 90px 1fr; gap:6px; margin-bottom:4px;
+    align-items:center; }
+  .row label { color:var(--muted); font-size:11px; }
+  .row.split { grid-template-columns: 90px 1fr 1fr 1fr; }
+  .row input, .row select { width:100%; }
+  .row.wide { grid-template-columns: 1fr; }
+  .warn-text { color:var(--warn); font-size:10px; margin-top:4px; }
+  .bad-text { color:var(--bad); font-size:10px; margin-top:4px; }
+  details summary { cursor:pointer; padding:2px 0; color:var(--muted); }
+  .dir-radio { display:flex; flex-wrap:wrap; gap:3px; }
+  .dir-radio button { padding:2px 6px; font-size:11px; }
+  .dir-radio button.active { background:var(--accent); border-color:var(--accent); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <button id="btnNew">New</button>
+    <button id="btnOpen">Open Kinematic</button>
+    <button id="btnOpenPods">Open Toolpods</button>
+    <button id="btnSave">Save</button>
+    <button id="btnSaveAs">Save As</button>
+    <button id="btnExport">Export bundle</button>
+    <input type="file" id="fileKin" accept=".tsv" style="display:none">
+    <input type="file" id="filePods" accept=".tsv" style="display:none">
+    <input type="file" id="fileObj" accept=".obj,.stl" style="display:none">
+    <!-- webkitdirectory makes the picker open a folder chooser; every
+         File.webkitRelativePath lands as e.g. "mx850/MX850 - DOC1227B.STL"
+         so the cache key matches the TSV's obj_file column verbatim. -->
+    <input type="file" id="fileDir" webkitdirectory directory multiple style="display:none">
+    <span class="sep"></span>
+    <label>Template:
+      <select id="tpl">
+        <option value="Mill3Axis">Mill3Axis</option>
+        <option value="MillTurn2Channel">MillTurn2Channel</option>
+        <option value="Mill5Axis">Mill5Axis</option>
+        <option value="Custom">Custom</option>
+      </select>
+    </label>
+    <button id="btnLoadTpl">Load template</button>
+    <span class="sep"></span>
+    <button id="btnLoadMeshes" title="Load a folder of .obj/.stl meshes. File names (relative to the folder) become cache keys, so mx850/foo.stl resolves.">Load meshes</button>
+    <span class="sep"></span>
+    <button id="btnFrame" title="Fit view to scene (F)">Fit</button>
+    <button id="btnViewTop" title="Top-down view (T)">Top</button>
+    <button id="btnViewFront" title="Front view (Y)">Front</button>
+    <button id="btnViewSide" title="Side view (X)">Side</button>
+    <button id="btnViewIso" title="Isometric (I)">Iso</button>
+    <label title="Smooth shading: merge shared vertices and average normals. Off = per-face flat shading (recommended for machined parts)."><input type="checkbox" id="chkSmooth"> smooth</label>
+    <button id="btnCycle" title="Test cycle sweep (shift+T)">Test cycle</button>
+    <span id="status">ready</span>
+  </div>
+
+  <div id="main">
+    <div id="left">
+      <h4>Kinematic chain</h4>
+      <ul id="tree"></ul>
+      <div style="display:flex; gap:4px; margin-top:6px; flex-wrap:wrap">
+        <button id="btnAddLinear">+ Linear</button>
+        <button id="btnAddRotary">+ Rotary</button>
+        <button id="btnAddFixed">+ Fixed</button>
+        <button id="btnDelAxis" class="bad">delete</button>
+      </div>
+      <h4 style="margin-top:14px">Tool pods</h4>
+      <ul id="podlist"></ul>
+      <div style="display:flex; gap:4px; margin-top:6px">
+        <button id="btnAddPod">+ pod</button>
+        <button id="btnAddStation">+ station</button>
+        <button id="btnDelPod" class="bad">delete</button>
+      </div>
+      <h4 style="margin-top:14px">Help</h4>
+      <div style="color:var(--muted); font-size:11px; line-height:1.4">
+        Drag-drop tree rows to reparent.<br>
+        Drop .obj or .stl onto viewport to attach to the selected axis.<br>
+        Slide axis values in the DRO to drive the preview.<br>
+        F=frame, T=test cycle, Del=remove, Ctrl+S=save, Ctrl+Z/Y=undo.
+      </div>
+    </div>
+
+    <div id="centre">
+      <div id="viewport"></div>
+      <div id="dro">
+        <table id="drotbl">
+          <thead><tr>
+            <th>axis</th><th>type</th><th>pos</th><th>slider</th>
+            <th>world dir</th><th>world origin</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="right">
+      <h4>Inspector</h4>
+      <div id="props">
+        <div style="color:var(--muted)">No item selected.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/three.min.js"></script>
+<script src="vendor/OrbitControls.js"></script>
+<script src="vendor/OBJLoader.js"></script>
+<script src="vendor/STLLoader.js"></script>
+<script src="vendor/jszip.min.js"></script>
+<script>
+"use strict";
+
+/* =========================================================================
+ *  Constants mirrored from the kernel.
+ * ========================================================================= */
+const KIN_HEADER =
+  "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis";
+const KIN_HEADER_V15 = KIN_HEADER + ",obj_file";
+const MAX_AXES = 12;
+const MAX_CHANNELS = 2;
+const OBJ_MAX_POSITIONS = 1024;
+const OBJ_MAX_NORMALS   = 1024;
+const OBJ_MAX_UVS       = 1024;
+const OBJ_MAX_VERTICES  = 4096;
+const OBJ_MAX_INDICES   = 8192;
+const OBJ_LS_MAX_BYTES  = 256 * 1024;   // per-mesh base64 cap in localStorage
+
+const AXIS_TYPES = ["Fixed", "Linear", "Rotary"];
+const MESH_SLOTS = ["none","base","x_axis","y_axis","z_axis","spindle","table","pivot",
+                    "box","cylinder","obj"];
+const DIR_PRESETS = [
+  {label:"+X", v:[1,0,0]}, {label:"-X", v:[-1,0,0]},
+  {label:"+Y", v:[0,1,0]}, {label:"-Y", v:[0,-1,0]},
+  {label:"+Z", v:[0,0,1]}, {label:"-Z", v:[0,0,-1]},
+];
+
+// Standard templates replicated from render/kinematic_model.cpp create_standard_machine.
+const TEMPLATES = {
+  Mill3Axis: {
+    channels: 1,
+    axes: [
+      ["base",   "Fixed",  "-1",  [0,0,0], [0,0,0],     [0,0],      "none",    0, -1],
+      ["X",      "Linear", "base",[1,0,0], [0,0,0],     [0,1000],   "box",     0,  0],
+      ["Y",      "Linear", "X",   [0,1,0], [0,0,0],     [0,800],    "box",     0,  1],
+      ["Z",      "Linear", "Y",   [0,0,1], [0,0,0],     [0,500],    "box",     0,  2],
+      ["spindle","Fixed",  "Z",   [0,0,0], [0,0.15,0],  [0,0],      "spindle", 0,  3],
+    ],
+  },
+  MillTurn2Channel: {
+    channels: 2,
+    axes: [
+      ["base",   "Fixed",  "-1",  [0,0,0], [0,0,0],     [0,0],      "none",    0, -1],
+      ["X",      "Linear", "base",[1,0,0], [0,0,0],     [0,500],    "box",     0,  0],
+      ["Y",      "Linear", "X",   [0,1,0], [0,0,0],     [0,400],    "box",     0,  1],
+      ["Z",      "Linear", "Y",   [0,0,1], [0,0,0],     [0,300],    "box",     0,  2],
+      ["C",      "Rotary", "Z",   [0,0,1], [0,0.1,0],   [0,360],    "table",   1, 16],
+      ["B",      "Rotary", "C",   [0,1,0], [0,0.15,0],  [-120,120], "pivot",   1, 17],
+      ["spindle","Fixed",  "B",   [0,0,0], [0,0.25,0],  [0,0],      "spindle", 1, 18],
+    ],
+  },
+  Mill5Axis: {
+    channels: 1,
+    axes: [
+      ["base",   "Fixed",  "-1",  [0,0,0], [0,0,0],     [0,0],      "none",    0, -1],
+      ["X",      "Linear", "base",[1,0,0], [0,0,0],     [0,1000],   "box",     0,  0],
+      ["Y",      "Linear", "X",   [0,1,0], [0,0,0],     [0,800],    "box",     0,  1],
+      ["Z",      "Linear", "Y",   [0,0,1], [0,0,0],     [0,500],    "box",     0,  2],
+      ["A",      "Rotary", "Z",   [1,0,0], [0,0.1,0],   [-120,120], "pivot",   0,  3],
+      ["C",      "Rotary", "A",   [0,0,1], [0,0.15,0],  [0,360],    "table",   0,  4],
+      ["spindle","Fixed",  "C",   [0,0,0], [0,0.2,0],   [0,0],      "spindle", 0,  5],
+    ],
+  },
+  Custom: { channels: 1, axes: [
+    ["base", "Fixed", "-1", [0,0,0], [0,0,0], [0,0], "none", 0, -1],
+  ]},
+};
+
+/* =========================================================================
+ *  Kinematic TSV parser / serialiser (14- and 15-column).
+ *
+ *  In-memory shape:
+ *    chain = {
+ *      header: <original header line, or null>,
+ *      leadingRaw: [ "# ...", "" ],         // comments above the header
+ *      headerTrailingRaw: [ "" ],           // blank lines between header and rows
+ *      axes: [ {
+ *         name, type, parent, dir:[x,y,z], off:[x,y,z], min, max,
+ *         mesh, channel, motion_axis, obj_file,
+ *         position:<live>,                  // not saved
+ *         rawAbove: [ "# ...", "" ],        // comment block right before this row
+ *      }, ... ],
+ *      trailingRaw: [ "" ],
+ *    }
+ *
+ *  Save emits 15 columns always. Load accepts 14 (obj_file = "") or 15.
+ * ========================================================================= */
+function parseKinematicTSV(text) {
+  text = text.replace(/\r\n/g, "\n");
+  const lines = text.split("\n");
+  const chain = {
+    header: null,
+    leadingRaw: [],
+    headerTrailingRaw: [],
+    axes: [],
+    trailingRaw: [],
+  };
+  let pendingRaw = [];
+  let seenHeader = false;
+  for (let i = 0; i < lines.length; ++i) {
+    const line = lines[i];
+    // The very last element after split is an empty string if the file
+    // ends in \n; don't treat that as a blank line to preserve.
+    if (i === lines.length - 1 && line === "") break;
+    if (line === "" || line.startsWith("#")) {
+      pendingRaw.push(line);
+      continue;
+    }
+    if (!seenHeader &&
+        (line === KIN_HEADER || line === KIN_HEADER_V15 ||
+         line.startsWith("name,type,parent,"))) {
+      chain.header = line;
+      chain.leadingRaw = pendingRaw;
+      pendingRaw = [];
+      seenHeader = true;
+      continue;
+    }
+    const cols = line.split(",");
+    if (cols.length < 13) continue;
+    const axis = {
+      name: cols[0] || "",
+      type: cols[1] || "Fixed",
+      parent: cols[2] || "-1",
+      dir: [ +cols[3]||0, +cols[4]||0, +cols[5]||0 ],
+      off: [ +cols[6]||0, +cols[7]||0, +cols[8]||0 ],
+      min: +cols[9]||0,
+      max: +cols[10]||0,
+      mesh: cols[11] || "box",
+      channel: (+cols[12])|0,
+      motion_axis: cols.length > 13 ? (+cols[13])|0 : -1,
+      obj_file: cols.length > 14 ? (cols[14] || "") : "",
+      position: 0,
+      rawAbove: pendingRaw,
+    };
+    pendingRaw = [];
+    chain.axes.push(axis);
+  }
+  if (pendingRaw.length) {
+    if (!seenHeader) chain.leadingRaw = pendingRaw;
+    else if (chain.axes.length === 0) chain.headerTrailingRaw = pendingRaw;
+    else chain.trailingRaw = pendingRaw;
+  }
+  if (!seenHeader) chain.header = KIN_HEADER;
+  return chain;
+}
+
+function serializeKinematicTSV(chain, opts) {
+  opts = opts || {};
+  const out = [];
+  const emitRaw = (raw) => {
+    if (!raw) return;
+    let lastBlank = false;
+    for (const l of raw) {
+      if (l === "") {
+        if (lastBlank) continue;
+        lastBlank = true;
+      } else lastBlank = false;
+      out.push(l);
+    }
+  };
+  emitRaw(chain.leadingRaw);
+  // Header choice: if we loaded a 14-col file and no axis has obj_file set,
+  // keep emitting 14 cols so the round-trip is byte-identical. Otherwise we
+  // must emit 15 cols.
+  const anyObj = chain.axes.some(a => (a.obj_file||"") !== "");
+  const useV15 = anyObj || opts.force15 === true;
+  out.push(useV15 ? KIN_HEADER_V15 : KIN_HEADER);
+  emitRaw(chain.headerTrailingRaw);
+  for (const a of chain.axes) {
+    emitRaw(a.rawAbove);
+    const cells = [
+      a.name, a.type, a.parent,
+      fmtNum(a.dir[0]), fmtNum(a.dir[1]), fmtNum(a.dir[2]),
+      fmtNum(a.off[0]), fmtNum(a.off[1]), fmtNum(a.off[2]),
+      fmtNum(a.min), fmtNum(a.max),
+      a.mesh || "box",
+      (a.channel|0).toString(),
+      (a.motion_axis|0).toString(),
+    ];
+    if (useV15) cells.push(a.obj_file || "");
+    out.push(cells.join(","));
+  }
+  emitRaw(chain.trailingRaw);
+  return out.join("\n") + "\n";
+}
+
+// Format a float to match the source style: integers stay integer, 0.15 stays
+// 0.15, etc. JS's .toString() does this correctly for the doubles the TSV
+// files actually carry; we only special-case -0 (which JS prints as "0").
+function fmtNum(n) {
+  if (Object.is(n, -0)) return "0";
+  if (Number.isInteger(n)) return n.toString();
+  return n.toString();
+}
+
+/* =========================================================================
+ *  Toolpods TSV parser / serialiser (line-based, key=value).
+ * ========================================================================= */
+function parsePodsTSV(text) {
+  text = text.replace(/\r\n/g, "\n");
+  const lines = text.split("\n");
+  const doc = { leadingRaw: [], records: [], trailingRaw: [] };
+  let pendingRaw = [];
+  for (let i = 0; i < lines.length; ++i) {
+    const line = lines[i];
+    if (i === lines.length - 1 && line === "") break;
+    if (line === "" || line.startsWith("#")) {
+      pendingRaw.push(line);
+      continue;
+    }
+    const cols = line.split("\t");
+    const kind = cols[0];
+    const fields = {};
+    const order = [];
+    for (let j = 1; j < cols.length; ++j) {
+      const c = cols[j];
+      if (!c) continue;
+      const eq = c.indexOf("=");
+      const key = eq < 0 ? c : c.slice(0, eq);
+      fields[key] = eq < 0 ? "" : c.slice(eq + 1);
+      order.push(key);
+    }
+    fields.__order = order;
+    doc.records.push({ kind, fields, raw: pendingRaw });
+    pendingRaw = [];
+  }
+  if (pendingRaw.length) {
+    if (doc.records.length) doc.trailingRaw = pendingRaw;
+    else doc.leadingRaw = pendingRaw;
+  }
+  return doc;
+}
+
+function serializePodsTSV(doc) {
+  const out = [];
+  const emitRaw = (raw) => {
+    if (!raw) return;
+    let lastBlank = false;
+    for (const l of raw) {
+      if (l === "") {
+        if (lastBlank) continue;
+        lastBlank = true;
+      } else lastBlank = false;
+      out.push(l);
+    }
+  };
+  emitRaw(doc.leadingRaw);
+  for (const r of doc.records) {
+    emitRaw(r.raw);
+    const parts = [r.kind];
+    const order = Array.isArray(r.fields.__order) && r.fields.__order.length
+      ? r.fields.__order : Object.keys(r.fields).filter(k => !k.startsWith("__"));
+    const seen = new Set();
+    for (const k of order) {
+      if (k.startsWith("__")) continue;
+      seen.add(k);
+      const v = r.fields[k];
+      if (v === undefined || v === null) continue;
+      parts.push(k + "=" + v);
+    }
+    for (const k of Object.keys(r.fields)) {
+      if (seen.has(k) || k.startsWith("__")) continue;
+      const v = r.fields[k];
+      if (v === undefined || v === null || v === "") continue;
+      parts.push(k + "=" + v);
+    }
+    out.push(parts.join("\t"));
+  }
+  emitRaw(doc.trailingRaw);
+  return out.join("\n") + "\n";
+}
+
+/* =========================================================================
+ *  Forward kinematics (must match render/kinematic_model.cpp exactly).
+ *
+ *  Each axis i contributes:
+ *     local[i] = translate(off) * motion
+ *                where motion = identity                          (Fixed)
+ *                      = translate(dir * position)                (Linear)
+ *                      = rotate(around dir, position * pi/180)    (Rotary)
+ *                rotation axis picks X/Y/Z based on which dir
+ *                component is non-zero (matches the kernel's
+ *                make_rotation_{x,y,z} ladder).
+ *     world[i] = (parent == -1 ? base : world[parent]) * local[i]
+ *
+ *  We return an array of 4x4 column-major matrices represented as 16-floats,
+ *  matching THREE.Matrix4 element layout (elements[column*4 + row]).
+ * ========================================================================= */
+function identityMat() {
+  return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+}
+function multiply(a, b) {
+  // both column-major
+  const r = new Float32Array(16);
+  for (let c = 0; c < 4; ++c) {
+    for (let row = 0; row < 4; ++row) {
+      let s = 0;
+      for (let k = 0; k < 4; ++k) s += a[k*4 + row] * b[c*4 + k];
+      r[c*4 + row] = s;
+    }
+  }
+  return r;
+}
+function translation(x, y, z) {
+  const m = identityMat();
+  m[12] = x; m[13] = y; m[14] = z;
+  return m;
+}
+function rotationX(angle) {
+  const m = identityMat();
+  const c = Math.cos(angle), s = Math.sin(angle);
+  m[5] = c; m[6] = s; m[9] = -s; m[10] = c;
+  return m;
+}
+function rotationY(angle) {
+  const m = identityMat();
+  const c = Math.cos(angle), s = Math.sin(angle);
+  m[0] = c; m[2] = -s; m[8] = s; m[10] = c;
+  return m;
+}
+function rotationZ(angle) {
+  const m = identityMat();
+  const c = Math.cos(angle), s = Math.sin(angle);
+  m[0] = c; m[1] = s; m[4] = -s; m[5] = c;
+  return m;
+}
+
+function resolveParentIndex(chain, axis) {
+  const pn = (axis.parent || "").trim();
+  if (!pn || pn === "-1") return -1;
+  for (let i = 0; i < chain.axes.length; ++i)
+    if (chain.axes[i].name === pn) return i;
+  return -1;
+}
+
+function computeForwardKinematics(chain) {
+  const world = new Array(chain.axes.length);
+  const local = new Array(chain.axes.length);
+  for (let i = 0; i < chain.axes.length; ++i) {
+    const a = chain.axes[i];
+    const origin = translation(a.off[0], a.off[1], a.off[2]);
+    let motion = identityMat();
+    if (a.type === "Linear") {
+      motion = translation(a.dir[0]*a.position, a.dir[1]*a.position, a.dir[2]*a.position);
+    } else if (a.type === "Rotary") {
+      const angle = a.position * Math.PI / 180;
+      if (a.dir[0] !== 0) motion = rotationX(angle);
+      else if (a.dir[1] !== 0) motion = rotationY(angle);
+      else motion = rotationZ(angle);
+    }
+    local[i] = multiply(origin, motion);
+    const pi = resolveParentIndex(chain, a);
+    world[i] = pi < 0 ? local[i] : multiply(world[pi], local[i]);
+  }
+  return { local, world };
+}
+
+// Extract the world-space direction of an axis as a unit vector.
+// The axis's local dir is a free vector, so we rotate it by the parent's
+// (or base's) world rotation matrix — the translation part of M doesn't
+// apply to directions.
+function worldDirection(chain, worldMats, axisIdx) {
+  const a = chain.axes[axisIdx];
+  const pi = resolveParentIndex(chain, a);
+  const parent = pi < 0 ? identityMat() : worldMats[pi];
+  const d = a.dir;
+  const x = parent[0]*d[0] + parent[4]*d[1] + parent[8] *d[2];
+  const y = parent[1]*d[0] + parent[5]*d[1] + parent[9] *d[2];
+  const z = parent[2]*d[0] + parent[6]*d[1] + parent[10]*d[2];
+  const len = Math.hypot(x, y, z) || 1;
+  return [x/len, y/len, z/len];
+}
+
+function worldOrigin(worldMat) {
+  return [worldMat[12], worldMat[13], worldMat[14]];
+}
+
+/* =========================================================================
+ *  App state + persistence.
+ * ========================================================================= */
+const LS_KEY = "miniOS.machineEditor.doc.v1";
+const state = {
+  chain: null,
+  pods: null,
+  chainFileName: "kinematic.tsv",
+  podsFileName: "embedded_toolpods.tsv",
+  chainHandle: null,
+  podsHandle: null,
+  selection: null,   // {kind:"axis",idx} | {kind:"pod",idx} | {kind:"station",pod,st}
+  objCache: {},      // name -> { text, parsed: THREE.Group|null, bytes }
+  undoStack: [],
+  redoStack: [],
+  cycling: false,
+  cyclingT0: 0,
+};
+
+function pushUndo() {
+  state.undoStack.push(snapshot());
+  if (state.undoStack.length > 40) state.undoStack.shift();
+  state.redoStack.length = 0;
+}
+function doUndo() {
+  if (!state.undoStack.length) return;
+  state.redoStack.push(snapshot());
+  restore(state.undoStack.pop());
+  renderAll();
+}
+function doRedo() {
+  if (!state.redoStack.length) return;
+  state.undoStack.push(snapshot());
+  restore(state.redoStack.pop());
+  renderAll();
+}
+function snapshot() {
+  return JSON.stringify({ chain: state.chain, pods: state.pods });
+}
+function restore(s) {
+  const o = JSON.parse(s);
+  state.chain = o.chain; state.pods = o.pods;
+  state.selection = null;
+}
+
+function saveLocal() {
+  try {
+    const objs = {};
+    for (const [k, v] of Object.entries(state.objCache)) {
+      if (!v || !v.text) continue;
+      const bytes = new Blob([v.text]).size;
+      if (bytes > OBJ_LS_MAX_BYTES) continue;
+      objs[k] = v.text;
+    }
+    localStorage.setItem(LS_KEY, JSON.stringify({
+      chain: state.chain, pods: state.pods,
+      chainFileName: state.chainFileName, podsFileName: state.podsFileName,
+      smoothShading: !!state.smoothShading,
+      objs,
+    }));
+  } catch (e) { /* quota: ignore */ }
+}
+function loadLocal() {
+  try {
+    const s = localStorage.getItem(LS_KEY);
+    if (!s) return false;
+    const o = JSON.parse(s);
+    state.chain = o.chain;
+    state.pods = o.pods;
+    state.chainFileName = o.chainFileName || state.chainFileName;
+    state.podsFileName = o.podsFileName || state.podsFileName;
+    state.smoothShading = !!o.smoothShading;
+    if (o.objs) {
+      for (const [k, text] of Object.entries(o.objs)) {
+        state.objCache[k] = { text, parsed: null, bytes: new Blob([text]).size };
+      }
+    }
+    return true;
+  } catch (e) { return false; }
+}
+
+// ---- BEGIN SYNCED DEFAULTS (regenerate via tools/machine_editor/sync_defaults.sh) ----
+const DEFAULT_KINEMATIC_TSV = `# Kinematic chain configuration for 3-axis mill visualization.
+# Extended to 15 columns (trailing obj_file) — kernel parser accepts both
+# 14 and 15. Leaving obj_file empty falls back to the mesh= slot lookup
+# (programmatic MachineModel); setting it routes through the OBJ registry
+# -> ObjImporter -> MachineModel::per_axis[] at boot.
+
+name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file
+base,Fixed,-1,0,0,0,0,0,0,0,0,obj,0,-1,demo_box.obj
+X,Linear,base,1,0,0,0,0,0,0,1000,box,0,0,
+Y,Linear,X,0,1,0,0,0,0,0,800,box,0,1,
+Z,Linear,Y,0,0,1,0,0,0,0,500,box,0,2,
+spindle,Fixed,Z,0,0,0,0,0.15,0,0,0,spindle,0,3,`;
+const DEFAULT_PODS_TSV = `# SPDX-License-Identifier: MIT OR Apache-2.0
+# Physical tool pods and virtual tool assignments.
+# Pod rows carry a machine-space anchor (x/y/z); station offsets are relative
+# to that anchor. The renderer composes pod.machine_* + station.machine_*.
+
+pod	id=upper_turret	title=Upper Turret	axis=C	motion=rotary	clamp_required=1	x=0	y=120	z=40
+station	pod=upper_turret	index=0	position=0	physical_tool=1	virtual_tool=1	x=0	y=0	z=0	a=0	name=turn_od
+station	pod=upper_turret	index=1	position=9000	physical_tool=2	virtual_tool=4	x=0	y=0	z=0	a=90	name=groove
+station	pod=upper_turret	index=2	position=18000	physical_tool=3	virtual_tool=2	x=0	y=0	z=0	a=180	name=drill
+station	pod=upper_turret	index=3	position=27000	physical_tool=4	virtual_tool=99	x=0	y=0	z=0	a=270	name=renishaw_probe
+
+pod	id=drill_rack	title=Drill Rack	axis=Y	motion=linear	clamp_required=0	x=220	y=0	z=80
+station	pod=drill_rack	index=0	position=0	physical_tool=11	virtual_tool=11	x=0	y=0	z=0	a=0	name=drill_6mm
+station	pod=drill_rack	index=1	position=5000	physical_tool=12	virtual_tool=12	x=0	y=50	z=0	a=0	name=drill_10mm
+station	pod=drill_rack	index=2	position=10000	physical_tool=13	virtual_tool=15	x=0	y=100	z=0	a=0	name=tap_m8`;
+const DEFAULT_OBJS = {
+  "demo_box.obj": `# miniOS demo box — end-to-end machine-editor -> OBJ registry -> ObjImporter
+# -> MachineModel::per_axis -> GLES1 render pipeline sanity check.
+# Dimensions 1.8 x 0.4 x 1.3 centered at origin (slightly different from the
+# programmatic MachineModel::base cube so you can tell which path is drawing).
+
+v -0.9 -0.2 -0.65
+v  0.9 -0.2 -0.65
+v  0.9  0.2 -0.65
+v -0.9  0.2 -0.65
+v -0.9 -0.2  0.65
+v  0.9 -0.2  0.65
+v  0.9  0.2  0.65
+v -0.9  0.2  0.65
+
+# -Z face
+f 1 2 3
+f 1 3 4
+# +Z face
+f 5 7 6
+f 5 8 7
+# -Y face
+f 1 6 2
+f 1 5 6
+# +Y face
+f 4 3 7
+f 4 7 8
+# -X face
+f 1 8 5
+f 1 4 8
+# +X face
+f 2 6 7
+f 2 7 3`,
+  "demo_part.stl": `solid miniOS_demo_tetra
+  facet normal 0.0 -1.0 0.0
+    outer loop
+      vertex 0.0 0.0 0.0
+      vertex 1.0 0.0 0.0
+      vertex 0.5 0.0 0.866
+    endloop
+  endfacet
+  facet normal 0.0 0.707 -0.707
+    outer loop
+      vertex 0.0 0.0 0.0
+      vertex 0.5 0.816 0.289
+      vertex 1.0 0.0 0.0
+    endloop
+  endfacet
+  facet normal 0.816 0.408 0.408
+    outer loop
+      vertex 1.0 0.0 0.0
+      vertex 0.5 0.816 0.289
+      vertex 0.5 0.0 0.866
+    endloop
+  endfacet
+  facet normal -0.816 0.408 0.408
+    outer loop
+      vertex 0.0 0.0 0.0
+      vertex 0.5 0.0 0.866
+      vertex 0.5 0.816 0.289
+    endloop
+  endfacet
+endsolid miniOS_demo_tetra`,
+};
+// ---- END SYNCED DEFAULTS ----
+
+function newDoc() {
+  // First run / File -> New pulls the kernel's shipped machine instead of
+  // an empty document, so the editor opens already framing the real mill3
+  // kinematic chain + the demo_box OBJ on the base. Kept in sync with
+  // devices/* via tools/machine_editor/sync_defaults.sh — rerun it when
+  // the kernel-side TSV/OBJ files change. The DEFAULT_* constants are
+  // inlined rather than fetched so the editor works from any filesystem
+  // origin (file://, http://, anywhere offline).
+  try {
+    state.chain = parseKinematicTSV(DEFAULT_KINEMATIC_TSV);
+    state.pods = parsePodsTSV(DEFAULT_PODS_TSV);
+    state.objCache = {};
+    for (const [name, text] of Object.entries(DEFAULT_OBJS)) {
+      state.objCache[name] = { text, parsed: null, bytes: new Blob([text]).size };
+    }
+    state.chainFileName = "kinematic_mill3.tsv";
+    state.podsFileName = "embedded_toolpods.tsv";
+  } catch (e) {
+    // If the inlined defaults are corrupt for any reason, fall back to
+    // the empty Mill3Axis template rather than leaving the editor blank.
+    state.chain = templateToChain(TEMPLATES.Mill3Axis);
+    state.pods = { leadingRaw: [
+      "# SPDX-License-Identifier: MIT OR Apache-2.0",
+      "# Physical tool pods and virtual tool assignments.",
+      "",
+    ], records: [], trailingRaw: [] };
+  }
+  state.selection = null;
+  state.undoStack = []; state.redoStack = [];
+}
+
+function templateToChain(tpl) {
+  const axes = tpl.axes.map(([name,type,parent,dir,off,[min,max],mesh,ch,mot]) => ({
+    name, type, parent,
+    dir: [...dir], off: [...off],
+    min, max, mesh, channel: ch, motion_axis: mot,
+    obj_file: "", position: 0, rawAbove: [],
+  }));
+  return {
+    header: KIN_HEADER,
+    leadingRaw: [
+      "# Kinematic chain configuration",
+      "# Format: " + KIN_HEADER,
+      "",
+    ],
+    headerTrailingRaw: [],
+    axes,
+    trailingRaw: [],
+  };
+}
+
+/* =========================================================================
+ *  Three.js scene.
+ * ========================================================================= */
+let scene, camera, renderer, controls, axisGroup, podsGroup, labelLayer;
+let originLabels = null;  // {plusX, minusX, plusY, minusY, plusZ, origin} HTML spans
+const axisObjects = []; // parallel to chain.axes: {group, meshes:[], label}
+const podObjects = [];  // parallel to pods.records: {group, mesh, label}
+
+// Small labelled span pinned to a world position via syncLabels. Used for
+// the origin / WCS triad so operators see which way +X/+Y/+Z point.
+function makeOriginLabel(text, color) {
+    const el = document.createElement("div");
+    el.textContent = text;
+    el.style.cssText =
+        "position:absolute; padding:1px 5px; border-radius:3px;" +
+        "background:rgba(2,6,23,0.78); border:1px solid " + color + ";" +
+        "color:" + color + "; font:600 11px monospace;" +
+        "transform:translate(-50%,-50%); pointer-events:none;" +
+        "white-space:nowrap; z-index:1;";
+    // labelLayer might not be instantiated yet — the caller appends.
+    return el;
+}
+
+function initThree() {
+  const vp = document.getElementById("viewport");
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x020617);
+  // Z-up, SolidWorks-style world — matches CAD exports and ISO 841 CNC
+  // convention. Three.js's default is Y-up, so we override camera.up and
+  // orient the ground grid / gizmo accordingly. Kinematic chain `dir_*`
+  // columns are now interpreted as machine axes directly (Z = vertical).
+  // Near/far are placeholder values — fit_view() rewrites them each time
+  // the scene changes so the depth-buffer precision stays sane for any
+  // machine size (MX850 STLs are 1-2m wide, but demo_box is 2 units wide).
+  // Rule of thumb: far/near <= 10_000 for usable Z-buffer precision.
+  camera = new THREE.PerspectiveCamera(45, vp.clientWidth / vp.clientHeight, 10, 100000);
+  camera.up.set(0, 0, 1);
+  // SolidWorks default Iso: camera in +X / -Y / +Z octant. Overwritten by
+  // fit_view() on first render; this just gives a sane initial pose.
+  camera.position.set(1500, -2500, 1500);
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(vp.clientWidth, vp.clientHeight);
+  vp.appendChild(renderer.domElement);
+  controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 0, 0);
+
+  // Ground grid — GridHelper is built on the XZ plane (Y-up native), so
+  // rotate it 90° around X to lie on the XY plane (Z=0) for Z-up.
+  // Centered on origin so -X..+X and -Y..+Y quadrants are symmetric around
+  // the WCS; the pair of brighter lines through (0,0) picks out the X and
+  // Y world axes.
+  const grid = new THREE.GridHelper(2000, 40, 0x94a3b8, 0x1e293b);
+  grid.rotation.x = Math.PI / 2;
+  grid.position.set(0, 0, 0);
+  scene.add(grid);
+
+  // Origin / WCS marker. The AxesHelper sits at (0,0,0) so the RGB triad
+  // is the operator's reference frame — red=+X, green=+Y, blue=+Z — with
+  // floating text labels at each tip (see rebuildOriginLabels) and a
+  // small sphere at the origin itself so it stays visible when meshes are
+  // sitting on the ground plane.
+  const axLen = 300;
+  const ax = new THREE.AxesHelper(axLen);
+  ax.position.set(0, 0, 0);
+  scene.add(ax);
+  // Negative-X / negative-Y extensions so the full quadrant structure
+  // reads at a glance. Drawn as dimmer lines in the matching axis hue
+  // so +X (bright red) / -X (dark red) / +Y (bright green) / -Y (dark
+  // green) are instantly distinguishable.
+  const negAxisGeom = new THREE.BufferGeometry();
+  negAxisGeom.setAttribute("position", new THREE.Float32BufferAttribute([
+       0,0,0,  -axLen,0,0,    // -X
+       0,0,0,   0,-axLen,0,   // -Y
+  ], 3));
+  negAxisGeom.setAttribute("color", new THREE.Float32BufferAttribute([
+      0.50,0.10,0.10,  0.50,0.10,0.10,   // -X dim red
+      0.10,0.35,0.10,  0.10,0.35,0.10,   // -Y dim green
+  ], 3));
+  scene.add(new THREE.LineSegments(negAxisGeom, new THREE.LineBasicMaterial({ vertexColors: true })));
+  const originDot = new THREE.Mesh(
+      new THREE.SphereGeometry(6, 12, 10),
+      new THREE.MeshBasicMaterial({ color: 0xfefce8 }));
+  originDot.position.set(0, 0, 0);
+  scene.add(originDot);
+  // Labels are HTML spans positioned in updateWorldTransforms / syncLabels.
+  originLabels = {
+    plusX:  makeOriginLabel("+X", "#ef4444"),
+    minusX: makeOriginLabel("-X", "#7f1d1d"),
+    plusY:  makeOriginLabel("+Y", "#22c55e"),
+    minusY: makeOriginLabel("-Y", "#14532d"),
+    plusZ:  makeOriginLabel("+Z", "#3b82f6"),
+    origin: makeOriginLabel("WCS", "#fef3c7"),
+  };
+  originLabels.plusX.worldPos  = new THREE.Vector3( axLen,  0, 0);
+  originLabels.minusX.worldPos = new THREE.Vector3(-axLen,  0, 0);
+  originLabels.plusY.worldPos  = new THREE.Vector3( 0,  axLen, 0);
+  originLabels.minusY.worldPos = new THREE.Vector3( 0, -axLen, 0);
+  originLabels.plusZ.worldPos  = new THREE.Vector3( 0,  0, axLen);
+  originLabels.origin.worldPos = new THREE.Vector3( 0,  0, 0);
+
+  // Lights. Key light from +X / +Y / +Z keeps the SolidWorks-authored
+  // front faces lit when the Front preset view puts the camera on -Y.
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.7);
+  dir.position.set(400, 400, 800);
+  scene.add(dir);
+
+  axisGroup = new THREE.Group(); scene.add(axisGroup);
+  podsGroup = new THREE.Group(); scene.add(podsGroup);
+  labelLayer = document.createElement("div");
+  labelLayer.style.cssText = "position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;";
+  vp.appendChild(labelLayer);
+  // Append the origin-triad labels now that labelLayer exists. They're
+  // positioned every frame by syncLabels() via their .worldPos field.
+  for (const k of Object.keys(originLabels)) {
+    labelLayer.appendChild(originLabels[k]);
+  }
+
+  window.addEventListener("resize", onResize);
+  new ResizeObserver(onResize).observe(vp);
+  animate();
+}
+function onResize() {
+  const vp = document.getElementById("viewport");
+  const w = vp.clientWidth, h = vp.clientHeight;
+  if (!w || !h) return;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+function animate() {
+  requestAnimationFrame(animate);
+  if (state.cycling) tickCycle();
+  controls.update();
+  syncLabels();
+  renderer.render(scene, camera);
+}
+
+// Build THREE.Group for an axis based on its mesh spec.
+function buildAxisGroup(a) {
+  const g = new THREE.Group();
+  const color = axisColor(a);
+  let mesh = null;
+  // flatShading: true draws each triangle with a single face normal — the
+  // correct look for machined parts and the natural rendering of STL files
+  // (which have no per-vertex normal averaging to begin with). `smooth`
+  // toggles the per-vertex-normal path: mergeVertices + computeVertexNormals
+  // welds shared vertices and averages their normals, giving Gouraud-style
+  // smoothing. Both are exposed so the operator can pick the look.
+  const useSmooth = !!state.smoothShading;
+  const mat = () => new THREE.MeshStandardMaterial({
+    color, roughness: 0.55, metalness: 0.2,
+    flatShading: !useSmooth,
+  });
+  const slotMesh = (w, h, d) => {
+    const geo = new THREE.BoxGeometry(w, h, d);
+    const m = new THREE.Mesh(geo, mat());
+    m.position.y = h * 0.5;
+    return m;
+  };
+  // Cache lookup with basename fallback: kernel TSVs reference paths like
+  // `mx850/MX850 - DOC1227B.STL` (to disambiguate across machines on the
+  // SD card), but when the user drags the file onto the viewport the
+  // browser gives us just `MX850 - DOC1227B.STL`. Match either so the
+  // workflow "drop seven files at once" actually works without per-file
+  // path editing.
+  function cacheLookup(path) {
+    if (!path) return null;
+    if (state.objCache[path] && state.objCache[path].text) return state.objCache[path];
+    const base = path.split("/").pop();
+    if (base && state.objCache[base] && state.objCache[base].text) return state.objCache[base];
+    return null;
+  }
+  const entry = cacheLookup(a.obj_file);
+  if (a.mesh === "obj" && a.obj_file && entry) {
+    // Extension sniff picks the right three.js loader — OBJLoader returns
+    // a Group, STLLoader returns a BufferGeometry. Both wire into the axis
+    // group the same way after wrapping the STL geometry in a Mesh.
+    const name = (a.obj_file || "").toLowerCase();
+    try {
+      if (name.endsWith(".stl") && typeof THREE.STLLoader === "function") {
+        const loader = new THREE.STLLoader();
+        let geom = loader.parse(entry.text);
+        if (useSmooth) {
+          // STL has one (pos,normal) triple per triangle corner with
+          // no vertex sharing, so plain computeVertexNormals() can't
+          // average across faces. We would need BufferGeometryUtils
+          // mergeVertices() to weld shared positions first — not
+          // vendored. Best effort: enable smooth shading by discarding
+          // the per-face normals and letting three.js generate
+          // per-vertex normals; without a weld step adjacent tris
+          // still won't share, so the look is only slightly smoother
+          // than flat. Users who want real smoothing should pre-weld
+          // the STL offline (meshlab / Fusion "compress mesh").
+          geom.deleteAttribute("normal");
+          geom.computeVertexNormals();
+        }
+        mesh = new THREE.Mesh(geom, mat());
+      } else {
+        const loader = new THREE.OBJLoader();
+        const parsed = loader.parse(entry.text);
+        parsed.traverse(obj => { if (obj.isMesh) obj.material = mat(); });
+        mesh = parsed;
+      }
+    } catch (e) {
+      mesh = slotMesh(50, 50, 50);
+    }
+  } else {
+    switch (a.mesh) {
+      case "base":    mesh = slotMesh(200, 30, 150); break;
+      case "x_axis":  mesh = slotMesh(120, 15, 30); break;
+      case "y_axis":  mesh = slotMesh(30,  15, 100); break;
+      case "z_axis":  mesh = slotMesh(25,  60, 25); break;
+      case "table":   mesh = slotMesh(80,  5,  60); break;
+      case "pivot":   mesh = slotMesh(28, 28, 28); break;
+      case "spindle": {
+        const geo = new THREE.CylinderGeometry(12, 12, 30, 16);
+        mesh = new THREE.Mesh(geo, mat());
+        mesh.position.y = 15;
+        break;
+      }
+      case "cylinder": {
+        const geo = new THREE.CylinderGeometry(20, 20, 40, 16);
+        mesh = new THREE.Mesh(geo, mat());
+        mesh.position.y = 20;
+        break;
+      }
+      case "box": default: mesh = slotMesh(40, 40, 40); break;
+      case "none": mesh = null;
+    }
+  }
+  if (mesh) g.add(mesh);
+
+  // Direction arrow for Linear/Rotary axes.
+  if (a.type === "Linear" && (a.dir[0] || a.dir[1] || a.dir[2])) {
+    const arrow = new THREE.ArrowHelper(
+      new THREE.Vector3(a.dir[0], a.dir[1], a.dir[2]).normalize(),
+      new THREE.Vector3(0, 0, 0), 80, 0x38bdf8, 14, 8);
+    g.add(arrow);
+  } else if (a.type === "Rotary") {
+    const geo = new THREE.TorusGeometry(30, 1.5, 8, 32);
+    const torus = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xf59e0b }));
+    if (a.dir[0] !== 0) torus.rotation.y = Math.PI / 2;
+    else if (a.dir[2] !== 0) torus.rotation.x = Math.PI / 2;
+    g.add(torus);
+  }
+  return g;
+}
+
+function axisColor(a) {
+  switch (a.type) {
+    case "Linear": return 0x3b82f6;
+    case "Rotary": return 0xf97316;
+    default:       return 0x64748b;
+  }
+}
+
+function rebuildScene() {
+  // Wipe prior axis objects
+  while (axisGroup.children.length) axisGroup.remove(axisGroup.children[0]);
+  axisObjects.length = 0;
+  // Clear the label layer but re-append the origin-triad labels so they
+  // survive every scene rebuild — they're tied to world (0,0,0), not to
+  // any axis object.
+  labelLayer.innerHTML = "";
+  if (originLabels) {
+    for (const k of Object.keys(originLabels)) {
+      labelLayer.appendChild(originLabels[k]);
+    }
+  }
+
+  if (!state.chain) return;
+  for (let i = 0; i < state.chain.axes.length; ++i) {
+    const a = state.chain.axes[i];
+    const g = buildAxisGroup(a);
+    g.userData.axisIdx = i;
+    axisGroup.add(g);
+    const lab = document.createElement("div");
+    lab.textContent = a.name;
+    lab.style.cssText = "position:absolute; padding:1px 4px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:3px; font-size:10px; color:#e2e8f0; transform:translate(-50%,-120%);";
+    labelLayer.appendChild(lab);
+    axisObjects.push({ group: g, label: lab, aabb: null });
+  }
+  rebuildPods();
+  updateWorldTransforms();
+}
+
+function rebuildPods() {
+  while (podsGroup.children.length) podsGroup.remove(podsGroup.children[0]);
+  podObjects.length = 0;
+  if (!state.pods) return;
+  const podIndexById = {};
+  const podAnchor = {};  // podId -> {x,y,z}
+  let currentPodIdx = -1;
+  // Pod rows now carry their own x/y/z anchor (kernel-side matches via
+  // machine::toolpods::Pod::machine_x/y/z). Station x/y/z are relative to
+  // that anchor; renderer composes pod + station.
+  for (let i = 0; i < state.pods.records.length; ++i) {
+    const r = state.pods.records[i];
+    if (r.kind === "pod") {
+      const px = +r.fields.x || 0;
+      const py = +r.fields.y || 0;
+      const pz = +r.fields.z || 0;
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(8, 16, 12),
+        new THREE.MeshStandardMaterial({ color: 0xfacc15 }));
+      mesh.position.set(px, py, pz);
+      mesh.userData.recIdx = i;
+      podsGroup.add(mesh);
+      const lab = document.createElement("div");
+      lab.textContent = "pod " + (r.fields.id || "?");
+      lab.style.cssText = "position:absolute; padding:1px 4px; background:rgba(15,23,42,0.8); border:1px solid #facc15; border-radius:3px; font-size:10px; color:#fef3c7; transform:translate(-50%,-120%);";
+      labelLayer.appendChild(lab);
+      podObjects.push({ recIdx: i, mesh, label: lab });
+      currentPodIdx = podObjects.length - 1;
+      podIndexById[r.fields.id] = currentPodIdx;
+      if (r.fields.id) podAnchor[r.fields.id] = { x: px, y: py, z: pz };
+    } else if (r.kind === "station") {
+      const targetId = r.fields.pod;
+      const poIdx = (targetId && podIndexById[targetId] !== undefined)
+        ? podIndexById[targetId] : currentPodIdx;
+      if (poIdx < 0) continue;
+      const anchor = (targetId && podAnchor[targetId]) || { x: 0, y: 0, z: 0 };
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(4, 12, 8),
+        new THREE.MeshStandardMaterial({ color: 0xfb923c }));
+      const sx = +r.fields.x || 0;
+      const sy = +r.fields.y || 0;
+      const sz = +r.fields.z || 0;
+      mesh.position.set(anchor.x + sx, anchor.y + sy, anchor.z + sz);
+      mesh.userData.recIdx = i;
+      podsGroup.add(mesh);
+      const lab = document.createElement("div");
+      lab.textContent = "s:" + (r.fields.name || r.fields.index || "?");
+      lab.style.cssText = "position:absolute; padding:1px 4px; background:rgba(15,23,42,0.7); border:1px solid #fb923c; border-radius:3px; font-size:9px; color:#ffedd5; transform:translate(-50%,-120%);";
+      labelLayer.appendChild(lab);
+      podObjects.push({ recIdx: i, mesh, label: lab });
+    }
+  }
+}
+
+function updateWorldTransforms() {
+  if (!state.chain) return;
+  const { world } = computeForwardKinematics(state.chain);
+  for (let i = 0; i < state.chain.axes.length; ++i) {
+    const w = world[i];
+    const obj = axisObjects[i];
+    if (!obj) continue;
+    obj.group.matrix.fromArray(w);
+    obj.group.matrixAutoUpdate = false;
+    obj.group.matrixWorldNeedsUpdate = true;
+    // Compute world-space AABB of this group for collision detection.
+    obj.group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(obj.group);
+    obj.aabb = box.isEmpty() ? null : box;
+  }
+  detectCollisions();
+}
+
+function detectCollisions() {
+  const flagged = new Set();
+  for (let i = 0; i < axisObjects.length; ++i) {
+    for (let j = i + 1; j < axisObjects.length; ++j) {
+      const a = axisObjects[i], b = axisObjects[j];
+      if (!a.aabb || !b.aabb) continue;
+      // Skip direct parent/child — they always "touch".
+      const ai = state.chain.axes[i], aj = state.chain.axes[j];
+      if (ai.parent === aj.name || aj.parent === ai.name) continue;
+      if (a.aabb.intersectsBox(b.aabb)) { flagged.add(i); flagged.add(j); }
+    }
+  }
+  state.collisionSet = flagged;
+}
+
+function syncLabels() {
+  if (!state.chain) return;
+  const vp = renderer.domElement.getBoundingClientRect();
+  const project = (v3) => {
+    const p = v3.clone().project(camera);
+    return { x: (p.x * 0.5 + 0.5) * vp.width,
+             y: (-p.y * 0.5 + 0.5) * vp.height,
+             visible: p.z < 1 && p.z > -1 };
+  };
+  for (let i = 0; i < axisObjects.length; ++i) {
+    const obj = axisObjects[i];
+    const pos = new THREE.Vector3();
+    obj.group.getWorldPosition(pos);
+    const pr = project(pos);
+    if (pr.visible) {
+      obj.label.style.display = "block";
+      obj.label.style.left = pr.x + "px";
+      obj.label.style.top = pr.y + "px";
+    } else obj.label.style.display = "none";
+  }
+  for (const po of podObjects) {
+    const pos = new THREE.Vector3();
+    po.mesh.getWorldPosition(pos);
+    const pr = project(pos);
+    if (pr.visible) {
+      po.label.style.display = "block";
+      po.label.style.left = pr.x + "px";
+      po.label.style.top = pr.y + "px";
+    } else po.label.style.display = "none";
+  }
+  // Origin / WCS labels are static world positions — not driven by the
+  // chain — so we just re-project them every frame. Keeps them pinned to
+  // the tips of the XYZ axes even as the camera orbits.
+  if (originLabels) {
+    for (const k of Object.keys(originLabels)) {
+      const L = originLabels[k];
+      const pr = project(L.worldPos);
+      if (pr.visible) {
+        L.style.display = "block";
+        L.style.left = pr.x + "px";
+        L.style.top = pr.y + "px";
+      } else L.style.display = "none";
+    }
+  }
+}
+
+// Compute the scene's AABB (axis bodies + pods). Falls back to a neutral
+// box when nothing is loaded so the caller can still compute a sensible
+// default pose.
+function sceneBounds() {
+  const box = new THREE.Box3();
+  for (const o of axisObjects) if (o.aabb) box.union(o.aabb);
+  for (const po of podObjects) if (po.mesh) box.expandByObject(po.mesh);
+  return box;
+}
+
+// Adjust camera.near/far based on current scene bounds so MX850-size
+// machines (≈2000 units across) don't hit the far plane when orbiting
+// out, and demo_box (≈2 units) keeps reasonable depth precision. Called
+// every time the scene changes.
+function updateClippingPlanes() {
+  const box = sceneBounds();
+  let radius = 100;
+  if (!box.isEmpty()) {
+    const size = new THREE.Vector3(); box.getSize(size);
+    radius = Math.max(size.x, size.y, size.z);
+  }
+  // 10x the radius gives enough orbit room; near is 1/1000 of that to
+  // keep the depth buffer happy. For a 2000-unit MX850: near≈20, far≈20000.
+  camera.far = Math.max(radius * 10, 500);
+  camera.near = Math.max(camera.far / 10000, 0.1);
+  camera.updateProjectionMatrix();
+}
+
+function fitView(direction) {
+  updateClippingPlanes();
+  const box = sceneBounds();
+  if (box.isEmpty()) {
+    camera.position.set(800, 800, 800);
+    controls.target.set(0, 0, 0);
+    controls.update();
+    return;
+  }
+  const size = new THREE.Vector3(); box.getSize(size);
+  const centre = new THREE.Vector3(); box.getCenter(centre);
+  // Distance that fits the tallest / widest axis within the frustum,
+  // with 20% padding so edges aren't flush against the viewport.
+  const fovRad = camera.fov * Math.PI / 180;
+  const aspect = Math.max(camera.aspect, 0.01);
+  const radV = Math.max(size.y, Math.max(size.x, size.z)) * 0.5;
+  const radH = Math.max(size.x, size.z) * 0.5;
+  const distV = radV / Math.tan(fovRad * 0.5);
+  const distH = radH / (aspect * Math.tan(fovRad * 0.5));
+  const dist = Math.max(distV, distH) * 1.2;
+
+  // Preset views in Z-up / SolidWorks convention. Camera.up = (0,0,1).
+  //   Top   = camera above, looking -Z. Tiny -Y tilt keeps screen-up = +Y.
+  //   Front = SolidWorks Front: looking along +Y, camera on -Y.
+  //   Side  = SolidWorks Right: looking along -X, camera on +X.
+  //   Iso   = camera in the +X/-Y/+Z octant — the SolidWorks default iso.
+  const dir = direction || "iso";
+  let offset;
+  switch (dir) {
+    case "top":   offset = new THREE.Vector3(0, -0.001, 1); break;
+    case "front": offset = new THREE.Vector3(0, -1, 0); break;
+    case "side":  offset = new THREE.Vector3(1, 0, 0); break;
+    case "iso":
+    default:      offset = new THREE.Vector3(1, -1, 0.7).normalize(); break;
+  }
+  offset.multiplyScalar(dist);
+  camera.position.copy(centre).add(offset);
+  controls.target.copy(centre);
+  controls.update();
+}
+
+// Kept as an alias — older code calls frameChain().
+function frameChain() { fitView("iso"); }
+
+/* =========================================================================
+ *  Test-cycle sweep.
+ * ========================================================================= */
+function startCycle() {
+  if (!state.chain) return;
+  state.cycling = true;
+  state.cyclingT0 = performance.now();
+}
+function tickCycle() {
+  const t = (performance.now() - state.cyclingT0) / 1000; // seconds
+  // Each axis gets its own phase; total sweep ~8 s.
+  const axes = state.chain.axes;
+  const period = 8.0;
+  const phaseStep = axes.length ? period / axes.length : period;
+  for (let i = 0; i < axes.length; ++i) {
+    const a = axes[i];
+    if (a.type === "Fixed") continue;
+    const localT = Math.max(0, t - i * phaseStep * 0.15);
+    const u = (Math.sin((localT / period) * Math.PI * 2) + 1) * 0.5;
+    a.position = a.min + (a.max - a.min) * u;
+  }
+  updateWorldTransforms();
+  renderDRO();
+  if (t > period) { state.cycling = false; }
+}
+
+/* =========================================================================
+ *  Left panel: chain tree + pod list.
+ * ========================================================================= */
+function renderTree() {
+  const tree = document.getElementById("tree");
+  tree.innerHTML = "";
+  if (!state.chain) return;
+  // Compute depth for indent by walking up parent chain.
+  const depth = (idx) => {
+    let d = 0, cur = state.chain.axes[idx];
+    while (cur && cur.parent && cur.parent !== "-1") {
+      const pi = state.chain.axes.findIndex(a => a.name === cur.parent);
+      if (pi < 0) break;
+      cur = state.chain.axes[pi]; d++;
+      if (d > 32) break;
+    }
+    return d;
+  };
+  for (let i = 0; i < state.chain.axes.length; ++i) {
+    const a = state.chain.axes[i];
+    const li = document.createElement("li");
+    li.style.paddingLeft = (4 + depth(i) * 14) + "px";
+    li.innerHTML = `<span>${escapeHtml(a.name)}</span><span class="type">${a.type}${a.mesh === "obj" ? " [obj]" : ""}</span>`;
+    if (state.selection && state.selection.kind === "axis" && state.selection.idx === i) li.classList.add("sel");
+    li.draggable = true;
+    li.dataset.idx = i;
+    li.addEventListener("click", () => selectAxis(i));
+    li.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/plain", "axis:" + i);
+      li.classList.add("dragging");
+    });
+    li.addEventListener("dragend", () => li.classList.remove("dragging"));
+    li.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      li.classList.remove("drop-above","drop-below","drop-child");
+      const r = li.getBoundingClientRect();
+      const y = e.clientY - r.top;
+      if (y < r.height * 0.25) li.classList.add("drop-above");
+      else if (y > r.height * 0.75) li.classList.add("drop-below");
+      else li.classList.add("drop-child");
+    });
+    li.addEventListener("dragleave", () => {
+      li.classList.remove("drop-above","drop-below","drop-child");
+    });
+    li.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const data = e.dataTransfer.getData("text/plain");
+      if (!data || !data.startsWith("axis:")) return;
+      const fromIdx = +data.slice(5);
+      if (fromIdx === i) return;
+      const mode = li.classList.contains("drop-child") ? "child"
+                 : li.classList.contains("drop-above") ? "above" : "below";
+      li.classList.remove("drop-above","drop-below","drop-child");
+      pushUndo();
+      reparentAxis(fromIdx, i, mode);
+      renderAll(); saveLocal();
+    });
+    tree.appendChild(li);
+  }
+
+  const pods = document.getElementById("podlist");
+  pods.innerHTML = "";
+  if (state.pods) {
+    for (let i = 0; i < state.pods.records.length; ++i) {
+      const r = state.pods.records[i];
+      if (r.kind !== "pod" && r.kind !== "station") continue;
+      const li = document.createElement("li");
+      if (r.kind === "station") li.classList.add("station");
+      li.textContent = r.kind === "pod"
+        ? `pod: ${r.fields.id || "?"}`
+        : `  ${r.fields.index ?? "?"}: ${r.fields.name || ""}`;
+      if (state.selection && state.selection.kind === "podrec" && state.selection.idx === i)
+        li.classList.add("sel");
+      li.addEventListener("click", () => selectPodRec(i));
+      pods.appendChild(li);
+    }
+  }
+}
+
+function reparentAxis(fromIdx, targetIdx, mode) {
+  const axes = state.chain.axes;
+  const moving = axes[fromIdx];
+  // Prevent cycle: target must not be in the moving subtree.
+  const isDescendant = (parentName, candidateName) => {
+    if (parentName === candidateName) return true;
+    const c = axes.find(x => x.name === candidateName);
+    if (!c || !c.parent || c.parent === "-1") return false;
+    return isDescendant(parentName, c.parent);
+  };
+  const target = axes[targetIdx];
+  if (isDescendant(moving.name, target.name)) {
+    alert("Refusing to create a cycle.");
+    return;
+  }
+  if (mode === "child") {
+    moving.parent = target.name;
+  } else {
+    moving.parent = target.parent;
+  }
+  // Reorder axes so fromIdx sits adjacent to targetIdx (preserving the
+  // "parent appears before child" invariant only if we keep things acyclic).
+  axes.splice(fromIdx, 1);
+  let newTargetIdx = axes.indexOf(target);
+  if (mode === "below" || mode === "child") newTargetIdx += 1;
+  axes.splice(newTargetIdx, 0, moving);
+}
+
+function selectAxis(i) { state.selection = { kind: "axis", idx: i }; renderAll(); }
+function selectPodRec(i) { state.selection = { kind: "podrec", idx: i }; renderAll(); }
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+/* =========================================================================
+ *  Right panel: inspector.
+ * ========================================================================= */
+function renderInspector() {
+  const p = document.getElementById("props");
+  p.innerHTML = "";
+  if (!state.selection) {
+    p.innerHTML = '<div style="color:var(--muted)">No item selected.</div>';
+    return;
+  }
+  if (state.selection.kind === "axis") { renderAxisInspector(p); return; }
+  if (state.selection.kind === "podrec") { renderPodRecInspector(p); return; }
+}
+
+function addRow(p, label, node, cls) {
+  const row = document.createElement("div");
+  row.className = "row" + (cls ? " " + cls : "");
+  const l = document.createElement("label"); l.textContent = label;
+  row.appendChild(l);
+  if (Array.isArray(node)) node.forEach(n => row.appendChild(n));
+  else row.appendChild(node);
+  p.appendChild(row);
+  return row;
+}
+
+function mkInput(getter, setter, type, attrs) {
+  const inp = document.createElement("input");
+  inp.type = type || "text";
+  inp.value = getter() ?? "";
+  if (attrs) Object.assign(inp, attrs);
+  inp.addEventListener("input", () => {
+    pushUndo();
+    const raw = inp.value;
+    setter(type === "number" ? (raw === "" ? 0 : +raw) : raw);
+    saveLocal(); softRefresh();
+  });
+  return inp;
+}
+
+function mkSelect(options, getter, setter) {
+  const sel = document.createElement("select");
+  for (const v of options) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = v;
+    sel.appendChild(o);
+  }
+  sel.value = getter();
+  sel.addEventListener("change", () => {
+    pushUndo();
+    setter(sel.value);
+    saveLocal(); softRefresh();
+  });
+  return sel;
+}
+
+function softRefresh() {
+  renderTree();
+  rebuildScene();
+  renderDRO();
+}
+
+function renderAxisInspector(p) {
+  const idx = state.selection.idx;
+  const a = state.chain.axes[idx];
+  if (!a) return;
+
+  addRow(p, "name", mkInput(() => a.name, (v) => {
+    const old = a.name;
+    a.name = v;
+    // keep children's parent= pointing at the new name
+    for (const b of state.chain.axes) if (b.parent === old) b.parent = v;
+  }));
+  addRow(p, "type", mkSelect(AXIS_TYPES, () => a.type, (v) => { a.type = v; }));
+
+  const parentSel = document.createElement("select");
+  const none = document.createElement("option"); none.value = "-1"; none.textContent = "(root)";
+  parentSel.appendChild(none);
+  for (const b of state.chain.axes) if (b !== a) {
+    const o = document.createElement("option"); o.value = b.name; o.textContent = b.name;
+    parentSel.appendChild(o);
+  }
+  parentSel.value = a.parent || "-1";
+  parentSel.addEventListener("change", () => { pushUndo(); a.parent = parentSel.value; saveLocal(); softRefresh(); });
+  addRow(p, "parent", parentSel);
+
+  // direction: preset radio row + three number inputs
+  const presets = document.createElement("div");
+  presets.className = "dir-radio";
+  for (const pr of DIR_PRESETS) {
+    const b = document.createElement("button");
+    b.textContent = pr.label;
+    if (a.dir[0] === pr.v[0] && a.dir[1] === pr.v[1] && a.dir[2] === pr.v[2]) b.classList.add("active");
+    b.addEventListener("click", () => { pushUndo(); a.dir = [...pr.v]; saveLocal(); renderInspector(); softRefresh(); });
+    presets.appendChild(b);
+  }
+  addRow(p, "dir preset", presets, "wide");
+  const dInputs = [0,1,2].map(i => mkInput(() => a.dir[i], (v) => { a.dir[i] = +v; }, "number", { step: "0.01" }));
+  addRow(p, "dir x/y/z", dInputs, "split");
+
+  const oInputs = [0,1,2].map(i => mkInput(() => a.off[i], (v) => { a.off[i] = +v; }, "number", { step: "0.01" }));
+  addRow(p, "offset", oInputs, "split");
+
+  addRow(p, "min", mkInput(() => a.min, (v) => { a.min = +v; }, "number"));
+  addRow(p, "max", mkInput(() => a.max, (v) => { a.max = +v; }, "number"));
+
+  addRow(p, "mesh", mkSelect(MESH_SLOTS, () => a.mesh || "box", (v) => { a.mesh = v; }));
+
+  addRow(p, "channel", mkSelect(["0","1"],
+    () => String(a.channel|0),
+    (v) => { a.channel = +v; }));
+
+  addRow(p, "motion_axis", mkInput(
+    () => a.motion_axis,
+    (v) => { const n = v === "" ? -1 : (+v|0); a.motion_axis = n; },
+    "number", { min: -1, max: 31, title: "-1 = unbound (motion integer 0..31)" }));
+
+  // obj_file field with browse button + warn row
+  const objRow = document.createElement("div");
+  objRow.className = "row";
+  const lbl = document.createElement("label"); lbl.textContent = "obj_file";
+  const inp = document.createElement("input"); inp.type = "text";
+  inp.value = a.obj_file || "";
+  inp.addEventListener("input", () => { pushUndo(); a.obj_file = inp.value; saveLocal(); softRefresh(); });
+  const browse = document.createElement("button"); browse.textContent = "...";
+  browse.style.marginLeft = "4px";
+  browse.title = "Pick a local .obj or .stl file";
+  browse.addEventListener("click", () => {
+    const fi = document.getElementById("fileObj");
+    fi.onchange = async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      const lower = f.name.toLowerCase();
+      if (!lower.endsWith(".obj") && !lower.endsWith(".stl")) {
+        setStatus("Only .obj and .stl files supported"); return;
+      }
+      const text = await f.text();
+      pushUndo();
+      a.obj_file = f.name;
+      state.objCache[f.name] = { text, parsed: null, bytes: f.size };
+      // objStats understands OBJ only; STL triangle-count stats can be
+      // added later (needed for kernel cap validation). Leave null for STL.
+      state.objCache[f.name].stats = lower.endsWith(".obj") ? objStats(text) : null;
+      a.mesh = "obj";
+      saveLocal(); renderAll();
+    };
+    fi.click();
+  });
+  const wrap = document.createElement("div"); wrap.style.display = "flex"; wrap.style.gap = "4px";
+  wrap.appendChild(inp); wrap.appendChild(browse);
+  objRow.appendChild(lbl); objRow.appendChild(wrap);
+  p.appendChild(objRow);
+
+  if (a.obj_file) {
+    // Accept either full-path or basename-keyed cache entries — see
+    // buildMesh's `cacheLookup` for the rationale.
+    const base = a.obj_file.split("/").pop();
+    const cache = state.objCache[a.obj_file] || state.objCache[base];
+    if (!cache) {
+      const d = document.createElement("div"); d.className = "warn-text";
+      d.textContent = "Mesh '" + a.obj_file + "' is referenced but not loaded. Drop the file (.obj or .stl) on the viewport or click browse.";
+      p.appendChild(d);
+    } else if (cache.stats) {
+      const s = cache.stats;
+      const over =
+        s.positions > OBJ_MAX_POSITIONS ||
+        s.normals   > OBJ_MAX_NORMALS   ||
+        s.uvs       > OBJ_MAX_UVS       ||
+        s.vertices  > OBJ_MAX_VERTICES  ||
+        s.indices   > OBJ_MAX_INDICES;
+      const d = document.createElement("div");
+      d.className = over ? "bad-text" : "warn-text";
+      d.textContent = `OBJ: positions=${s.positions}/${OBJ_MAX_POSITIONS}, normals=${s.normals}/${OBJ_MAX_NORMALS}, uvs=${s.uvs}/${OBJ_MAX_UVS}, vertices=${s.vertices}/${OBJ_MAX_VERTICES}, indices=${s.indices}/${OBJ_MAX_INDICES}` + (over ? " — exceeds kernel import limits" : "");
+      p.appendChild(d);
+    }
+  }
+}
+
+function renderPodRecInspector(p) {
+  const idx = state.selection.idx;
+  const r = state.pods.records[idx];
+  if (!r) return;
+  const note = document.createElement("div"); note.style.cssText = "color:var(--muted); font-size:11px; margin-bottom:6px";
+  note.textContent = "Record kind: " + r.kind;
+  p.appendChild(note);
+  const fieldsFor = r.kind === "pod"
+    ? ["id","title","axis","motion","clamp_required","x","y","z"]
+    : ["pod","index","position","physical_tool","virtual_tool","x","y","z","a","name"];
+  for (const k of fieldsFor) {
+    addRow(p, k, mkInput(
+      () => r.fields[k] ?? "",
+      (v) => {
+        pushUndo();
+        r.fields[k] = v;
+        if (!r.fields.__order || !r.fields.__order.includes(k)) {
+          if (!Array.isArray(r.fields.__order)) r.fields.__order = [];
+          r.fields.__order.push(k);
+        }
+      }));
+  }
+  const del = document.createElement("button");
+  del.textContent = "Delete record"; del.className = "bad"; del.style.marginTop = "8px";
+  del.addEventListener("click", () => {
+    pushUndo();
+    state.pods.records.splice(idx, 1);
+    state.selection = null;
+    saveLocal(); renderAll();
+  });
+  p.appendChild(del);
+}
+
+/* =========================================================================
+ *  DRO panel: sliders + live world-space readout per axis.
+ * ========================================================================= */
+function renderDRO() {
+  const tb = document.querySelector("#drotbl tbody");
+  tb.innerHTML = "";
+  if (!state.chain) return;
+  const { world } = computeForwardKinematics(state.chain);
+  const flagged = state.collisionSet || new Set();
+  for (let i = 0; i < state.chain.axes.length; ++i) {
+    const a = state.chain.axes[i];
+    const wd = worldDirection(state.chain, world, i);
+    const wo = worldOrigin(world[i]);
+    const tr = document.createElement("tr");
+    if (flagged.has(i)) tr.classList.add("flagged");
+
+    const td1 = document.createElement("td"); td1.textContent = a.name; tr.appendChild(td1);
+    const td2 = document.createElement("td"); td2.textContent = a.type; tr.appendChild(td2);
+
+    const td3 = document.createElement("td");
+    const num = document.createElement("input");
+    num.type = "number";
+    num.step = "0.1";
+    num.style.width = "72px";
+    num.value = (a.position || 0).toFixed(3);
+    num.addEventListener("input", () => {
+      a.position = +num.value || 0;
+      updateWorldTransforms();
+      renderDRO();
+    });
+    td3.appendChild(num);
+    td3.classList.add("num");
+    tr.appendChild(td3);
+
+    const td4 = document.createElement("td");
+    const min = Math.min(a.min, a.max), max = Math.max(a.min, a.max);
+    const rng = document.createElement("input");
+    rng.type = "range";
+    rng.min = min; rng.max = max === min ? min + 1 : max;
+    rng.step = (max - min) / 1000 || 0.01;
+    rng.value = Math.max(min, Math.min(max, a.position || 0));
+    rng.disabled = a.type === "Fixed";
+    rng.addEventListener("input", () => {
+      a.position = +rng.value;
+      num.value = (a.position || 0).toFixed(3);
+      updateWorldTransforms();
+      // only the flagged-row class changes between ticks; avoid full DRO redraw
+      const fl = state.collisionSet || new Set();
+      if (fl.has(i)) tr.classList.add("flagged"); else tr.classList.remove("flagged");
+    });
+    td4.appendChild(rng);
+    tr.appendChild(td4);
+
+    const td5 = document.createElement("td");
+    td5.classList.add("num");
+    td5.textContent = `(${wd[0].toFixed(3)}, ${wd[1].toFixed(3)}, ${wd[2].toFixed(3)})`;
+    tr.appendChild(td5);
+
+    const td6 = document.createElement("td");
+    td6.classList.add("num");
+    td6.textContent = `(${wo[0].toFixed(2)}, ${wo[1].toFixed(2)}, ${wo[2].toFixed(2)})`;
+    tr.appendChild(td6);
+
+    tr.addEventListener("click", (e) => {
+      if (e.target.tagName === "INPUT") return;
+      selectAxis(i);
+    });
+    tb.appendChild(tr);
+  }
+}
+
+/* =========================================================================
+ *  OBJ stats (count positions/normals/uvs/faces, triangulate quads).
+ * ========================================================================= */
+function objStats(text) {
+  let positions = 0, normals = 0, uvs = 0;
+  let vertexSet = new Set();       // unique v/vt/vn triples
+  let indices = 0;
+  const lines = text.split("\n");
+  for (const line of lines) {
+    const s = line.trim();
+    if (!s || s[0] === "#") continue;
+    if (s.startsWith("v ")) positions++;
+    else if (s.startsWith("vn ")) normals++;
+    else if (s.startsWith("vt ")) uvs++;
+    else if (s.startsWith("f ")) {
+      const verts = s.split(/\s+/).slice(1);
+      for (const v of verts) vertexSet.add(v);
+      // triangles: n-2 tris per n-vertex face
+      indices += Math.max(0, verts.length - 2) * 3;
+    }
+  }
+  return { positions, normals, uvs, vertices: vertexSet.size, indices };
+}
+
+/* =========================================================================
+ *  File operations.
+ * ========================================================================= */
+async function pickOpen(inputId) {
+  return new Promise((resolve) => {
+    const fi = document.getElementById(inputId);
+    fi.onchange = async (e) => {
+      const f = e.target.files[0];
+      if (!f) return resolve(null);
+      const text = await f.text();
+      resolve({ name: f.name, text });
+    };
+    fi.click();
+  });
+}
+async function openKinematic() {
+  if (window.showOpenFilePicker) {
+    try {
+      const [h] = await window.showOpenFilePicker({
+        types: [{ description: "TSV", accept: { "text/tab-separated-values": [".tsv"] } }],
+      });
+      const f = await h.getFile();
+      pushUndo();
+      state.chain = parseKinematicTSV(await f.text());
+      state.chainFileName = f.name;
+      state.chainHandle = h;
+      state.selection = null;
+      renderAll(); saveLocal();
+      setStatus("Loaded " + f.name);
+      return;
+    } catch (e) { if (e.name === "AbortError") return; }
+  }
+  const r = await pickOpen("fileKin");
+  if (!r) return;
+  pushUndo();
+  state.chain = parseKinematicTSV(r.text);
+  state.chainFileName = r.name;
+  state.selection = null;
+  renderAll(); saveLocal();
+  setStatus("Loaded " + r.name);
+}
+async function openPods() {
+  if (window.showOpenFilePicker) {
+    try {
+      const [h] = await window.showOpenFilePicker({
+        types: [{ description: "TSV", accept: { "text/tab-separated-values": [".tsv"] } }],
+      });
+      const f = await h.getFile();
+      pushUndo();
+      state.pods = parsePodsTSV(await f.text());
+      state.podsFileName = f.name;
+      state.podsHandle = h;
+      state.selection = null;
+      renderAll(); saveLocal();
+      setStatus("Loaded " + f.name);
+      return;
+    } catch (e) { if (e.name === "AbortError") return; }
+  }
+  const r = await pickOpen("filePods");
+  if (!r) return;
+  pushUndo();
+  state.pods = parsePodsTSV(r.text);
+  state.podsFileName = r.name;
+  state.selection = null;
+  renderAll(); saveLocal();
+  setStatus("Loaded " + r.name);
+}
+
+async function saveAll() {
+  const kin = serializeKinematicTSV(state.chain);
+  const pods = state.pods ? serializePodsTSV(state.pods) : null;
+  if (state.chainHandle) {
+    const w = await state.chainHandle.createWritable();
+    await w.write(kin); await w.close();
+  } else {
+    downloadBlob(kin, state.chainFileName || "kinematic.tsv");
+  }
+  if (pods !== null) {
+    if (state.podsHandle) {
+      const w = await state.podsHandle.createWritable();
+      await w.write(pods); await w.close();
+    } else {
+      downloadBlob(pods, state.podsFileName || "embedded_toolpods.tsv");
+    }
+  }
+  setStatus("Saved.");
+}
+
+async function saveAs() {
+  const kin = serializeKinematicTSV(state.chain);
+  if (window.showSaveFilePicker) {
+    try {
+      const h = await window.showSaveFilePicker({
+        suggestedName: state.chainFileName || "kinematic.tsv",
+        types: [{ description: "TSV", accept: { "text/tab-separated-values": [".tsv"] } }],
+      });
+      const w = await h.createWritable(); await w.write(kin); await w.close();
+      state.chainHandle = h; state.chainFileName = h.name;
+      setStatus("Saved " + h.name);
+      return;
+    } catch (e) { if (e.name === "AbortError") return; }
+  }
+  downloadBlob(kin, state.chainFileName || "kinematic.tsv");
+}
+
+function downloadBlob(text, name) {
+  const blob = new Blob([text], { type: "text/tab-separated-values" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function exportBundle() {
+  if (!window.JSZip) { alert("JSZip not loaded; cannot export."); return; }
+  const zip = new JSZip();
+  zip.file(state.chainFileName || "kinematic.tsv", serializeKinematicTSV(state.chain));
+  if (state.pods) zip.file(state.podsFileName || "embedded_toolpods.tsv", serializePodsTSV(state.pods));
+  const objs = {};
+  for (const a of state.chain.axes) {
+    if (a.obj_file && state.objCache[a.obj_file]) {
+      zip.file(a.obj_file, state.objCache[a.obj_file].text);
+      objs[a.obj_file] = new Blob([state.objCache[a.obj_file].text]).size;
+    }
+  }
+  const manifest = {
+    generator: "miniOS machine_editor",
+    version: 1,
+    generated_at: new Date().toISOString(),
+    chain_file: state.chainFileName || "kinematic.tsv",
+    pods_file: state.pods ? (state.podsFileName || "embedded_toolpods.tsv") : null,
+    axes: state.chain.axes.length,
+    objs,
+  };
+  zip.file("manifest.json", JSON.stringify(manifest, null, 2));
+  const blob = await zip.generateAsync({ type: "blob" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "machine_bundle.zip"; a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus("Exported bundle.");
+}
+
+function setStatus(t) { document.getElementById("status").textContent = t; }
+
+/* =========================================================================
+ *  Wire-up.
+ * ========================================================================= */
+function renderAll() {
+  renderTree();
+  renderInspector();
+  rebuildScene();
+  // Keep clipping planes in sync with the scene extent so tiny demo_box
+  // (~2 units) and big MX850 (~2000 units) both look right without the
+  // user having to touch anything. The depth-buffer precision target is
+  // far/near <= ~10_000.
+  updateClippingPlanes();
+  renderDRO();
+}
+
+function bindUI() {
+  document.getElementById("btnNew").addEventListener("click", () => {
+    if (!confirm("Discard current document?")) return;
+    state.chainHandle = null; state.podsHandle = null;
+    newDoc(); renderAll(); saveLocal();
+  });
+  document.getElementById("btnOpen").addEventListener("click", openKinematic);
+  document.getElementById("btnOpenPods").addEventListener("click", openPods);
+  document.getElementById("btnSave").addEventListener("click", saveAll);
+  document.getElementById("btnSaveAs").addEventListener("click", saveAs);
+  document.getElementById("btnExport").addEventListener("click", exportBundle);
+  document.getElementById("btnFrame").addEventListener("click", () => fitView("iso"));
+  document.getElementById("btnViewTop").addEventListener("click", () => fitView("top"));
+  document.getElementById("btnViewFront").addEventListener("click", () => fitView("front"));
+  document.getElementById("btnViewSide").addEventListener("click", () => fitView("side"));
+  document.getElementById("btnViewIso").addEventListener("click", () => fitView("iso"));
+  document.getElementById("chkSmooth").addEventListener("change", (e) => {
+    state.smoothShading = e.target.checked;
+    saveLocal(); renderAll();
+  });
+  document.getElementById("chkSmooth").checked = !!state.smoothShading;
+  document.getElementById("btnCycle").addEventListener("click", startCycle);
+  document.getElementById("btnLoadTpl").addEventListener("click", () => {
+    const name = document.getElementById("tpl").value;
+    if (!TEMPLATES[name]) return;
+    if (!confirm("Replace current chain with template '" + name + "'?")) return;
+    pushUndo();
+    state.chain = templateToChain(TEMPLATES[name]);
+    state.selection = null;
+    renderAll(); saveLocal();
+  });
+  document.getElementById("btnAddLinear").addEventListener("click", () => addAxis("Linear"));
+  document.getElementById("btnAddRotary").addEventListener("click", () => addAxis("Rotary"));
+  document.getElementById("btnAddFixed").addEventListener("click", () => addAxis("Fixed"));
+  document.getElementById("btnDelAxis").addEventListener("click", deleteAxis);
+  document.getElementById("btnAddPod").addEventListener("click", addPod);
+  document.getElementById("btnAddStation").addEventListener("click", addStation);
+  document.getElementById("btnDelPod").addEventListener("click", deletePodRec);
+
+  window.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+    if (e.key === "Delete" || e.key === "Backspace") {
+      if (state.selection && state.selection.kind === "axis") deleteAxis();
+      else if (state.selection && state.selection.kind === "podrec") deletePodRec();
+      e.preventDefault();
+    } else if (e.ctrlKey && e.key === "s") { saveAll(); e.preventDefault(); }
+    else if (e.ctrlKey && e.key === "z") { doUndo(); e.preventDefault(); }
+    else if (e.ctrlKey && (e.key === "y" || (e.shiftKey && e.key === "Z"))) { doRedo(); e.preventDefault(); }
+    else if (e.key === "f" || e.key === "F") { fitView("iso"); }
+    else if (e.key === "t" && !e.shiftKey) { fitView("top"); }
+    else if (e.key === "T" && e.shiftKey) { startCycle(); }
+    else if (e.key === "y" || e.key === "Y") { fitView("front"); }
+    else if (e.key === "x" || e.key === "X") { fitView("side"); }
+    else if (e.key === "i" || e.key === "I") { fitView("iso"); }
+    else if (e.key === "Escape") { state.selection = null; renderAll(); }
+  });
+
+  // Drop .obj / .stl (or a whole folder of them) onto the viewport.
+  //
+  // Two code paths:
+  //  1. Flat file drops — e.dataTransfer.files works as before. Each file
+  //     caches under its basename and attaches to the currently-selected
+  //     axis (or the last axis) if nothing is already bound.
+  //  2. Folder drops — e.dataTransfer.items[i].webkitGetAsEntry() returns
+  //     FileSystemDirectoryEntry. We recurse it, cache every mesh under
+  //     its path *relative to the drop root* (e.g. "mx850/FOO.STL") AND
+  //     under its basename, so both "mx850/foo.stl" references in the TSV
+  //     and raw "foo.stl" references resolve.
+  //
+  // For kinematic TSVs like kinematic_mx850.tsv that use `mx850/<file>`
+  // paths, dropping the whole `mx850/` folder is the one-gesture fix.
+  // Flat-file drag-and-drop still works; you just won't match "mx850/"
+  // prefixes without the basename fallback in buildMesh/cacheLookup.
+  async function cacheMeshFile(relPath, fileObj) {
+    const lower = (relPath || fileObj.name).toLowerCase();
+    const isStl = lower.endsWith(".stl");
+    const isObj = lower.endsWith(".obj");
+    if (!isObj && !isStl) return null;
+    const text = await fileObj.text();
+    const stats = isObj ? objStats(text) : null;
+    const entry = { text, parsed: null, bytes: fileObj.size, stats };
+    // Key under both the relative path ("mx850/foo.stl") and the basename
+    // ("foo.stl") so TSV references of either form resolve.
+    const rel = relPath || fileObj.name;
+    state.objCache[rel] = entry;
+    const base = rel.split("/").pop();
+    if (base && base !== rel) state.objCache[base] = entry;
+    return rel;
+  }
+
+  function readEntries(dirReader) {
+    // readEntries is paginated — call repeatedly until it returns [].
+    return new Promise((resolve, reject) => {
+      const all = [];
+      const step = () => {
+        dirReader.readEntries(entries => {
+          if (!entries.length) resolve(all);
+          else { all.push(...entries); step(); }
+        }, reject);
+      };
+      step();
+    });
+  }
+
+  async function walkEntry(entry, pathPrefix, onFile) {
+    if (entry.isFile) {
+      const file = await new Promise((res, rej) => entry.file(res, rej));
+      await onFile(file, pathPrefix + entry.name);
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const children = await readEntries(reader);
+      const nextPrefix = pathPrefix + entry.name + "/";
+      for (const c of children) await walkEntry(c, nextPrefix, onFile);
+    }
+  }
+
+  const vp = document.getElementById("viewport");
+  vp.addEventListener("dragover", (e) => { e.preventDefault(); vp.classList.add("drag-over"); });
+  vp.addEventListener("dragleave", () => vp.classList.remove("drag-over"));
+  vp.addEventListener("drop", async (e) => {
+    e.preventDefault(); vp.classList.remove("drag-over");
+
+    // Walk DataTransferItems first so folder drops recurse. Fall back to
+    // flat file list on browsers without webkitGetAsEntry. The first
+    // dropped mesh gets auto-attached to the selected axis; the rest just
+    // populate the cache so TSV references resolve.
+    const loaded = [];
+    const ensureAttach = async (relPath) => {
+      loaded.push(relPath);
+      if (loaded.length > 1) return;  // only attach the first
+      let targetIdx = state.selection && state.selection.kind === "axis"
+        ? state.selection.idx : state.chain.axes.length - 1;
+      if (targetIdx < 0) return;
+      pushUndo();
+      const a = state.chain.axes[targetIdx];
+      a.obj_file = relPath;
+      a.mesh = "obj";
+    };
+
+    const items = e.dataTransfer.items;
+    let handled = 0;
+    if (items && items.length && items[0].webkitGetAsEntry) {
+      for (const it of items) {
+        const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
+        if (!entry) continue;
+        await walkEntry(entry, "", async (file, relPath) => {
+          const r = await cacheMeshFile(relPath, file);
+          if (r) { ++handled; await ensureAttach(r); }
+        });
+      }
+    } else {
+      for (const f of e.dataTransfer.files) {
+        const r = await cacheMeshFile(f.name, f);
+        if (r) { ++handled; await ensureAttach(r); }
+      }
+    }
+
+    saveLocal(); renderAll();
+    if (loaded.length === 1) setStatus("Loaded " + loaded[0]);
+    else if (loaded.length > 1) setStatus("Loaded " + loaded.length + " meshes");
+    else if (handled === 0) setStatus("Nothing loaded — drop .obj / .stl or a folder containing them");
+  });
+
+  // "Load meshes" folder-picker button. Uses <input webkitdirectory> so the
+  // OS opens a directory chooser; every File comes back with its
+  // webkitRelativePath set (e.g. "mx850/MX850 - DOC1227B.STL").
+  document.getElementById("btnLoadMeshes").addEventListener("click", () => {
+    const fi = document.getElementById("fileDir");
+    fi.onchange = async (e) => {
+      const files = Array.from(e.target.files || []);
+      let count = 0;
+      for (const f of files) {
+        // Folder picker strips the top-level chosen dir and returns paths
+        // like "chosen_dir/sub/file.stl"; we preserve it verbatim so the
+        // TSV can reference either the full path or the basename.
+        const rel = f.webkitRelativePath || f.name;
+        const r = await cacheMeshFile(rel, f);
+        if (r) ++count;
+      }
+      saveLocal(); renderAll();
+      setStatus(count > 0 ? "Loaded " + count + " mesh(es) from folder"
+                          : "No .obj/.stl in selected folder");
+    };
+    fi.click();
+  });
+}
+
+function addAxis(type) {
+  pushUndo();
+  const n = nextAxisName(type[0]);
+  const parent = state.chain.axes.length ? state.chain.axes[state.chain.axes.length - 1].name : "-1";
+  state.chain.axes.push({
+    name: n, type, parent,
+    dir: type === "Rotary" ? [0,0,1] : [1,0,0],
+    off: [0,0,0], min: 0, max: type === "Rotary" ? 360 : 100,
+    mesh: "box", channel: 0, motion_axis: -1, obj_file: "",
+    position: 0, rawAbove: [],
+  });
+  state.selection = { kind: "axis", idx: state.chain.axes.length - 1 };
+  saveLocal(); renderAll();
+}
+function nextAxisName(prefix) {
+  for (let i = 1; i < 100; ++i) {
+    const n = prefix + i;
+    if (!state.chain.axes.some(a => a.name === n)) return n;
+  }
+  return prefix + Date.now();
+}
+function deleteAxis() {
+  if (!state.selection || state.selection.kind !== "axis") return;
+  const idx = state.selection.idx;
+  const name = state.chain.axes[idx].name;
+  pushUndo();
+  state.chain.axes.splice(idx, 1);
+  // reparent orphans to -1
+  for (const a of state.chain.axes) if (a.parent === name) a.parent = "-1";
+  state.selection = null;
+  saveLocal(); renderAll();
+}
+function addPod() {
+  pushUndo();
+  state.pods = state.pods || { leadingRaw: [], records: [], trailingRaw: [] };
+  const id = "pod" + (state.pods.records.filter(r => r.kind === "pod").length + 1);
+  state.pods.records.push({
+    kind: "pod",
+    fields: {
+      id, title: id, axis: "X", motion: "linear", clamp_required: "0",
+      x: "0", y: "0", z: "0",
+      __order: ["id","title","axis","motion","clamp_required","x","y","z"],
+    },
+    raw: [""],
+  });
+  state.selection = { kind: "podrec", idx: state.pods.records.length - 1 };
+  saveLocal(); renderAll();
+}
+function addStation() {
+  if (!state.pods || !state.pods.records.length) { alert("Add a pod first."); return; }
+  pushUndo();
+  // Find the selected pod (or the last pod).
+  let podId = null, podIdx = -1;
+  if (state.selection && state.selection.kind === "podrec") {
+    const r = state.pods.records[state.selection.idx];
+    if (r.kind === "pod") podId = r.fields.id;
+    else if (r.kind === "station") podId = r.fields.pod;
+  }
+  if (!podId) {
+    for (let i = state.pods.records.length - 1; i >= 0; --i) {
+      if (state.pods.records[i].kind === "pod") { podId = state.pods.records[i].fields.id; break; }
+    }
+  }
+  const existingStations = state.pods.records
+    .filter(r => r.kind === "station" && r.fields.pod === podId).length;
+  state.pods.records.push({
+    kind: "station",
+    fields: {
+      pod: podId, index: String(existingStations), position: "0",
+      physical_tool: "1", virtual_tool: "1",
+      x: "0", y: "0", z: "0", a: "0", name: "station",
+      __order: ["pod","index","position","physical_tool","virtual_tool","x","y","z","a","name"],
+    },
+    raw: [],
+  });
+  state.selection = { kind: "podrec", idx: state.pods.records.length - 1 };
+  saveLocal(); renderAll();
+}
+function deletePodRec() {
+  if (!state.selection || state.selection.kind !== "podrec") return;
+  pushUndo();
+  state.pods.records.splice(state.selection.idx, 1);
+  state.selection = null;
+  saveLocal(); renderAll();
+}
+
+/* =========================================================================
+ *  Export parser/serialiser for Node round-trip tests.
+ *  (When the file runs in a Node environment, window/document is missing.)
+ * ========================================================================= */
+if (typeof module !== "undefined") {
+  module.exports = {
+    parseKinematicTSV, serializeKinematicTSV,
+    parsePodsTSV, serializePodsTSV,
+    computeForwardKinematics, resolveParentIndex,
+  };
+}
+
+/* =========================================================================
+ *  Boot.
+ * ========================================================================= */
+// Preload any obj_file references by fetch() from the editor's own origin.
+// With the flat machines/ layout, the editor's index.html lives alongside
+// its STL / OBJ siblings, so a fetch("./MX850 - DOC1227B.STL") succeeds
+// when the page is served from http://localhost:8765/ (i.e. via serve.sh).
+// Files that 404 are silently ignored — the drop/browse fallback still
+// works for anything not colocated.
+async function preloadSiblingMeshes() {
+  if (!state.chain || !state.chain.axes) return 0;
+  const already = new Set(Object.keys(state.objCache));
+  const refs = new Set();
+  for (const a of state.chain.axes) if (a.obj_file) refs.add(a.obj_file);
+  let loaded = 0;
+  for (const ref of refs) {
+    // Cache hit on either the full path or the basename (see cacheLookup).
+    const base = ref.split("/").pop();
+    if (already.has(ref) || (base && already.has(base))) continue;
+    try {
+      // Try the ref as-is first (matches TSV column verbatim), then the
+      // basename alone in case the TSV has a path prefix but the file is
+      // a sibling (flat machines/ layout).
+      for (const url of [ref, base]) {
+        if (!url) continue;
+        const resp = await fetch(url, { cache: "no-cache" });
+        if (!resp.ok) continue;
+        const text = await resp.text();
+        const stats = url.toLowerCase().endsWith(".obj") ? objStats(text) : null;
+        const entry = { text, parsed: null, bytes: text.length, stats };
+        state.objCache[ref] = entry;
+        if (base && base !== ref) state.objCache[base] = entry;
+        ++loaded;
+        break;
+      }
+    } catch (e) { /* file:// or CORS — silent fallback */ }
+  }
+  if (loaded > 0) { saveLocal(); setStatus("Auto-loaded " + loaded + " sibling mesh(es)"); }
+  return loaded;
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("DOMContentLoaded", async () => {
+    if (!loadLocal()) newDoc();
+    initThree();
+    bindUI();
+    renderAll();
+    // Try sibling-fetch now that we have a chain; if it picks up meshes,
+    // re-render + re-frame. Blocks briefly but only on the first load.
+    const n = await preloadSiblingMeshes();
+    if (n > 0) renderAll();
+    frameChain();
+  });
+}
+</script>
+</body>
+</html>

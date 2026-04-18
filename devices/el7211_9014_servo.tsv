@@ -1,0 +1,78 @@
+# Beckhoff EL7211-9014 — 1-channel compact servo drive terminal.
+# Source: ethercat/esi/Beckhoff EL72xx.xml (ProductCode #x1c2b3052, Rev #x001e2336).
+#
+# Specification highlights:
+#   - Permanent-magnet 3-phase synchronous motor drive, direct motor cable.
+#   - OCT (One Cable Technology) — motor phases + absolute feedback in one cable.
+#   - Supply: 24 V DC electronics (E-bus), 8..48 V DC motor stage (external).
+#   - 4.5 A RMS continuous (≤45 °C), 9 A peak for 1 s.
+#   - 2× end-position inputs, 1× STO input, 1× motor-brake output.
+#   - Dual profile support: MDP 742 (Beckhoff-native, objects in 0x6000/0x7010)
+#     *and* CiA-402 DS402 (0x6040 controlword, 0x607A target, 0x6064 actual).
+#     miniOS uses the DS402 profile — same CSP pipeline as the ClearPath-EC.
+#
+# Relation to the EL72xx family:
+#   EL7201  2.8 A / 50 V — resolver feedback
+#   EL7211  4.5 A / 50 V — OCT / Hiperface DSL absolute feedback (this file)
+#   EL7221  8.0 A / 50 V — OCT / Hiperface DSL absolute feedback
+# All three share the DS402 profile, same SM layout, same DC AssignActivate=0x0700.
+
+# === Device identity ===
+device	type=servo	name=EL7211-9014	vid=0x00000002	pid=0x1c2b3052	rev_min=0x001e2336	profile=CiA-402|MDP742	ebus_current_ma=120	dc_assign=0x0700	cycle_min_us=125	cycle_quant_us=125	sync_modes=DC-Sync|SM-Sync	features=OCT,STO,motor_brake,2x_end_pos
+
+# === Pre-Op SDO initialisation ===
+# Interpolation time period must match master cycle. 250 µs = 25×10⁻⁵.
+sdo_init	0x60C2	0x01	8	25	ITP value: 25 × 10^-5 s = 250 µs
+sdo_init	0x60C2	0x02	8	-5	ITP index: 10^-5 seconds
+# Mode of operation: CSP (0x08). The EL7211 walks the CiA-402 FSA like any
+# standard DS402 drive once 0x6060 is set.
+sdo_init	0x6060	0x00	8	0x08	Modes of Operation = CSP (DS402 profile)
+# Max motor torque / current limit. 1000 = 100.0 % of rated (0x6072 is permille).
+sdo_init	0x6072	0x00	16	1000	Max torque = 100.0 %
+# Feature select: switch the PDO profile to DS402 (CiA-402) rather than
+# Beckhoff-native MDP 742. 0x8012:08 = 1 means DS402.
+sdo_init	0x8012	0x08	8	1	DRV Feature: profile = DS402 (CiA-402)
+
+# === PDO mapping — CSP (DS402 profile, 0x1600 / 0x1A00) ===
+# RxPDO (master -> slave)
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x6040	sub=0x00	bits=16	pin=controlword	type=u16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x6060	sub=0x00	bits=8	pin=modes_of_operation	type=i8
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x607A	sub=0x00	bits=32	pin=target_position	type=i32
+# TxPDO (slave -> master)
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6041	sub=0x00	bits=16	pin=statusword	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6061	sub=0x00	bits=8	pin=modes_of_operation_display	type=i8
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6064	sub=0x00	bits=32	pin=position_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x603F	sub=0x00	bits=16	pin=error_code	type=u16
+
+# === CSV fallback (velocity mode) via 0x1601 / 0x1A01 ===
+pdo	slave=0	sm=2	dir=rx	pdo=0x1601	entry=0x6040	sub=0x00	bits=16	pin=controlword	type=u16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1601	entry=0x60FF	sub=0x00	bits=32	pin=target_velocity	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6041	sub=0x00	bits=16	pin=statusword	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6064	sub=0x00	bits=32	pin=position_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x606C	sub=0x00	bits=32	pin=velocity_actual	type=i32
+
+# === Object dictionary defaults (informational / SDO-readable) ===
+od	0x1018	0x01	32	u32	ro	2	Vendor ID (Beckhoff)
+od	0x1018	0x02	32	u32	ro	0x1c2b3052	Product Code (EL7211-9014)
+od	0x1018	0x03	32	u32	ro	0x001e2336	Revision Number
+od	0x6040	0x00	16	u16	rw	0	Controlword
+od	0x6041	0x00	16	u16	ro	0	Statusword
+od	0x6060	0x00	8	i8	rw	8	Modes of Operation (default CSP)
+od	0x6061	0x00	8	i8	ro	0	Modes of Operation Display
+od	0x6064	0x00	32	i32	ro	0	Position actual value (counts)
+od	0x607A	0x00	32	i32	rw	0	Target position (counts)
+od	0x6072	0x00	16	u16	rw	1000	Max torque (0.1 % peak)
+od	0x6080	0x00	32	u32	rw	-	Max motor speed (rpm; 0 = use motor nameplate)
+od	0x6085	0x00	32	u32	rw	0	Quick stop deceleration (counts/s²)
+od	0x60C2	0x01	8	u8	rw	25	Interpolation time period value
+od	0x60C2	0x02	8	i8	rw	-5	Interpolation time period index (10^-5 s)
+od	0x60FF	0x00	32	i32	rw	0	Target velocity (counts/s)
+# OCT-specific feedback descriptors (populated by the drive at PreOp from
+# the motor's OCT electronic nameplate; 0 = not yet resolved).
+od	0x6091	0x01	32	u32	rw	1	Gear ratio: motor revolutions
+od	0x6091	0x02	32	u32	rw	1	Gear ratio: shaft revolutions
+od	0x608F	0x01	32	u32	ro	-	Position encoder resolution: increments
+od	0x608F	0x02	32	u32	ro	-	Position encoder resolution: motor revs
+# Beckhoff-specific diagnostics / tuning (0x8010..0x80E0 block).
+od	0x8012	0x08	8	u8	rw	1	Feature select: profile (0 MDP742, 1 DS402)
+od	0x10F3	0x02	16	u16	ro	0	DiagHistory newest-message pointer

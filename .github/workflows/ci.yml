@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# CI for miniOS v1.7 — ARM64 only. RISC-V is not buildable yet (see Makefile).
+# Gate: pipe a command through the CLI and confirm it responds.
+
+name: miniOS CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-boot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            qemu-system-arm gdb-multiarch
+
+      - name: Build kernel
+        run: make
+
+      - name: Verify ELF load addresses
+        run: |
+          aarch64-linux-gnu-readelf -l miniOS_kernel.elf > elf_headers.txt
+          grep -q "VirtAddr.*0x40000000" elf_headers.txt
+          grep -q "VirtAddr.*0x40100000" elf_headers.txt
+
+      - name: Boot under QEMU and drive the CLI
+        run: |
+          timeout 15s sh -c 'printf "echo ci-ok\n" | qemu-system-aarch64 \
+              -M virt -cpu max -smp 4 -m 128M -nographic \
+              -kernel miniOS_kernel.elf' > boot.log 2>&1 || true
+          cat boot.log
+          grep -q "miniOS CLI ready" boot.log
+          # CLI echoes lines with CRLF; match the token loosely.
+          grep -q "ci-ok" boot.log
+
+      - name: Enforce ClearPath-EC master cycle (>=250 µs, multiple of 250)
+        run: |
+          # Banner from ethercat/master.cpp:run_loop — "[ecN] cycle=<us>us (...)".
+          # Must match for every ec master that started; also validates the
+          # numeric constraint. Keep the regex and this check in lockstep with
+          # the banner format.
+          grep -E "\[ec[0-9]+\] cycle=[0-9]+us" boot.log \
+            || { echo "no ec cycle banner in boot log"; exit 1; }
+          awk '
+            match($0, /\[ec[0-9]+\] cycle=([0-9]+)us/, m) {
+              us = m[1] + 0
+              if (us < 250 || us % 250 != 0) {
+                printf "master cycle %d µs violates ClearPath-EC rule (>=250 and multiple of 250)\n", us
+                exit 1
+              }
+              found = 1
+            }
+            END { if (!found) { print "no parsable cycle banner"; exit 1 } }
+          ' boot.log
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: miniOS-arm64
+          path: |
+            miniOS_kernel.elf
+            miniOS_kernel.elf.map
+            boot.log
+            elf_headers.txt

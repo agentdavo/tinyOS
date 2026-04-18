@@ -1,0 +1,50 @@
+# Beckhoff EL5112 — 2-channel incremental encoder interface (5V).
+# Source: ethercat/esi/Beckhoff EL5xxx.xml (ProductCode #x13f83052, Rev #x00110000)
+# Role: 2-channel incremental encoder with 5V TTL/RS422 support.
+#
+# Specification:
+#   - 2 channels, 5V encoder supply
+#   - EBus current: 190 mA
+#   - Supports 2× AB (quadrature) or 1× ABC (with index) per channel
+#   - Counter frequency: up to 2 MHz
+#   - Resolution: 32-bit position counter per channel
+#
+# PDO mapping (TxPDO 0x1A02/0x1A11 for 2-ch AB mode):
+#   Ch1: 0x6000:01 Status, 0x6000:11 Position, 0x6000:12 Speed
+#   Ch2: 0x6010:01 Status, 0x6010:11 Position, 0x6010:12 Speed
+
+device	type=encoder	name=EL5112	vid=0x00000002	pid=0x13f83052	rev_min=0x00110000	profile=5001	channels=2	dc_assign=0x0300	sync_modes=DC-Sync|SM-Sync	ebus_current_ma=190	features=incremental,2ch
+
+# === PDO mapping (2-ch Standard, 2xAB mode) ===
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A02	entry=0x6000	sub=0x01	bits=16	pin=ch1_status	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A02	entry=0x6000	sub=0x11	bits=32	pin=ch1_position	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A02	entry=0x6000	sub=0x12	bits=16	pin=ch1_speed	type=i16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A11	entry=0x6010	sub=0x01	bits=16	pin=ch2_status	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A11	entry=0x6010	sub=0x11	bits=32	pin=ch2_position	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A11	entry=0x6010	sub=0x12	bits=16	pin=ch2_speed	type=i16
+
+# === SDO configuration (0x80nn block for channel n) ===
+sdo_init	0x8000	0x01	8	0	Ch1 Encoder Type: 0=Incremental
+sdo_init	0x8000	0x05	8	50	Ch1 Supply Voltage: 50=5V
+sdo_init	0x8000	0x06	8	5	Ch1 Counter Mode: 5=AB (4x)
+sdo_init	0x8000	0x07	8	0	Ch1 Invert Signals
+sdo_init	0x8010	0x01	8	0	Ch2 Encoder Type: 0=Incremental
+sdo_init	0x8010	0x05	8	50	Ch2 Supply Voltage: 50=5V
+sdo_init	0x8010	0x06	8	5	Ch2 Counter Mode: 5=AB (4x)
+sdo_init	0x8010	0x07	8	0	Ch2 Invert Signals
+
+# === Object Dictionary defaults ===
+od	0x1018	0x01	32	u32	ro	2	Vendor ID (Beckhoff)
+od	0x1018	0x02	32	u32	ro	0x13f83052	Product Code (EL5112)
+od	0x6000	0x01	16	u16	tx	-	Ch1 Status
+od	0x6000	0x11	32	i32	tx	-	Ch1 Position
+od	0x6000	0x12	16	i16	tx	-	Ch1 Speed
+od	0x6010	0x01	16	u16	tx	-	Ch2 Status
+od	0x6010	0x11	32	i32	tx	-	Ch2 Position
+od	0x6010	0x12	16	i16	tx	-	Ch2 Speed
+od	0x8000	0x01	8	u8	rw	0	Ch1 Encoder Type
+od	0x8000	0x05	8	u8	rw	50	Ch1 Supply Voltage
+od	0x8000	0x06	8	u8	rw	5	Ch1 Counter Mode
+od	0x8010	0x01	8	u8	rw	0	Ch2 Encoder Type
+od	0x8010	0x05	8	u8	rw	50	Ch2 Supply Voltage
+od	0x8010	0x06	8	u8	rw	5	Ch2 Counter Mode

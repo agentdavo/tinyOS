@@ -1,0 +1,120 @@
+# Beckhoff EL5042 2-channel BiSS-C encoder interface
+# Source: Beckhoff EL5xxx.xml lines ~106671-113000, RevisionNo 0x00100000 entry
+# Role: secondary (load-side) position feedback for dual-loop motion control.
+#       Pairs with ClearPath-EC - both DC-sync at AssignActivate=0x300, so their
+#       TxPDO samples are captured at the same SYNC0 instant.
+
+# === Device identity ===
+device	type=encoder	name=EL5042	vid=0x00000002	pid=0x13B23052	rev_min=0x00100000	profile=5001	channels=2	dc_assign=0x0300	sync_modes=DC-Sync|SM-Sync	ebus_current_ma=120
+# Notes:
+#   vid=2 (Beckhoff)
+#   pid=0x13B23052 (product code)
+#   profile=5001 = measuring terminal, AddInfo=513, ChannelCount=2
+#   CoE mailbox: SdoInfo, PdoAssign, PdoConfig, CompleteAccess (from ESI),
+#     RequestTimeout=100 ms, ResponseTimeout=10000 ms
+#   FMMUs: Inputs, MBoxState (no Outputs FMMU - input-only terminal)
+#   SM layout (ESI line ~109533):
+#     SM0 MBoxOut 0x1000 default=128B ControlByte=0x26
+#     SM1 MBoxIn  0x1080 default=128B ControlByte=0x22
+#     SM2 Outputs 0x1100 default=0B   ControlByte=0x04  Enable=0 (disabled)
+#     SM3 Inputs  0x1180 default=20B  ControlByte=0x20
+#   Default TxPDO pair (TwinCAT AlternativeSmMapping): 2 Ch. Standard
+#     = 0x1A00 + 0x1A01 (both channels, 64-bit position each)
+
+# === PDO assignments (TxPDOs only; no RxPDOs on this terminal) ===
+# TwinCAT mode-to-PDO mapping (from ESI AlternativeSmMapping):
+#   "1 Ch. Standard"  : SM3 = 0x1A00                   (Ch1, 64-bit)
+#   "1 Ch. Compact"   : SM3 = 0x1A02                   (Ch1, 32-bit)
+#   "2 Ch. Standard"  : SM3 = 0x1A00 + 0x1A01 (default); both channels, 64-bit
+#   "2 Ch. Compact"   : SM3 = 0x1A02 + 0x1A03           both channels, 32-bit
+# Exclusion: 0x1A00 excludes 0x1A02; 0x1A01 excludes 0x1A03.
+
+# slave sm  dir pdo    entry    sub  bits pin                    type
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x01	bits=1	pin=ch1_status_warning	type=bool
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x02	bits=1	pin=ch1_status_error	type=bool
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x03	bits=1	pin=ch1_status_ready	type=bool
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x0000	sub=0x00	bits=5	pin=ch1_status_pad1	type=pad
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x0000	sub=0x00	bits=4	pin=ch1_status_pad2	type=pad
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x0D	bits=1	pin=ch1_status_diag	type=bool
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x0E	bits=1	pin=ch1_status_txpdo_state	type=bool
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x0F	bits=2	pin=ch1_status_cycle_counter	type=u2
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x11	bits=64	pin=ch1_position	type=u64
+
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6010	sub=0x01	bits=1	pin=ch2_status_warning	type=bool
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6010	sub=0x02	bits=1	pin=ch2_status_error	type=bool
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6010	sub=0x03	bits=1	pin=ch2_status_ready	type=bool
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x0000	sub=0x00	bits=5	pin=ch2_status_pad1	type=pad
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x0000	sub=0x00	bits=4	pin=ch2_status_pad2	type=pad
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6010	sub=0x0D	bits=1	pin=ch2_status_diag	type=bool
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6010	sub=0x0E	bits=1	pin=ch2_status_txpdo_state	type=bool
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6010	sub=0x0F	bits=2	pin=ch2_status_cycle_counter	type=u2
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6010	sub=0x11	bits=64	pin=ch2_position	type=u64
+
+# Compact variants (32-bit position only)
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A02	entry=0x6000	sub=0x11	bits=32	pin=ch1_position_compact	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A03	entry=0x6010	sub=0x11	bits=32	pin=ch2_position_compact	type=u32
+
+# === Pre-Op SDO initialisation (mandatory before SafeOp) ===
+# Channel 1 config block lives at 0x8000; Channel 2 at 0x8010.
+# Values below are ESI DefaultData; override per encoder datasheet.
+sdo_init	0x8000	0x01	8	0	Ch1 Device Type = 0 (BiSS-C); 1 = SSI
+sdo_init	0x8000	0x05	8	50	Ch1 Supply Voltage = 5.0 V (enum: 50=5.0V, 90=9.0V)
+sdo_init	0x8000	0x06	8	9	Ch1 Clock Frequency = 1 MHz (enum: 0=10M, 1=5M, 2=3.33M, 3=2.5M, 4=2M, 9=1M, 17=500k, 19=250k)
+sdo_init	0x8000	0x07	8	0	Ch1 Code = Dual (0) or Gray (1)
+sdo_init	0x8000	0x0D	8	0	Ch1 Disable Status Bits = 0 (keep status in PDO)
+sdo_init	0x8000	0x0E	8	0	Ch1 CRC Invert = 0
+sdo_init	0x8000	0x0F	8	0x43	Ch1 CRC Polynomial (BiSS-C default 0x43)
+sdo_init	0x8000	0x12	8	0	Ch1 Multiturn bit count - SET FROM ENCODER DATASHEET
+sdo_init	0x8000	0x13	8	0	Ch1 Singleturn bit count - SET FROM ENCODER DATASHEET
+sdo_init	0x8010	0x01	8	0	Ch2 Device Type = BiSS-C
+sdo_init	0x8010	0x05	8	50	Ch2 Supply Voltage = 5.0 V
+sdo_init	0x8010	0x06	8	9	Ch2 Clock Frequency = 1 MHz
+sdo_init	0x8010	0x07	8	0	Ch2 Code = Dual
+sdo_init	0x8010	0x0D	8	0	Ch2 Disable Status Bits
+sdo_init	0x8010	0x0E	8	0	Ch2 CRC Invert
+sdo_init	0x8010	0x0F	8	0x43	Ch2 CRC Polynomial
+sdo_init	0x8010	0x12	8	0	Ch2 Multiturn bit count - SET FROM ENCODER DATASHEET
+sdo_init	0x8010	0x13	8	0	Ch2 Singleturn bit count - SET FROM ENCODER DATASHEET
+
+# === Object Dictionary (notable entries) ===
+# index sub bits typ access default note
+od	0x1000	0x00	32	u32	ro	0x13020101	Device Type (profile 5001 + type 513)
+od	0x1008	0x00	48	str6	ro	EL5042	Manufacturer Device Name
+od	0x1018	0x01	32	u32	ro	0x00000002	Vendor ID (Beckhoff)
+od	0x1018	0x02	32	u32	ro	0x13B23052	Product Code
+od	0x1018	0x03	32	u32	ro	-	Revision (lower word = minor, upper word = major)
+od	0x1018	0x04	32	u32	ro	-	Serial Number
+od	0x10F0	0x01	32	u32	ro	-	Backup / Checksum support
+od	0x10F3	0x00	8	u8	ro	-	Diagnosis History entry count (see ESI DiagMessages)
+od	0x6000	0x0D	1	bool	tx	-	Ch1 Status Diag
+od	0x6000	0x0E	1	bool	tx	-	Ch1 Status TxPDO State (1 = stale)
+od	0x6000	0x0F	2	u2	tx	-	Ch1 Input cycle counter (advance each valid read)
+od	0x6000	0x11	64	u64	tx	-	Ch1 Position (absolute, raw BiSS frame)
+od	0x6010	0x0D	1	bool	tx	-	Ch2 Status Diag
+od	0x6010	0x0E	1	bool	tx	-	Ch2 Status TxPDO State
+od	0x6010	0x0F	2	u2	tx	-	Ch2 Input cycle counter
+od	0x6010	0x11	64	u64	tx	-	Ch2 Position (absolute, raw BiSS frame)
+od	0x8000	0x01	8	u8	rw	0	Ch1 Device Type (0=BiSS-C, 1=SSI)
+od	0x8000	0x05	8	u8	rw	50	Ch1 Supply Voltage enum (50=5V, 90=9V)
+od	0x8000	0x06	8	u8	rw	9	Ch1 Clock Frequency enum
+od	0x8000	0x07	8	u8	rw	0	Ch1 Code (0=Dual, 1=Gray)
+od	0x8000	0x0D	8	u8	rw	0	Ch1 Disable Status Bits
+od	0x8000	0x0E	8	u8	rw	0	Ch1 CRC Invert
+od	0x8000	0x0F	8	u8	rw	0x43	Ch1 CRC Polynomial
+od	0x8000	0x12	8	u8	rw	-	Ch1 Multiturn bit count
+od	0x8000	0x13	8	u8	rw	-	Ch1 Singleturn bit count
+od	0x8010	0x01	8	u8	rw	0	Ch2 Device Type (same as 0x8000)
+od	0x8010	0x05	8	u8	rw	50	Ch2 Supply Voltage
+od	0x8010	0x06	8	u8	rw	9	Ch2 Clock Frequency
+od	0x8010	0x07	8	u8	rw	0	Ch2 Code
+od	0x8010	0x0D	8	u8	rw	0	Ch2 Disable Status Bits
+od	0x8010	0x0E	8	u8	rw	0	Ch2 CRC Invert
+od	0x8010	0x0F	8	u8	rw	0x43	Ch2 CRC Polynomial
+od	0x8010	0x12	8	u8	rw	-	Ch2 Multiturn bit count
+od	0x8010	0x13	8	u8	rw	-	Ch2 Singleturn bit count
+
+# === DC sync telemetry (read-only, ESI-defined) ===
+od	0x1C32	0x03	32	u32	ro	-	SM2 Output Shift Time (ns) - N/A, no outputs
+od	0x1C33	0x03	32	u32	ro	-	SM3 Input Shift Time (ns) - subtract to get true sample instant
+od	0x1C33	0x05	32	u32	ro	-	SM3 Minimum Cycle Time (ns)
+od	0x1C33	0x06	32	u32	ro	-	SM3 Calc+Copy Time (ns)

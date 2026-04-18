@@ -1,0 +1,30 @@
+# Kinematic chain for the MX850 — 5-axis mill, trunnion-table layout.
+# 15-column format (trailing obj_file column). Two chains branch off the
+# upper base: the table slide stack (X -> B -> C) and the spindle stack
+# (Y -> Z).
+#
+# Operator-confirmed parts:
+#   DOC1231B -> base_floor   (Fixed, chain root)
+#   DOC1228A -> base_upper   (Fixed, on base_floor)
+#   DOC1227B -> X            (Linear, carries the trunnion)
+#   DOC3184A -> B            (Rotary, swinging support for the rotary table)
+#   DOC3186A -> C            (Rotary, the rotating table itself)
+#   DOC1230A -> Y            (Linear, spindle Y slide)
+#   DOC1234B -> Z            (Linear, spindle Z ram, carried by Y)
+#
+# motion_axis mapping (matches kernel): X=0, Y=1, Z=2, B=3, C=4.
+# obj_file column holds the plain basename — the machine files live flat
+# alongside this TSV in machines/, and on the SD card they land flat at
+# /system/machine/. render::obj::lookup("MX850-DOC1227B.STL") rewrites to
+# `system/machine/MX850-DOC1227B.STL` and hits the VFS cache directly.
+# STL vertices are already in machine frame so offsets are zero — tweak
+# only if you need to shift a whole sub-chain.
+
+name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file
+base_floor,Fixed,-1,0,0,0,-500,-1000,-1000,0,0,obj,0,-1,MX850-DOC1231B.STL
+base_upper,Fixed,base_floor,0,0,0,0,0,0,0,0,obj,0,-1,MX850-DOC1228A.STL
+X,Linear,base_upper,1,0,0,0,0,0,-450,450,obj,0,0,MX850-DOC1227B.STL
+B,Rotary,X,1,0,0,0,0,0,-90,90,obj,0,3,MX850-DOC3184A.STL
+C,Rotary,B,0,0,1,0,0,0,0,360,obj,0,4,MX850-DOC3186A.STL
+Y,Linear,base_upper,0,1,0,0,0,0,0,550,obj,0,1,MX850-DOC1230A.STL
+Z,Linear,Y,0,0,1,0,0,0,0,500,obj,0,2,MX850-DOC1234B.STL

@@ -1,0 +1,38 @@
+# Beckhoff EL5001 — 1-channel SSI encoder interface.
+# Source: ethercat/esi/Beckhoff EL5xxx.xml (ProductCode #x13893052, Rev #x00010000)
+# Role: SSI (Synchronous Serial Interface) absolute encoder support.
+#
+# Specification:
+#   - 1 channel, 5V/24V encoder supply (selectable)
+#   - EBus current: 120 mA
+#   - Supports SSI (Synchronous Serial Interface) absolute encoders
+#   - Resolution: up to 32-bit position
+#   - Clock frequency: configurable (10 kHz to 2 MHz)
+#
+# PDO mapping (TxPDO 0x1A00):
+#   0x6000:01 Status (8b) - Encoder status bits
+#   0x6000:11 Position (32b) - Current position in counts
+
+device	type=encoder	name=EL5001	vid=0x00000002	pid=0x13893052	rev_min=0x00010000	profile=5001	channels=1	dc_assign=0x0300	sync_modes=DC-Sync|SM-Sync	ebus_current_ma=120	features=ssi
+
+# === PDO mapping ===
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x01	bits=8	pin=status	type=u8
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x11	bits=32	pin=position	type=i32
+
+# === SDO configuration (0x80nn block for channel n) ===
+sdo_init	0x8000	0x01	8	1	Encoder Type: 1=SSI
+sdo_init	0x8000	0x05	8	50	Supply Voltage: 50=5V, 90=9V
+sdo_init	0x8000	0x06	8	9	Clock Frequency: 9=1 MHz (default)
+sdo_init	0x8000	0x07	8	0	Code: 0=Binary, 1=Gray
+sdo_init	0x8000	0x08	8	25	Data Length: bits per position (default 25)
+
+# === Object Dictionary defaults ===
+od	0x1018	0x01	32	u32	ro	2	Vendor ID (Beckhoff)
+od	0x1018	0x02	32	u32	ro	0x13893052	Product Code (EL5001)
+od	0x6000	0x01	8	u8	tx	-	Status
+od	0x6000	0x11	32	i32	tx	-	Position
+od	0x8000	0x01	8	u8	rw	1	Encoder Type
+od	0x8000	0x05	8	u8	rw	50	Supply Voltage
+od	0x8000	0x06	8	u8	rw	9	Clock Frequency
+od	0x8000	0x07	8	u8	rw	0	Code (Binary/Gray)
+od	0x8000	0x08	8	u8	rw	25	Data Length

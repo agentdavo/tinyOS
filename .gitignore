@@ -1,0 +1,44 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+/docs
+
+# Windows NTFS alternate data stream sidecars (from WSL/Windows copies)
+*:Zone.Identifier
+
+# Build artifacts
+*.elf
+*.bin
+*.map
+qemu.pid
+serial_core0.log
+compile_commands.json

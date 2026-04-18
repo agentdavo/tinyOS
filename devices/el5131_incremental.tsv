@@ -1,0 +1,39 @@
+# Beckhoff EL5131 — 1-channel incremental encoder with 24V output.
+# Source: ethercat/esi/Beckhoff EL5xxx.xml (ProductCode #x140b3052, Rev #x00100000)
+# Role: Incremental encoder with RS422/TTL support and 2× 24V DC outputs.
+#
+# Specification:
+#   - 1 channel, 5V/24V encoder supply (selectable)
+#   - EBus current: 240 mA
+#   - Supports incremental encoders (A/B/I signals)
+#   - 2× 24V DC outputs for external devices
+#   - Counter frequency: up to 2 MHz
+#   - Resolution: 32-bit position counter
+
+device	type=encoder	name=EL5131	vid=0x00000002	pid=0x140b3052	rev_min=0x00100000	profile=5001	channels=1	dc_assign=0x0300	sync_modes=DC-Sync|SM-Sync	ebus_current_ma=240	features=incremental,24v_output
+
+# === PDO mapping (Standard with Output) ===
+pdo	slave=0	sm=2	dir=rx	pdo=0x1602	entry=0x7000	sub=0x01	bits=8	pin=ch1_ctrl	type=u8
+pdo	slave=0	sm=2	dir=rx	pdo=0x1602	entry=0x7000	sub=0x11	bits=16	pin=ch1_dout	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x01	bits=16	pin=ch1_status	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x11	bits=32	pin=ch1_position	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x12	bits=16	pin=ch1_speed	type=i16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A02	entry=0x6000	sub=0x21	bits=8	pin=ch1_ext_status	type=u8
+
+# === SDO configuration ===
+sdo_init	0x8000	0x01	8	0	Encoder Type: 0=Incremental
+sdo_init	0x8000	0x05	8	50	Supply Voltage: 50=5V, B0=24V
+sdo_init	0x8000	0x06	8	5	Counter Mode: 5=AB (4x)
+sdo_init	0x8000	0x07	8	Invert Signals
+
+# === Object Dictionary defaults ===
+od	0x1018	0x01	32	u32	ro	2	Vendor ID (Beckhoff)
+od	0x1018	0x02	32	u32	ro	0x140b3052	Product Code (EL5131)
+od	0x6000	0x01	16	u16	tx	-	Status
+od	0x6000	0x11	32	i32	tx	-	Position
+od	0x6000	0x12	16	i16	tx	-	Speed
+od	0x7000	0x01	8	u8	rx	-	Control
+od	0x7000	0x11	16	u16	rx	-	Digital Output
+od	0x8000	0x01	8	u8	rw	0	Encoder Type
+od	0x8000	0x05	8	u8	rw	50	Supply Voltage
+od	0x8000	0x06	8	u8	rw	5	Counter Mode

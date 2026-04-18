@@ -1,0 +1,279 @@
+# ClearPath-EC EtherCAT servo drive (Teknic)
+# Source: ClearPath-EC Software Reference rev 1.16 (April 7, 2026), 61 pages
+# Models: ECSK, ECHP (part number CPM-ECxx-xxxxx-xxxx, e.g. CPM-ECHP-3411H-ELSB)
+# CiA-402 drive profile
+
+# === Device identity ===
+# type             name                   vid          pid         profile    encoder_counts     dc_assign          cycle_min_us   cycle_quant_us   sync_modes
+device	type=servo	name=ClearPath-EC	vid=0x00000C96	pid=0x00000001	profile=CiA-402	encoder=12800|51200	dc_assign=0x0300	cycle_min_us=250	cycle_quant_us=250	sync_modes=DC-Sync|SM-Sync
+# Notes:
+#   vid=0x0C96 = decimal 3222 (Teknic vendor ID, from OD 0x1018:1)
+#   pid=0x0001 (Product code OD 0x1018:2)
+#   Revision number OD 0x1018:3 = 2
+#   Device Type OD 0x1000 = 0x00020192 (CiA-402 profile #402)
+#   CiA-402 profile version OD 0x67FE = 0x00040100
+#   Encoder: 12800 cnts/rev for -Rxxx models, 51200 cnts/rev for -Exxx models.
+#   miniOS default build targets -Exxx (51200 cpr) — required for the gear
+#   primitive (9.5) to hit DIN 5/6 on hobbing/power-skiving. -Rxxx works for
+#   development but gives ~4x coarser phase resolution at the motor shaft.
+#   Free Run sync mode NOT supported
+#   dc_assign 0x0300 (DC-Sync OpMode AssignActivate) - from ESI Teknic_ClearPathEC_ESI.xml line 8183
+#     Slave leaves CycleTimeSync0 / ShiftTimeSync0 / Sync1 = 0 (master picks at runtime)
+#     The Free Run / SM-Synchron OpMode uses AssignActivate=0x0000
+#   CoE capabilities (ESI line 8171): SdoInfo, PdoAssign, PdoConfig, CompleteAccess,
+#     SegmentedSdo, DiagHistory, FoE
+#   SyncManager layout (ESI lines 7508-7511):
+#     SM0 MBoxOut 0x1000 default=246B max=562B ControlByte=0x26
+#     SM1 MBoxIn  0x1400 default=246B max=562B ControlByte=0x22
+#     SM2 Outputs 0x1800 default=10B             ControlByte=0x64
+#     SM3 Inputs  0x1C00 default=16B             ControlByte=0x20
+#   FMMUs required (ESI lines 7505-7507): Outputs, Inputs, MBoxState (3 FMMUs)
+#   Mailbox timeouts (ESI lines 23-25): RequestTimeout=2000 ms, ResponseTimeout=20000 ms
+#   PDOs declared Fixed="0" => master may remap entries in PREOP (not just reassign).
+#   Drive ships a second deprecated device entry "ClearPath EC (CoE Rev 1)"
+#     ProductCode=0x1 RevisionNo=0x1 in the same ESI - master should refuse it
+#     (we only support Rev 2, per 0x1018:3 = 2).
+#   Mode-to-default-PDO mapping (ESI TwinCAT AlternativeSmMapping):
+#     CSP  (default at boot): RxPDO 0x1601 / TxPDO 0x1A01   <-- NOT 0x1600/0x1A00
+#     CSV:                    RxPDO 0x1602 / TxPDO 0x1A02
+#     CST/TQ:                 RxPDO 0x1603 / TxPDO 0x1A03
+#     PP:                     RxPDO 0x1604 / TxPDO 0x1A04
+#     PV:                     RxPDO 0x1605 / TxPDO 0x1A05
+#     Combined (all cyclic):  RxPDO 0x1600 / TxPDO 0x1A00
+#   CoE DiagHistory pool: ESI carries 53 DiagMessage entries with TextIds
+#     (0xABxx / 0xACxx) and English text - resolve TextIds read from 0x10F3
+#     against this table rather than inventing our own strings.
+
+# === Pre-Op SDO initialisation (mandatory before SafeOp) ===
+# PDO mapping and assignment objects (0x1600-0x1605, 0x1A00-0x1A05, 0x1C12, 0x1C13)
+# are writable ONLY in PREOP state.
+# Interpolation time period must be set to match master cycle time.
+# index  sub  bits  value              comment
+sdo_init	0x60C2	0x01	8	25	ITP value: 25 * 10^-5 s = 250 µs (must match master cycle)
+sdo_init	0x60C2	0x02	8	-5	ITP index: 10^-5 seconds
+# Encoding table: 2ms = (2, -3); 1ms = (1, -3); 500µs = (50, -5); 250µs = (25, -5)
+# Keep these two in sync with ethercat/master.cpp Master(..., period_us). CI gate enforces.
+sdo_init	0x6060	0x00	8	0x08	Modes of Operation = CSP (0x08) default
+sdo_init	0x6098	0x00	8	37	Homing method default = 37 (current position)
+sdo_init	0x6072	0x00	16	1000	Max Torque = 100.0% of peak
+sdo_init	0x60E0	0x00	16	1000	Positive Torque Limit = 100.0%
+sdo_init	0x60E1	0x00	16	1000	Negative Torque Limit = 100.0%
+sdo_init	0x6007	0x00	16	3	Abort Connection Option = Quick Stop (default)
+sdo_init	0x605A	0x00	16	-1	Quick Stop Option = Dynamic Brake (default)
+sdo_init	0x605C	0x00	16	-1	Disable Operation Option = Dynamic Brake
+sdo_init	0x605D	0x00	16	-1	Halt Option = Position Hold (PP/PV/TQ/HM only)
+sdo_init	0x605E	0x00	16	-1	Fault Reaction Option = Dynamic Brake
+# Watchdog: ESI does not specify a slave-side default; master sets 0x0400/0x0410/0x0420
+#   at SafeOp. Typical choice: divider 0x0400=0x09C2 (2498 cycles of 40ns = 100us tick)
+#   and PDI/SM watchdog counts scaled so timeout ≈ 100 ms. Confirm against real hardware.
+
+# === Default PDO mappings ===
+# Combined PDO (0x1600 RxPDO / 0x1A00 TxPDO) - covers all operating modes
+# slave sm dir pdo entry sub bits pin type
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x6040	sub=0x00	bits=16	pin=controlword	type=u16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x6060	sub=0x00	bits=8	pin=modes_of_operation	type=i8
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x607A	sub=0x00	bits=32	pin=target_position	type=i32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x60FF	sub=0x00	bits=32	pin=target_velocity	type=i32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x6071	sub=0x00	bits=16	pin=target_torque	type=i16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1600	entry=0x60FE	sub=0x01	bits=32	pin=digital_outputs	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x603F	sub=0x00	bits=16	pin=error_code	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6041	sub=0x00	bits=16	pin=statusword	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6061	sub=0x00	bits=8	pin=modes_of_operation_display	type=i8
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6064	sub=0x00	bits=32	pin=position_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x606C	sub=0x00	bits=32	pin=velocity_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6077	sub=0x00	bits=16	pin=torque_actual	type=i16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x60F4	sub=0x00	bits=32	pin=following_error	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x60FD	sub=0x00	bits=32	pin=digital_inputs	type=u32
+
+# CSP-only PDO (RxPDO 0x1601 / TxPDO 0x1A01)
+pdo	slave=0	sm=2	dir=rx	pdo=0x1601	entry=0x6040	sub=0x00	bits=16	pin=controlword	type=u16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1601	entry=0x607A	sub=0x00	bits=32	pin=target_position	type=i32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1601	entry=0x60FE	sub=0x01	bits=32	pin=digital_outputs	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6041	sub=0x00	bits=16	pin=statusword	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6064	sub=0x00	bits=32	pin=position_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x60F4	sub=0x00	bits=32	pin=following_error	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x60FD	sub=0x00	bits=32	pin=digital_inputs	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x603F	sub=0x00	bits=16	pin=error_code	type=u16
+
+# CSV-only PDO (RxPDO 0x1602 / TxPDO 0x1A02)
+pdo	slave=0	sm=2	dir=rx	pdo=0x1602	entry=0x6040	sub=0x00	bits=16	pin=controlword	type=u16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1602	entry=0x60FF	sub=0x00	bits=32	pin=target_velocity	type=i32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1602	entry=0x60FE	sub=0x01	bits=32	pin=digital_outputs	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A02	entry=0x6041	sub=0x00	bits=16	pin=statusword	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A02	entry=0x6064	sub=0x00	bits=32	pin=position_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A02	entry=0x606C	sub=0x00	bits=32	pin=velocity_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A02	entry=0x60FD	sub=0x00	bits=32	pin=digital_inputs	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A02	entry=0x603F	sub=0x00	bits=16	pin=error_code	type=u16
+
+# CST/TQ PDO (RxPDO 0x1603 / TxPDO 0x1A03)
+pdo	slave=0	sm=2	dir=rx	pdo=0x1603	entry=0x6040	sub=0x00	bits=16	pin=controlword	type=u16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1603	entry=0x6071	sub=0x00	bits=16	pin=target_torque	type=i16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1603	entry=0x60FE	sub=0x01	bits=32	pin=digital_outputs	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A03	entry=0x6041	sub=0x00	bits=16	pin=statusword	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A03	entry=0x6064	sub=0x00	bits=32	pin=position_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A03	entry=0x6077	sub=0x00	bits=16	pin=torque_actual	type=i16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A03	entry=0x60FD	sub=0x00	bits=32	pin=digital_inputs	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A03	entry=0x603F	sub=0x00	bits=16	pin=error_code	type=u16
+
+# PP PDO (RxPDO 0x1604 / TxPDO 0x1A04)
+pdo	slave=0	sm=2	dir=rx	pdo=0x1604	entry=0x6040	sub=0x00	bits=16	pin=controlword	type=u16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1604	entry=0x607A	sub=0x00	bits=32	pin=target_position	type=i32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1604	entry=0x6081	sub=0x00	bits=32	pin=profile_velocity	type=u32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1604	entry=0x6083	sub=0x00	bits=32	pin=profile_acceleration	type=u32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1604	entry=0x6084	sub=0x00	bits=32	pin=profile_deceleration	type=u32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1604	entry=0x60FE	sub=0x01	bits=32	pin=digital_outputs	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A04	entry=0x603F	sub=0x00	bits=16	pin=error_code	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A04	entry=0x6041	sub=0x00	bits=16	pin=statusword	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A04	entry=0x6064	sub=0x00	bits=32	pin=position_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A04	entry=0x2316	sub=0x00	bits=32	pin=current_profile_position	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A04	entry=0x2317	sub=0x00	bits=32	pin=current_profile_velocity	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A04	entry=0x2318	sub=0x00	bits=32	pin=current_profile_acceleration	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A04	entry=0x2319	sub=0x00	bits=32	pin=current_profile_deceleration	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A04	entry=0x60FD	sub=0x00	bits=32	pin=digital_inputs	type=u32
+
+# PV PDO (RxPDO 0x1605 / TxPDO 0x1A05)
+pdo	slave=0	sm=2	dir=rx	pdo=0x1605	entry=0x6040	sub=0x00	bits=16	pin=controlword	type=u16
+pdo	slave=0	sm=2	dir=rx	pdo=0x1605	entry=0x60FF	sub=0x00	bits=32	pin=target_velocity	type=i32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1605	entry=0x6083	sub=0x00	bits=32	pin=profile_acceleration	type=u32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1605	entry=0x6084	sub=0x00	bits=32	pin=profile_deceleration	type=u32
+pdo	slave=0	sm=2	dir=rx	pdo=0x1605	entry=0x60FE	sub=0x01	bits=32	pin=digital_outputs	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A05	entry=0x603F	sub=0x00	bits=16	pin=error_code	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A05	entry=0x6041	sub=0x00	bits=16	pin=statusword	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A05	entry=0x6064	sub=0x00	bits=32	pin=position_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A05	entry=0x606C	sub=0x00	bits=32	pin=velocity_actual	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A05	entry=0x2317	sub=0x00	bits=32	pin=current_profile_velocity	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A05	entry=0x2318	sub=0x00	bits=32	pin=current_profile_acceleration	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A05	entry=0x2319	sub=0x00	bits=32	pin=current_profile_deceleration	type=u32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A05	entry=0x60FD	sub=0x00	bits=32	pin=digital_inputs	type=u32
+
+# === Object Dictionary - notable user-tunable parameters ===
+# index sub bits typ access default note
+od	0x1000	0x00	32	u32	ro	0x00020192	Device Type (CiA-402)
+od	0x1008	0x00	168	str21	ro	-	Manufacturer Device Name (motor part number)
+od	0x1009	0x00	24	str3	ro	-	Hardware Revision
+od	0x100A	0x00	80	str10	ro	-	Software Revision
+od	0x1010	0x01	32	u32	rw	-	Save All Parameters - write 0x65766173 to persist to EEPROM
+od	0x1018	0x01	32	u32	ro	3222	Vendor ID (Teknic = 3222 = 0x0C96)
+od	0x1018	0x02	32	u32	ro	0x00000001	Product Code
+od	0x1018	0x03	32	u32	ro	2	Revision Number
+od	0x1018	0x04	32	u32	ro	-	Serial Number
+od	0x2018	0x00	32	u32	rw	-	Application Config Register (bit23=Move Done Torque Foldback, bit24=software limit home offset base)
+od	0x201D	0x00	32	u32	ro	-	On Time (tenths of a second)
+od	0x2063	0x00	16	u16	rw	5	Input A filter time ms (0-4850)
+od	0x2066	0x00	16	u16	rw	5	Input B filter time ms (0-4850)
+od	0x2118	0x00	16	u16	ro	-	Bus Voltage Measured (V)
+od	0x2123	0x00	16	i16	ro	-	Drive Temperature (degC)
+od	0x2163	0x00	16	i16	rw	0	Move Done Torque Foldback (0.1% trq, 0-1000)
+od	0x2164	0x00	16	i16	rw	200	Move Done Torque Foldback Tc ms (0-10000)
+od	0x216B	0x00	16	i16	rw	-	Hardstop Torque Maximum (0.1% trq, 0-1000) - hardstop homing
+od	0x216F	0x00	32	i32	ro	-	Mechanical Position (single-turn absolute encoder cnts; -1 = not yet indexed)
+od	0x2170	0x00	16	i16	rw	-	Delay Disable Time ms (0-16383) - lets brake engage before disable
+od	0x2201	0x00	32	u32	rw	0	Physical Home Clearance cnts - backoff from hardstop; Teknic recommends >= 1/2 rev
+od	0x2242	0x00	16	i16	rw	0	Minimum Operating Volts V (0-92)
+od	0x2243	0x00	16	i16	rw	83	Max User Temp degC (0-93)
+od	0x2244	0x00	16	i16	rw	-	Bus Current Trip A (0-9)
+od	0x2300	0x00	32	u32	rw	0xFFFFFFFF	Shaft Homing Target cnts - for methods 33/34
+od	0x230E	0x00	16	u16	rw	0x0000	Digital Input Map - limit/home/interlock routing, autobrake
+od	0x230F	0x00	16	u16	ro	-	RMS Level (0.1%) - thermal load, shuts down at 100%
+od	0x2316	0x00	32	i32	ro	-	Current Profile Position (PP only)
+od	0x2317	0x00	32	i32	ro	-	Current Profile Velocity (PP/PV)
+od	0x2318	0x00	32	u32	ro	-	Current Profile Acceleration (PP/PV)
+od	0x2319	0x00	32	u32	ro	-	Current Profile Deceleration (PP/PV)
+od	0x231A	0x00	16	u16	rw	10	Overspeed Timeout ms - only in CSP/CST/TQ
+od	0x6007	0x00	16	i16	rw	3	Abort Connection Option Code (0=no action 1=fault 2=disable 3=quickstop)
+od	0x603F	0x00	16	u16	ro	-	Error Code (see Appendix B)
+od	0x6040	0x00	16	u16	rw	-	Controlword (mode-specific bits)
+od	0x6041	0x00	16	u16	ro	-	Statusword (mode-specific bits)
+od	0x605A	0x00	16	i16	rw	-1	Quick Stop Option (-2 pos-hold, -1 dyn-brake, 0 coast, 2 decel-to-stop)
+od	0x605C	0x00	16	i16	rw	-1	Disable Operation Option
+od	0x605D	0x00	16	i16	rw	-1	Halt Option (PP/PV/TQ/HM only)
+od	0x605E	0x00	16	i16	rw	-1	Fault Reaction Option (-1 dyn-brake, 0 coast)
+od	0x6060	0x00	8	i8	rw	8	Modes Of Operation (1=PP,3=PV,4=TQ,6=HM,8=CSP,9=CSV,10=CST)
+od	0x6061	0x00	8	i8	ro	-	Modes Of Operation Display
+od	0x6062	0x00	32	i32	ro	-	Position Demand Value (trajectory output, cnts)
+od	0x6064	0x00	32	i32	ro	-	Position Actual Value (cnts)
+od	0x6065	0x00	32	u32	rw	-	Following Error Window (cnts; 0xFFFFFFFF disables)
+od	0x6066	0x00	16	u16	rw	0	Following Error Time Out (ms)
+od	0x6067	0x00	32	u32	rw	-	Position Window (cnts) - In Range detection
+od	0x6068	0x00	16	u16	rw	0	Position Window Time (ms)
+od	0x606B	0x00	32	i32	ro	-	Velocity Demand Value (cnts/s)
+od	0x606C	0x00	32	i32	ro	-	Velocity Actual Value (cnts/s)
+od	0x606D	0x00	16	u16	rw	-	Velocity Window (cnts/s)
+od	0x606E	0x00	16	u16	rw	0	Velocity Window Time (ms)
+od	0x6071	0x00	16	i16	rw	-	Target Torque (0.1% peak, -1000..1000)
+od	0x6072	0x00	16	u16	rw	1000	Max Torque (0.1% peak)
+od	0x6074	0x00	16	i16	ro	-	Torque Demand Value
+od	0x6077	0x00	16	i16	ro	-	Torque Actual Value (0.1% peak)
+od	0x6079	0x00	32	u32	ro	-	DC Link Circuit Voltage (mV)
+od	0x607A	0x00	32	i32	rw	-	Target Position (cnts)
+od	0x607C	0x00	32	i32	rw	0	Home Offset (cnts) - position reported after homing
+od	0x607D	0x01	32	i32	rw	0	Min Software Position Limit (cnts; homing required first)
+od	0x607D	0x02	32	i32	rw	0	Max Software Position Limit (cnts; homing required first)
+od	0x607E	0x00	8	u8	rw	0x00	Polarity (bit6 velocity/torque, bit7 position); inverts demand only, not measured
+od	0x6080	0x00	32	u32	rw	-	Max Motor Speed (RPM)
+od	0x6081	0x00	32	u32	rw	500000	Profile Velocity (cnts/s; PP mode) — miniOS default: 500k cnt/s (~10 rev/s on 51200-cpr encoder). Drive ESI has no default; master must write.
+od	0x6083	0x00	32	u32	rw	1000000	Profile Acceleration (cnts/s^2; PP/PV) — miniOS default: 1M cnt/s^2 (0.5s to Profile Velocity). Drive ESI has no default; master must write.
+od	0x6084	0x00	32	u32	rw	1000000	Profile Deceleration (cnts/s^2; PP/PV) — matches 0x6083 by default.
+od	0x6085	0x00	32	u32	rw	-	Quick Stop Deceleration (cnts/s^2)
+od	0x6087	0x00	32	u32	rw	0xFFFFFFFF	Torque Slope (0.1% peak / s) - TQ mode ramp
+od	0x608F	0x01	32	u32	ro	12800|51200	Encoder Increments (per rev)
+od	0x608F	0x02	32	u32	ro	1	Motor Revolutions
+od	0x6098	0x00	8	i8	rw	37	Homing Method (-2,-1,17-22,33,34,37 supported)
+od	0x6099	0x01	32	u32	rw	-	Fast Homing Speed (cnts/s, 213..536870911)
+od	0x6099	0x02	32	u32	rw	-	Slow Homing Speed (cnts/s)
+od	0x609A	0x00	32	u32	rw	-	Homing Acceleration (cnts/s^2)
+od	0x60B0	0x00	32	i32	rw	0	Position Offset (cnts)
+od	0x60B1	0x00	32	i32	rw	0	Velocity Offset (cnts/s)
+od	0x60B2	0x00	16	i16	rw	0	Torque Offset (0.1% peak)
+od	0x60B8	0x00	16	u16	rw	0x1713	Touch Probe Function (2 probes, edge select, zero-pulse or input)
+od	0x60B9	0x00	16	u16	ro	-	Touch Probe Status
+od	0x60BA	0x00	32	i32	ro	-	Touch Probe 1 Pos Edge Value (cnts)
+od	0x60BB	0x00	32	i32	ro	-	Touch Probe 1 Neg Edge Value (cnts)
+od	0x60BC	0x00	32	i32	ro	-	Touch Probe 2 Pos Edge Value (cnts)
+od	0x60BD	0x00	32	i32	ro	-	Touch Probe 2 Neg Edge Value (cnts)
+od	0x60C2	0x01	8	u8	rw	2	Interpolation Time Period Value
+od	0x60C2	0x02	8	i8	rw	-3	Interpolation Time Index (10^i seconds)
+od	0x60D5	0x00	16	u16	ro	-	Touch Probe 1 Positive Edge Counter
+od	0x60D6	0x00	16	u16	ro	-	Touch Probe 1 Negative Edge Counter
+od	0x60D7	0x00	16	u16	ro	-	Touch Probe 2 Positive Edge Counter
+od	0x60D8	0x00	16	u16	ro	-	Touch Probe 2 Negative Edge Counter
+od	0x60E0	0x00	16	u16	rw	1000	Positive Torque Limit Value (0.1% peak)
+od	0x60E1	0x00	16	u16	rw	1000	Negative Torque Limit Value (0.1% peak)
+od	0x60E3	0x00	8	u8	ro	11	Supported Homing Methods count; entries at 1..11
+od	0x60F4	0x00	32	i32	ro	-	Following Error Actual Value (cnts)
+od	0x60FD	0x00	32	u32	ro	-	Digital Inputs (bit0 neg-lim, bit1 pos-lim, bit2 home, bit3 interlock, bit16 inA, bit17 inB, bit18 brake, bit19 ethercat-up)
+od	0x60FE	0x01	32	u32	rw	0	Digital Outputs (bit16 outA, bit17 outB)
+od	0x60FE	0x02	32	u32	rw	0xFFFFFFFF	Output Mask
+od	0x60FF	0x00	32	i32	rw	-	Target Velocity (cnts/s)
+od	0x6502	0x00	32	u32	ro	0x3AD	Supported Drive Modes (PP|PV|TQ|HM|CSP|CSV|CST bits set)
+od	0x67FE	0x00	32	u32	ro	0x00040100	CiA-402 Profile Version
+od	0x67FF	0x00	32	u32	ro	0x00000192	Single Device Type
+# Teknic proprietary extensions (0x2xxx range):
+od	0x2009	0x00	96	byte12	ro	-	Alert Register - real-time shutdown detail (use ClearView)
+od	0x2017	0x00	32	u32	rw	-	Hardware Config Register
+od	0x2143	0x00	16	i16	rw	512	Kr (Q9 fixed-point, 0-2048)
+od	0x2146	0x00	32	u32	rw	-	Kv (velocity gain)
+od	0x2147	0x00	32	u32	rw	-	Kp (position gain)
+od	0x2148	0x00	32	u32	rw	-	Ki (integral gain)
+od	0x2149	0x00	32	u32	rw	-	Kfv (velocity feedforward)
+od	0x214A	0x00	32	u32	rw	-	Kfa (acceleration feedforward)
+od	0x214B	0x00	32	u32	rw	-	Kfj (jerk feedforward)
+od	0x214D	0x00	32	u32	rw	-	Knv (notch/velocity filter)
+od	0x214F	0x00	16	i16	rw	0	Torque Bias (0.003% trq units)
+od	0x215D	0x00	16	u16	rw	19	Fine Tuning Slider (0-31)
+od	0x2039	0x00	16	u16	rw	-	RAS Delay ms (anti-hunt RAS - Regressive Auto-Spline)
+od	0x2145	0x00	32	u32	rw	-	Tuning Config Register
+od	0x10F3	0x00	8	u8	ro	55	Diagnosis History (last 50 messages at sub 6..55)
+# TODO Object 0x1023 Command Object - used for diagnostic command/reply, BYTE[32]
+
+# === Sync Manager / Distributed Clock telemetry (read-only, ESI-defined) ===
+# 0x1C32/0x1C33 contain DC shift times published by the slave:
+od	0x1C32	0x03	32	u32	ro	440	RxPDO Output Shift Time (ns)
+od	0x1C32	0x05	32	u32	ro	62500	RxPDO Minimum Cycle Time (ns) = 62.5us
+od	0x1C32	0x06	32	u32	ro	15000	RxPDO Calc+Copy Time (ns)
+od	0x1C32	0x09	32	u32	ro	440	RxPDO DC Output Delay Time (ns)
+od	0x1C33	0x03	32	u32	ro	5200	TxPDO Input Shift Time (ns)
+od	0x1C33	0x05	32	u32	ro	62500	TxPDO Minimum Cycle Time (ns)
+od	0x1C33	0x06	32	u32	ro	10000	TxPDO Calc+Copy Time (ns)
+od	0x1C33	0x09	32	u32	ro	5200	TxPDO DC Input Delay Time (ns)
+# Note: sync pulses must arrive AFTER the datagram, not during - tighten output shift for sub-1ms cycles

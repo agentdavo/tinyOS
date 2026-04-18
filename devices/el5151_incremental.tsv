@@ -1,0 +1,39 @@
+# Beckhoff EL5151 — 1-channel incremental encoder interface.
+# Source: ethercat/esi/Beckhoff EL5xxx.xml (ProductCode #x141f3052, Rev #x00110000)
+# Role: Incremental encoder support with TTL/HTL signal levels.
+#
+# Specification:
+#   - 1 channel, 5V/24V encoder supply (selectable)
+#   - EBus current: 130 mA
+#   - Supports incremental encoders (A/B/I signals)
+#   - Counter frequency: up to 2 MHz
+#   - Resolution: 32-bit position counter
+#
+# PDO mapping (TxPDO 0x1A00):
+#   0x6000:01 Status (16b) - Encoder status bits
+#   0x6000:11 Position (32b) - Current position in counts
+#   0x6000:12 Speed (16b) - Current speed
+
+device	type=encoder	name=EL5151	vid=0x00000002	pid=0x141f3052	rev_min=0x00110000	profile=5001	channels=1	dc_assign=0x0300	sync_modes=DC-Sync|SM-Sync	ebus_current_ma=130	features=incremental
+
+# === PDO mapping ===
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x01	bits=16	pin=status	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x11	bits=32	pin=position	type=i32
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x12	bits=16	pin=speed	type=i16
+
+# === SDO configuration (0x80nn block for channel n) ===
+sdo_init	0x8000	0x01	8	0	Encoder Type: 0=Incremental
+sdo_init	0x8000	0x05	8	50	Supply Voltage: 50=5V, 90=9V, B0=24V
+sdo_init	0x8000	0x06	8	3	Counter Mode: 3=AB (1x), 4=AB (2x), 5=AB (4x)
+sdo_init	0x8000	0x07	8	0	Invert Signals: bitmask
+
+# === Object Dictionary defaults ===
+od	0x1018	0x01	32	u32	ro	2	Vendor ID (Beckhoff)
+od	0x1018	0x02	32	u32	ro	0x141f3052	Product Code (EL5151)
+od	0x6000	0x01	16	u16	tx	-	Status
+od	0x6000	0x11	32	i32	tx	-	Position
+od	0x6000	0x12	16	i16	tx	-	Speed
+od	0x8000	0x01	8	u8	rw	0	Encoder Type
+od	0x8000	0x05	8	u8	rw	50	Supply Voltage
+od	0x8000	0x06	8	u8	rw	3	Counter Mode
+od	0x8000	0x07	8	u8	rw	0	Invert Signals

@@ -1,0 +1,30 @@
+# Beckhoff EL2809 — 16-channel digital output, 24 V DC, 0.5 A.
+# Source: devices/ethercat/esi/Beckhoff EL2xxx.xml (ProductCode=#x0AF93052).
+#
+# No mailbox: SyncManager is Outputs-only (SM0 at 0x0F00), no CoE. Same
+# handling as EL1809 — bus_config treats as coupler-class, no SDO/DC.
+#
+# Process data — 16 RxPDOs (Sm=0, Fixed=1):
+#   0x1600 Channel 1 -> 0x7000:01 (Output, 1 bit)
+#   0x1601 Channel 2 -> 0x7010:01
+#   ... 0x160F Channel 16 -> 0x70F0:01
+# Total RxPDO image = 16 × 1 bit = 2 bytes.
+
+device	type=digital_output	name=EL2809	vid=0x00000002	pid=0x0AF93052	ebus_current_ma=140	cycle_min_us=0	cycle_quant_us=0	channels=16
+
+pdo	slave=0	sm=0	dir=rx	pdo=0x1600	entry=0x7000	sub=0x01	bits=1	pin=do_ch01	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x1601	entry=0x7010	sub=0x01	bits=1	pin=do_ch02	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x1602	entry=0x7020	sub=0x01	bits=1	pin=do_ch03	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x1603	entry=0x7030	sub=0x01	bits=1	pin=do_ch04	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x1604	entry=0x7040	sub=0x01	bits=1	pin=do_ch05	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x1605	entry=0x7050	sub=0x01	bits=1	pin=do_ch06	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x1606	entry=0x7060	sub=0x01	bits=1	pin=do_ch07	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x1607	entry=0x7070	sub=0x01	bits=1	pin=do_ch08	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x1608	entry=0x7080	sub=0x01	bits=1	pin=do_ch09	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x1609	entry=0x7090	sub=0x01	bits=1	pin=do_ch10	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x160A	entry=0x70A0	sub=0x01	bits=1	pin=do_ch11	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x160B	entry=0x70B0	sub=0x01	bits=1	pin=do_ch12	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x160C	entry=0x70C0	sub=0x01	bits=1	pin=do_ch13	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x160D	entry=0x70D0	sub=0x01	bits=1	pin=do_ch14	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x160E	entry=0x70E0	sub=0x01	bits=1	pin=do_ch15	type=bool
+pdo	slave=0	sm=0	dir=rx	pdo=0x160F	entry=0x70F0	sub=0x01	bits=1	pin=do_ch16	type=bool

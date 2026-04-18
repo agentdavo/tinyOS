@@ -1,0 +1,10 @@
+hmi	key=dhcp_enable	value=1
+hmi	key=static_ip	value=10.0.2.15
+hmi	key=netmask	value=255.255.255.0
+hmi	key=gateway	value=10.0.2.2
+hmi	key=udp_port	value=5000
+hmi	key=dhcp_timeout_ms	value=3000
+hmi	key=ping_selftest_enable	value=1
+hmi	key=ping_selftest_target	value=8.8.8.8
+hmi	key=ping_selftest_delay_ms	value=1500
+hmi	key=ping_selftest_timeout_ms	value=3000

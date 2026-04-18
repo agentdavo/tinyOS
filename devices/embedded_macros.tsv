@@ -1,0 +1,221 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+symbol	name=drawer_open_cmd	type=bool	initial=0	writable=1
+symbol	name=drawer_close_cmd	type=bool	initial=0	writable=1
+symbol	name=drawer_open_fb	type=bool	initial=0	writable=1
+symbol	name=drawer_closed_fb	type=bool	initial=1	writable=1
+symbol	name=tool_measure_request	type=bool	initial=0	writable=1
+symbol	name=tool_measure_done	type=bool	initial=0	writable=1
+symbol	name=tool_change_request	type=bool	initial=0	writable=1
+symbol	name=probe_arm_request	type=bool	initial=0	writable=1
+symbol	name=probe_cycle_done	type=bool	initial=0	writable=1
+symbol	name=probe_stylus_ok	type=bool	initial=0	writable=1
+symbol	name=probe_sim_enable	type=bool	initial=1	writable=1
+symbol	name=probe_target_axis	type=int	initial=-1	writable=1
+symbol	name=probe_target_pos	type=int	initial=0	writable=1
+symbol	name=probe_target_tol	type=int	initial=10	writable=1
+symbol	name=probe_stylus_radius_mm	type=float	initial=2.5	writable=1
+symbol	name=probe_offset_work_index	type=int	initial=-1	writable=1
+symbol	name=probe_offset_policy	type=int	initial=0	writable=1
+symbol	name=probe_datum_target_x_mm	type=float	initial=0.0	writable=1
+symbol	name=probe_datum_target_y_mm	type=float	initial=0.0	writable=1
+symbol	name=probe_datum_target_z_mm	type=float	initial=-8.0	writable=1
+symbol	name=probe_result_x	type=int	initial=0	writable=1
+symbol	name=probe_result_y	type=int	initial=0	writable=1
+symbol	name=probe_result_z	type=int	initial=0	writable=1
+symbol	name=probe_x_minus_mm	type=float	initial=0	writable=1
+symbol	name=probe_x_plus_mm	type=float	initial=0	writable=1
+symbol	name=probe_y_minus_mm	type=float	initial=0	writable=1
+symbol	name=probe_y_plus_mm	type=float	initial=0	writable=1
+symbol	name=probe_center_x_mm	type=float	initial=0	writable=1
+symbol	name=probe_center_y_mm	type=float	initial=0	writable=1
+symbol	name=probe_floor_z_mm	type=float	initial=0	writable=1
+symbol	name=probe_pocket_size_x_mm	type=float	initial=0	writable=1
+symbol	name=probe_pocket_size_y_mm	type=float	initial=0	writable=1
+symbol	name=probe_shift_x_mm	type=float	initial=0	writable=1
+symbol	name=probe_shift_y_mm	type=float	initial=0	writable=1
+symbol	name=probe_shift_z_mm	type=float	initial=0	writable=1
+symbol	name=probe_pocket_nominal_mm	type=float	initial=15.0	writable=1
+symbol	name=probe_pocket_depth_mm	type=float	initial=8.0	writable=1
+symbol	name=probe_sphere_center_x_mm	type=float	initial=0.0	writable=1
+symbol	name=probe_sphere_center_y_mm	type=float	initial=0.0	writable=1
+symbol	name=probe_sphere_center_z_mm	type=float	initial=0.0	writable=1
+symbol	name=probe_sphere_radius_mm	type=float	initial=15.0	writable=1
+symbol	name=probe_sphere_diameter_mm	type=float	initial=20.0	writable=1
+symbol	name=probe_sphere_hits	type=int	initial=3	writable=1
+symbol	name=probe_sphere_point_count	type=int	initial=0	writable=1
+symbol	name=probe_sphere_ready	type=bool	initial=0	writable=1
+
+macro	id=drawer_open	title=Drawer Open	mcode=300
+step	type=set	symbol=drawer_close_cmd	value_type=bool	value=0
+step	type=set	symbol=drawer_open_cmd	value_type=bool	value=1
+step	type=wait	symbol=drawer_open_fb	value_type=bool	compare=eq	value=1	timeout_ms=1000
+
+macro	id=drawer_close	title=Drawer Close	mcode=301
+step	type=set	symbol=drawer_open_cmd	value_type=bool	value=0
+step	type=set	symbol=drawer_close_cmd	value_type=bool	value=1
+step	type=wait	symbol=drawer_closed_fb	value_type=bool	compare=eq	value=1	timeout_ms=1000
+
+macro	id=tool_measure	title=Tool Measure	mcode=302
+step	type=set	symbol=tool_measure_request	value_type=bool	value=1
+step	type=move	axis=Z	position=5000
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2000
+step	type=set	symbol=tool_measure_done	value_type=bool	value=1
+
+macro	id=tool_change	title=Tool Change	mcode=303
+step	type=set	symbol=tool_change_request	value_type=bool	value=1
+step	type=pod_select	pod=upper_turret	value_type=int	value=2
+step	type=wait	symbol=drawer_open_fb	value_type=bool	compare=eq	value=1	timeout_ms=1000
+step	type=alarm	message=waiting for manual tool change confirmation
+
+macro	id=tool_reassign	title=Tool Reassign	mcode=304
+step	type=tool_assign	pod=upper_turret	value_type=int	value=1	position=8
+step	type=alarm	message=tool assignment changed
+
+macro	id=probe_qualify	title=Probe Qualify	mcode=305
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=0
+step	type=set	symbol=probe_stylus_ok	value_type=bool	value=0
+step	type=set	symbol=probe_arm_request	value_type=bool	value=1
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=2
+step	type=set	symbol=probe_target_pos	value_type=int	value=4500
+step	type=pod_select	pod=upper_turret	value_type=int	value=3
+step	type=move	axis=Z	position=4500
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2000
+step	type=capture_probe	axis=Z	direction=-1	symbol=probe_result_z	value_type=int
+step	type=set	symbol=probe_target_axis	value_type=int	value=-1
+step	type=set	symbol=probe_arm_request	value_type=bool	value=0
+step	type=set	symbol=probe_stylus_ok	value_type=bool	value=1
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=1
+
+macro	id=probe_z_surface	title=Probe Z Surface	mcode=306
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=0
+step	type=set	symbol=probe_arm_request	value_type=bool	value=1
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=2
+step	type=set	symbol=probe_target_pos	value_type=int	value=3000
+step	type=pod_select	pod=upper_turret	value_type=int	value=3
+step	type=move	axis=Z	position=3000
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2000
+step	type=capture_probe	axis=Z	direction=-1	symbol=probe_result_z	value_type=int
+step	type=set	symbol=probe_target_axis	value_type=int	value=-1
+step	type=set	symbol=probe_arm_request	value_type=bool	value=0
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=1
+
+macro	id=probe_x_edge	title=Probe X Edge	mcode=307
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=0
+step	type=set	symbol=probe_arm_request	value_type=bool	value=1
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=0
+step	type=set	symbol=probe_target_pos	value_type=int	value=2500
+step	type=pod_select	pod=upper_turret	value_type=int	value=3
+step	type=move	axis=X	position=2500
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2000
+step	type=capture_probe	axis=X	direction=1	symbol=probe_result_x	value_type=int
+step	type=set	symbol=probe_target_axis	value_type=int	value=-1
+step	type=set	symbol=probe_arm_request	value_type=bool	value=0
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=1
+
+macro	id=probe_y_edge	title=Probe Y Edge	mcode=308
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=0
+step	type=set	symbol=probe_arm_request	value_type=bool	value=1
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=1
+step	type=set	symbol=probe_target_pos	value_type=int	value=2500
+step	type=pod_select	pod=upper_turret	value_type=int	value=3
+step	type=move	axis=Y	position=2500
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2000
+step	type=capture_probe	axis=Y	direction=1	symbol=probe_result_y	value_type=int
+step	type=set	symbol=probe_target_axis	value_type=int	value=-1
+step	type=set	symbol=probe_arm_request	value_type=bool	value=0
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=1
+
+macro	id=probe_bore_xy	title=Probe Bore XY	mcode=309
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=0
+step	type=set	symbol=probe_arm_request	value_type=bool	value=1
+step	type=pod_select	pod=upper_turret	value_type=int	value=3
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=0
+step	type=set	symbol=probe_target_pos	value_type=int	value=1800
+step	type=move	axis=X	position=1800
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2000
+step	type=capture_probe	axis=X	direction=1	symbol=probe_result_x	value_type=int
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=1
+step	type=set	symbol=probe_target_pos	value_type=int	value=1800
+step	type=move	axis=Y	position=1800
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2000
+step	type=capture_probe	axis=Y	direction=1	symbol=probe_result_y	value_type=int
+step	type=set	symbol=probe_target_axis	value_type=int	value=-1
+step	type=set	symbol=probe_arm_request	value_type=bool	value=0
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=1
+
+macro	id=probe_calibrate_3d_pocket	title=3D Pocket Calibrate	mcode=310
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=0
+step	type=set	symbol=probe_stylus_ok	value_type=bool	value=0
+step	type=pod_select	pod=drill_rack	value_type=int	value=0
+step	type=move	axis=Z	position=500
+step	type=move	axis=X	position=-450
+step	type=move	axis=Y	position=-450
+step	type=move	axis=Z	position=-800
+step	type=move	axis=X	position=450
+step	type=move	axis=Y	position=450
+step	type=move	axis=X	position=-450
+step	type=move	axis=Y	position=-450
+step	type=move	axis=X	position=0
+step	type=move	axis=Y	position=0
+step	type=move	axis=Z	position=500
+step	type=pod_select	pod=upper_turret	value_type=int	value=3
+step	type=set	symbol=probe_arm_request	value_type=bool	value=1
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=0
+step	type=set	symbol=probe_target_pos	value_type=int	value=-750
+step	type=move	axis=X	position=-750
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2500
+step	type=capture_probe	axis=X	direction=-1	symbol=probe_x_minus_mm	value_type=float
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=0
+step	type=set	symbol=probe_target_pos	value_type=int	value=750
+step	type=move	axis=X	position=750
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2500
+step	type=capture_probe	axis=X	direction=1	symbol=probe_x_plus_mm	value_type=float
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=1
+step	type=set	symbol=probe_target_pos	value_type=int	value=-750
+step	type=move	axis=Y	position=-750
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2500
+step	type=capture_probe	axis=Y	direction=-1	symbol=probe_y_minus_mm	value_type=float
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=1
+step	type=set	symbol=probe_target_pos	value_type=int	value=750
+step	type=move	axis=Y	position=750
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2500
+step	type=capture_probe	axis=Y	direction=1	symbol=probe_y_plus_mm	value_type=float
+step	type=set	symbol=probe_tripped	value_type=bool	value=0
+step	type=set	symbol=probe_target_axis	value_type=int	value=2
+step	type=set	symbol=probe_target_pos	value_type=int	value=-800
+step	type=move	axis=Z	position=-800
+step	type=wait	symbol=probe_tripped	value_type=bool	compare=eq	value=1	timeout_ms=2500
+step	type=capture_probe	axis=Z	direction=-1	symbol=probe_floor_z_mm	value_type=float
+step	type=compute	op=avg	symbol=probe_center_x_mm	src=probe_x_minus_mm	src_b=probe_x_plus_mm
+step	type=compute	op=avg	symbol=probe_center_y_mm	src=probe_y_minus_mm	src_b=probe_y_plus_mm
+step	type=compute	op=sub	symbol=probe_pocket_size_x_mm	src=probe_x_plus_mm	src_b=probe_x_minus_mm
+step	type=compute	op=sub	symbol=probe_pocket_size_y_mm	src=probe_y_plus_mm	src_b=probe_y_minus_mm
+step	type=compute	op=sub	symbol=probe_shift_x_mm	src=probe_datum_target_x_mm	src_b=probe_center_x_mm
+step	type=compute	op=sub	symbol=probe_shift_y_mm	src=probe_datum_target_y_mm	src_b=probe_center_y_mm
+step	type=compute	op=sub	symbol=probe_shift_z_mm	src=probe_datum_target_z_mm	src_b=probe_floor_z_mm
+step	type=set_work_offset	axis=X	symbol=probe_shift_x_mm
+step	type=set_work_offset	axis=Y	symbol=probe_shift_y_mm
+step	type=set_work_offset	axis=Z	symbol=probe_shift_z_mm
+step	type=set	symbol=probe_target_axis	value_type=int	value=-1
+step	type=set	symbol=probe_arm_request	value_type=bool	value=0
+step	type=set	symbol=probe_stylus_ok	value_type=bool	value=1
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=1
+
+macro	id=probe_calibrate_ref_sphere	title=Ref Sphere Calibrate	mcode=311
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=0
+step	type=set	symbol=probe_stylus_ok	value_type=bool	value=0
+step	type=set	symbol=probe_sphere_ready	value_type=bool	value=0
+step	type=pod_select	pod=upper_turret	value_type=int	value=3
+step	type=sphere_calibrate
+step	type=set	symbol=probe_stylus_ok	value_type=bool	value=1
+step	type=set	symbol=probe_cycle_done	value_type=bool	value=1

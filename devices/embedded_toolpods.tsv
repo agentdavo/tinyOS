@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Physical tool pods and virtual tool assignments.
+# Pod rows carry a machine-space anchor (x/y/z); station offsets are relative
+# to that anchor. The renderer composes pod.machine_* + station.machine_*.
+
+pod	id=upper_turret	title=Upper Turret	axis=C	motion=rotary	clamp_required=1	x=0	y=120	z=40
+station	pod=upper_turret	index=0	position=0	physical_tool=1	virtual_tool=1	x=0	y=0	z=0	a=0	name=turn_od
+station	pod=upper_turret	index=1	position=9000	physical_tool=2	virtual_tool=4	x=0	y=0	z=0	a=90	name=groove
+station	pod=upper_turret	index=2	position=18000	physical_tool=3	virtual_tool=2	x=0	y=0	z=0	a=180	name=drill
+station	pod=upper_turret	index=3	position=27000	physical_tool=4	virtual_tool=99	x=0	y=0	z=0	a=270	name=renishaw_probe
+
+pod	id=drill_rack	title=Drill Rack	axis=Y	motion=linear	clamp_required=0	x=220	y=0	z=80
+station	pod=drill_rack	index=0	position=0	physical_tool=11	virtual_tool=11	x=0	y=0	z=0	a=0	name=drill_6mm
+station	pod=drill_rack	index=1	position=5000	physical_tool=12	virtual_tool=12	x=0	y=50	z=0	a=0	name=drill_10mm
+station	pod=drill_rack	index=2	position=10000	physical_tool=13	virtual_tool=15	x=0	y=100	z=0	a=0	name=tap_m8

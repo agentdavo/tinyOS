@@ -1,0 +1,27 @@
+# Beckhoff EtherCAT bus couplers — passive segment devices.
+# No PDOs, no OD parameters the master needs to touch. They show up on
+# discovery, walk the ESM, and forward frames. Source: LinuxCNC-ethercat
+# lcec_typelist.c + Beckhoff ESI files.
+#
+# `type=coupler` is a miniOS convention: DeviceDB::configure_from_db skips
+# any TSV record with this type (nothing to write).
+
+# === EK1100 ===
+# E-bus coupler, default Beckhoff entry device. No user I/O.
+device	type=coupler	vid=0x00000002	pid=0x044C2C52	name=EK1100	cycle_min_us=0	cycle_quant_us=0
+
+# === EK1101 ===
+# EK1100 + hex ID switch + 2-digit display. Still no user PDOs.
+device	type=coupler	vid=0x00000002	pid=0x044D2C52	name=EK1101	cycle_min_us=0	cycle_quant_us=0
+
+# === EK1110 ===
+# EtherCAT extension / RJ45 daisy-chain downlink. No PDOs.
+device	type=coupler	vid=0x00000002	pid=0x04562C52	name=EK1110	cycle_min_us=0	cycle_quant_us=0
+
+# === EK1122 ===
+# 2-port EtherCAT junction. No PDOs.
+device	type=coupler	vid=0x00000002	pid=0x04622C52	name=EK1122	cycle_min_us=0	cycle_quant_us=0
+
+# === EP1122 ===
+# EK1122 in IP67. Same PDO=none semantics.
+device	type=coupler	vid=0x00000002	pid=0x04624052	name=EP1122	cycle_min_us=0	cycle_quant_us=0

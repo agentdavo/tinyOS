@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Named EtherCAT/IO bindings into the machine registry.
+# source = ec.di | ec.do | ec.ai_uni | ec.ai_bip
+
+signal	name=door_closed	source=ec.di	master=0	slave=1	bit=0	writable=1
+signal	name=drawer_open_fb	source=ec.di	master=0	slave=1	bit=1	writable=1
+signal	name=drawer_closed_fb	source=ec.di	master=0	slave=1	bit=2	writable=1
+signal	name=probe_tripped	source=ec.di	master=0	slave=1	bit=3	writable=1
+signal	name=air_ok	source=ec.di	master=0	slave=1	bit=4	writable=1
+signal	name=hydraulic_ok	source=ec.di	master=0	slave=1	bit=5	writable=1
+signal	name=tool_clamp_ok	source=ec.di	master=0	slave=1	bit=6	writable=1
+
+signal	name=drawer_open_cmd	source=ec.do	master=0	slave=2	bit=0	writable=1
+signal	name=drawer_close_cmd	source=ec.do	master=0	slave=2	bit=1	writable=1
+signal	name=tool_change_request	source=ec.do	master=0	slave=2	bit=2	writable=1
+signal	name=probe_arm_request	source=ec.do	master=0	slave=2	bit=3	writable=1
+signal	name=coolant_cmd	source=ec.do	master=0	slave=2	bit=4	writable=1
+signal	name=air_blast_cmd	source=ec.do	master=0	slave=2	bit=5	writable=1
+
+signal	name=spindle_load_raw	source=ec.ai_uni	master=0	slave=3	channel=0	value_type=int
+signal	name=hydraulic_pressure_raw	source=ec.ai_uni	master=0	slave=3	channel=1	value_type=int
+signal	name=probe_signal_raw	source=ec.ai_bip	master=0	slave=3	channel=0	value_type=int
+
+# Richer field-level PDO / drive bindings for heterogeneous EtherCAT nodes.
+signal	name=x_scale_raw	source=ec.tx_pin	master=0	slave=4	pin=ch1_position_compact	value_type=int
+signal	name=x_servo_status	source=ec.statusword	master=0	slave=5	value_type=int
+signal	name=x_servo_pos	source=ec.position_actual	master=0	slave=5	value_type=int
+signal	name=x_servo_inputs	source=ec.digital_inputs	master=0	slave=5	value_type=int
+signal	name=x_servo_outputs	source=ec.digital_outputs	master=0	slave=5	value_type=int	writable=1
+signal	name=main_spindle_status	source=ec.statusword	master=1	slave=0	value_type=int
+signal	name=main_spindle_pos	source=ec.position_actual	master=1	slave=0	value_type=int
+signal	name=tool_spindle_mode	source=ec.drive_mode	master=1	slave=1	value_type=int

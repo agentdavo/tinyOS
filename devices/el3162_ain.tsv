@@ -1,0 +1,32 @@
+# Beckhoff EL3162 — 2-channel analog input, 0..10 V, 16-bit single-ended.
+#
+# NOTE: the EL3162 ESI descriptor is NOT present in ethercat/esi/ (only
+# EL3602 differential-10V and EL3xxx-0030 family shipped). Values below
+# come from Beckhoff public documentation + EL31xx family defaults. When
+# the real ESI is added, cross-check RevisionNo and EBusCurrent and
+# update this TSV.
+#
+# ProductCode 0x0C5A3052 is the documented EL3162 identity. CoE is
+# supported (mailbox present) so unlike EL1809/EL2809 this terminal *can*
+# take 0x8000/0x8010 filter + range config via SDO.
+#
+# Process data — 2 channels, each channel publishes {Status u16, Value i16}
+# in its TxPDO:
+#   0x1A00 Channel 1: 0x6000:01 Status (16b), 0x6000:11 Value (16b)
+#   0x1A01 Channel 2: 0x6010:01 Status (16b), 0x6010:11 Value (16b)
+# Total TxPDO image = 2 × (2 + 2) = 8 bytes.
+
+device	type=analog_input	name=EL3162	vid=0x00000002	pid=0x0C5A3052	ebus_current_ma=190	cycle_min_us=0	cycle_quant_us=0	channels=2	range=0..10V
+
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x01	bits=16	pin=ch01_status	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A00	entry=0x6000	sub=0x11	bits=16	pin=ch01_value	type=i16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6010	sub=0x01	bits=16	pin=ch02_status	type=u16
+pdo	slave=0	sm=3	dir=tx	pdo=0x1A01	entry=0x6010	sub=0x11	bits=16	pin=ch02_value	type=i16
+
+# Per-channel filter / range presets (0x80x0). CoE-writable at PreOp; the
+# TSV carries the most common operating values — 50 Hz (IIR2), range code
+# for 0..10V. Adjust per-channel via the CLI `ec_sdo_write` if needed.
+sdo_init	0x8000	0x15	16	0x0003	Ch1 Filter = IIR2 50 Hz
+sdo_init	0x8000	0x19	16	0x0002	Ch1 User scale enable (application-specific)
+sdo_init	0x8010	0x15	16	0x0003	Ch2 Filter = IIR2 50 Hz
+sdo_init	0x8010	0x19	16	0x0002	Ch2 User scale enable
