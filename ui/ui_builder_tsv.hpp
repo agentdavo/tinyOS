@@ -142,6 +142,16 @@ const char* last_error();
 uint32_t last_error_line();
 void tick();
 
+// Acquire/release the UI state lock. Held briefly during set_active_page's
+// show/hide cascade and during the renderer's tree walk so a concurrent
+// page switch can't leave two pages in inconsistent visibility state.
+// pump_ui_input and screen.render() in the UI main loop are sequential;
+// these locks therefore never nest in practice. When TSV hot-reload lands
+// (rebuilding g_widgets / g_pages), extend this protection over the
+// rebuild and any future tree-mutation entry points.
+void lock_state() noexcept;
+void unlock_state() noexcept;
+
 }
 
 #endif // UI_BUILDER_TSV_HPP

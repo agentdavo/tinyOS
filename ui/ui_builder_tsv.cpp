@@ -20,6 +20,8 @@
 
 #include "fs/vfs.hpp"
 
+#include "core.hpp"
+
 namespace ui_builder {
 
 namespace {
@@ -108,6 +110,7 @@ static constexpr uint32_t kInputFeedbackTicks = 12;
 static char g_last_error[160] = {};
 static uint32_t g_last_error_line = 0;
 static uint32_t g_click_trace_count = 0;
+static kernel::core::Spinlock g_state_lock;
 
 void advance_focus(int step);
 
@@ -1108,6 +1111,7 @@ bool validate_actions(uint32_t line_no) {
 
 void set_active_page(int idx) {
     if (idx < 0 || static_cast<uint32_t>(idx) >= g_page_count) return;
+    kernel::core::ScopedLock guard(g_state_lock);
     g_active_page = idx;
     for (uint32_t i = 0; i < g_page_count; ++i) {
         if (!g_pages[i].root) continue;
@@ -2792,6 +2796,9 @@ const char* last_error() {
 uint32_t last_error_line() {
     return g_last_error_line;
 }
+
+void lock_state() noexcept   { g_state_lock.acquire_general(); }
+void unlock_state() noexcept { g_state_lock.release_general(); }
 
 void tick() {
     for (uint32_t i = 0; i < g_input_count; ++i) {

@@ -463,7 +463,9 @@ void show_main_page(Framebuffer& fb) {
     auto* built = ui_builder::root_widget();
     screen.set_screen(built);
     if (built) {
+        ui_builder::lock_state();
         screen.render();
+        ui_builder::unlock_state();
         return;
     }
     fb.draw_text(72, 72, "TSV UI NOT_LOADED", Color::Red(), Color::Black());
