@@ -697,9 +697,17 @@ void Kernel::cycle_axis(Axis& a, uint64_t t_now, bool freeze_trajectory) noexcep
         // stop. We stop advancing the trajectory (gate below) and stop
         // publishing target_position. Clear via Kernel::fault_reset which
         // pulses CW_FAULT_RESET on the controlword PDO.
+        // A latched master-side deadline fault forces every axis into the
+        // same fault-reaction stop the drive itself would trigger — needed
+        // because the slave may not have ack'd QuickStopActive yet on the
+        // cycle we trip, and the drive->state read is one cycle stale.
+        const bool master_dl_fault =
+            ethercat::g_master_a.is_deadline_faulted() ||
+            ethercat::g_master_b.is_deadline_faulted();
         const bool drive_fault =
             a.drive->state == cia402::State::Fault ||
-            a.drive->state == cia402::State::FaultReactionActive;
+            a.drive->state == cia402::State::FaultReactionActive ||
+            master_dl_fault;
         if (drive_fault && !a.fault_latched) {
             a.fault_latched = true;
             // Task 1.5 — latch 0x603F at the instant we decide this is a fault
