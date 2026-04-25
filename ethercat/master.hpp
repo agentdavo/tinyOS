@@ -38,6 +38,7 @@ struct Stats {
     std::atomic<uint32_t> discovered{0};   // last discovery WKC
     std::atomic<uint32_t> esm_timeouts{0};
     std::atomic<uint32_t> sdo_tx{0};
+    std::atomic<uint32_t> deadline_trips{0}; // times the consecutive-miss threshold tripped
 };
 
 class Master {
@@ -224,6 +225,22 @@ public:
     void allow_safeop(bool ok) noexcept { allow_safeop_.store(ok, std::memory_order_release); }
     bool allow_safeop_set() const noexcept { return allow_safeop_.load(std::memory_order_acquire); }
 
+    // Deadline-miss safety latch. After CONSECUTIVE_MISS_THRESHOLD cycles
+    // overrun back-to-back, the master commands every CiA-402 servo on the
+    // bus to QuickStopActive (controlword = CW_CMD_QUICK_STOP). The fault is
+    // latched — motion observes it via is_deadline_faulted() and walks the
+    // axes through their fault-reaction stop. Operator must explicitly
+    // acknowledge via clear_deadline_fault() (e.g. CLI `ec_clear_fault`).
+    static constexpr uint32_t CONSECUTIVE_MISS_THRESHOLD = 2;
+    bool is_deadline_faulted() const noexcept {
+        return deadline_fault_.load(std::memory_order_acquire);
+    }
+    void clear_deadline_fault() noexcept {
+        deadline_fault_.store(false, std::memory_order_release);
+        deadline_fault_logged_ = false;
+        consecutive_misses_ = 0;
+    }
+
     // Cycle-latency telemetry. `cycle` measures whole-iteration duration;
     // the sub-histograms split it into the send-probe / ESM / LRW / wait
     // phases so you can see where budget goes.
@@ -263,6 +280,11 @@ private:
     uint64_t esm_deadline_us_ = 0;
     uint8_t  sdo_counter_ = 1;
     uint8_t  dgram_idx_ = 0;
+
+    // Deadline-trip latch state.
+    uint32_t consecutive_misses_ = 0;
+    std::atomic<bool> deadline_fault_{false};
+    bool deadline_fault_logged_ = false;
 
     // --- SDO upload state (task 1.2 + segmented follow-up) ----------------
     // Linear state machine driving a single mailbox exchange at a time.
@@ -325,6 +347,7 @@ private:
     void step_esm();
     void discover_slaves();
     void cycle_lrw();
+    void on_deadline_fault() noexcept;
     void service_sdo_upload() noexcept;  // task 1.2 cycle-loop hook
     void service_esc_read() noexcept;
     bool send_frame(const uint8_t* buf, size_t len) noexcept;

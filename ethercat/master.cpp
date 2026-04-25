@@ -1082,10 +1082,40 @@ void Master::run_loop() {
         if (wait_t0 > next_us) {
             stats_.cycle_deadline_miss.fetch_add(1, std::memory_order_relaxed);
             next_us = wait_t0;
+            if (++consecutive_misses_ >= CONSECUTIVE_MISS_THRESHOLD &&
+                !deadline_fault_.load(std::memory_order_relaxed)) {
+                on_deadline_fault();
+            }
         } else {
+            consecutive_misses_ = 0;
             wait_until_us(next_us);
             hist_wait_.record(t->get_system_time_us() - wait_t0);
         }
+    }
+}
+
+void Master::on_deadline_fault() noexcept {
+    deadline_fault_.store(true, std::memory_order_release);
+    stats_.deadline_trips.fetch_add(1, std::memory_order_relaxed);
+
+    // Command every CiA-402 servo on the bus to QuickStopActive. The next
+    // cycle_lrw() pack will lift the new target_state through Drive::step()
+    // into the controlword PDO, so the slaves see CW_CMD_QUICK_STOP without
+    // any extra mailbox traffic. Slaves without a CiA-402 PDO layout
+    // (rx_controlword_off == 0xFF — couplers, raw I/O) are left alone.
+    for (size_t i = 0; i < slave_count_; ++i) {
+        if (slaves_[i].pdo_layout.rx_controlword_off != 0xFF) {
+            slaves_[i].drive.target_state = cia402::State::QuickStopActive;
+        }
+    }
+
+    if (!deadline_fault_logged_) {
+        deadline_fault_logged_ = true;
+        char buf[96];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "[ec%d] DEADLINE FAULT — %u consecutive misses, QuickStop broadcast\n",
+            id_, (unsigned)consecutive_misses_);
+        early_uart_puts(buf);
     }
 }
 
@@ -1112,13 +1142,15 @@ void Master::dump_status(kernel::hal::UARTDriverOps* uart) const {
         esm_phase_ == EsmPhase::Settled      ? "settled" :
         esm_phase_ == EsmPhase::Error        ? "err"     : "?";
     kernel::util::k_snprintf(buf, sizeof(buf),
-        "  ec%d nic=%d state=%s period=%uus cycles=%llu tx=%llu rx=%llu slaves=%u miss=%llu esm=%s tgt=0x%02x to=%u safeop_gate=%s\n",
+        "  ec%d nic=%d state=%s period=%uus cycles=%llu tx=%llu rx=%llu slaves=%u miss=%llu trips=%u dl_fault=%s esm=%s tgt=0x%02x to=%u safeop_gate=%s\n",
         id_, nic_idx_, sname, period_us_,
         (unsigned long long)stats_.cycles.load(std::memory_order_relaxed),
         (unsigned long long)stats_.tx_frames.load(std::memory_order_relaxed),
         (unsigned long long)stats_.rx_frames.load(std::memory_order_relaxed),
         (unsigned)slave_count_,
         (unsigned long long)stats_.cycle_deadline_miss.load(std::memory_order_relaxed),
+        (unsigned)stats_.deadline_trips.load(std::memory_order_relaxed),
+        deadline_fault_.load(std::memory_order_acquire) ? "LATCHED" : "ok",
         pname,
         (unsigned)esm_target_,
         (unsigned)stats_.esm_timeouts.load(std::memory_order_relaxed),
