@@ -301,6 +301,53 @@ void bus_config_entry(void* arg) {
             if (compute_pdo_layout(expected->id, cia402::Mode::CyclicSyncPosition, layout)) {
                 slave.pdo_layout = layout;
             }
+
+            // Verify CiA-402 0x60C2 (Interpolation Time Period) against the
+            // master cycle. configure_from_db has just queued the SDO write
+            // from the device DB; we read back what the slave is actually
+            // running so a TSV value drift vs Master::period_us shows up
+            // here instead of as silent following-error in the field.
+            uint8_t v_buf[4]   = {};
+            uint8_t e_buf[4]   = {};
+            uint8_t v_bytes    = 0;
+            uint8_t e_bytes    = 0;
+            uint32_t v_abort   = 0;
+            uint32_t e_abort   = 0;
+            const bool got_v = m.upload_sdo(station, 0x60C2, 1, v_buf, &v_bytes, 50000, &v_abort);
+            const bool got_e = m.upload_sdo(station, 0x60C2, 2, e_buf, &e_bytes, 50000, &e_abort);
+            if (!got_v || !got_e || v_bytes < 1 || e_bytes < 1) {
+                kernel::util::k_snprintf(buf, sizeof(buf),
+                    "%sslave 0x%04x: 0x60C2 readback FAILED (cannot verify cycle time)\n",
+                    prefix, (unsigned)station);
+                log(buf);
+                all_ok = false;
+            } else {
+                const uint8_t value = v_buf[0];
+                const int8_t  expn  = static_cast<int8_t>(e_buf[0]);
+                // period_us = value · 10^(expn + 6); +6 converts seconds→µs.
+                int32_t scale = static_cast<int32_t>(expn) + 6;
+                uint64_t slave_period_us = value;
+                if (scale >= 0) {
+                    for (int32_t k = 0; k < scale; ++k) slave_period_us *= 10;
+                } else {
+                    for (int32_t k = 0; k < -scale && slave_period_us > 0; ++k) slave_period_us /= 10;
+                }
+                if (slave_period_us != m.period_us()) {
+                    kernel::util::k_snprintf(buf, sizeof(buf),
+                        "%sslave 0x%04x: 0x60C2 MISMATCH — slave=%lluus master=%uus "
+                        "(value=%u expn=%d)\n",
+                        prefix, (unsigned)station,
+                        (unsigned long long)slave_period_us, (unsigned)m.period_us(),
+                        (unsigned)value, (int)expn);
+                    log(buf);
+                    all_ok = false;
+                } else {
+                    kernel::util::k_snprintf(buf, sizeof(buf),
+                        "%sslave 0x%04x: 0x60C2 verified = %uus\n",
+                        prefix, (unsigned)station, (unsigned)slave_period_us);
+                    log(buf);
+                }
+            }
         }
         if (downloads == 0) {
             kernel::util::k_snprintf(buf, sizeof(buf),
