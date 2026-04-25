@@ -556,6 +556,13 @@ void Scheduler::idle_thread_func(void* arg) {
     while (true) {
         kernel::g_platform->get_power_ops()->enter_idle_state(core_id);
         kernel::hal::sync::barrier_dmb();
+        // Cooperatively yield in case work was enqueued onto this core's
+        // ready queue but no IRQ could wake us. On dedicated RT cores the
+        // scheduler tick is left disabled until an RT worker programs CNTP
+        // via wait_wfi_until_ns — without this yield, the first RT thread
+        // bound to the core after start_core_scheduler() would never be
+        // picked up. Cheap on shared cores (already preempted by timer).
+        if (kernel::g_scheduler_ptr) kernel::g_scheduler_ptr->yield(core_id);
     }
 }
 
