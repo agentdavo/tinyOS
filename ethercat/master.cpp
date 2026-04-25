@@ -1112,26 +1112,33 @@ void Master::run_loop() {
 }
 
 void Master::on_deadline_fault() noexcept {
-    deadline_fault_.store(true, std::memory_order_release);
-    stats_.deadline_trips.fetch_add(1, std::memory_order_relaxed);
+    char reason[64];
+    kernel::util::k_snprintf(reason, sizeof(reason),
+        "deadline miss x%u", (unsigned)consecutive_misses_);
+    trip_fault(reason);
+}
 
-    // Command every CiA-402 servo on the bus to QuickStopActive. The next
-    // cycle_lrw() pack will lift the new target_state through Drive::step()
-    // into the controlword PDO, so the slaves see CW_CMD_QUICK_STOP without
-    // any extra mailbox traffic. Slaves without a CiA-402 PDO layout
-    // (rx_controlword_off == 0xFF — couplers, raw I/O) are left alone.
-    for (size_t i = 0; i < slave_count_; ++i) {
-        if (slaves_[i].pdo_layout.rx_controlword_off != 0xFF) {
-            slaves_[i].drive.target_state = cia402::State::QuickStopActive;
+void Master::trip_fault(const char* reason) noexcept {
+    const bool was_already = deadline_fault_.exchange(true, std::memory_order_acq_rel);
+    if (!was_already) {
+        stats_.deadline_trips.fetch_add(1, std::memory_order_relaxed);
+        // Command every CiA-402 servo to QuickStopActive. The next cycle_lrw()
+        // pack lifts target_state through Drive::step() into the controlword
+        // PDO, so the slaves see CW_CMD_QUICK_STOP without any extra mailbox
+        // traffic. Slaves without a CiA-402 PDO layout (rx_controlword_off ==
+        // 0xFF — couplers, raw I/O) are left alone.
+        for (size_t i = 0; i < slave_count_; ++i) {
+            if (slaves_[i].pdo_layout.rx_controlword_off != 0xFF) {
+                slaves_[i].drive.target_state = cia402::State::QuickStopActive;
+            }
         }
     }
-
     if (!deadline_fault_logged_) {
         deadline_fault_logged_ = true;
-        char buf[96];
+        char buf[128];
         kernel::util::k_snprintf(buf, sizeof(buf),
-            "[ec%d] DEADLINE FAULT — %u consecutive misses, QuickStop broadcast\n",
-            id_, (unsigned)consecutive_misses_);
+            "[ec%d] FAULT TRIPPED — %s, QuickStop broadcast\n",
+            id_, reason ? reason : "(no reason)");
         early_uart_puts(buf);
     }
 }

@@ -275,6 +275,13 @@ static int cmd_ec_abort(const char*, kernel::hal::UARTDriverOps* uart) {
                  : "ec_abort: FAIL (send)\n");
     return n ? 0 : 1;
 }
+static int cmd_estop(const char*, kernel::hal::UARTDriverOps* uart) {
+    ethercat::g_master_a.trip_fault("operator E-stop");
+    ethercat::g_master_b.trip_fault("operator E-stop");
+    uart->puts("ESTOP: QuickStop broadcast on both masters; fault latched. "
+               "Use ec_clear_fault to acknowledge.\n");
+    return 0;
+}
 static int cmd_ec_clear_fault(const char*, kernel::hal::UARTDriverOps* uart) {
     const bool a_was = ethercat::g_master_a.is_deadline_faulted();
     const bool b_was = ethercat::g_master_b.is_deadline_faulted();
@@ -3778,6 +3785,7 @@ CLI::CLI() {
     register_command("version", cmd_version, "Kernel + build info");
     register_command("ec_diag_dump", cmd_ec_diag_dump, "ec_diag_dump [station] — walk 0x10F3 DiagHistory + decode TextId");
     register_command("ec_scan", cmd_ec_scan, "ec_scan [start=0x1001] [count=8] — probe identity over a station range");
+    register_command("estop", cmd_estop, "Operator E-stop — broadcast QuickStop to all CiA-402 servos and latch fault");
     register_command("ec_abort", cmd_ec_abort, "Broadcast AL=Init — emergency bus bring-down");
     register_command("ec_clear_fault", cmd_ec_clear_fault, "Clear latched deadline fault on both EtherCAT masters");
     register_command("ec_watchdog", cmd_ec_watchdog, "ec_watchdog <timeout_ms> [station] — program SM watchdog");

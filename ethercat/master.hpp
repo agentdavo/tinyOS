@@ -240,6 +240,11 @@ public:
         deadline_fault_logged_ = false;
         consecutive_misses_ = 0;
     }
+    // Operator-initiated trip — broadcast QuickStop to every CiA-402 servo
+    // and latch the same fault as a deadline miss. Reason string is logged
+    // via early_uart_puts. Idempotent: a second call while latched re-logs
+    // but does not double-broadcast.
+    void trip_fault(const char* reason) noexcept;
 
     // Cycle-latency telemetry. `cycle` measures whole-iteration duration;
     // the sub-histograms split it into the send-probe / ESM / LRW / wait
