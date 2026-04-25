@@ -528,6 +528,11 @@ bool WatchdogDriver::stop_watchdog() {
 }
 
 bool USBHostController::init() {
+    // No PCI host bridge discovered (no FDT, or no pci-host-ecam-generic in
+    // the FDT). The shared xhci probe would scan a zero-base ECAM window
+    // and hang on invalid MMIO; bail fast instead. QEMU configurations
+    // without -device qemu-xhci land here.
+    if (pci_host_.ecam_base == 0) return false;
     return ::hal::shared::xhci::init_from_pci(pci_host_, xhci_, info_);
 }
 

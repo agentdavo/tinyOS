@@ -179,7 +179,6 @@ case "$PLATFORM" in
             -device virtio-gpu-device
             -device virtio-keyboard-device
             -device virtio-tablet-device
-            -device qemu-xhci,id=xhci
             -kernel "$ELF"
         )
         ;;
@@ -194,7 +193,6 @@ case "$PLATFORM" in
             -device virtio-gpu-device
             -device virtio-keyboard-device
             -device virtio-tablet-device
-            -device qemu-xhci,id=xhci
             -kernel "$ELF"
         )
         ;;

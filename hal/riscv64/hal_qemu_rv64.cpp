@@ -287,6 +287,9 @@ void MemoryOps::invalidate_cache_range(const void* addr, size_t size) {
 }
 
 bool USBHostController::init() {
+    // No PCI host bridge discovered. The shared xhci probe would scan a
+    // zero-base ECAM window and hang on invalid MMIO; bail fast instead.
+    if (pci_host_.ecam_base == 0) return false;
     return ::hal::shared::xhci::init_from_pci(pci_host_, xhci_, info_);
 }
 
