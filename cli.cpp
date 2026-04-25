@@ -2436,6 +2436,69 @@ static int cmd_barrier_arrive(const char* args, kernel::hal::UARTDriverOps* uart
 static int cmd_mpos(const char*, kernel::hal::UARTDriverOps* uart) {
     motion::g_motion.dump_positions(uart); return 0;
 }
+
+// Operator-friendly digital readout. One screen, no jargon. Per-axis
+// commanded/actual/dtg/state, plus master health (state, miss count, p99
+// cycle, deadline-fault latch). Designed for at-a-glance use during
+// commissioning and run.
+static int cmd_dro(const char*, kernel::hal::UARTDriverOps* uart) {
+    if (!uart) return 1;
+    char buf[192];
+    static const char* axis_letters = "XYZABCUV";
+
+    // Master health line per master (only if at least one slave seen, plus ec0
+    // always since it's the primary).
+    auto fmt_master = [&](const ethercat::Master& m, const char* tag) {
+        const auto& s = m.stats();
+        const uint64_t p99 = m.hist_cycle().percentile(99);
+        const uint64_t mx  = m.hist_cycle().percentile(100);
+        const ethercat::State ms = m.state();
+        const char* sname =
+            ms == ethercat::State::Init   ? "INIT"   :
+            ms == ethercat::State::PreOp  ? "PRE-OP" :
+            ms == ethercat::State::SafeOp ? "SAFE-OP":
+            ms == ethercat::State::Op     ? "OP"     :
+            ms == ethercat::State::Fault  ? "FAULT"  : "?";
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "  %-3s state=%-7s slaves=%u  miss=%lu  trips=%u  fault=%-7s  cycle p99=%lluus max=%lluus\n",
+            tag, sname, (unsigned)m.slave_count(),
+            (unsigned long)s.cycle_deadline_miss.load(std::memory_order_relaxed),
+            (unsigned)s.deadline_trips.load(std::memory_order_relaxed),
+            m.is_deadline_faulted() ? "LATCHED" : "ok",
+            (unsigned long long)p99, (unsigned long long)mx);
+        uart->puts(buf);
+    };
+
+    uart->puts("== DRO ============================================================\n");
+    uart->puts("  Axis  Cmd          Actual       DtG          F-Err   State              Torque\n");
+    const size_t n_axes = motion::MAX_AXES;
+    size_t shown = 0;
+    for (size_t i = 0; i < n_axes && shown < 8; ++i) {
+        const auto& a = motion::g_motion.axis(i);
+        if (!a.drive && !a.enabled) continue;  // skip unbound axes
+        ++shown;
+        const int32_t cmd = a.commanded_position;
+        const int32_t act = a.actual_position_feedback;
+        const int32_t dtg = a.target - cmd;
+        const int32_t ferr = cmd - act;
+        const int16_t tq  = a.actual_torque_permille.load(std::memory_order_relaxed);
+        const char* st = motion::Kernel::drive_state_name(a.state);
+        const char letter = axis_letters[i < 8 ? i : 7];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "  %c[%zu]  %-12ld %-12ld %-12ld %-7ld %-18s %d.%01d%%%s\n",
+            letter, i,
+            (long)cmd, (long)act, (long)dtg, (long)ferr,
+            st,
+            (int)(tq / 10), (int)((tq < 0 ? -tq : tq) % 10),
+            a.fault_latched ? "  FAULT" : "");
+        uart->puts(buf);
+    }
+    if (shown == 0) uart->puts("  (no axes wired)\n");
+    uart->puts("== Bus ============================================================\n");
+    fmt_master(ethercat::g_master_a, "ec0");
+    fmt_master(ethercat::g_master_b, "ec1");
+    return 0;
+}
 // Inline parser (parse_long sits inside the FAKE_SLAVE namespace and isn't
 // visible here). Accepts optional leading +/-, optional 0x for hex; returns
 // false on garbage.
@@ -3893,6 +3956,7 @@ CLI::CLI() {
     register_command("axis_tune",  cmd_axis_tune, "axis_tune <axis> [vmax] [accel] [jerk] - per-axis motion tuning");
     register_command("encoder_config", cmd_encoder_config, "encoder_config <axis> [src] [motor_cpr] [ext_cpr] [num] [den] [sign] - configure encoder");
     register_command("mpos",   cmd_mpos,   "Dump per-axis commanded/actual positions and following error");
+    register_command("dro",    cmd_dro,    "Operator DRO: per-axis cmd/actual/dtg/F-err/state plus master health");
     register_command("fault_reset", cmd_fault_reset, "fault_reset <axis> - pulse CW_FAULT_RESET, drop latch");
     register_command("axis_autodetect", cmd_axis_autodetect, "axis_autodetect <axis> - probe 0x608F, store cnts/rev in motion axis");
 #if MINIOS_FAKE_SLAVE
