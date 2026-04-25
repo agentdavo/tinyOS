@@ -36,6 +36,11 @@ public:
     // Reset all counters to zero (for "ec_hist clear" or test harnesses).
     void reset() noexcept;
 
+    // Conservative percentile estimate: returns the upper edge of the
+    // bucket containing the p-th sample (p in [0, 100]). The true value
+    // is somewhere inside that bucket. Returns 0 when no samples recorded.
+    uint64_t percentile(uint8_t p) const noexcept;
+
     static const uint64_t* bucket_edges_us() noexcept;
 
 private:

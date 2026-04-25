@@ -55,6 +55,24 @@ void LatencyHistogram::record(uint64_t us) noexcept {
     atomic_max(max_us_, us);
 }
 
+uint64_t LatencyHistogram::percentile(uint8_t p) const noexcept {
+    if (p > 100) p = 100;
+    const uint64_t total = count_.load(std::memory_order_relaxed);
+    if (total == 0) return 0;
+    // Threshold = ceil(total * p / 100). For p=99 we want to land in the
+    // bucket holding the 99th sample, not just the strict majority.
+    const uint64_t target = (total * p + 99) / 100;
+    uint64_t cum = 0;
+    for (size_t i = 0; i < HIST_BUCKETS; ++i) {
+        cum += counts_[i].load(std::memory_order_relaxed);
+        if (cum >= target) {
+            if (i == HIST_BUCKETS - 1) return max_us_.load(std::memory_order_relaxed);
+            return kEdges[i];
+        }
+    }
+    return max_us_.load(std::memory_order_relaxed);
+}
+
 void LatencyHistogram::reset() noexcept {
     for (auto& c : counts_) c.store(0, std::memory_order_relaxed);
     count_.store(0, std::memory_order_relaxed);
@@ -79,12 +97,16 @@ void LatencyHistogram::dump(kernel::hal::UARTDriverOps* uart, const char* label)
     }
     const uint64_t avg = sum / count;
     const uint64_t mn_disp = (mn == UINT64_MAX) ? 0 : mn;
+    const uint64_t p50 = percentile(50);
+    const uint64_t p99 = percentile(99);
     kernel::util::k_snprintf(buf, sizeof(buf),
-        "  %s: n=%llu min=%lluus avg=%lluus max=%lluus\n",
+        "  %s: n=%llu min=%lluus avg=%lluus p50=%lluus p99=%lluus max=%lluus\n",
         label ? label : "hist",
         (unsigned long long)count,
         (unsigned long long)mn_disp,
         (unsigned long long)avg,
+        (unsigned long long)p50,
+        (unsigned long long)p99,
         (unsigned long long)mx);
     uart->puts(buf);
 
