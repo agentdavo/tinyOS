@@ -591,8 +591,12 @@ void create_boot_services(CreateThreadFn create_thread) {
     const int ui_core = static_cast<int>(machine::placement::g_service.sanitize_core(placement.ui_core, num_cores));
 
     if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
-        (void)create_thread(&cli::CLI::thread_entry, nullptr, 3, cli_core, "cli", false, 0);
-        (void)create_thread(&cli::io::uart_io_entry, uart, 3, uart_io_core, "uart_io", false, 0);
+        // Same deadline as the UI/HMI/housekeeper group so the EDF tie-breaker
+        // (oldest last_scheduled_us wins) rotates these into the same fair
+        // pool. Setting 0 here would make them last-resort under EDF and
+        // they'd never win against UI/HMI on their own core.
+        (void)create_thread(&cli::CLI::thread_entry, nullptr, 3, cli_core, "cli", false, 1000);
+        (void)create_thread(&cli::io::uart_io_entry, uart, 3, uart_io_core, "uart_io", false, 1000);
     }
 
     log_timestamped("cli...");

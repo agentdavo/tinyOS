@@ -150,6 +150,14 @@ struct TCB {
     TCB* next_in_q = nullptr;
     std::atomic<bool> event_flag{false};
     uint64_t deadline_us = 0;
+    // Monotonic timestamp of the last context-switch INTO this task. Used as
+    // a tie-breaker in EDFPolicy::select_next_task: among tasks with equal
+    // earliest deadline, the one with the oldest last_scheduled_us wins.
+    // Without this, same-deadline tasks at different priority levels form a
+    // duopoly between the two highest priorities (EDF iterates priority high
+    // to low, picks the first deadline match, and the immediate-caller
+    // exclusion alone isn't enough to give lower-priority peers a turn).
+    uint64_t last_scheduled_us = 0;
 
     // Walk the stack from base up, counting unbroken STACK_PAINT_BYTE bytes
     // (skipping STACK_PAINT_SKIP_BOTTOM). Returns stack_size - unused. If
