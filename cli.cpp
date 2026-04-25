@@ -275,6 +275,19 @@ static int cmd_ec_abort(const char*, kernel::hal::UARTDriverOps* uart) {
                  : "ec_abort: FAIL (send)\n");
     return n ? 0 : 1;
 }
+static int cmd_ec_clear_fault(const char*, kernel::hal::UARTDriverOps* uart) {
+    const bool a_was = ethercat::g_master_a.is_deadline_faulted();
+    const bool b_was = ethercat::g_master_b.is_deadline_faulted();
+    ethercat::g_master_a.clear_deadline_fault();
+    ethercat::g_master_b.clear_deadline_fault();
+    char buf[96];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "ec_clear_fault: ec0=%s ec1=%s\n",
+        a_was ? "cleared" : "ok",
+        b_was ? "cleared" : "ok");
+    uart->puts(buf);
+    return 0;
+}
 static int cmd_ec_watchdog(const char* args, kernel::hal::UARTDriverOps* uart) {
     // ec_watchdog <timeout_ms> [station]. Default 100 ms per PLAN.md
     // "Still open" note.
@@ -3766,6 +3779,7 @@ CLI::CLI() {
     register_command("ec_diag_dump", cmd_ec_diag_dump, "ec_diag_dump [station] — walk 0x10F3 DiagHistory + decode TextId");
     register_command("ec_scan", cmd_ec_scan, "ec_scan [start=0x1001] [count=8] — probe identity over a station range");
     register_command("ec_abort", cmd_ec_abort, "Broadcast AL=Init — emergency bus bring-down");
+    register_command("ec_clear_fault", cmd_ec_clear_fault, "Clear latched deadline fault on both EtherCAT masters");
     register_command("ec_watchdog", cmd_ec_watchdog, "ec_watchdog <timeout_ms> [station] — program SM watchdog");
     register_command("motion_enable", cmd_motion_enable, "motion_enable <axis> — servo on without a move");
     register_command("motion_disable", cmd_motion_disable, "motion_disable <axis> — explicit servo-off");
