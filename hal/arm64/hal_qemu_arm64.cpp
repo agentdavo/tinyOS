@@ -104,8 +104,17 @@ void UARTDriver::uart_put_uint64_hex(uint64_t value) {
     this->puts(buffer); 
 }
 char UARTDriver::getc_blocking() {
-    while (read_uart_reg(0x18) & (1 << 4)) {} 
-    return static_cast<char>(read_uart_reg(0x00) & 0xFF); 
+    // Yield to the scheduler each time we observe an empty RX FIFO. Without
+    // this, the uart_io thread monopolises its core spinning on FR.RXFE and
+    // the (lower-priority) cli thread sharing the core never gets to publish
+    // its prompt or process queued output. Yielding only when the FIFO is
+    // empty keeps the fast path (back-to-back characters) one MMIO read.
+    while (read_uart_reg(0x18) & (1 << 4)) {
+        if (kernel::g_scheduler_ptr && kernel::g_platform) {
+            kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id());
+        }
+    }
+    return static_cast<char>(read_uart_reg(0x00) & 0xFF);
 }
 
 // --- IRQController ---

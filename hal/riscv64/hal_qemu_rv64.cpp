@@ -200,7 +200,13 @@ void UARTDriver::uart_put_uint64_hex(uint64_t value) {
     this->puts(buf);
 }
 char UARTDriver::getc_blocking() {
-    while ((*uart_reg(NS16550_LSR) & LSR_DR) == 0) { /* spin */ }
+    // Yield while RX FIFO is empty so the uart_io thread doesn't starve the
+    // cli thread sharing its core. Mirrors the arm64 PL011 path.
+    while ((*uart_reg(NS16550_LSR) & LSR_DR) == 0) {
+        if (kernel::g_scheduler_ptr && kernel::g_platform) {
+            kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id());
+        }
+    }
     return static_cast<char>(*uart_reg(NS16550_RBR));
 }
 

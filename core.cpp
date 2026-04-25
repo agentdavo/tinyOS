@@ -321,8 +321,17 @@ TCB* EDFPolicy::select_next_task(uint32_t core_id, TCB* current_task) {
                 if (task_iter->state == TCB::State::READY &&
                     (task_iter->core_affinity == -1 || task_iter->core_affinity == static_cast<int>(core_id)) &&
                     (pass == 1 || !is_caller)) {
-                    if (task_iter->deadline_us > 0 && task_iter->deadline_us < earliest_deadline) {
-                        earliest_deadline = task_iter->deadline_us; earliest_task = task_iter;
+                    // deadline_us == 0 means "no explicit deadline" — treat as
+                    // effectively-max so the task is selectable but always loses
+                    // to any task with a real deadline. Without this, tasks
+                    // created with deadline=0 (e.g. cli/uart_io) are silently
+                    // invisible to EDF and never run on a core that hosts even
+                    // one deadlined task.
+                    const uint64_t eff_deadline = task_iter->deadline_us > 0
+                        ? task_iter->deadline_us
+                        : std::numeric_limits<uint64_t>::max() - 1;
+                    if (eff_deadline < earliest_deadline) {
+                        earliest_deadline = eff_deadline; earliest_task = task_iter;
                         chosen_priority_idx = p_idx; chosen_prev_in_list = prev_in_list;
                     }
                 }
