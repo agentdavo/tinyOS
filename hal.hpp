@@ -452,6 +452,11 @@ public:
     // gracefully falls back to its embedded-defaults-only mode when this
     // returns null.
     virtual FileSystemOps* get_fs_ops() { return nullptr; }
+    // Probe the block device (virtio-blk on both arm64 + rv64 virt) and
+    // mount the FAT32 FS backend on it. Default is no-op; arches that ship
+    // a block driver override. Returns false if no device was found — the
+    // VFS then falls back to embedded-defaults-only mode.
+    virtual bool init_block_device() { return false; }
     virtual void early_init_platform() = 0;
     virtual void early_init_core(uint32_t core_id) = 0;
     virtual void route_net_irq(int if_idx, uint32_t core_mask) { (void)if_idx; (void)core_mask; }

@@ -116,7 +116,9 @@ ifeq ($(TARGET),riscv64)
     HAL_CPP    = $(HAL_DIR)/hal_qemu_rv64.cpp $(HAL_DIR)/rv64_stubs.cpp \
                  $(HAL_DIR)/rv64_sched.cpp \
                  hal/shared/virtio_net.cpp hal/shared/virtio_gpu.cpp \
+                 hal/shared/virtio_blk.cpp \
                  hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp \
+                 hal/shared/sdcard.cpp \
                  hal/shared/virtio_input.cpp
     LINKER     = $(HAL_DIR)/linker.ld
     # -fno-pic/-fno-pie stops the compiler from emitting GOT-indirect
@@ -149,7 +151,10 @@ ifeq ($(TARGET),riscv64)
                  -device virtio-gpu-device \
                  -device virtio-keyboard-device \
                  -device virtio-tablet-device \
-                 -device qemu-xhci,id=xhci
+                 -drive if=none,file=sdcard.img,format=raw,id=miniosblk \
+                 -device virtio-blk-device,drive=miniosblk
+    # xhci removed from rv64 for parity with arm64 — see note under the
+    # arm64 args block. If USB comes back, both arches need it.
     # rv64 now links shared kernel components: kernel/main.cpp + core.cpp 
     # (the scheduler). TCB_Rv64 from rv64_sched.cpp is used via the
     # cpu_context_switch_impl shim in rv64_stubs.cpp. The shared scheduler

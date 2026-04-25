@@ -7,15 +7,13 @@
 
 #include "miniOS.hpp"
 
-namespace hal::qemu_virt_rv64 {
-struct TCB_Rv64;
-}
-
-extern "C" void cpu_context_switch_rv64(hal::qemu_virt_rv64::TCB_Rv64* old_tcb, hal::qemu_virt_rv64::TCB_Rv64* new_tcb);
+// TCB_Rv64 is now a typedef for kernel::core::TCB (see rv64_sched.cpp) —
+// no cast required. Keep this shim so the shared scheduler's context-switch
+// seam calls into the rv64-specific asm implementation.
+extern "C" void cpu_context_switch_rv64(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb);
 
 extern "C" void cpu_context_switch_impl(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb) {
-    cpu_context_switch_rv64(reinterpret_cast<hal::qemu_virt_rv64::TCB_Rv64*>(old_tcb),
-                            reinterpret_cast<hal::qemu_virt_rv64::TCB_Rv64*>(new_tcb));
+    cpu_context_switch_rv64(old_tcb, new_tcb);
 }
 
 namespace kernel {

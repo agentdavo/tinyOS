@@ -739,7 +739,7 @@ void PlatformQEMUVirtARM64::early_init_platform() {
     HAL_VDBG("[HAL_DEBUG] PlatformQEMUVirtARM64::early_init_platform() EXIT\n");
 }
 
-bool PlatformQEMUVirtARM64::init_virtio_blk() {
+bool PlatformQEMUVirtARM64::init_block_device() {
     // Scan the same virtio-mmio bus for a block device. If QEMU wasn't
     // started with `-drive ... -device virtio-blk-device`, the scan
     // returns nullptr and we leave fs_ops_ready_ false so `get_fs_ops()`

@@ -6,9 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The project is **miniOS** — a freestanding, bare-metal C++20 RTOS that runs as a QEMU `virt` kernel. The working directory is named `tinyOS` but all code, branding, and artifacts use `miniOS`. Build artifacts live under `build/<target>/` (for example `build/arm64/miniOS_kernel_arm64.elf`). Source headers and Makefile are v1.7.
 
-**Boot status**: kernel boots cleanly to the idle loop on all 4 cores. The two historical bugs that blocked it are both fixed:
-1. `-mno-outline-atomics` in the Makefile stops libgcc from emitting its `init_have_lse_atomics` ctor, which read the (nonexistent) ELF aux vector and faulted.
-2. `cpu_arm64.S:call_constructors` now saves/restores `x0` around each `blr` — previously the callee's return value clobbered the init_array cursor, so only the first ctor ever ran.
+**Boot status**: both arm64 and rv64 boot cleanly through SMP bring-up, virtio-gpu scanout configuration, FAT32 mount (when `sdcard.img` is attached), and into the UI + CLI + HMI services on core 0 / hart 0. Historical bugs fixed here (so they don't regress):
+1. `-mno-outline-atomics` in the Makefile stops libgcc from emitting its `init_have_lse_atomics` ctor, which read the (nonexistent) ELF aux vector and faulted (arm64).
+2. `cpu_arm64.S:call_constructors` saves/restores `x0` around each `blr` — previously the callee's return value clobbered the init_array cursor (arm64).
+3. `_secondary_start` sets SP before any `bl` to a C function — PSCI leaves SP undefined and the old code crashed on the first function prologue push (arm64).
+4. `cbz x21` tests the preserved core_id in `_start`'s primary-vs-secondary dispatch. The old code tested `x1` which is caller-save and happened-to-be-zero only by accident (arm64).
+5. EDF `select_next_task` does a two-pass scan that prefers a non-caller task on pass 1; fixed-deadline cooperative yield used to re-pick the yielder every time (shared `core.cpp`, benefits both arches).
+6. Early-UART output is lock-atomic at line granularity: `boot_log_core_phase_c` / `boot_log_reg64_c` hold the lock across the whole line, and `UARTDriver::puts` on arm64 shares the same lock (rv64's PL011-analog `UARTDriver::puts` has its own `UartLockGuard`). Output from concurrent cores no longer shreds.
 
 **CLI**: `cli.cpp` is the only CLI implementation and is linked into every build — two threads on core 0 (`uart_io` owning the UART + SPSC queues, `cli` doing the line editor + dispatch). There is no `cli_minimal.cpp`; prior references to it in this file and README.md were stale. A successful boot prints `miniOS CLI ready. Type 'help'.` from `cli.cpp:1045`. If the banner is absent from the serial log, the scheduler didn't reach the `cli` thread — that's Phase 0 territory, not a missing subsystem.
 
@@ -48,12 +52,27 @@ That script talks to the CLI over serial, issues `ui_page <id>` and `ui_dump <sc
 
 ### Target selection
 
-The Makefile supports two targets and both build:
+The Makefile supports two targets and both build + boot to the UI + CLI + HMI services:
 
-- **`TARGET=arm64`** (default) — full kernel. Core/HAL/scheduler/CLI/EtherCAT/motion all linked. `QEMU_SYS=qemu-system-aarch64`, `-M virt -cpu max`, dual virtio-net NICs cross-connected via socket backends for EtherCAT loopback.
-- **`TARGET=riscv64`** — partial port. HAL + `cpu_rv64.S` + minimal stubs build and boot under `qemu-system-riscv64 -M virt -cpu rv64`, but `CORE_CPP` is empty on the rv64 branch (no scheduler, no CLI, no EtherCAT yet — it's a skeleton for bring-up). NIC setup is SLIRP-only (`-netdev user`), which won't carry 0x88A4 frames, so EtherCAT won't work there even once core is linked.
+- **`TARGET=arm64`** (default) — QEMU virt arm64. `-cpu max`, PL011 UART, GICv3, PSCI HVC SMP bring-up, virtio-mmio at `0x0A000000`/stride `0x200`/32 slots.
+- **`TARGET=riscv64`** — QEMU virt rv64 in M-mode (`-bios none`). NS16550 UART, PLIC+CLINT, spin-table SMP bring-up (hart 0 writes each secondary's entry address into `g_secondary_entry[]`, kicks via MSIP), virtio-mmio at `0x10001000`/stride `0x1000`/8 slots. Also mounts FAT32 via virtio-blk when `sdcard.img` is attached.
 
-When adding kernel features, keep them arch-neutral in `core.cpp` / `cli.cpp` / `ethercat/` / `motion/` so the rv64 skeleton can eventually pick them up. Anything new that needs an MMIO driver goes behind `hal::Platform` and gets a concrete impl in `hal/arm64/hal_qemu_arm64.cpp` and `hal/riscv64/hal_qemu_rv64.cpp`.
+Both arches link the same `core.cpp` / `cli.cpp` / `ui/` / `ethercat/` / `motion/` / shared virtio drivers / FAT32. The only legitimate divergence is below the HAL boundary — see "Arch parity contract" below.
+
+### Arch parity contract
+
+The shared kernel is arch-neutral above the HAL. When adding a feature:
+
+- **Goes in `kernel/main.cpp` (one place)**: TSV loading, VFS init, net-role routing, thread-creation sequence. Exposed as `kernel::boot::load_runtime_tsvs` / `init_vfs` / `log_and_route_net_roles` / `create_boot_services(create_thread_fn)` / `create_runtime_services(create_thread_fn)`. Both `kernel_main()` (arm64) and `kernel_main_rv64()` (rv64) call these.
+- **Stays split per-arch**: CPU register save/restore asm, PSCI vs spin-table SMP bring-up, IRQ controller (GICv3 vs PLIC+CLINT), UART MMIO base, timer CSRs, linker script, MMIO bus geometry.
+
+Concrete "is this an accidental divergence?" checklist:
+1. If a boot step needs adding to one side, does it also need to run on the other? If yes, add it to `kernel::boot::*` and have both sides call it. Don't duplicate.
+2. If a driver ships under `hal/shared/`, both arches link it. Missing a shared driver from one arch's `HAL_CPP` is a regression.
+3. TCB layout is a single type: `kernel::core::TCB`. Byte offsets for `regs[31]` / `sp` / `pc` / `pstate` are fixed — both `cpu_arm64.S` and `cpu_rv64.S` use the same offsets. rv64 stores `mstatus` in the `pstate` slot.
+4. Residual: rv64 still has its own `rv64_sched.cpp` (FIFO round-robin) alongside arm64's `core.cpp` EDF scheduler. TCB type is unified but the ready queues + scheduler entry points are still split — medium-risk refactor, tracked separately. `cpu_context_switch_impl` is the shared seam (arm64 in `hal.cpp`, rv64 in `rv64_stubs.cpp`).
+
+New MMIO drivers go behind `hal::Platform`; concrete impls in `hal/arm64/hal_qemu_arm64.cpp` and `hal/riscv64/hal_qemu_rv64.cpp`.
 
 ### Tests
 
@@ -72,9 +91,9 @@ Three-layer stack, each layer depends only on the ones below it:
 
 1. **`core.hpp`/`core.cpp`** — pure kernel types: `TCB`, `Scheduler` (SMP-aware EDF, up to `MAX_CORES=4`), `Spinlock`/`ScopedLock`/`ScopedISRLock`, `FixedMemoryPool`, `PerCPUData`. No HAL dependency.
 2. **`hal.hpp`** — abstract `Platform` plus `*Ops` interfaces (`UARTDriverOps`, `IRQControllerOps`, `TimerDriverOps`, `DMAControllerOps`, `I2SDriverOps`, `MemoryOps`, `NetworkDriverOps`, `PowerOps`, `GPIODriverOps`, `WatchdogOps`). Pure virtuals only.
-3. **`hal_qemu_arm64.{hpp,cpp}` + `cpu_arm64.S`** — the one concrete platform in `KERNEL_OBJ`. Boot/context-switch is in the `.S` file; MMIO drivers are in the `.cpp`.
+3. **`hal_qemu_arm64.{hpp,cpp}` + `cpu_arm64.S`** (arm64) or **`hal_qemu_rv64.{hpp,cpp}` + `cpu_rv64.S` + `rv64_stubs.cpp` + `rv64_sched.cpp`** (rv64) — per-arch concrete platforms. Boot/context-switch is in the `.S`; MMIO drivers are in the `.cpp`.
 
-`kernel_globals.cpp` defines the singletons (`g_platform`, `g_scheduler_ptr`, trace/IRQ locks). `kernel_main` instantiates the concrete `Platform` and assigns `g_platform`; everything else in the kernel dereferences that pointer. When porting to new hardware the only files that change are a new `hal_*` pair, a new `cpu_*.S`, a linker script, and the `g_platform = new ...` line (see README.md "Porting" section).
+`kernel_globals.cpp` defines the singletons (`g_platform`, `g_scheduler_ptr`, trace/IRQ locks). arm64's `kernel_main()` and rv64's `kernel_main_rv64()` each instantiate their concrete `Platform`, assign `g_platform`, then hand off to the shared `kernel::boot::*` helpers for the rest of bring-up. To port to new hardware: new `hal_*` pair, new `cpu_*.S`, a linker script, and a new `kernel_main_<arch>` that follows the same sequence.
 
 ### Freestanding constraints
 
@@ -86,11 +105,11 @@ Single implementation: `cli.cpp` (tab completion, history, full command table). 
 
 ### Subsystems not currently linked
 
-`audio.cpp`, `dsp.cpp`, `fs.cpp`, `gpio.cpp`, `net.cpp` (and `demo_cli_dsp.cpp`, `test_framework.cpp`) exist but are **not** in `CORE_CPP`. The active kernel links core, hal, util, trace, cli, kernel_globals, the freestanding/runtime stubs, the EtherCAT stack, motion, config/tsv, devices, diag, rt/base_thread, and the arm64 HAL (`cpu_arm64.S`, `hal_qemu_arm64.cpp`, `hal/shared/virtio_net.cpp`), plus `fake_slave.cpp` when `FAKE_SLAVE=1`. Adding back a subsystem means appending its `.cpp` to `CORE_CPP` in the Makefile and calling its init from `kernel_main`.
+`audio.cpp`, `dsp.cpp`, `fs.cpp`, `gpio.cpp`, `net.cpp` (and `demo_cli_dsp.cpp`, `test_framework.cpp`) exist but are **not** in `CORE_CPP`. The active kernel links core, hal, util, trace, cli, kernel_globals, the freestanding/runtime stubs, the EtherCAT stack, motion, config/tsv, devices, diag, rt/base_thread, ui (fb + splash + display + operator_api + ui_builder_tsv), automation (macro/ladder/probe runtimes), machine (toolpods/topology/placement/motion_wiring), hmi service, cnc interpreter + MDI, fs/vfs + fat32 + fs_fat32, and the per-arch HAL (`cpu_<arch>.S`, `hal_qemu_<arch>.cpp`, plus shared drivers: `virtio_net`, `virtio_gpu`, `virtio_blk`, `virtio_input`, `e1000`, `pci`, `xhci`, `sdcard`). arm64 additionally links `fake_slave.cpp` when `FAKE_SLAVE=1`. Adding a subsystem means appending its `.cpp` to `CORE_CPP` in the Makefile and calling its init from `kernel::boot::*` (so both arches pick it up).
 
 ### Memory layout
 
-Linker script `ld/linker_arm64.ld` places `.text` at `0x40000000` and `.data` at `0x40100000` — CI asserts both via readelf/objdump. Changing these will break the CI ELF-integrity check.
+Linker scripts `hal/arm64/linker.ld` / `hal/riscv64/linker.ld` fix the load base per arch (arm64 `RAM` origin `0x40000000`, rv64 `RAM` origin `0x80000000`, both 128 MB). CI asserts the arm64 layout via readelf/objdump; changing it will break that check.
 
 ## Conventions worth knowing
 

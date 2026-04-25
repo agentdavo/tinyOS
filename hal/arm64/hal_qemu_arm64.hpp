@@ -286,11 +286,10 @@ public:
     kernel::hal::FileSystemOps* get_fs_ops() override {
         return fs_ops_ready_ ? &fs_ops_ : nullptr;
     }
-    // Called from boot to bind the virtio-block device (if any) and set
-    // up the FAT32 FS backend. No-op / returns false if no virtio-blk is
-    // present on the bus, which keeps QEMU runs that don't pass -drive
-    // booting on embedded defaults only.
-    bool init_virtio_blk();
+    // Scan the virtio-mmio bus for a block device and mount FAT32 on it.
+    // Returns false if no virtio-blk device is present, keeping embedded-
+    // defaults-only boots working.
+    bool init_block_device() override;
 private:
     // Adapter so fs::Fat32FileSystem can read sectors via an abstract
     // BlockReader interface without knowing anything about virtio.

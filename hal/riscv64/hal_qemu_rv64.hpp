@@ -13,14 +13,19 @@
 #include "hal/shared/virtio_gpu.hpp"
 #include "hal/shared/virtio_input.hpp"
 #include "hal/shared/virtio_net.hpp"
+#include "hal/shared/virtio_blk.hpp"
 #include "hal/shared/e1000.hpp"
 #include "hal/shared/pci.hpp"
 #include "hal/shared/xhci.hpp"
+#include "fs/fs_fat32.hpp"
+#include "core.hpp"
 #include <cstdint>
 
 namespace hal::qemu_virt_rv64 {
 
-struct TCB_Rv64;
+// TCB_Rv64 is a typedef for kernel::core::TCB (see rv64_sched.cpp). Exposed
+// here so other TUs can reference it without pulling in rv64_sched internals.
+using TCB_Rv64 = kernel::core::TCB;
 class USBHostController;
 
 // QEMU virt RISC-V peripheral addresses.
@@ -201,6 +206,10 @@ public:
     kernel::hal::StorageOps*              get_storage_ops() override { return nullptr; }
     kernel::hal::DisplayOps*              get_display_ops() override { return &gpu_; }
     kernel::hal::USBHostControllerOps*    get_usb_ops() override { return &usb_; }
+    kernel::hal::FileSystemOps*           get_fs_ops() override {
+        return fs_ops_ready_ ? &fs_ops_ : nullptr;
+    }
+    bool init_block_device() override;
 
     void early_init_platform() override {}
     void early_init_core(uint32_t) override {}
@@ -208,6 +217,16 @@ public:
     void reboot_system() override {}
 
 private:
+    class VirtioBlkReader : public fs::BlockReader {
+    public:
+        void bind(::hal::shared::virtio::VirtioBlkDriver* d) { drv_ = d; }
+        bool read_sectors(uint64_t lba, uint32_t count, void* buf) override {
+            return drv_ && drv_->read_sectors(lba, count, buf);
+        }
+    private:
+        ::hal::shared::virtio::VirtioBlkDriver* drv_ = nullptr;
+    };
+
     UARTDriver  uart_;
     TimerDriver timer_;
     PLICDriver  plic_;
@@ -221,6 +240,10 @@ private:
     ::hal::shared::e1000::E1000Driver e1000_nics_[3]{};
     int         num_e1000_nics_ = 0;
     int         num_virtio_nics_ = 0;
+    ::hal::shared::virtio::VirtioBlkDriver* virtio_blk_ = nullptr;
+    VirtioBlkReader blk_reader_;
+    fs::Fat32FileSystem fs_ops_{&blk_reader_};
+    bool fs_ops_ready_ = false;
 };
 
 extern PlatformQEMUVirtRV64 g_platform_instance;

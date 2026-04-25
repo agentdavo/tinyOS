@@ -26,6 +26,7 @@
 
 #include "hal_qemu_rv64.hpp"
 #include "../../miniOS.hpp"
+#include "../../kernel/main.hpp"
 #include "rt_wait.hpp"
 #include "fdt.hpp"
 #include "hal/shared/fdt_scan.hpp"
@@ -127,7 +128,7 @@ static std::atomic<uint32_t> g_secondary_ready_mask{0};
 // Forward declarations for the rv64-local scheduler (see rv64_sched.cpp).
 // Intentionally kept at file scope so both the trap dispatcher and
 // kernel_main_rv64 can invoke them without pulling in a new header.
-struct TCB_Rv64;
+// TCB_Rv64 is aliased in hal_qemu_rv64.hpp — kept here as a reminder.
 TCB_Rv64* sched_create_thread(void (*entry)(void*), void* arg,
                               uint32_t hart_affinity, const char* name,
                               bool is_idle);
@@ -618,6 +619,20 @@ void PlatformQEMUVirtRV64::discover_virtio_nets() {
     uart_.puts(" nic(s)\n");
 }
 
+bool PlatformQEMUVirtRV64::init_block_device() {
+    // Scan virtio-mmio bus for a virtio-blk device. If QEMU wasn't started
+    // with `-drive ... -device virtio-blk-device`, the scan returns nullptr
+    // and we leave fs_ops_ready_ false so get_fs_ops() stays nullptr and
+    // the VFS falls back to embedded-defaults-only.
+    virtio_blk_ = ::hal::shared::virtio::discover_virtio_blk(
+        VIRTIO_MMIO_BASE, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_NUM);
+    if (!virtio_blk_) return false;
+    blk_reader_.bind(virtio_blk_);
+    if (!fs_ops_.mount()) return false;
+    fs_ops_ready_ = true;
+    return true;
+}
+
 void PlatformQEMUVirtRV64::route_net_irq(int if_idx, uint32_t core_mask) {
     if (if_idx < 0 || if_idx >= 3) return;
     const uint32_t irq = virtio_nic_irq_ids_[if_idx];
@@ -756,37 +771,6 @@ static void setup_this_hart_trap_stack(uint32_t hartid) {
 static void idle_thread_rv64(void* arg) {
     (void)arg;
     for (;;) asm volatile("wfi");
-}
-
-static void ui_thread_entry_rv64(void* arg) {
-    (void)arg;
-    auto* uart = ::hal::qemu_virt_rv64::g_platform_instance.get_uart_ops();
-    auto* timer = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
-    const bool display_ok = kernel::ui::init_display_backend();
-    if (display_ok) {
-        if (uart) uart->puts("[rv64-ui] display backend initialized\n");
-    } else {
-        if (uart) uart->puts("[rv64-ui] display backend FAILED - framebuffer only\n");
-    }
-
-    kernel::ui::boot_ui_once();
-
-    uint64_t next_ns = timer ? timer->get_system_time_ns() + 750000000ULL : 0;
-    if (timer) timer->wait_until_ns(next_ns);
-    else for (uint32_t i = 0; i < 1000000; ++i) kernel::util::cpu_relax();
-
-    constexpr uint64_t UI_PERIOD_NS = 100000000ULL;
-    for (;;) {
-        kernel::ui::render_ui_once();
-        if (timer) {
-            next_ns += UI_PERIOD_NS;
-            const uint64_t now = timer->get_system_time_ns();
-            if (now > next_ns) next_ns = now;
-            else timer->wait_until_ns(next_ns);
-        } else {
-            kernel::util::cpu_relax();
-        }
-    }
 }
 
 // Demo work threads — pinned to hart 0, print progress lines through the
@@ -1123,161 +1107,39 @@ extern "C" void kernel_main_rv64(uint32_t hartid) {
         kernel::util::cpu_relax();
     }
 
+    // VFS + block-device + devices-TSV load, same sequence as arm64.
+    kernel::boot::init_vfs();
+
     uart.puts("[boot] loading devices...\n");
     devices::load_all_embedded();
     uart.puts("[boot] devices ok\n");
 
-    const uintptr_t ui_start = reinterpret_cast<uintptr_t>(&_binary_embedded_ui_tsv_start);
-    const uintptr_t ui_end = reinterpret_cast<uintptr_t>(&_binary_embedded_ui_tsv_end);
-    const size_t ui_len = ui_end - ui_start;
-    if (ui_len > 0) {
-        if (ui_builder::load_tsv(reinterpret_cast<const char*>(ui_start), ui_len)) {
-            uart.puts("[boot] ui template ok\n");
-        } else {
-            uart.puts("[boot] ui template FAILED\n");
-        }
-    } else {
-        uart.puts("[boot] ui template missing\n");
-    }
-    const uintptr_t macros_start = reinterpret_cast<uintptr_t>(&_binary_embedded_macros_tsv_start);
-    const uintptr_t macros_end = reinterpret_cast<uintptr_t>(&_binary_embedded_macros_tsv_end);
-    if (macros_end > macros_start) {
-        (void)macros::g_runtime.load_tsv(reinterpret_cast<const char*>(macros_start), macros_end - macros_start);
-    }
-    const uintptr_t ladder_start = reinterpret_cast<uintptr_t>(&_binary_embedded_ladder_tsv_start);
-    const uintptr_t ladder_end = reinterpret_cast<uintptr_t>(&_binary_embedded_ladder_tsv_end);
-    if (ladder_end > ladder_start) {
-        (void)ladder::g_runtime.load_tsv(reinterpret_cast<const char*>(ladder_start), ladder_end - ladder_start);
-    }
-    const uintptr_t toolpods_start = reinterpret_cast<uintptr_t>(&_binary_embedded_toolpods_tsv_start);
-    const uintptr_t toolpods_end = reinterpret_cast<uintptr_t>(&_binary_embedded_toolpods_tsv_end);
-    if (toolpods_end > toolpods_start) {
-        (void)machine::toolpods::g_service.load_tsv(reinterpret_cast<const char*>(toolpods_start), toolpods_end - toolpods_start);
-    }
-    const uintptr_t signals_start = reinterpret_cast<uintptr_t>(&_binary_embedded_signals_tsv_start);
-    const uintptr_t signals_end = reinterpret_cast<uintptr_t>(&_binary_embedded_signals_tsv_end);
-    if (signals_end > signals_start) {
-        (void)machine::g_registry.load_signal_tsv(reinterpret_cast<const char*>(signals_start), signals_end - signals_start);
-    }
-    const uintptr_t topology_start = reinterpret_cast<uintptr_t>(&_binary_embedded_topology_tsv_start);
-    const uintptr_t topology_end = reinterpret_cast<uintptr_t>(&_binary_embedded_topology_tsv_end);
-    if (topology_end > topology_start) {
-        (void)machine::topology::g_service.load_tsv(reinterpret_cast<const char*>(topology_start), topology_end - topology_start);
-    }
-    const uintptr_t placement_start = reinterpret_cast<uintptr_t>(&_binary_embedded_placement_tsv_start);
-    const uintptr_t placement_end = reinterpret_cast<uintptr_t>(&_binary_embedded_placement_tsv_end);
-    if (placement_end > placement_start) {
-        (void)machine::placement::g_service.load_tsv(reinterpret_cast<const char*>(placement_start), placement_end - placement_start);
-    }
-    const uintptr_t hmi_start = reinterpret_cast<uintptr_t>(&_binary_embedded_hmi_tsv_start);
-    const uintptr_t hmi_end = reinterpret_cast<uintptr_t>(&_binary_embedded_hmi_tsv_end);
-    if (hmi_end > hmi_start) {
-        (void)hmi::g_service.load_tsv(reinterpret_cast<const char*>(hmi_start), hmi_end - hmi_start);
-    }
+    // Shared boot helpers — identical sequence on arm64. See kernel/main.hpp.
+    kernel::boot::load_runtime_tsvs();
     cli::io::init(&uart);
-
-    machine::placement::Config placement{};
-    machine::placement::g_service.snapshot(placement);
-    const uint32_t num_cores = plat.get_num_cores();
-    const uint32_t num_nets = static_cast<uint32_t>(plat.get_num_nets());
-    if (num_nets > 0) {
-        auto log_net_role = [&](const char* role, uint32_t nic, uint32_t core) {
-            char buf[128];
-            if (nic < num_nets) {
-                kernel::util::k_snprintf(buf, sizeof(buf),
-                                         "[boot] net-role %s: eth%u -> core%u\n",
-                                         role ? role : "unknown",
-                                         static_cast<unsigned>(nic),
-                                         static_cast<unsigned>(core));
-            } else {
-                kernel::util::k_snprintf(buf, sizeof(buf),
-                                         "[boot] net-role %s: eth%u unavailable (nics=%u)\n",
-                                         role ? role : "unknown",
-                                         static_cast<unsigned>(nic),
-                                         static_cast<unsigned>(num_nets));
-            }
-            uart.puts(buf);
-        };
-        const uint32_t hmi_nic = placement.hmi_nic;
-        const uint32_t hmi_core = machine::placement::g_service.sanitize_core(placement.hmi_irq_core, num_cores);
-        log_net_role("hmi", hmi_nic, hmi_core);
-        if (hmi_nic < num_nets) {
-            plat.route_net_irq(static_cast<int>(hmi_nic), 1u << hmi_core);
-        }
-        const uint32_t ec_a_nic = placement.ec_a_nic;
-        log_net_role("ec_a", ec_a_nic,
-                     machine::placement::g_service.sanitize_core(placement.ec_a_core, num_cores));
-        if (ec_a_nic < num_nets) {
-            ethercat::g_master_a.set_nic_index(static_cast<int>(ec_a_nic));
-            plat.route_net_irq(static_cast<int>(ec_a_nic), 1u << machine::placement::g_service.sanitize_core(placement.ec_a_core, num_cores));
-        }
-        const uint32_t fake_slave_nic = placement.fake_slave_nic;
-        log_net_role("fake_slave", fake_slave_nic,
-                     machine::placement::g_service.sanitize_core(placement.fake_slave_core, num_cores));
-        if (fake_slave_nic < num_nets) {
-            ethercat::g_fake_slave.set_nic_idx(static_cast<int>(fake_slave_nic));
-            plat.route_net_irq(static_cast<int>(fake_slave_nic), 1u << machine::placement::g_service.sanitize_core(placement.fake_slave_core, num_cores));
-        }
-    }
-    const uint32_t cli_core = machine::placement::g_service.sanitize_core(placement.cli_core, num_cores);
-    const uint32_t uart_io_core = machine::placement::g_service.sanitize_core(placement.uart_io_core, num_cores);
-    const uint32_t ui_core = machine::placement::g_service.sanitize_core(placement.ui_core, num_cores);
-    const uint32_t motion_core = machine::placement::g_service.sanitize_core(placement.motion_core, num_cores);
-    const uint32_t gcode_core = machine::placement::g_service.sanitize_core(placement.gcode_core, num_cores);
-    const uint32_t macro_core = machine::placement::g_service.sanitize_core(placement.macro_core, num_cores);
-    const uint32_t ladder_core = machine::placement::g_service.sanitize_core(placement.ladder_core, num_cores);
-    const uint32_t probe_core = machine::placement::g_service.sanitize_core(placement.probe_core, num_cores);
-    const uint32_t hmi_core = machine::placement::g_service.sanitize_core(placement.hmi_irq_core, num_cores);
-    const uint32_t ec_a_core = machine::placement::g_service.sanitize_core(placement.ec_a_core, num_cores);
-    const uint32_t fake_slave_core = machine::placement::g_service.sanitize_core(placement.fake_slave_core, num_cores);
-    const uint32_t bus_config_core = machine::placement::g_service.sanitize_core(placement.bus_config_core, num_cores);
-    const uint32_t hmi_nic = placement.hmi_nic;
-    const uint32_t ec_a_nic = placement.ec_a_nic;
-    const uint32_t fake_slave_nic = placement.fake_slave_nic;
+    kernel::boot::log_and_route_net_roles();
 
     sched_create_thread(&idle_thread_rv64, nullptr, 0, "idle_h0",
                         /*is_idle=*/true);
-    // On rv64 the scheduler is FIFO round-robin without priorities. Start the
-    // shared UI thread before CLI/UART so display bring-up is not gated by a
-    // blocking serial reader on hart 0.
-    sched_create_thread(&kernel::ui::boot_ui_thread_entry, nullptr, ui_core, "ui", false);
-    sched_create_thread(&cli::CLI::thread_entry, nullptr, cli_core, "cli", false);
-    sched_create_thread(&cli::io::uart_io_entry, &uart, uart_io_core, "uart_io", false);
+    // Bring up display + input on the synchronous boot path so the scanout is
+    // live before the scheduler starts. The UI thread created below just runs
+    // the refresh loop.
+    kernel::ui::init_ui_backends();
+    kernel::ui::boot_ui_once();
 
+    // rv64 adapter around the unified create-thread signature. The rv64
+    // scheduler is FIFO round-robin without priorities, so prio / deadline /
+    // is_idle map to fixed defaults for now (folded out in task #30).
+    auto rv64_create_thread = [](void (*fn)(void*), void* arg, int /*prio*/,
+                                 int affinity, const char* name, bool is_idle,
+                                 uint64_t /*deadline_us*/) -> bool {
+        return sched_create_thread(fn, arg, static_cast<uint32_t>(affinity < 0 ? 0 : affinity),
+                                   name, is_idle) != nullptr;
+    };
+
+    kernel::boot::create_boot_services(rv64_create_thread);
     (void)machine::wiring::wire_motion_axes_from_topology(&uart);
-    sched_create_thread(&motion::Kernel::thread_entry, nullptr, motion_core, "motion", false);
-    sched_create_thread(&cnc::interp::Runtime::thread_entry, nullptr, gcode_core, "gcode", false);
-    sched_create_thread(&macros::Runtime::thread_entry, nullptr, macro_core, "macro", false);
-    sched_create_thread(&ladder::Runtime::thread_entry, nullptr, ladder_core, "ladder", false);
-    sched_create_thread(&probe::Runtime::thread_entry, nullptr, probe_core, "probe", false);
-    if (num_nets > hmi_nic) {
-        hmi::g_service.configure(static_cast<uint8_t>(hmi_nic));
-        uart.puts("[boot] hmi: eth0 service...\n");
-        sched_create_thread(&hmi::Service::thread_entry, &hmi::g_service, hmi_core, "hmi", false);
-    }
-
-    if (num_nets > ec_a_nic) {
-        ethercat::g_master_a.set_nic_index(static_cast<int>(ec_a_nic));
-        sched_create_thread(&ethercat::Master::thread_entry, &ethercat::g_master_a, ec_a_core, "ec_a", false);
-        sched_create_thread(&ethercat::bus_config_entry, &ethercat::g_master_a, bus_config_core, "bus_cfg_a", false);
-#if MINIOS_FAKE_SLAVE
-        if (num_nets > fake_slave_nic) {
-            ethercat::g_fake_slave.set_nic_idx(static_cast<int>(fake_slave_nic));
-            sched_create_thread(&ethercat::FakeSlave::thread_entry, &ethercat::g_fake_slave, fake_slave_core, "fake_slave", false);
-        }
-#else
-        const uint32_t ec_b_core = machine::placement::g_service.sanitize_core(placement.ec_b_core, num_cores);
-        const uint32_t ec_b_nic = placement.ec_b_nic;
-        if (num_nets > ec_b_nic) {
-            ethercat::g_master_b.set_nic_index(static_cast<int>(ec_b_nic));
-            sched_create_thread(&ethercat::Master::thread_entry, &ethercat::g_master_b, ec_b_core, "ec_b", false);
-            sched_create_thread(&ethercat::bus_config_entry, &ethercat::g_master_b, bus_config_core, "bus_cfg_b", false);
-        }
-#endif
-    } else {
-        sched_create_thread(&test_thread_a, nullptr, 0, "thread_a", false);
-        sched_create_thread(&test_thread_b, nullptr, 0, "thread_b", false);
-    }
+    kernel::boot::create_runtime_services(rv64_create_thread);
 
     uart.puts("[miniOS rv64] scheduler: services armed on harts 0-2\n");
 

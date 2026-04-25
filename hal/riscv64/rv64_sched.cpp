@@ -25,37 +25,21 @@
 //     tcb->entry(tcb->arg).
 
 #include "hal_qemu_rv64.hpp"
+#include "../../core.hpp"
+#include "../../util.hpp"
 #include <cstdint>
 #include <cstddef>
 #include <atomic>
 
 namespace hal::qemu_virt_rv64 {
 
-// ---- TCB layout: MUST match cpu_rv64.S offsets ----
-//   offsetof(TCB_Rv64, regs)    == TCB_REGS_OFF    (= 0)
-//   offsetof(TCB_Rv64, sp)      == TCB_SP_OFF      (= 31*8 = 248)
-//   offsetof(TCB_Rv64, pc)      == TCB_PC_OFF      (= 256)
-//   offsetof(TCB_Rv64, mstatus) == TCB_MSTATUS_OFF (= 264)
-struct TCB_Rv64 {
-    uint64_t regs[31];    // regs[i] holds x(i+1); regs[0]=ra/x1, regs[1]=sp/x2, regs[9]=a0/x10...
-    uint64_t sp;
-    uint64_t pc;
-    uint64_t mstatus;
-    // -------------- C-side fields below (not touched by asm) ----------
-    void (*entry)(void*);
-    void*   arg;
-    uint8_t* stack_base;
-    size_t   stack_size;
-    uint32_t hart_affinity;
-    bool     in_use;
-    bool     is_idle;
-    char     name[16];
-    TCB_Rv64* next_ready;  // per-hart ready queue link
-};
-static_assert(offsetof(TCB_Rv64, regs)    == 0,        "TCB regs offset");
-static_assert(offsetof(TCB_Rv64, sp)      == 31 * 8,   "TCB sp offset");
-static_assert(offsetof(TCB_Rv64, pc)      == 32 * 8,   "TCB pc offset");
-static_assert(offsetof(TCB_Rv64, mstatus) == 33 * 8,   "TCB mstatus offset");
+// TCB_Rv64 is aliased to kernel::core::TCB in hal_qemu_rv64.hpp. The
+// asm-visible prefix (regs[31], sp, pc, pstate) is identical on both arches
+// — rv64 reads the `pstate` field as mstatus (same byte offset, 264).
+static_assert(offsetof(TCB_Rv64, regs)    == 0,      "TCB regs offset");
+static_assert(offsetof(TCB_Rv64, sp)      == 31 * 8, "TCB sp offset");
+static_assert(offsetof(TCB_Rv64, pc)      == 32 * 8, "TCB pc offset");
+static_assert(offsetof(TCB_Rv64, pstate)  == 33 * 8, "TCB pstate (mstatus) offset");
 
 constexpr uint32_t MAX_THREADS   = 16;
 constexpr size_t   STACK_BYTES   = 8192;
@@ -101,20 +85,20 @@ struct SchedLock {
 };
 
 static void ready_enqueue_locked(TCB_Rv64* t) {
-    t->next_ready = nullptr;
-    uint32_t h = t->hart_affinity;
+    t->next_in_q = nullptr;
+    uint32_t h = static_cast<uint32_t>(t->core_affinity < 0 ? 0 : t->core_affinity);
     TCB_Rv64** slot = &g_ready_head[h];
     if (*slot == nullptr) { *slot = t; return; }
     TCB_Rv64* tail = *slot;
-    while (tail->next_ready) tail = tail->next_ready;
-    tail->next_ready = t;
+    while (tail->next_in_q) tail = tail->next_in_q;
+    tail->next_in_q = t;
 }
 
 static TCB_Rv64* ready_dequeue_locked(uint32_t hart) {
     TCB_Rv64* h = g_ready_head[hart];
     if (!h) return nullptr;
-    g_ready_head[hart] = h->next_ready;
-    h->next_ready = nullptr;
+    g_ready_head[hart] = h->next_in_q;
+    h->next_in_q = nullptr;
     return h;
 }
 
@@ -125,7 +109,7 @@ extern "C" void thread_bootstrap_rv64(TCB_Rv64* self);
 extern "C" void thread_bootstrap_rv64(TCB_Rv64* self) {
     // Enable MIE so the preempt tick can fire.
     asm volatile("csrsi mstatus, 0x8" ::: "memory");
-    if (self && self->entry) self->entry(self->arg);
+    if (self && self->entry_point) self->entry_point(self->arg_ptr);
     // Entry returned — park the hart.  In a fuller design we'd mark this
     // TCB zombie and request a switch.
     for (;;) asm volatile("wfi");
@@ -142,15 +126,17 @@ TCB_Rv64* sched_create_thread(void (*entry)(void*), void* arg,
     SchedLock lock;
     TCB_Rv64* t = nullptr;
     for (auto& cand : g_tcbs) {
-        if (!cand.in_use) { t = &cand; break; }
+        if (cand.state == TCB_Rv64::State::INACTIVE) { t = &cand; break; }
     }
     if (!t) return nullptr;
-    *t = TCB_Rv64{};
-    t->in_use = true;
-    t->is_idle = is_idle;
-    t->entry = entry;
-    t->arg = arg;
-    t->hart_affinity = hart_affinity;
+    // Zero-reset the TCB. TCB has a std::atomic<bool> event_flag that
+    // defeats copy/move assign, so zero via memset (safe here because no
+    // thread has observed this slot yet).
+    kernel::util::kmemset(t, 0, sizeof(TCB_Rv64));
+    t->state = TCB_Rv64::State::READY;
+    t->entry_point = entry;
+    t->arg_ptr = arg;
+    t->core_affinity = static_cast<int>(hart_affinity);
     t->stack_base = g_stacks[t - g_tcbs];
     t->stack_size = STACK_BYTES;
     // Copy name (truncate).
@@ -164,9 +150,9 @@ TCB_Rv64* sched_create_thread(void (*entry)(void*), void* arg,
     //   regs[0] (ra)  = thread_bootstrap_rv64
     //   regs[1] (sp)  = top-of-stack, 16-byte aligned
     //   regs[9] (a0)  = TCB pointer (bootstrap's argument)
-    //   mstatus       = MIE=0 (bootstrap turns it on) + MPP=M so mret-ish
-    //                   operations work; FS=Dirty so scheduled C++ code may
-    //                   use float registers without trapping on first use.
+    //   pstate        = rv64 mstatus. MIE=0 (bootstrap turns it on) + MPP=M
+    //                   so mret-ish operations work; FS=Dirty so scheduled
+    //                   C++ may use float registers without trapping.
     uintptr_t top = reinterpret_cast<uintptr_t>(t->stack_base + t->stack_size);
     top &= ~uintptr_t{15};
     t->regs[0] = reinterpret_cast<uint64_t>(&thread_bootstrap_rv64);
@@ -174,10 +160,7 @@ TCB_Rv64* sched_create_thread(void (*entry)(void*), void* arg,
     t->regs[9] = reinterpret_cast<uint64_t>(t);
     t->sp      = top;
     t->pc      = reinterpret_cast<uint64_t>(&thread_bootstrap_rv64);
-    // mstatus: MPP=M (bits 11:12 = 0b11 = 3), FS=Dirty (bits 13:14 = 0b11),
-    // MPIE=1 (bit 7), MIE=0 (bit 3 — bootstrap enables MIE at entry). This
-    // is the "initial" mstatus any future trap exit to this thread installs.
-    t->mstatus = (0x3ULL << 11) | (0x3ULL << 13) | (1ULL << 7);
+    t->pstate  = (0x3ULL << 11) | (0x3ULL << 13) | (1ULL << 7);
 
     if (!is_idle) ready_enqueue_locked(t);
     else          g_idle[hart_affinity] = t;

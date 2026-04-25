@@ -22,12 +22,12 @@
  *   into old_tcb, loads from new_tcb, returns into new_tcb's saved ra.
  *   Used from cooperative yield paths.
  *
- * TCB layout (byte offsets, kept in sync with TCB_Rv64 in rv64_sched.cpp):
+ * TCB layout (byte offsets, must match kernel::core::TCB in core.hpp):
  *   0   ..  30*8    regs[31]  (regs[i] holds x(i+1); x0 has no slot)
  *   31*8 = 248      sp        (u64, also mirrored in regs[1])
  *   32*8 = 256      pc        (u64, = mepc on entry)
- *   33*8 = 264      mstatus   (u64)
- *   264+8 and beyond: C-side fields (entry, arg, stack_base, ...)
+ *   33*8 = 264      pstate    (u64 — rv64 stores mstatus here)
+ *   264+8 and beyond: C-side fields (entry_point, arg_ptr, stack_base, ...)
  *
  * CSR bit layout reminders:
  *   mstatus.MIE  = bit 3   mstatus.MPIE = bit 7
@@ -41,7 +41,9 @@
     .equ UART_THR,        0x10000000
     .equ MSTATUS_FS,      0x00006000  /* FS[1:0] = 11 (Dirty) */
 
-    /* TCB offsets — keep in sync with TCB_Rv64 in rv64_sched.cpp. */
+    /* TCB offsets — must match kernel::core::TCB. The pstate field at
+     * byte offset 264 stores mstatus on rv64 (same slot arm64 uses for
+     * SPSR_EL1). */
     .equ TCB_REGS_OFF,    0
     .equ TCB_SP_OFF,      (31*8)
     .equ TCB_PC_OFF,      (31*8 + 8)
