@@ -43,6 +43,14 @@ constexpr uint8_t SRC_MAC[6]       = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
 
 constexpr uint64_t ESM_TIMEOUT_US = 200000; // 200 ms per transition
 
+// poll_rx drain budget. POLL_RX_BATCH small enough that the worst-case
+// overshoot is only one batch's worth of handler work past the deadline;
+// POLL_RX_SAFETY_MARGIN_US stops the loop while there's still slack to
+// finish the iteration without tripping the deadline-fault latch.
+constexpr size_t   POLL_RX_BATCH              = 2;
+constexpr size_t   POLL_RX_MAX_PER_CYCLE      = 8;
+constexpr uint64_t POLL_RX_SAFETY_MARGIN_US   = 30;
+
 template<typename T>
 bool upload_scalar(Master& m, uint16_t station, uint16_t index, uint8_t sub,
                    T* out, uint8_t expect_bytes) noexcept {
@@ -1065,11 +1073,20 @@ void Master::run_loop() {
         service_sdo_upload();
         service_esc_read();
 
-        // Drain whatever the NIC queued. Each frame routes through
-        // rx_trampoline → handle_rx_frame, bumping rx counters and (stub
-        // for now) advancing ESM state from observed WKC.
+        // Drain whatever the NIC queued, but stop early if we're about to
+        // overshoot the cycle deadline — undrained frames stay in the NIC
+        // RX queue and get picked up next cycle. A flooded link previously
+        // could blow the budget here and trip the deadline-fault latch.
         if (net_) {
-            net_->poll_rx(&Master::rx_trampoline, this, 8);
+            const uint64_t drain_deadline_us =
+                next_us > POLL_RX_SAFETY_MARGIN_US ? next_us - POLL_RX_SAFETY_MARGIN_US : 0;
+            size_t total = 0;
+            while (total < POLL_RX_MAX_PER_CYCLE) {
+                if (t->get_system_time_us() >= drain_deadline_us) break;
+                const size_t got = net_->poll_rx(&Master::rx_trampoline, this, POLL_RX_BATCH);
+                if (got == 0) break;
+                total += got;
+            }
         }
 
         stats_.cycles.fetch_add(1, std::memory_order_relaxed);
