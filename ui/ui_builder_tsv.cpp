@@ -434,6 +434,12 @@ enum class BindKind : uint8_t {
     EcCycles,
     EcTxFrames,
     EcRxFrames,
+    Alarm0Id, Alarm0Severity, Alarm0Axis, Alarm0Message, Alarm0Time,
+    Alarm1Id, Alarm1Severity, Alarm1Axis, Alarm1Message, Alarm1Time,
+    Alarm2Id, Alarm2Severity, Alarm2Axis, Alarm2Message, Alarm2Time,
+    Alarm3Id, Alarm3Severity, Alarm3Axis, Alarm3Message, Alarm3Time,
+    AlarmActiveCount,
+    AlarmHistoryCount,
 };
 
 BindKind parse_bind(const char* s) {
@@ -530,7 +536,54 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "ec:cycles") == 0) return BindKind::EcCycles;
     if (strcmp(s, "ec:tx")     == 0) return BindKind::EcTxFrames;
     if (strcmp(s, "ec:rx")     == 0) return BindKind::EcRxFrames;
+    if (strcmp(s, "alarm:active_count")  == 0) return BindKind::AlarmActiveCount;
+    if (strcmp(s, "alarm:history_count") == 0) return BindKind::AlarmHistoryCount;
+    if (strcmp(s, "alarm:0:id")   == 0) return BindKind::Alarm0Id;
+    if (strcmp(s, "alarm:0:sev")  == 0) return BindKind::Alarm0Severity;
+    if (strcmp(s, "alarm:0:axis") == 0) return BindKind::Alarm0Axis;
+    if (strcmp(s, "alarm:0:msg")  == 0) return BindKind::Alarm0Message;
+    if (strcmp(s, "alarm:0:time") == 0) return BindKind::Alarm0Time;
+    if (strcmp(s, "alarm:1:id")   == 0) return BindKind::Alarm1Id;
+    if (strcmp(s, "alarm:1:sev")  == 0) return BindKind::Alarm1Severity;
+    if (strcmp(s, "alarm:1:axis") == 0) return BindKind::Alarm1Axis;
+    if (strcmp(s, "alarm:1:msg")  == 0) return BindKind::Alarm1Message;
+    if (strcmp(s, "alarm:1:time") == 0) return BindKind::Alarm1Time;
+    if (strcmp(s, "alarm:2:id")   == 0) return BindKind::Alarm2Id;
+    if (strcmp(s, "alarm:2:sev")  == 0) return BindKind::Alarm2Severity;
+    if (strcmp(s, "alarm:2:axis") == 0) return BindKind::Alarm2Axis;
+    if (strcmp(s, "alarm:2:msg")  == 0) return BindKind::Alarm2Message;
+    if (strcmp(s, "alarm:2:time") == 0) return BindKind::Alarm2Time;
+    if (strcmp(s, "alarm:3:id")   == 0) return BindKind::Alarm3Id;
+    if (strcmp(s, "alarm:3:sev")  == 0) return BindKind::Alarm3Severity;
+    if (strcmp(s, "alarm:3:axis") == 0) return BindKind::Alarm3Axis;
+    if (strcmp(s, "alarm:3:msg")  == 0) return BindKind::Alarm3Message;
+    if (strcmp(s, "alarm:3:time") == 0) return BindKind::Alarm3Time;
     return BindKind::None;
+}
+
+int alarm_row_index(BindKind bind) {
+    switch (bind) {
+        case BindKind::Alarm0Id: case BindKind::Alarm0Severity: case BindKind::Alarm0Axis:
+        case BindKind::Alarm0Message: case BindKind::Alarm0Time: return 0;
+        case BindKind::Alarm1Id: case BindKind::Alarm1Severity: case BindKind::Alarm1Axis:
+        case BindKind::Alarm1Message: case BindKind::Alarm1Time: return 1;
+        case BindKind::Alarm2Id: case BindKind::Alarm2Severity: case BindKind::Alarm2Axis:
+        case BindKind::Alarm2Message: case BindKind::Alarm2Time: return 2;
+        case BindKind::Alarm3Id: case BindKind::Alarm3Severity: case BindKind::Alarm3Axis:
+        case BindKind::Alarm3Message: case BindKind::Alarm3Time: return 3;
+        default: return -1;
+    }
+}
+
+const char* alarm_severity_text(kernel::ui::operator_api::AlarmsSnapshot::Severity sev) {
+    using S = kernel::ui::operator_api::AlarmsSnapshot::Severity;
+    switch (sev) {
+        case S::Info:     return "INFO";
+        case S::Warning:  return "WARN";
+        case S::Error:    return "ERR";
+        case S::Critical: return "CRIT";
+    }
+    return "?";
 }
 
 int32_t bound_numeric_value(BindKind bind) {
@@ -766,6 +819,28 @@ int32_t bound_numeric_value(BindKind bind) {
             const auto snap = kernel::ui::operator_api::machine_snapshot();
             return snap.view_toolpods ? 1 : 0;
         }
+        case BindKind::AlarmActiveCount: {
+            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            return static_cast<int32_t>(snap.active_count);
+        }
+        case BindKind::AlarmHistoryCount: {
+            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            return static_cast<int32_t>(snap.history_count);
+        }
+        case BindKind::Alarm0Id: case BindKind::Alarm1Id:
+        case BindKind::Alarm2Id: case BindKind::Alarm3Id: {
+            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const int row = alarm_row_index(bind);
+            if (row < 0 || static_cast<size_t>(row) >= snap.active_count) return 0;
+            return static_cast<int32_t>(snap.active[row].id);
+        }
+        case BindKind::Alarm0Time: case BindKind::Alarm1Time:
+        case BindKind::Alarm2Time: case BindKind::Alarm3Time: {
+            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const int row = alarm_row_index(bind);
+            if (row < 0 || static_cast<size_t>(row) >= snap.active_count) return 0;
+            return static_cast<int32_t>(snap.active[row].timestamp_ns / 1000000000ULL);
+        }
         default: return 0;
     }
 }
@@ -930,6 +1005,65 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             const auto snap = kernel::ui::operator_api::ethercat_snapshot();
             const char* text = snap.deadline_fault ? "LATCHED" : "ok";
             copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::Alarm0Severity: case BindKind::Alarm1Severity:
+        case BindKind::Alarm2Severity: case BindKind::Alarm3Severity: {
+            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const int row = alarm_row_index(bind);
+            const char* text = "---";
+            if (row >= 0 && static_cast<size_t>(row) < snap.active_count) {
+                text = alarm_severity_text(snap.active[row].severity);
+            }
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::Alarm0Axis: case BindKind::Alarm1Axis:
+        case BindKind::Alarm2Axis: case BindKind::Alarm3Axis: {
+            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const int row = alarm_row_index(bind);
+            const char* text = "-";
+            if (row >= 0 && static_cast<size_t>(row) < snap.active_count && snap.active[row].axis) {
+                text = snap.active[row].axis;
+            }
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::Alarm0Message: case BindKind::Alarm1Message:
+        case BindKind::Alarm2Message: case BindKind::Alarm3Message: {
+            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const int row = alarm_row_index(bind);
+            const char* text = "";
+            if (row >= 0 && static_cast<size_t>(row) < snap.active_count && snap.active[row].message) {
+                text = snap.active[row].message;
+            }
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::Alarm0Id: case BindKind::Alarm1Id:
+        case BindKind::Alarm2Id: case BindKind::Alarm3Id: {
+            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const int row = alarm_row_index(bind);
+            if (row < 0 || static_cast<size_t>(row) >= snap.active_count) {
+                copy_field(buf, buf_size, "-", 1);
+                return;
+            }
+            kernel::util::k_snprintf(buf, buf_size, "%s%lu", prefix ? prefix : "",
+                                     static_cast<unsigned long>(snap.active[row].id));
+            return;
+        }
+        case BindKind::Alarm0Time: case BindKind::Alarm1Time:
+        case BindKind::Alarm2Time: case BindKind::Alarm3Time: {
+            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const int row = alarm_row_index(bind);
+            if (row < 0 || static_cast<size_t>(row) >= snap.active_count) {
+                copy_field(buf, buf_size, "-", 1);
+                return;
+            }
+            // Best-effort: render as "Xs" using seconds since epoch from
+            // the snapshot. No wall clock available for true relative.
+            const uint32_t s = static_cast<uint32_t>(snap.active[row].timestamp_ns / 1000000000ULL);
+            kernel::util::k_snprintf(buf, buf_size, "%s%us", prefix ? prefix : "", s);
             return;
         }
         case BindKind::EcSlaves:
@@ -1314,6 +1448,16 @@ void run_action_target(const char* target) {
     else if (strcmp(target, "view:zoom:out") == 0) view_zoom_all(1.18f);
     else if (strcmp(target, "ec:estop") == 0) request_ec_estop();
     else if (strcmp(target, "ec:clear_fault") == 0) clear_ec_fault();
+    else if (strcmp(target, "alarm:clear_history") == 0) clear_alarm_history();
+    else if (strncmp(target, "alarm:ack:", 10) == 0) {
+        const int row = simple_atoi(target + 10);
+        if (row >= 0 && row < 4) {
+            const auto snap = alarms_snapshot();
+            if (static_cast<size_t>(row) < snap.active_count) {
+                acknowledge_alarm(snap.active[row].id);
+            }
+        }
+    }
     else if (strcmp(target, "demo:estop") == 0) {
         // Stop all interpreter channels + latch alarm. Full drive-level quickstop
         // belongs in the motion layer; this mirrors the reset path plus an

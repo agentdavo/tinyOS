@@ -218,6 +218,11 @@ const BIND_GROUPS = {
   MDI: ["mdi:input","mdi:last","mdi:status","mdi:message","mdi:depth"],
   EtherCAT: ["ec:state","ec:fault","ec:slaves","ec:miss","ec:trips",
              "ec:p99","ec:max","ec:period","ec:cycles","ec:tx","ec:rx"],
+  Alarms: ["alarm:active_count","alarm:history_count",
+           "alarm:0:id","alarm:0:sev","alarm:0:axis","alarm:0:msg","alarm:0:time",
+           "alarm:1:id","alarm:1:sev","alarm:1:axis","alarm:1:msg","alarm:1:time",
+           "alarm:2:id","alarm:2:sev","alarm:2:axis","alarm:2:msg","alarm:2:time",
+           "alarm:3:id","alarm:3:sev","alarm:3:axis","alarm:3:msg","alarm:3:time"],
 };
 const ALL_BINDS = new Set(Object.values(BIND_GROUPS).flat());
 
@@ -240,6 +245,8 @@ const ACTION_GROUPS = {
            "commit:tool:length","commit:tool:radius","commit:tool:wear",
            "commit:restart:line"],
   EtherCAT: ["ec:estop","ec:clear_fault"],
+  Alarms: ["alarm:ack:0","alarm:ack:1","alarm:ack:2","alarm:ack:3",
+           "alarm:clear_history"],
 };
 function actionIsValid(target, doc) {
   if (!target) return true;

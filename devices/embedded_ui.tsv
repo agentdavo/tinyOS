@@ -614,7 +614,7 @@ action	widget=setup_load	event=click	target=setup:load
 action	widget=setup_save	event=click	target=setup:save
 action	widget=service_probe	event=click	target=goto:probe
 action	widget=service_ethercat	event=click	target=goto:ethercat
-action	widget=service_alarms	event=click	target=goto:service
+action	widget=service_alarms	event=click	target=goto:alarms
 action	widget=service_macros	event=click	target=goto:macros
 include	page=bottom_nav
 
@@ -670,6 +670,88 @@ button	id=ec_back_btn	parent=ec_root	x=720	y=988	w=320	h=110	text=BACK	bg=#33415
 action	widget=ec_clear_fault_btn	event=click	target=ec:clear_fault
 action	widget=ec_estop_btn	event=click	target=ec:estop
 action	widget=ec_back_btn	event=click	target=goto:service
+include	page=bottom_nav
+
+# ============================================================
+# alarms -- active alarm list, per-row acknowledge, history clear
+# Layout (1080 x 1740):
+#   y   20..  70  page title
+#   y   90..1200  active alarms panel (h=210 summary + h=900 table)
+#     y   90.. 200  summary panel (active / history counts)
+#     y  220.. 720  active alarms table (header + 4 rows)
+#   y  740..1700  actions panel (h=200) + notes
+# ============================================================
+page	id=alarms	title=Alarms
+panel	id=alarms_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=alarms_title	parent=alarms_root	x=40	y=30	w=1000	h=40	text=ALARM HISTORY	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- summary panel (y=90, h=110) ---
+panel	id=alarms_sum_panel	parent=alarms_root	x=20	y=90	w=1040	h=110	bg=#111827	border=#334155
+label	id=alarms_sum_title	parent=alarms_root	x=40	y=104	w=400	h=28	text=SUMMARY	color=#94A3B8	bg=#111827	scale=2
+label	id=alarms_active_lbl	parent=alarms_root	x=40	y=150	w=200	h=32	text=ACTIVE	color=#94A3B8	bg=#111827	scale=1
+label	id=alarms_active_v	parent=alarms_root	x=240	y=146	w=240	h=40	text=0	color=#FCA5A5	bg=#0F172A	border=#EF4444	bind=alarm:active_count	align=center	scale=2
+label	id=alarms_hist_lbl	parent=alarms_root	x=540	y=150	w=200	h=32	text=HISTORY	color=#94A3B8	bg=#111827	scale=1
+label	id=alarms_hist_v	parent=alarms_root	x=740	y=146	w=300	h=40	text=0	color=#FBBF24	bg=#0F172A	border=#475569	bind=alarm:history_count	align=center	scale=2
+
+# --- active alarms table panel (y=220, h=500) ---
+panel	id=alarms_tbl_panel	parent=alarms_root	x=20	y=220	w=1040	h=500	bg=#111827	border=#334155
+label	id=alarms_tbl_title	parent=alarms_root	x=40	y=234	w=600	h=28	text=ACTIVE ALARMS	color=#94A3B8	bg=#111827	scale=2
+# column headers (y=275)
+label	id=alarms_h_id	parent=alarms_root	x=40	y=275	w=70	h=28	text=#	color=#64748B	bg=#111827	align=center	scale=1
+label	id=alarms_h_sev	parent=alarms_root	x=120	y=275	w=110	h=28	text=SEV	color=#64748B	bg=#111827	align=center	scale=1
+label	id=alarms_h_axis	parent=alarms_root	x=240	y=275	w=90	h=28	text=AXIS	color=#64748B	bg=#111827	align=center	scale=1
+label	id=alarms_h_msg	parent=alarms_root	x=340	y=275	w=420	h=28	text=MESSAGE	color=#64748B	bg=#111827	align=center	scale=1
+label	id=alarms_h_time	parent=alarms_root	x=770	y=275	w=110	h=28	text=TIME	color=#64748B	bg=#111827	align=center	scale=1
+label	id=alarms_h_act	parent=alarms_root	x=890	y=275	w=130	h=28	text=ACK	color=#64748B	bg=#111827	align=center	scale=1
+
+# row 0 (y=315)
+label	id=alarms_r0_id	parent=alarms_root	x=40	y=315	w=70	h=72	text=-	color=#E2E8F0	bg=#0F172A	border=#334155	bind=alarm:0:id	align=center	scale=2
+label	id=alarms_r0_sev	parent=alarms_root	x=120	y=315	w=110	h=72	text=---	color=#FCA5A5	bg=#0F172A	border=#334155	bind=alarm:0:sev	align=center	scale=2
+label	id=alarms_r0_axis	parent=alarms_root	x=240	y=315	w=90	h=72	text=-	color=#7DD3FC	bg=#0F172A	border=#334155	bind=alarm:0:axis	align=center	scale=2
+label	id=alarms_r0_msg	parent=alarms_root	x=340	y=315	w=420	h=72	text=---	color=#F8FAFC	bg=#0F172A	border=#334155	bind=alarm:0:msg	align=center	scale=1
+label	id=alarms_r0_time	parent=alarms_root	x=770	y=315	w=110	h=72	text=-	color=#FBBF24	bg=#0F172A	border=#334155	bind=alarm:0:time	align=center	scale=1
+button	id=alarms_r0_ack	parent=alarms_root	x=890	y=315	w=130	h=72	text=ACK	bg=#15803D	color=#FFFFFF	scale=2	focus=600
+
+# row 1 (y=395)
+label	id=alarms_r1_id	parent=alarms_root	x=40	y=395	w=70	h=72	text=-	color=#E2E8F0	bg=#0F172A	border=#334155	bind=alarm:1:id	align=center	scale=2
+label	id=alarms_r1_sev	parent=alarms_root	x=120	y=395	w=110	h=72	text=---	color=#FCA5A5	bg=#0F172A	border=#334155	bind=alarm:1:sev	align=center	scale=2
+label	id=alarms_r1_axis	parent=alarms_root	x=240	y=395	w=90	h=72	text=-	color=#7DD3FC	bg=#0F172A	border=#334155	bind=alarm:1:axis	align=center	scale=2
+label	id=alarms_r1_msg	parent=alarms_root	x=340	y=395	w=420	h=72	text=---	color=#F8FAFC	bg=#0F172A	border=#334155	bind=alarm:1:msg	align=center	scale=1
+label	id=alarms_r1_time	parent=alarms_root	x=770	y=395	w=110	h=72	text=-	color=#FBBF24	bg=#0F172A	border=#334155	bind=alarm:1:time	align=center	scale=1
+button	id=alarms_r1_ack	parent=alarms_root	x=890	y=395	w=130	h=72	text=ACK	bg=#15803D	color=#FFFFFF	scale=2	focus=602
+
+# row 2 (y=475)
+label	id=alarms_r2_id	parent=alarms_root	x=40	y=475	w=70	h=72	text=-	color=#E2E8F0	bg=#0F172A	border=#334155	bind=alarm:2:id	align=center	scale=2
+label	id=alarms_r2_sev	parent=alarms_root	x=120	y=475	w=110	h=72	text=---	color=#FCA5A5	bg=#0F172A	border=#334155	bind=alarm:2:sev	align=center	scale=2
+label	id=alarms_r2_axis	parent=alarms_root	x=240	y=475	w=90	h=72	text=-	color=#7DD3FC	bg=#0F172A	border=#334155	bind=alarm:2:axis	align=center	scale=2
+label	id=alarms_r2_msg	parent=alarms_root	x=340	y=475	w=420	h=72	text=---	color=#F8FAFC	bg=#0F172A	border=#334155	bind=alarm:2:msg	align=center	scale=1
+label	id=alarms_r2_time	parent=alarms_root	x=770	y=475	w=110	h=72	text=-	color=#FBBF24	bg=#0F172A	border=#334155	bind=alarm:2:time	align=center	scale=1
+button	id=alarms_r2_ack	parent=alarms_root	x=890	y=475	w=130	h=72	text=ACK	bg=#15803D	color=#FFFFFF	scale=2	focus=604
+
+# row 3 (y=555)
+label	id=alarms_r3_id	parent=alarms_root	x=40	y=555	w=70	h=72	text=-	color=#E2E8F0	bg=#0F172A	border=#334155	bind=alarm:3:id	align=center	scale=2
+label	id=alarms_r3_sev	parent=alarms_root	x=120	y=555	w=110	h=72	text=---	color=#FCA5A5	bg=#0F172A	border=#334155	bind=alarm:3:sev	align=center	scale=2
+label	id=alarms_r3_axis	parent=alarms_root	x=240	y=555	w=90	h=72	text=-	color=#7DD3FC	bg=#0F172A	border=#334155	bind=alarm:3:axis	align=center	scale=2
+label	id=alarms_r3_msg	parent=alarms_root	x=340	y=555	w=420	h=72	text=---	color=#F8FAFC	bg=#0F172A	border=#334155	bind=alarm:3:msg	align=center	scale=1
+label	id=alarms_r3_time	parent=alarms_root	x=770	y=555	w=110	h=72	text=-	color=#FBBF24	bg=#0F172A	border=#334155	bind=alarm:3:time	align=center	scale=1
+button	id=alarms_r3_ack	parent=alarms_root	x=890	y=555	w=130	h=72	text=ACK	bg=#15803D	color=#FFFFFF	scale=2	focus=606
+
+label	id=alarms_tbl_note	parent=alarms_root	x=40	y=655	w=1000	h=32	text=Showing first 4 active alarms. ACK clears the row from active state.	color=#64748B	bg=#111827	scale=1
+
+# --- actions panel (y=740, h=200) ---
+panel	id=alarms_act_panel	parent=alarms_root	x=20	y=740	w=1040	h=200	bg=#111827	border=#334155
+label	id=alarms_act_title	parent=alarms_root	x=40	y=754	w=400	h=28	text=ACTIONS	color=#94A3B8	bg=#111827	scale=2
+button	id=alarms_clear_btn	parent=alarms_root	x=40	y=798	w=320	h=120	text=CLEAR HISTORY	bg=#B45309	color=#FFFFFF	scale=2	focus=620
+button	id=alarms_reset_btn	parent=alarms_root	x=380	y=798	w=320	h=120	text=RESET ALARMS	bg=#B91C1C	color=#FFFFFF	scale=2	focus=622
+button	id=alarms_back_btn	parent=alarms_root	x=720	y=798	w=320	h=120	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=624
+
+action	widget=alarms_r0_ack	event=click	target=alarm:ack:0
+action	widget=alarms_r1_ack	event=click	target=alarm:ack:1
+action	widget=alarms_r2_ack	event=click	target=alarm:ack:2
+action	widget=alarms_r3_ack	event=click	target=alarm:ack:3
+action	widget=alarms_clear_btn	event=click	target=alarm:clear_history
+action	widget=alarms_reset_btn	event=click	target=demo:reset
+action	widget=alarms_back_btn	event=click	target=goto:service
 include	page=bottom_nav
 
 # ============================================================
