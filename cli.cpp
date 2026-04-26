@@ -28,6 +28,7 @@
 #include "diag/cpu_load.hpp"
 #include "hmi/hmi_service.hpp"
 #include "ui/fb.hpp"
+#include "ui/operator_api.hpp"
 #include "ui/splash.hpp"
 #include "ui/ui_builder_tsv.hpp"
 #include "kernel/usb/usb.hpp"
@@ -1367,6 +1368,39 @@ static int cmd_axis_spin(const char* args, kernel::hal::UARTDriverOps* uart) {
     uart->puts(buf);
     return ok ? 0 : 1;
 }
+static int cmd_jog_hold(const char* args, kernel::hal::UARTDriverOps* uart) {
+    if (!args || !*args) {
+        uart->puts("usage: jog_hold <axis_idx> <sign>\n"); return 1;
+    }
+    const char* p = args;
+    long ax = 0, sign = 0;
+    if (!cli_parse_long(p, ax) || !cli_parse_long(p, sign)) {
+        uart->puts("jog_hold: bad args\n"); return 1;
+    }
+    kernel::ui::operator_api::start_continuous_jog(
+        static_cast<uint32_t>(ax), static_cast<int32_t>(sign));
+    char buf[64];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "jog_hold ax%ld sign=%ld\n", ax, sign);
+    uart->puts(buf);
+    return 0;
+}
+static int cmd_jog_stop(const char* args, kernel::hal::UARTDriverOps* uart) {
+    if (!args || !*args) {
+        uart->puts("usage: jog_stop <axis_idx>\n"); return 1;
+    }
+    const char* p = args;
+    long ax = 0;
+    if (!cli_parse_long(p, ax)) {
+        uart->puts("jog_stop: bad args\n"); return 1;
+    }
+    kernel::ui::operator_api::stop_continuous_jog(static_cast<uint32_t>(ax));
+    char buf[64];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "jog_stop ax%ld\n", ax);
+    uart->puts(buf);
+    return 0;
+}
 static int cmd_gear_engage(const char* args, kernel::hal::UARTDriverOps* uart) {
     // Usage: gear_engage <leader_ax> <follower_ax> <follower_ch> <k_num> <k_den> [ramp=100]
     if (!args || !*args) {
@@ -2441,8 +2475,8 @@ static int cmd_mpos(const char*, kernel::hal::UARTDriverOps* uart) {
 // commanded/actual/dtg/state, plus master health (state, miss count, p99
 // cycle, deadline-fault latch). Designed for at-a-glance use during
 // commissioning and run.
-static int cmd_dro(const char*, kernel::hal::UARTDriverOps* uart) {
-    if (!uart) return 1;
+static void dro_dump(kernel::hal::UARTDriverOps* uart) {
+    if (!uart) return;
     char buf[192];
     static const char* axis_letters = "XYZABCUV";
 
@@ -2497,6 +2531,11 @@ static int cmd_dro(const char*, kernel::hal::UARTDriverOps* uart) {
     uart->puts("== Bus ============================================================\n");
     fmt_master(ethercat::g_master_a, "ec0");
     fmt_master(ethercat::g_master_b, "ec1");
+}
+
+static int cmd_dro(const char*, kernel::hal::UARTDriverOps* uart) {
+    if (!uart) return 1;
+    dro_dump(uart);
     return 0;
 }
 // Inline parser (parse_long sits inside the FAKE_SLAVE namespace and isn't
@@ -3497,6 +3536,39 @@ static int cmd_ttop(const char*, kernel::hal::UARTDriverOps* uart) {
     return 0;
 }
 
+static int cmd_ttop_dro(const char*, kernel::hal::UARTDriverOps* uart) {
+    if (!uart) return 1;
+    uart->puts("\x1b[?25l");
+    for (;;) {
+        uart->puts("\x1b[H\x1b[2J");
+        dro_dump(uart);
+        uart->puts("\n(press any key to exit)\n");
+
+        const uint64_t deadline_us = kernel::g_platform && kernel::g_platform->get_timer_ops()
+            ? kernel::g_platform->get_timer_ops()->get_system_time_us() + TTOP_PERIOD_US
+            : 0;
+        bool key = false;
+        for (;;) {
+            uint8_t b;
+            if (io::try_get(b)) { key = true; break; }
+            if (kernel::g_platform && kernel::g_platform->get_timer_ops()) {
+                if (kernel::g_platform->get_timer_ops()->get_system_time_us() >= deadline_us) break;
+            } else {
+                break;
+            }
+            if (kernel::g_scheduler_ptr && kernel::g_platform) {
+                kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id());
+            } else {
+                kernel::util::cpu_relax();
+            }
+        }
+        if (key) break;
+    }
+    uart->puts("\x1b[?25h");
+    uart->puts("\n");
+    return 0;
+}
+
 #if MINIOS_FAKE_SLAVE
 namespace {
 
@@ -3969,6 +4041,7 @@ CLI::CLI() {
     register_command("budget",  cmd_budget,  "RT budget verdict (OK / MARGIN / FAIL) per thread");
     register_command("top",     cmd_top,     "Snapshot of cores, threads, memory, RT");
     register_command("ttop",    cmd_ttop,    "Continuous top (500ms refresh, any key exits)");
+    register_command("ttop_dro", cmd_ttop_dro, "Continuous DRO (500ms refresh, any key exits)");
 #if MINIOS_FAKE_SLAVE
     register_command("fake",     cmd_fake,     "Dump in-kernel FakeIO slave state (NIC 1)");
     register_command("fake_set", cmd_fake_set, "Inject FakeIO inputs: di <bm> | uni <ch> <raw> | bip <ch> <raw>");
