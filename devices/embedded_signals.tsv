@@ -57,12 +57,12 @@ signal	name=tool_spindle_mode	source=ec.drive_mode	master=1	slave=1	value_type=i
 # resolves at runtime when a real handwheel is attached.
 signal	name=mpg_handwheel	source=ec.tx_s32	master=0	slave=10	offset=0	width=32	value_type=int
 
-# Hardware safety inputs on a dedicated 16-channel DI slave. Slave 11 is a
-# placeholder — operator overrides via TSV when wiring a real safety relay
-# module (typical: EL1904 TwinSAFE, ESI-described SDI module, or a generic
-# EL1809). Until then the registry silently skips the slave read so the
-# symbols stay at their default of `false` and motion::cycle_safety treats
-# every line as inactive.
+# Hardware safety inputs on a dedicated multi-channel digital-input slave.
+# Slave 11 is a placeholder — operator overrides via TSV when wiring a real
+# safety logic terminal (any safety-rated digital-input slave or a generic
+# DI terminal driven through an external safety relay). Until then the
+# registry silently skips the slave read so the symbols stay at their
+# default of `false` and motion::cycle_safety treats every line as inactive.
 #
 # WIRING CONVENTION: every safety input is treated as ACTIVE-HIGH at the
 # kernel boundary — value=1 means "asserted / unsafe condition". Real CNC
