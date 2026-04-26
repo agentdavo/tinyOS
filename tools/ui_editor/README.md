@@ -87,6 +87,24 @@ Grouped exactly as in the inspector:
 - **MDI** mdi:{input,last,status,message,depth}
 - **EtherCAT** ec:{state,fault,slaves,miss,trips,p99,max,period,cycles,tx,rx}
 - **View** view_toolpath, view_toolpods (machine_view page overlay flags)
+- **Network** net:{nic,ip,gateway,mac,dhcp,link,pending_ip,pending_gateway,
+  pending_ping,ping_target,ping_result,ping_rtt,rx_requests,tx_responses,
+  uptime}. dhcp cycles IDLE/DISCOVERING/BOUND/TIMEOUT/STATIC; link cycles
+  DOWN/UP/PROBING; ping_result is one of OK/BUSY/BAD ADDR/TIMEOUT/SEND FAIL
+  or `---` when no ping has been issued. IPs format dotted-quad; mac
+  formats colon-hex; uptime renders HH:MM:SS.
+- **Axis detail** axis:detail:{state,traj,mode,enabled,fault,homed,err_code,
+  fe,fe_max,vmax,accel,jerk,cmd,act,sw,cw}. All bindings read the
+  operator-selected axis (machine_snapshot().selected_axis); change axis
+  via the picker buttons or any `jog:axis:N` action. State decodes the
+  CiA-402 FSA name; traj cycles IDLE/READY/ACCEL/CRUISE/DECEL/HOLDING;
+  mode is the active 402 op-mode (CSP/CSV/HM/...). Counts render mm
+  (1000 cnt/mm); err_code/sw/cw render hex.
+- **Tool change** tc:{current,target,state,msg,current_pod,current_st,
+  current_lbl,target_pod,target_st,target_lbl,step,total}. State cycles
+  IDLE/RELEASING/MOVING/PICKING/VERIFYING/DONE/FAULTED. The wizard is
+  first-cut a confirmation flow (request → Moving → ACCEPT commits via
+  toolpods::Service::accept_tool_change which calls select_station).
 
 ## Action catalogue
 
@@ -140,7 +158,23 @@ Grouped exactly as in the inspector:
 - Input commit targets: `commit:offset:{x,y,z,a}`,
   `commit:tool:{length,radius,wear}`, `commit:restart:line`,
   `commit:spindle:rpm`, `commit:cal:pec:{pos,err}`,
-  `commit:cal:geom:{xy,xz,yz}`
+  `commit:cal:geom:{xy,xz,yz}`, `commit:net:{ip,gateway,ping_target}`
+  (dotted-quad IPv4), `commit:tc:target` (integer tool number)
+- `net:{dhcp:on,dhcp:off,commit_static,ping}` — network setup actions.
+  `dhcp:off` latches the live IP into the static-config slot so the
+  operator's view doesn't blank when toggled; `commit_static` pushes the
+  pending IP / gateway buffer live; `ping` fires async at the pending
+  target. All gated by master deadline-fault.
+- `axis:detail:{enable,disable,fault_reset}` — operate on the SELECTED
+  axis (whatever `set_selected_axis` last picked). Routes through
+  motion::Kernel::{enable_axis,disable_axis,fault_reset}. Master
+  deadline-fault gated.
+- `tc:{start,abort,accept}` — tool change wizard transport. `start`
+  picks up the operator-typed target tool, resolves it against the pod
+  registry, and transitions Idle → Moving with a confirm message.
+  `accept` commits the swap via toolpods::Service::select_station;
+  `abort` reverts to Idle without touching the active station. Master
+  deadline-fault gated.
 - `ec:{estop,clear_fault}` — broadcast QuickStop / clear deadline-fault latch
 - `view:{toolpath,toolpods}:toggle` — flip overlay flags on machine_view
 - `view:{reset,zoom:in,zoom:out}` — camera primitives on machine_view

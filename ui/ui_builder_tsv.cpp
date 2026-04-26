@@ -352,7 +352,9 @@ int32_t text_x_for_align(int32_t x, uint32_t width, const char* text, Align alig
     return x + static_cast<int32_t>(width) - text_w - 8;
 }
 
-enum class BindKind : uint8_t {
+// uint16_t — the existing catalogue + three new operator-facing pages
+// (network, axis status, tool change) push this enum past 256 entries.
+enum class BindKind : uint16_t {
     None = 0,
     Mode,
     Alarm,
@@ -495,6 +497,26 @@ enum class BindKind : uint8_t {
     CalSpherePoints, CalSphereComputed,
     CalSphereErrPosX, CalSphereErrPosY, CalSphereErrPosZ,
     CalSphereErrSqXy, CalSphereErrSqXz, CalSphereErrSqYz,
+    // Network setup page — projection of hmi::Service state via
+    // operator_api::network_snapshot. IP / gateway / pending fields are
+    // formatted dotted-quad in format_bind_value; mac is colon-hex.
+    NetIp, NetGateway, NetMac, NetDhcpState, NetLinkState,
+    NetPendingIp, NetPendingGateway, NetPendingPingTarget,
+    NetLastPingTarget, NetLastPingResult, NetLastPingRtt,
+    NetRxRequests, NetTxResponses, NetUptime, NetNicName,
+    // Per-axis status sub-page — reads the SELECTED axis. All bindings
+    // pull from operator_api::axis_status_snapshot() so a single
+    // set_selected_axis call refreshes every value on the page.
+    AxisDetailDrive, AxisDetailTrajState, AxisDetailMode,
+    AxisDetailEnabled, AxisDetailFault, AxisDetailHomed,
+    AxisDetailErrorCode, AxisDetailFollowingErr, AxisDetailMaxFollowingErr,
+    AxisDetailVmax, AxisDetailAccel, AxisDetailJerk,
+    AxisDetailCmd, AxisDetailAct, AxisDetailStatusWord, AxisDetailControlWord,
+    // Tool change wizard — confirmation flow over the toolpod registry.
+    ToolChangeCurrent, ToolChangeTarget, ToolChangeState, ToolChangeMessage,
+    ToolChangeCurrentPod, ToolChangeCurrentStation, ToolChangeCurrentLabel,
+    ToolChangeTargetPod, ToolChangeTargetStation, ToolChangeTargetLabel,
+    ToolChangeStep, ToolChangeTotalSteps,
 };
 
 BindKind parse_bind(const char* s) {
@@ -722,6 +744,49 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "cal:sphere:err_sq_xy") == 0) return BindKind::CalSphereErrSqXy;
     if (strcmp(s, "cal:sphere:err_sq_xz") == 0) return BindKind::CalSphereErrSqXz;
     if (strcmp(s, "cal:sphere:err_sq_yz") == 0) return BindKind::CalSphereErrSqYz;
+    if (strcmp(s, "net:ip")             == 0) return BindKind::NetIp;
+    if (strcmp(s, "net:gateway")        == 0) return BindKind::NetGateway;
+    if (strcmp(s, "net:mac")            == 0) return BindKind::NetMac;
+    if (strcmp(s, "net:dhcp")           == 0) return BindKind::NetDhcpState;
+    if (strcmp(s, "net:link")           == 0) return BindKind::NetLinkState;
+    if (strcmp(s, "net:pending_ip")     == 0) return BindKind::NetPendingIp;
+    if (strcmp(s, "net:pending_gateway")== 0) return BindKind::NetPendingGateway;
+    if (strcmp(s, "net:pending_ping")   == 0) return BindKind::NetPendingPingTarget;
+    if (strcmp(s, "net:ping_target")    == 0) return BindKind::NetLastPingTarget;
+    if (strcmp(s, "net:ping_result")    == 0) return BindKind::NetLastPingResult;
+    if (strcmp(s, "net:ping_rtt")       == 0) return BindKind::NetLastPingRtt;
+    if (strcmp(s, "net:rx_requests")    == 0) return BindKind::NetRxRequests;
+    if (strcmp(s, "net:tx_responses")   == 0) return BindKind::NetTxResponses;
+    if (strcmp(s, "net:uptime")         == 0) return BindKind::NetUptime;
+    if (strcmp(s, "net:nic")            == 0) return BindKind::NetNicName;
+    if (strcmp(s, "axis:detail:state")    == 0) return BindKind::AxisDetailDrive;
+    if (strcmp(s, "axis:detail:traj")     == 0) return BindKind::AxisDetailTrajState;
+    if (strcmp(s, "axis:detail:mode")     == 0) return BindKind::AxisDetailMode;
+    if (strcmp(s, "axis:detail:enabled")  == 0) return BindKind::AxisDetailEnabled;
+    if (strcmp(s, "axis:detail:fault")    == 0) return BindKind::AxisDetailFault;
+    if (strcmp(s, "axis:detail:homed")    == 0) return BindKind::AxisDetailHomed;
+    if (strcmp(s, "axis:detail:err_code") == 0) return BindKind::AxisDetailErrorCode;
+    if (strcmp(s, "axis:detail:fe")       == 0) return BindKind::AxisDetailFollowingErr;
+    if (strcmp(s, "axis:detail:fe_max")   == 0) return BindKind::AxisDetailMaxFollowingErr;
+    if (strcmp(s, "axis:detail:vmax")     == 0) return BindKind::AxisDetailVmax;
+    if (strcmp(s, "axis:detail:accel")    == 0) return BindKind::AxisDetailAccel;
+    if (strcmp(s, "axis:detail:jerk")     == 0) return BindKind::AxisDetailJerk;
+    if (strcmp(s, "axis:detail:cmd")      == 0) return BindKind::AxisDetailCmd;
+    if (strcmp(s, "axis:detail:act")      == 0) return BindKind::AxisDetailAct;
+    if (strcmp(s, "axis:detail:sw")       == 0) return BindKind::AxisDetailStatusWord;
+    if (strcmp(s, "axis:detail:cw")       == 0) return BindKind::AxisDetailControlWord;
+    if (strcmp(s, "tc:current")     == 0) return BindKind::ToolChangeCurrent;
+    if (strcmp(s, "tc:target")      == 0) return BindKind::ToolChangeTarget;
+    if (strcmp(s, "tc:state")       == 0) return BindKind::ToolChangeState;
+    if (strcmp(s, "tc:msg")         == 0) return BindKind::ToolChangeMessage;
+    if (strcmp(s, "tc:current_pod") == 0) return BindKind::ToolChangeCurrentPod;
+    if (strcmp(s, "tc:current_st")  == 0) return BindKind::ToolChangeCurrentStation;
+    if (strcmp(s, "tc:current_lbl") == 0) return BindKind::ToolChangeCurrentLabel;
+    if (strcmp(s, "tc:target_pod")  == 0) return BindKind::ToolChangeTargetPod;
+    if (strcmp(s, "tc:target_st")   == 0) return BindKind::ToolChangeTargetStation;
+    if (strcmp(s, "tc:target_lbl")  == 0) return BindKind::ToolChangeTargetLabel;
+    if (strcmp(s, "tc:step")        == 0) return BindKind::ToolChangeStep;
+    if (strcmp(s, "tc:total")       == 0) return BindKind::ToolChangeTotalSteps;
     return BindKind::None;
 }
 
@@ -1192,6 +1257,80 @@ int32_t bound_numeric_value(BindKind bind) {
             return kernel::ui::operator_api::calibration_snapshot().sphere_err_sq_xz_urad;
         case BindKind::CalSphereErrSqYz:
             return kernel::ui::operator_api::calibration_snapshot().sphere_err_sq_yz_urad;
+        case BindKind::NetIp:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().local_ip);
+        case BindKind::NetGateway:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().gateway);
+        case BindKind::NetPendingIp:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().pending_ip);
+        case BindKind::NetPendingGateway:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().pending_gateway);
+        case BindKind::NetPendingPingTarget:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().pending_ping_target);
+        case BindKind::NetLastPingTarget:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().last_ping_target);
+        case BindKind::NetLastPingRtt:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().last_ping_rtt_ms);
+        case BindKind::NetDhcpState:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().dhcp_state);
+        case BindKind::NetLinkState:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().link_state);
+        case BindKind::NetLastPingResult:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().last_ping_result);
+        case BindKind::NetUptime:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().uptime_s);
+        case BindKind::NetRxRequests:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().rx_requests);
+        case BindKind::NetTxResponses:
+            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().tx_responses);
+        // Per-axis status sub-page — selected_axis is the implicit input.
+        case BindKind::AxisDetailDrive:
+            return kernel::ui::operator_api::axis_status_snapshot().drive_state;
+        case BindKind::AxisDetailTrajState:
+            return kernel::ui::operator_api::axis_status_snapshot().traj_state;
+        case BindKind::AxisDetailMode:
+            return kernel::ui::operator_api::axis_status_snapshot().mode;
+        case BindKind::AxisDetailEnabled:
+            return kernel::ui::operator_api::axis_status_snapshot().enabled ? 1 : 0;
+        case BindKind::AxisDetailFault:
+            return kernel::ui::operator_api::axis_status_snapshot().fault_latched ? 1 : 0;
+        case BindKind::AxisDetailHomed:
+            return kernel::ui::operator_api::axis_status_snapshot().homed ? 1 : 0;
+        case BindKind::AxisDetailErrorCode:
+            return kernel::ui::operator_api::axis_status_snapshot().last_error_code;
+        case BindKind::AxisDetailFollowingErr:
+            return kernel::ui::operator_api::axis_status_snapshot().following_error;
+        case BindKind::AxisDetailMaxFollowingErr:
+            return kernel::ui::operator_api::axis_status_snapshot().max_following_error;
+        case BindKind::AxisDetailVmax:
+            return kernel::ui::operator_api::axis_status_snapshot().vmax_cps;
+        case BindKind::AxisDetailAccel:
+            return kernel::ui::operator_api::axis_status_snapshot().accel_cps2;
+        case BindKind::AxisDetailJerk:
+            return kernel::ui::operator_api::axis_status_snapshot().jerk_cps3;
+        case BindKind::AxisDetailCmd:
+            return kernel::ui::operator_api::axis_status_snapshot().cmd_pos;
+        case BindKind::AxisDetailAct:
+            return kernel::ui::operator_api::axis_status_snapshot().actual_pos;
+        case BindKind::AxisDetailStatusWord:
+            return kernel::ui::operator_api::axis_status_snapshot().status_word;
+        case BindKind::AxisDetailControlWord:
+            return kernel::ui::operator_api::axis_status_snapshot().control_word;
+        // Tool change wizard.
+        case BindKind::ToolChangeCurrent:
+            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().current_tool);
+        case BindKind::ToolChangeTarget:
+            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().target_tool);
+        case BindKind::ToolChangeState:
+            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().state);
+        case BindKind::ToolChangeCurrentStation:
+            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().current_station);
+        case BindKind::ToolChangeTargetStation:
+            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().target_station);
+        case BindKind::ToolChangeStep:
+            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().step);
+        case BindKind::ToolChangeTotalSteps:
+            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().total_steps);
         default: return 0;
     }
 }
@@ -1649,6 +1788,210 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::CalSpherePoints: {
+            kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
+                                     static_cast<long>(bound_numeric_value(bind)));
+            return;
+        }
+        // Network setup page formatters. IPs are stored host-order in the
+        // snapshot; format big-endian-style for the operator (a.b.c.d). The
+        // hmi service stores IPs in host order so byte 0 = MSB.
+        case BindKind::NetIp:
+        case BindKind::NetGateway:
+        case BindKind::NetPendingIp:
+        case BindKind::NetPendingGateway:
+        case BindKind::NetPendingPingTarget:
+        case BindKind::NetLastPingTarget: {
+            const uint32_t v = static_cast<uint32_t>(bound_numeric_value(bind));
+            if (v == 0) { copy_field(buf, buf_size, "---", 3); return; }
+            kernel::util::k_snprintf(buf, buf_size, "%s%u.%u.%u.%u", prefix ? prefix : "",
+                                     (v >> 24) & 0xFFu, (v >> 16) & 0xFFu,
+                                     (v >> 8) & 0xFFu, v & 0xFFu);
+            return;
+        }
+        case BindKind::NetMac: {
+            const auto snap = kernel::ui::operator_api::network_snapshot();
+            kernel::util::k_snprintf(buf, buf_size, "%s%02X:%02X:%02X:%02X:%02X:%02X",
+                                     prefix ? prefix : "",
+                                     snap.mac[0], snap.mac[1], snap.mac[2],
+                                     snap.mac[3], snap.mac[4], snap.mac[5]);
+            return;
+        }
+        case BindKind::NetDhcpState: {
+            using DS = kernel::ui::operator_api::NetworkSnapshot::DhcpState;
+            const auto snap = kernel::ui::operator_api::network_snapshot();
+            const char* text = "?";
+            switch (snap.dhcp_state) {
+                case DS::Idle: text = "IDLE"; break;
+                case DS::Discovering: text = "DISCOVERING"; break;
+                case DS::Bound: text = "BOUND"; break;
+                case DS::Timeout: text = "TIMEOUT"; break;
+                case DS::Static: text = "STATIC"; break;
+            }
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::NetLinkState: {
+            using LS = kernel::ui::operator_api::NetworkSnapshot::LinkState;
+            const auto snap = kernel::ui::operator_api::network_snapshot();
+            const char* text = snap.link_state == LS::Up ? "UP" :
+                               snap.link_state == LS::Probing ? "PROBING" : "DOWN";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::NetLastPingResult: {
+            using PR = kernel::ui::operator_api::NetworkSnapshot::PingResultKind;
+            const auto snap = kernel::ui::operator_api::network_snapshot();
+            const char* text = "---";
+            switch (snap.last_ping_result) {
+                case PR::None: text = "---"; break;
+                case PR::Ok: text = "OK"; break;
+                case PR::Busy: text = "BUSY"; break;
+                case PR::BadAddress: text = "BAD ADDR"; break;
+                case PR::Timeout: text = "TIMEOUT"; break;
+                case PR::SendFailed: text = "SEND FAIL"; break;
+            }
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::NetLastPingRtt: {
+            const int32_t v = bound_numeric_value(bind);
+            if (v <= 0) { copy_field(buf, buf_size, "---", 3); return; }
+            kernel::util::k_snprintf(buf, buf_size, "%s%ld ms", prefix ? prefix : "", static_cast<long>(v));
+            return;
+        }
+        case BindKind::NetUptime: {
+            const uint32_t s = static_cast<uint32_t>(bound_numeric_value(bind));
+            kernel::util::k_snprintf(buf, buf_size, "%s%02u:%02u:%02u", prefix ? prefix : "",
+                                     (s / 3600u) % 100u, (s / 60u) % 60u, s % 60u);
+            return;
+        }
+        case BindKind::NetNicName: {
+            const auto snap = kernel::ui::operator_api::network_snapshot();
+            copy_field(buf, buf_size, snap.nic_name, strlen(snap.nic_name));
+            return;
+        }
+        case BindKind::NetRxRequests:
+        case BindKind::NetTxResponses: {
+            kernel::util::k_snprintf(buf, buf_size, "%s%lld", prefix ? prefix : "",
+                                     static_cast<long long>(static_cast<uint32_t>(bound_numeric_value(bind))));
+            return;
+        }
+        // Per-axis status sub-page formatters.
+        case BindKind::AxisDetailDrive: {
+            // Names follow motion::DriveState ordering (NotReady..Fault).
+            static const char* kNames[] = {"NOT READY", "DISABLED", "READY", "ON",
+                                           "ENABLED", "QSTOP", "FAULT REACT", "FAULT"};
+            const int32_t v = bound_numeric_value(bind);
+            const char* text = (v >= 0 && v < 8) ? kNames[v] : "?";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::AxisDetailTrajState: {
+            // motion::TrajState ordering: Idle, MoveReady, Accel, ConstantVel, Decel, Holding.
+            static const char* kNames[] = {"IDLE", "READY", "ACCEL", "CRUISE", "DECEL", "HOLDING"};
+            const int32_t v = bound_numeric_value(bind);
+            const char* text = (v >= 0 && v < 6) ? kNames[v] : "?";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::AxisDetailMode: {
+            // motion::Mode ordering: None, CSP, CSV, CST, PP, PV, TQ, Homing.
+            static const char* kNames[] = {"---", "CSP", "CSV", "CST", "PP", "PV", "TQ", "HM"};
+            const int32_t v = bound_numeric_value(bind);
+            const char* text = (v >= 0 && v < 8) ? kNames[v] : "?";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::AxisDetailEnabled: {
+            const char* text = bound_numeric_value(bind) ? "ENABLED" : "DISABLED";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::AxisDetailFault: {
+            const char* text = bound_numeric_value(bind) ? "LATCHED" : "ok";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::AxisDetailHomed: {
+            const char* text = bound_numeric_value(bind) ? "HOMED" : "---";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::AxisDetailErrorCode:
+        case BindKind::AxisDetailStatusWord:
+        case BindKind::AxisDetailControlWord: {
+            kernel::util::k_snprintf(buf, buf_size, "%s0x%04X", prefix ? prefix : "",
+                                     static_cast<unsigned>(bound_numeric_value(bind)) & 0xFFFFu);
+            return;
+        }
+        case BindKind::AxisDetailFollowingErr:
+        case BindKind::AxisDetailMaxFollowingErr:
+        case BindKind::AxisDetailCmd:
+        case BindKind::AxisDetailAct: {
+            // Counts → mm via the same 1000 counts/mm convention as the DRO.
+            const float value = static_cast<float>(bound_numeric_value(bind)) / 1000.0f;
+            kernel::util::k_snprintf(buf, buf_size, "%s%+9.3f", prefix ? prefix : "",
+                                     static_cast<double>(value));
+            return;
+        }
+        case BindKind::AxisDetailVmax:
+        case BindKind::AxisDetailAccel:
+        case BindKind::AxisDetailJerk: {
+            kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
+                                     static_cast<long>(bound_numeric_value(bind)));
+            return;
+        }
+        // Tool change wizard formatters.
+        case BindKind::ToolChangeState: {
+            using TS = kernel::ui::operator_api::ToolChangeSnapshot::State;
+            const int32_t v = bound_numeric_value(bind);
+            const char* names[] = {"IDLE", "RELEASING", "MOVING", "PICKING",
+                                   "VERIFYING", "DONE", "FAULTED"};
+            const char* text = (v >= 0 && v <= static_cast<int32_t>(TS::Faulted)) ? names[v] : "?";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::ToolChangeMessage: {
+            const auto snap = kernel::ui::operator_api::tool_change_snapshot();
+            copy_field(buf, buf_size, snap.status_message, strlen(snap.status_message));
+            return;
+        }
+        case BindKind::ToolChangeCurrent:
+        case BindKind::ToolChangeTarget: {
+            const int32_t v = bound_numeric_value(bind);
+            if (v <= 0) { copy_field(buf, buf_size, "---", 3); return; }
+            kernel::util::k_snprintf(buf, buf_size, "%sT%ld", prefix ? prefix : "",
+                                     static_cast<long>(v));
+            return;
+        }
+        case BindKind::ToolChangeCurrentPod: {
+            const auto snap = kernel::ui::operator_api::tool_change_snapshot();
+            const char* text = snap.current_pod[0] ? snap.current_pod : "---";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::ToolChangeCurrentLabel: {
+            const auto snap = kernel::ui::operator_api::tool_change_snapshot();
+            const char* text = snap.current_label[0] ? snap.current_label : "";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::ToolChangeTargetPod: {
+            const auto snap = kernel::ui::operator_api::tool_change_snapshot();
+            const char* text = snap.target_pod[0] ? snap.target_pod : "---";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::ToolChangeTargetLabel: {
+            const auto snap = kernel::ui::operator_api::tool_change_snapshot();
+            const char* text = snap.target_label[0] ? snap.target_label : "";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::ToolChangeCurrentStation:
+        case BindKind::ToolChangeTargetStation:
+        case BindKind::ToolChangeStep:
+        case BindKind::ToolChangeTotalSteps: {
             kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
                                      static_cast<long>(bound_numeric_value(bind)));
             return;
@@ -2147,6 +2490,23 @@ void run_action_target(const char* target) {
     }
     else if (strcmp(target, "mdi:clear") == 0) cnc::mdi::g_service.clear();
     else if (strcmp(target, "mdi:abort") == 0) cnc::mdi::g_service.abort();
+    // Network setup actions. dhcp:on/off flips hmi config; commit_static
+    // pushes the operator's pending IP/gateway live; ping fires async at
+    // the pending target. All gated on master deadline-fault inside
+    // operator_api.
+    else if (strcmp(target, "net:dhcp:on")  == 0) net_set_dhcp(true);
+    else if (strcmp(target, "net:dhcp:off") == 0) net_set_dhcp(false);
+    else if (strcmp(target, "net:commit_static") == 0) net_commit_static();
+    else if (strcmp(target, "net:ping") == 0) net_request_ping();
+    // Per-axis status sub-page mutators — operate on the SELECTED axis.
+    else if (strcmp(target, "axis:detail:enable") == 0) axis_detail_enable();
+    else if (strcmp(target, "axis:detail:disable") == 0) axis_detail_disable();
+    else if (strcmp(target, "axis:detail:fault_reset") == 0) axis_detail_fault_reset();
+    // Tool change wizard transport. start/abort/accept gate on
+    // master-fault inside operator_api.
+    else if (strcmp(target, "tc:start") == 0) tool_change_start();
+    else if (strcmp(target, "tc:abort") == 0) tool_change_abort();
+    else if (strcmp(target, "tc:accept") == 0) tool_change_accept();
 }
 
 bool commit_input_target(const char* target, const char* value_text, BindKind bind_hint) {
@@ -2234,6 +2594,37 @@ bool commit_input_target(const char* target, const char* value_text, BindKind bi
         // Bare-number entry only — sign carries direction. Operator must
         // tap START explicitly after committing the value to begin motion.
         spindle_set_rpm(simple_atoi(value_text));
+        return true;
+    }
+    // Network setup: dotted-quad IP entry. simple_atoi can't parse "a.b.c.d"
+    // so do it inline. Reject any text that doesn't end with three dots and
+    // four numeric octets in 0..255.
+    if (target && *target &&
+        (strcmp(target, "commit:net:ip") == 0 ||
+         strcmp(target, "commit:net:gateway") == 0 ||
+         strcmp(target, "commit:net:ping_target") == 0)) {
+        uint32_t parts[4] = {0, 0, 0, 0};
+        size_t pi = 0;
+        const char* p = value_text;
+        while (*p && pi < 4) {
+            uint32_t v = 0;
+            bool any = false;
+            while (*p >= '0' && *p <= '9') { v = v * 10 + static_cast<uint32_t>(*p - '0'); ++p; any = true; }
+            if (!any || v > 255u) return false;
+            parts[pi++] = v;
+            if (*p == '.') ++p; else if (*p != '\0') return false;
+        }
+        if (pi != 4) return false;
+        const uint32_t ip = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
+        if (strcmp(target, "commit:net:ip") == 0) net_set_pending_ip(ip);
+        else if (strcmp(target, "commit:net:gateway") == 0) net_set_pending_gateway(ip);
+        else net_set_pending_ping_target(ip);
+        return true;
+    }
+    if (target && *target && strcmp(target, "commit:tc:target") == 0) {
+        const int32_t v = simple_atoi(value_text);
+        if (v <= 0) return false;
+        tool_change_set_pending_target(static_cast<uint32_t>(v));
         return true;
     }
     return false;

@@ -14,6 +14,7 @@
 #include "../machine/machine_topology.hpp"
 #include "../motion/motion.hpp"
 #include "../machine/toolpods.hpp"
+#include "../hmi/hmi_service.hpp"
 #include "../util.hpp"
 
 namespace kernel::ui::operator_api {
@@ -47,6 +48,16 @@ struct CalUiState {
     int32_t  pending_err = 0;
 };
 CalUiState g_cal_ui{};
+
+// Network setup page operator state. The COMMIT button copies pending_*
+// into hmi::Service via set_static_config(); until then the operator can
+// edit the inputs without disrupting live networking.
+struct NetUiState {
+    uint32_t pending_ip = 0;
+    uint32_t pending_gateway = 0;
+    uint32_t pending_ping_target = 0x08080808u; // 8.8.8.8 default
+};
+NetUiState g_net_ui{};
 
 bool any_master_deadline_faulted() {
     return ethercat::g_master_a.is_deadline_faulted() ||
@@ -1358,6 +1369,274 @@ void cal_sphere_set_enabled(bool en) {
 void cal_sphere_clear() {
     if (any_master_deadline_faulted()) return;
     motion::g_motion.sphere_clear_points();
+}
+
+// ===== Network setup =====
+//
+// The HMI service owns DHCP, link, and ping; this page is a thin
+// projection onto its public state. Commit/ping/dhcp toggles all flow
+// into hmi::g_service so the page stays a pure operator surface.
+
+NetworkSnapshot network_snapshot() {
+    NetworkSnapshot snap{};
+    auto& svc = hmi::g_service;
+    snap.service_online = true;
+    snap.nic_idx = svc.nic_idx();
+    // QEMU virtio-net is always slot 0; render a stable label so the
+    // operator has a name even before the NIC enumeration prints anything.
+    kernel::util::k_snprintf(snap.nic_name, sizeof(snap.nic_name),
+                             "nic%u", static_cast<unsigned>(snap.nic_idx));
+    const uint8_t* mac = svc.mac();
+    for (int i = 0; i < 6; ++i) snap.mac[i] = mac[i];
+    snap.local_ip = svc.local_ip();
+    snap.netmask = svc.netmask();
+    snap.gateway = svc.gateway();
+    snap.dhcp_enabled = svc.dhcp_enabled();
+    snap.last_ping_target = svc.last_ping_target();
+    snap.last_ping_rtt_ms = svc.last_ping_rtt_ms();
+    snap.last_ping_result =
+        static_cast<NetworkSnapshot::PingResultKind>(static_cast<uint8_t>(svc.last_ping_result()) + 1);
+    if (snap.last_ping_target == 0) snap.last_ping_result = NetworkSnapshot::PingResultKind::None;
+    snap.rx_requests = svc.rx_requests();
+    snap.tx_responses = svc.tx_responses();
+
+    // Link state: virtio-net never reports link-down post-init in QEMU,
+    // so we infer Up once any tx has flowed; Probing while DHCP is mid-
+    // discovery; Down before the first DHCP attempt or first packet.
+    if (svc.tx_responses() > 0 || snap.local_ip != 0) {
+        snap.link_state = NetworkSnapshot::LinkState::Up;
+    } else if (svc.dhcp_in_progress()) {
+        snap.link_state = NetworkSnapshot::LinkState::Probing;
+    } else {
+        snap.link_state = NetworkSnapshot::LinkState::Down;
+    }
+
+    if (!snap.dhcp_enabled) {
+        snap.dhcp_state = NetworkSnapshot::DhcpState::Static;
+    } else if (svc.dhcp_bound()) {
+        snap.dhcp_state = NetworkSnapshot::DhcpState::Bound;
+    } else if (svc.dhcp_in_progress()) {
+        snap.dhcp_state = NetworkSnapshot::DhcpState::Discovering;
+    } else if (snap.tx_responses > 0) {
+        snap.dhcp_state = NetworkSnapshot::DhcpState::Timeout;
+    } else {
+        snap.dhcp_state = NetworkSnapshot::DhcpState::Idle;
+    }
+
+    {
+        core::ScopedLock lock(g_lock);
+        snap.pending_ip = g_net_ui.pending_ip ? g_net_ui.pending_ip : snap.local_ip;
+        snap.pending_gateway = g_net_ui.pending_gateway ? g_net_ui.pending_gateway : snap.gateway;
+        snap.pending_ping_target = g_net_ui.pending_ping_target;
+        snap.uptime_s = g_machine.tick / 10u;
+    }
+    return snap;
+}
+
+void net_set_dhcp(bool enabled) {
+    if (any_master_deadline_faulted()) return;
+    hmi::g_service.set_dhcp_enabled(enabled);
+}
+
+void net_commit_static() {
+    if (any_master_deadline_faulted()) return;
+    uint32_t ip = 0, gw = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        ip = g_net_ui.pending_ip;
+        gw = g_net_ui.pending_gateway;
+    }
+    if (ip == 0) return;
+    hmi::g_service.set_dhcp_enabled(false);
+    hmi::g_service.set_static_config(ip, 0, gw);
+}
+
+void net_set_pending_ip(uint32_t ip) {
+    core::ScopedLock lock(g_lock);
+    g_net_ui.pending_ip = ip;
+}
+
+void net_set_pending_gateway(uint32_t gw) {
+    core::ScopedLock lock(g_lock);
+    g_net_ui.pending_gateway = gw;
+}
+
+void net_set_pending_ping_target(uint32_t ip) {
+    core::ScopedLock lock(g_lock);
+    g_net_ui.pending_ping_target = ip;
+}
+
+void net_request_ping() {
+    if (any_master_deadline_faulted()) return;
+    uint32_t target = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        target = g_net_ui.pending_ping_target;
+    }
+    if (target == 0) return;
+    uint32_t rtt = 0;
+    (void)hmi::g_service.ping_ipv4(target, 2000u, rtt);
+}
+
+// ===== Per-axis status sub-page =====
+//
+// Reads g_machine.selected_axis (set by the dashboard / jog page's axis
+// picker) and projects motion::Axis fields. enable / disable / fault_reset
+// route through motion::Kernel and check master deadline-fault.
+
+AxisStatusSnapshot axis_status_snapshot() {
+    AxisStatusSnapshot snap{};
+    uint32_t sel = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        sel = g_machine.selected_axis & 3u;
+    }
+    snap.selected_axis = sel;
+    const auto& ax = motion::g_motion.axis(sel);
+    snap.cmd_pos = ax.target_pos.load(std::memory_order_relaxed);
+    snap.actual_pos = ax.actual_pos.load(std::memory_order_relaxed);
+    snap.following_error = snap.cmd_pos - snap.actual_pos;
+    snap.max_following_error = ax.max_following_error;
+    snap.vmax_cps = ax.vmax_cps;
+    snap.accel_cps2 = ax.accel_cps2;
+    snap.jerk_cps3 = ax.jerk_cps3;
+    snap.drive_state = static_cast<uint8_t>(ax.state);
+    snap.traj_state = static_cast<uint8_t>(ax.traj_state);
+    snap.mode = static_cast<uint8_t>(ax.mode);
+    snap.enabled = ax.enabled;
+    snap.fault_latched = ax.fault_latched;
+    snap.last_error_code = ax.last_error_code;
+    snap.status_word = ax.status_word.load(std::memory_order_relaxed);
+    snap.control_word = ax.control_word.load(std::memory_order_relaxed);
+    {
+        core::ScopedLock lock(g_lock);
+        snap.homed = axis_homed_locked(sel);
+    }
+    return snap;
+}
+
+void axis_detail_enable() {
+    if (any_master_deadline_faulted()) return;
+    uint32_t sel = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        sel = g_machine.selected_axis & 3u;
+    }
+    (void)motion::g_motion.enable_axis(sel);
+}
+
+void axis_detail_disable() {
+    if (any_master_deadline_faulted()) return;
+    uint32_t sel = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        sel = g_machine.selected_axis & 3u;
+    }
+    (void)motion::g_motion.disable_axis(sel);
+}
+
+void axis_detail_fault_reset() {
+    if (any_master_deadline_faulted()) return;
+    uint32_t sel = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        sel = g_machine.selected_axis & 3u;
+    }
+    (void)motion::g_motion.fault_reset(sel);
+}
+
+// ===== Tool change wizard =====
+//
+// Wraps machine::toolpods::Service's confirmation flow under the master
+// deadline-fault gate. set_pending_target buffers the operator-typed tool
+// number so START can pick it up; ABORT clears, ACCEPT commits via the
+// service's accept_tool_change which calls select_station() inline.
+
+namespace {
+struct ToolChangeUiState {
+    uint32_t pending_target = 0;
+};
+ToolChangeUiState g_tc_ui{};
+}  // namespace
+
+ToolChangeSnapshot tool_change_snapshot() {
+    ToolChangeSnapshot snap{};
+    const auto status = machine::toolpods::g_service.tool_change_state();
+    snap.state = static_cast<ToolChangeSnapshot::State>(static_cast<uint8_t>(status.state));
+    snap.step = status.step;
+    snap.total_steps = status.total_steps;
+    snap.current_tool = status.current_tool;
+    {
+        core::ScopedLock lock(g_lock);
+        snap.target_tool = status.target_tool ? status.target_tool : g_tc_ui.pending_target;
+    }
+    snap.target_resolved = status.target_resolved;
+    kernel::util::k_snprintf(snap.status_message, sizeof(snap.status_message), "%s", status.message);
+
+    // Resolve current tool → its hosting pod for the CURRENT panel. Walk
+    // every pod's active station; first match wins. machine::toolpods::Service
+    // does not currently expose a "pod hosting active tool" accessor.
+    for (size_t i = 0; i < machine::toolpods::g_service.pod_count(); ++i) {
+        const auto* pod = machine::toolpods::g_service.pod(i);
+        if (!pod) continue;
+        const auto* station = machine::toolpods::g_service.active_station(i);
+        if (!station || station->virtual_tool == 0) continue;
+        if (station->virtual_tool == snap.current_tool) {
+            kernel::util::k_snprintf(snap.current_pod, sizeof(snap.current_pod), "%s", pod->id);
+            snap.current_station = station->index;
+            kernel::util::k_snprintf(snap.current_label, sizeof(snap.current_label), "%s", station->name);
+            break;
+        }
+    }
+
+    // Resolve target → pod via the same registry walk. Done here (not via
+    // status.target_pod_idx) so the UI can render the result even before
+    // request_tool_change is fired — handy as the operator types the
+    // target number in.
+    if (snap.target_tool != 0) {
+        size_t pod_idx = 0, station_idx = 0;
+        if (machine::toolpods::g_service.lookup_virtual_tool(
+                static_cast<uint16_t>(snap.target_tool), pod_idx, station_idx)) {
+            const auto* pod = machine::toolpods::g_service.pod(pod_idx);
+            if (pod && station_idx < pod->station_count) {
+                kernel::util::k_snprintf(snap.target_pod, sizeof(snap.target_pod), "%s", pod->id);
+                snap.target_station = pod->stations[station_idx].index;
+                kernel::util::k_snprintf(snap.target_label, sizeof(snap.target_label),
+                                         "%s", pod->stations[station_idx].name);
+                snap.target_resolved = true;
+            }
+        } else {
+            kernel::util::k_snprintf(snap.target_pod, sizeof(snap.target_pod), "%s", "unassigned");
+            snap.target_station = 0;
+            snap.target_label[0] = '\0';
+        }
+    }
+    return snap;
+}
+
+void tool_change_set_pending_target(uint32_t tool) {
+    core::ScopedLock lock(g_lock);
+    g_tc_ui.pending_target = tool;
+}
+
+void tool_change_start() {
+    if (any_master_deadline_faulted()) return;
+    uint32_t target = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        target = g_tc_ui.pending_target;
+    }
+    if (target == 0) return;
+    (void)machine::toolpods::g_service.request_tool_change(target);
+}
+
+void tool_change_abort() {
+    (void)machine::toolpods::g_service.abort_tool_change();
+}
+
+void tool_change_accept() {
+    if (any_master_deadline_faulted()) return;
+    (void)machine::toolpods::g_service.accept_tool_change();
 }
 
 } // namespace kernel::ui::operator_api

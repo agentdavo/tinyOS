@@ -503,4 +503,104 @@ bool delete_file(const char* path);
 bool read_file(const char* path, char* buffer, size_t bufsize);
 bool write_file(const char* path, const char* data, size_t len);
 
+// ===== Network setup operator surface =====
+// Surfaces hmi::Service state (DHCP, link, ping) plus a small editor for
+// the static-IP fallback fields. Mutators are gated on master deadline-fault
+// like every other operator-side write — networking changes that happen
+// while the bus is faulted should wait for explicit clear_ec_fault.
+struct NetworkSnapshot {
+    enum class DhcpState : uint8_t { Idle = 0, Discovering, Bound, Timeout, Static };
+    enum class LinkState : uint8_t { Down = 0, Up, Probing };
+    enum class PingResultKind : uint8_t {
+        None = 0, Ok, Busy, BadAddress, Timeout, SendFailed,
+    };
+    bool service_online = false;
+    uint8_t  nic_idx = 0;
+    char     nic_name[16]{};
+    uint8_t  mac[6]{};
+    uint32_t local_ip = 0;        // big-endian-free host-order, render dotted
+    uint32_t netmask = 0;
+    uint32_t gateway = 0;
+    uint32_t pending_ip = 0;       // operator-edited static IP
+    uint32_t pending_gateway = 0;  // operator-edited static gateway
+    uint32_t pending_ping_target = 0;
+    bool     dhcp_enabled = true;
+    DhcpState dhcp_state = DhcpState::Idle;
+    LinkState link_state = LinkState::Down;
+    PingResultKind last_ping_result = PingResultKind::None;
+    uint32_t last_ping_target = 0;
+    uint32_t last_ping_rtt_ms = 0;
+    uint64_t rx_requests = 0;
+    uint64_t tx_responses = 0;
+    uint32_t uptime_s = 0;
+};
+
+NetworkSnapshot network_snapshot();
+void net_set_dhcp(bool enabled);
+void net_commit_static();                 // pushes pending_ip/gateway live
+void net_set_pending_ip(uint32_t ip);
+void net_set_pending_gateway(uint32_t gw);
+void net_set_pending_ping_target(uint32_t ip);
+void net_request_ping();                  // fires async ping to pending_ping_target
+
+// ===== Per-axis status sub-page operator surface =====
+// Reads the SELECTED axis (machine_snapshot().selected_axis) and exposes
+// motion::Axis fields directly. ENABLE/DISABLE/FAULT_RESET mutators all go
+// through motion::Kernel and are gated on master deadline-fault.
+struct AxisStatusSnapshot {
+    uint32_t selected_axis = 0;
+    int32_t  cmd_pos = 0;
+    int32_t  actual_pos = 0;
+    int32_t  following_error = 0;
+    int32_t  max_following_error = 0;
+    int32_t  vmax_cps = 0;
+    int32_t  accel_cps2 = 0;
+    int32_t  jerk_cps3 = 0;
+    uint8_t  drive_state = 0;       // motion::DriveState raw enum
+    uint8_t  traj_state = 0;        // motion::TrajState raw enum
+    uint8_t  mode = 0;              // motion::Mode raw enum
+    bool     enabled = false;
+    bool     fault_latched = false;
+    bool     homed = false;
+    uint16_t last_error_code = 0;
+    uint16_t status_word = 0;
+    uint16_t control_word = 0;
+};
+
+AxisStatusSnapshot axis_status_snapshot();
+void axis_detail_enable();
+void axis_detail_disable();
+void axis_detail_fault_reset();
+
+// ===== Tool change wizard operator surface =====
+// First-cut wizard: Idle -> Moving -> Done with manual operator confirmation.
+// The wizard does NOT drive an actual tool changer — it gates the operator
+// confirmation flow so a virtual tool change is only "accepted" once the
+// operator has verified the swap. machine::toolpods::Service backs the pod
+// registry; this wizard adds the state machine on top.
+struct ToolChangeSnapshot {
+    enum class State : uint8_t {
+        Idle = 0, Releasing, Moving, Picking, Verifying, Done, Faulted,
+    };
+    State state = State::Idle;
+    uint32_t step = 0;
+    uint32_t total_steps = 0;
+    uint32_t current_tool = 0;
+    uint32_t target_tool = 0;
+    char     current_pod[24]{};
+    uint32_t current_station = 0;
+    char     current_label[24]{};
+    char     target_pod[24]{};
+    uint32_t target_station = 0;
+    char     target_label[24]{};
+    bool     target_resolved = false;     // false → "unassigned"
+    char     status_message[64]{};
+};
+
+ToolChangeSnapshot tool_change_snapshot();
+void tool_change_set_pending_target(uint32_t tool);
+void tool_change_start();
+void tool_change_abort();
+void tool_change_accept();
+
 } // namespace kernel::ui::operator_api

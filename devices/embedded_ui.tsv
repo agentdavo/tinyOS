@@ -287,6 +287,7 @@ button	id=jog_home	parent=jog_root	x=800	y=1090	w=260	h=150	text=HOME	bg=#0F766E
 # --- status panel ---
 panel	id=jog_status	parent=jog_root	x=20	y=1260	w=1040	h=440	bg=#111827	border=#334155
 label	id=jog_status_title	parent=jog_root	x=40	y=1274	w=400	h=28	text=AXIS STATUS	color=#94A3B8	bg=#111827	scale=2
+button	id=jog_axis_detail_btn	parent=jog_root	x=820	y=1268	w=220	h=44	text=AXIS DETAIL	bg=#0E7490	color=#FFFFFF	scale=1	focus=128
 # Headers
 label	id=jog_h_axis	parent=jog_status	x=40	y=1320	w=80	h=24	text=AX	color=#94A3B8	bg=#111827	scale=1
 label	id=jog_h_cmd	parent=jog_status	x=140	y=1320	w=300	h=24	text=CMD	color=#94A3B8	bg=#111827	scale=1
@@ -361,6 +362,7 @@ action	widget=jog_hold_pos	event=click	target=jog:hold:sel:1
 action	widget=jog_sp_start	event=click	target=spindle:start
 action	widget=jog_sp_stop	event=click	target=spindle:stop
 action	widget=jog_sp_rev	event=click	target=spindle:rev
+action	widget=jog_axis_detail_btn	event=click	target=goto:axis_status
 include	page=bottom_nav
 
 # ============================================================
@@ -577,7 +579,8 @@ label	id=offsets_tool	parent=offsets_root	x=690	y=100	w=350	h=44	text=---	color=
 # --- active-row editor strip (panel y=170, h=170) ---
 panel	id=offsets_edit_panel	parent=offsets_root	x=20	y=170	w=1040	h=170	bg=#111827	border=#334155
 label	id=offsets_edit_hdr	parent=offsets_root	x=40	y=184	w=600	h=28	text=EDIT ACTIVE WORK OFFSET	color=#94A3B8	bg=#111827	scale=2
-label	id=offsets_edit_hint	parent=offsets_root	x=620	y=190	w=420	h=24	text=type value + Enter to commit	color=#64748B	bg=#111827	align=right	scale=1
+label	id=offsets_edit_hint	parent=offsets_root	x=620	y=190	w=300	h=24	text=type value + Enter to commit	color=#64748B	bg=#111827	align=right	scale=1
+button	id=offsets_change_tool_btn	parent=offsets_root	x=920	y=180	w=120	h=44	text=CHANGE TOOL	bg=#0E7490	color=#FFFFFF	scale=1	focus=270
 label	id=oe_x_lbl	parent=offsets_root	x=40	y=230	w=245	h=24	text=X	color=#94A3B8	bg=#111827	align=center	scale=1
 label	id=oe_y_lbl	parent=offsets_root	x=295	y=230	w=245	h=24	text=Y	color=#94A3B8	bg=#111827	align=center	scale=1
 label	id=oe_z_lbl	parent=offsets_root	x=550	y=230	w=245	h=24	text=Z	color=#94A3B8	bg=#111827	align=center	scale=1
@@ -690,6 +693,7 @@ action	widget=tool_t5	event=click	target=offset:tool:4
 action	widget=tool_t6	event=click	target=offset:tool:5
 action	widget=tool_t7	event=click	target=offset:tool:6
 action	widget=tool_t8	event=click	target=offset:tool:7
+action	widget=offsets_change_tool_btn	event=click	target=goto:tool_change
 include	page=bottom_nav
 
 # ============================================================
@@ -730,6 +734,7 @@ button	id=service_ethercat	parent=service_root	x=40	y=710	w=240	h=120	text=ETHER
 button	id=service_alarms	parent=service_root	x=300	y=710	w=240	h=120	text=ALARMS	bg=#B91C1C	color=#FFFFFF	scale=2	focus=330
 button	id=service_macros	parent=service_root	x=560	y=710	w=240	h=120	text=MACROS	bg=#5B21B6	color=#FFFFFF	scale=2	focus=340
 button	id=service_homing	parent=service_root	x=820	y=710	w=220	h=120	text=HOMING	bg=#0F766E	color=#FFFFFF	scale=2	focus=345
+button	id=service_network	parent=service_root	x=560	y=850	w=240	h=80	text=NETWORK	bg=#0E7490	color=#FFFFFF	scale=1	focus=349
 label	id=service_comp_title	parent=service_root	x=40	y=850	w=400	h=24	text=COMPENSATION	color=#64748B	bg=#111827	scale=1
 button	id=service_pec	parent=service_root	x=40	y=880	w=320	h=120	text=PITCH ERROR	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=346
 button	id=service_geometry	parent=service_root	x=380	y=880	w=320	h=120	text=GEOMETRY	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=347
@@ -753,6 +758,7 @@ action	widget=service_homing	event=click	target=goto:homing
 action	widget=service_pec	event=click	target=goto:pec
 action	widget=service_geometry	event=click	target=goto:geometry
 action	widget=service_sphere	event=click	target=goto:sphere
+action	widget=service_network	event=click	target=goto:network
 include	page=bottom_nav
 
 # ============================================================
@@ -1315,4 +1321,269 @@ action	widget=sphere_compute_btn	event=click	target=cal:sphere:compute
 action	widget=sphere_enable_btn	event=click	target=cal:sphere:enable:toggle
 action	widget=sphere_clear_btn	event=click	target=cal:sphere:clear
 action	widget=sphere_back_btn	event=click	target=goto:service
+include	page=bottom_nav
+
+# ============================================================
+# network -- HMI service network setup + diagnostics
+# Layout (1080 x 1740):
+#   y   20.. 70  page title
+#   y   90.. 470 STATUS panel (NIC / IP / GW / MAC / link / DHCP / uptime)
+#   y  490.. 880 CONFIG panel (DHCP toggle + static IP / GW input + COMMIT)
+#   y  900..1280 DIAGNOSTICS panel (ping target input + PING + last result)
+#   y 1300..1500 CONTROLS row (COMMIT / RESET / BACK)
+# Operator path: read STATUS to verify the live binding; toggle DHCP off
+# and type static IP / GW + tap COMMIT to switch to manual config; type
+# ping target + tap PING to verify reachability. RESET reverts the local
+# pending fields to whatever DHCP last bound. All write actions gate on
+# master deadline-fault inside operator_api.
+# ============================================================
+page	id=network	title=Network
+panel	id=net_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=net_title	parent=net_root	x=40	y=30	w=1000	h=40	text=NETWORK SETUP	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- STATUS panel (y=90, h=380) ---
+panel	id=net_status_panel	parent=net_root	x=20	y=90	w=1040	h=380	bg=#111827	border=#334155
+label	id=net_status_title	parent=net_root	x=40	y=104	w=400	h=28	text=STATUS	color=#94A3B8	bg=#111827	scale=2
+label	id=net_nic_lbl	parent=net_root	x=40	y=156	w=140	h=32	text=NIC	color=#94A3B8	bg=#111827	scale=1
+label	id=net_nic_v	parent=net_root	x=200	y=152	w=200	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#475569	bind=net:nic	align=center	scale=2
+label	id=net_link_lbl	parent=net_root	x=420	y=156	w=120	h=32	text=LINK	color=#94A3B8	bg=#111827	scale=1
+label	id=net_link_v	parent=net_root	x=560	y=152	w=200	h=44	text=DOWN	color=#86EFAC	bg=#052E16	border=#22C55E	bind=net:link	align=center	scale=2
+label	id=net_dhcp_lbl	parent=net_root	x=780	y=156	w=120	h=32	text=DHCP	color=#94A3B8	bg=#111827	scale=1
+label	id=net_dhcp_v	parent=net_root	x=900	y=152	w=140	h=44	text=---	color=#FEF3C7	bg=#451A03	border=#F59E0B	bind=net:dhcp	align=center	scale=2
+
+label	id=net_ip_lbl	parent=net_root	x=40	y=216	w=140	h=32	text=IP	color=#94A3B8	bg=#111827	scale=1
+label	id=net_ip_v	parent=net_root	x=200	y=212	w=560	h=56	text=---	color=#F0F9FF	bg=#0B1220	border=#1E40AF	bind=net:ip	align=center	scale=3
+label	id=net_uptime_lbl	parent=net_root	x=780	y=216	w=120	h=32	text=UPTIME	color=#94A3B8	bg=#111827	scale=1
+label	id=net_uptime_v	parent=net_root	x=900	y=212	w=140	h=56	text=00:00:00	color=#FBBF24	bg=#0F172A	border=#475569	bind=net:uptime	align=center	scale=2
+
+label	id=net_gw_lbl	parent=net_root	x=40	y=288	w=140	h=32	text=GATEWAY	color=#94A3B8	bg=#111827	scale=1
+label	id=net_gw_v	parent=net_root	x=200	y=284	w=560	h=44	text=---	color=#BAE6FD	bg=#0F172A	border=#475569	bind=net:gateway	align=center	scale=2
+
+label	id=net_mac_lbl	parent=net_root	x=40	y=348	w=140	h=32	text=MAC	color=#94A3B8	bg=#111827	scale=1
+label	id=net_mac_v	parent=net_root	x=200	y=344	w=840	h=44	text=00:00:00:00:00:00	color=#7DD3FC	bg=#0F172A	border=#475569	bind=net:mac	align=center	scale=2
+
+label	id=net_rx_lbl	parent=net_root	x=40	y=410	w=140	h=24	text=RX REQS	color=#94A3B8	bg=#111827	scale=1
+label	id=net_rx_v	parent=net_root	x=180	y=406	w=300	h=36	text=0	color=#86EFAC	bg=#0F172A	border=#475569	bind=net:rx_requests	align=center	scale=1
+label	id=net_tx_lbl	parent=net_root	x=520	y=410	w=140	h=24	text=TX RESPS	color=#94A3B8	bg=#111827	scale=1
+label	id=net_tx_v	parent=net_root	x=660	y=406	w=380	h=36	text=0	color=#86EFAC	bg=#0F172A	border=#475569	bind=net:tx_responses	align=center	scale=1
+
+# --- CONFIG panel (y=490, h=390) ---
+panel	id=net_cfg_panel	parent=net_root	x=20	y=490	w=1040	h=390	bg=#111827	border=#334155
+label	id=net_cfg_title	parent=net_root	x=40	y=504	w=400	h=28	text=CONFIG	color=#94A3B8	bg=#111827	scale=2
+label	id=net_cfg_hint	parent=net_root	x=440	y=510	w=600	h=24	text=Type IP a.b.c.d, press Enter, then COMMIT	color=#64748B	bg=#111827	align=right	scale=1
+
+label	id=net_dhcp_toggle_lbl	parent=net_root	x=40	y=556	w=200	h=32	text=DHCP MODE	color=#94A3B8	bg=#111827	scale=1
+button	id=net_dhcp_on	parent=net_root	x=240	y=550	w=240	h=80	text=DHCP ON	bg=#15803D	color=#FFFFFF	active_if=net:dhcp:2	scale=2	focus=700
+button	id=net_dhcp_off	parent=net_root	x=500	y=550	w=240	h=80	text=DHCP OFF	bg=#B45309	color=#FFFFFF	active_if=net:dhcp:4	scale=2	focus=702
+
+label	id=net_pip_lbl	parent=net_root	x=40	y=658	w=200	h=32	text=STATIC IP	color=#94A3B8	bg=#111827	scale=1
+input	id=net_pip_in	parent=net_root	x=240	y=652	w=420	h=64	text=0.0.0.0	bg=#F8FAFC	border=#1E40AF	color=#0F172A	bind=net:pending_ip	action=commit:net:ip	focus=704
+label	id=net_pip_v	parent=net_root	x=680	y=658	w=360	h=64	text=---	color=#FBBF24	bg=#0B1220	border=#1F2937	bind=net:pending_ip	align=center	scale=2
+
+label	id=net_pgw_lbl	parent=net_root	x=40	y=738	w=200	h=32	text=STATIC GW	color=#94A3B8	bg=#111827	scale=1
+input	id=net_pgw_in	parent=net_root	x=240	y=732	w=420	h=64	text=0.0.0.0	bg=#F8FAFC	border=#1E40AF	color=#0F172A	bind=net:pending_gateway	action=commit:net:gateway	focus=706
+label	id=net_pgw_v	parent=net_root	x=680	y=738	w=360	h=64	text=---	color=#FBBF24	bg=#0B1220	border=#1F2937	bind=net:pending_gateway	align=center	scale=2
+
+button	id=net_commit_btn	parent=net_root	x=40	y=820	w=320	h=50	text=COMMIT STATIC	bg=#1D4ED8	color=#FFFFFF	scale=1	focus=708
+
+# --- DIAGNOSTICS panel (y=900, h=380) ---
+panel	id=net_diag_panel	parent=net_root	x=20	y=900	w=1040	h=380	bg=#111827	border=#334155
+label	id=net_diag_title	parent=net_root	x=40	y=914	w=400	h=28	text=DIAGNOSTICS	color=#94A3B8	bg=#111827	scale=2
+
+label	id=net_pt_lbl	parent=net_root	x=40	y=970	w=200	h=32	text=PING TARGET	color=#94A3B8	bg=#111827	scale=1
+input	id=net_pt_in	parent=net_root	x=240	y=964	w=420	h=64	text=8.8.8.8	bg=#F8FAFC	border=#0EA5E9	color=#0F172A	bind=net:pending_ping	action=commit:net:ping_target	focus=720
+label	id=net_pt_v	parent=net_root	x=680	y=970	w=360	h=64	text=---	color=#7DD3FC	bg=#0B1220	border=#1F2937	bind=net:pending_ping	align=center	scale=2
+
+button	id=net_ping_btn	parent=net_root	x=40	y=1050	w=320	h=80	text=PING	bg=#15803D	color=#FFFFFF	scale=2	focus=722
+
+label	id=net_lt_lbl	parent=net_root	x=40	y=1156	w=200	h=32	text=LAST TARGET	color=#94A3B8	bg=#111827	scale=1
+label	id=net_lt_v	parent=net_root	x=240	y=1152	w=420	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#475569	bind=net:ping_target	align=center	scale=2
+label	id=net_lr_lbl	parent=net_root	x=680	y=1156	w=140	h=32	text=RESULT	color=#94A3B8	bg=#111827	scale=1
+label	id=net_lr_v	parent=net_root	x=820	y=1152	w=220	h=44	text=---	color=#86EFAC	bg=#052E16	border=#22C55E	bind=net:ping_result	align=center	scale=2
+
+label	id=net_rtt_lbl	parent=net_root	x=40	y=1216	w=200	h=32	text=RTT	color=#94A3B8	bg=#111827	scale=1
+label	id=net_rtt_v	parent=net_root	x=240	y=1212	w=300	h=44	text=---	color=#FBBF24	bg=#0F172A	border=#475569	bind=net:ping_rtt	align=center	scale=2
+
+# --- CONTROLS row (y=1300, h=180) ---
+panel	id=net_ctl_panel	parent=net_root	x=20	y=1300	w=1040	h=180	bg=#111827	border=#334155
+label	id=net_ctl_title	parent=net_root	x=40	y=1314	w=400	h=28	text=CONTROLS	color=#94A3B8	bg=#111827	scale=2
+button	id=net_back_btn	parent=net_root	x=720	y=1360	w=320	h=110	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=730
+
+action	widget=net_dhcp_on	event=click	target=net:dhcp:on
+action	widget=net_dhcp_off	event=click	target=net:dhcp:off
+action	widget=net_commit_btn	event=click	target=net:commit_static
+action	widget=net_ping_btn	event=click	target=net:ping
+action	widget=net_back_btn	event=click	target=goto:service
+include	page=bottom_nav
+
+# ============================================================
+# axis_status -- per-axis detail view (selected axis lens)
+# Layout (1080 x 1740):
+#   y   20.. 70  page title
+#   y   90.. 270 AXIS picker (X/Y/Z/A buttons highlight selected_axis)
+#   y  290.. 690 POSITION panel (cmd / actual / following error)
+#   y  710..1100 STATE panel (drive / traj / mode / enabled / fault / homed / err code)
+#   y 1120..1430 TUNING panel (vmax / accel / jerk / fe_max / status word / control word)
+#   y 1450..1700 CONTROLS (ENABLE / DISABLE / FAULT RESET / BACK)
+# All values pull from the SELECTED axis via axis_status_snapshot();
+# tapping a different axis on the picker re-binds the entire page.
+# ============================================================
+page	id=axis_status	title=Axis Detail
+panel	id=axis_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=axis_title	parent=axis_root	x=40	y=30	w=1000	h=40	text=AXIS DETAIL	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- axis picker (y=90, h=180) ---
+panel	id=axis_pick_panel	parent=axis_root	x=20	y=90	w=1040	h=180	bg=#111827	border=#334155
+label	id=axis_pick_title	parent=axis_root	x=40	y=104	w=400	h=28	text=SELECT AXIS	color=#94A3B8	bg=#111827	scale=2
+button	id=axis_pick_x	parent=axis_root	x=40	y=150	w=240	h=110	text=X	bg=#1E40AF	color=#FFFFFF	active_if=selected_axis:0	scale=3	focus=800
+button	id=axis_pick_y	parent=axis_root	x=300	y=150	w=240	h=110	text=Y	bg=#1E40AF	color=#FFFFFF	active_if=selected_axis:1	scale=3	focus=802
+button	id=axis_pick_z	parent=axis_root	x=560	y=150	w=240	h=110	text=Z	bg=#1E40AF	color=#FFFFFF	active_if=selected_axis:2	scale=3	focus=804
+button	id=axis_pick_a	parent=axis_root	x=820	y=150	w=220	h=110	text=A	bg=#92400E	color=#FFFFFF	active_if=selected_axis:3	scale=3	focus=806
+
+# --- POSITION panel (y=290, h=400) ---
+panel	id=axis_pos_panel	parent=axis_root	x=20	y=290	w=1040	h=400	bg=#111827	border=#334155
+label	id=axis_pos_title	parent=axis_root	x=40	y=304	w=400	h=28	text=POSITION	color=#94A3B8	bg=#111827	scale=2
+label	id=axis_pos_unit	parent=axis_root	x=900	y=308	w=140	h=24	text=mm	color=#94A3B8	bg=#111827	bind=units	align=right	scale=1
+
+label	id=axis_cmd_lbl	parent=axis_root	x=40	y=358	w=160	h=32	text=CMD	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_cmd_v	parent=axis_root	x=210	y=350	w=830	h=64	text=0.000	color=#F0F9FF	bg=#0B1220	border=#1E40AF	bind=axis:detail:cmd	align=right	scale=3
+label	id=axis_act_lbl	parent=axis_root	x=40	y=438	w=160	h=32	text=ACTUAL	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_act_v	parent=axis_root	x=210	y=430	w=830	h=64	text=0.000	color=#7DD3FC	bg=#0B1220	border=#1E40AF	bind=axis:detail:act	align=right	scale=3
+label	id=axis_fe_lbl	parent=axis_root	x=40	y=518	w=160	h=32	text=FOLL ERR	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_fe_v	parent=axis_root	x=210	y=510	w=830	h=64	text=0.000	color=#FBBF24	bg=#0B1220	border=#475569	bind=axis:detail:fe	align=right	scale=3
+label	id=axis_fe_max_lbl	parent=axis_root	x=40	y=598	w=160	h=32	text=PEAK FE	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_fe_max_v	parent=axis_root	x=210	y=594	w=400	h=44	text=0.000	color=#FCA5A5	bg=#0F172A	border=#475569	bind=axis:detail:fe_max	align=right	scale=2
+label	id=axis_homed_lbl	parent=axis_root	x=640	y=598	w=160	h=32	text=HOMED	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_homed_v	parent=axis_root	x=820	y=594	w=220	h=44	text=---	color=#86EFAC	bg=#0F172A	border=#475569	bind=axis:detail:homed	align=center	scale=2
+
+# --- STATE panel (y=710, h=390) ---
+panel	id=axis_state_panel	parent=axis_root	x=20	y=710	w=1040	h=390	bg=#111827	border=#334155
+label	id=axis_state_title	parent=axis_root	x=40	y=724	w=400	h=28	text=STATE	color=#94A3B8	bg=#111827	scale=2
+
+label	id=axis_drive_lbl	parent=axis_root	x=40	y=776	w=160	h=32	text=DRIVE	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_drive_v	parent=axis_root	x=210	y=770	w=400	h=64	text=NOT READY	color=#FEF3C7	bg=#451A03	border=#F59E0B	bind=axis:detail:state	align=center	scale=2
+label	id=axis_traj_lbl	parent=axis_root	x=640	y=776	w=160	h=32	text=TRAJ	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_traj_v	parent=axis_root	x=820	y=770	w=220	h=64	text=IDLE	color=#BAE6FD	bg=#082F49	border=#0EA5E9	bind=axis:detail:traj	align=center	scale=2
+
+label	id=axis_mode_lbl	parent=axis_root	x=40	y=856	w=160	h=32	text=MODE	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_mode_v	parent=axis_root	x=210	y=850	w=200	h=44	text=---	color=#DDD6FE	bg=#1E1B4B	border=#7C3AED	bind=axis:detail:mode	align=center	scale=2
+label	id=axis_en_lbl	parent=axis_root	x=440	y=856	w=160	h=32	text=ENABLED	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_en_v	parent=axis_root	x=620	y=850	w=200	h=44	text=DISABLED	color=#FCA5A5	bg=#0F172A	border=#475569	bind=axis:detail:enabled	align=center	scale=2
+label	id=axis_flt_lbl	parent=axis_root	x=840	y=856	w=120	h=32	text=FAULT	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_flt_v	parent=axis_root	x=970	y=850	w=70	h=44	text=ok	color=#86EFAC	bg=#0F172A	border=#475569	bind=axis:detail:fault	align=center	scale=2
+
+label	id=axis_err_lbl	parent=axis_root	x=40	y=930	w=160	h=32	text=ERR CODE	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_err_v	parent=axis_root	x=210	y=924	w=400	h=44	text=0x0000	color=#FCA5A5	bg=#0F172A	border=#475569	bind=axis:detail:err_code	align=center	scale=2
+label	id=axis_sw_lbl	parent=axis_root	x=640	y=930	w=160	h=32	text=STATUS	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_sw_v	parent=axis_root	x=820	y=924	w=220	h=44	text=0x0000	color=#7DD3FC	bg=#0F172A	border=#475569	bind=axis:detail:sw	align=center	scale=2
+
+label	id=axis_cw_lbl	parent=axis_root	x=40	y=998	w=160	h=32	text=CTRL WORD	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_cw_v	parent=axis_root	x=210	y=992	w=400	h=44	text=0x0000	color=#7DD3FC	bg=#0F172A	border=#475569	bind=axis:detail:cw	align=center	scale=2
+
+# --- TUNING panel (y=1120, h=310) ---
+panel	id=axis_tune_panel	parent=axis_root	x=20	y=1120	w=1040	h=310	bg=#111827	border=#334155
+label	id=axis_tune_title	parent=axis_root	x=40	y=1134	w=400	h=28	text=TUNING (counts)	color=#94A3B8	bg=#111827	scale=2
+label	id=axis_vmax_lbl	parent=axis_root	x=40	y=1186	w=200	h=32	text=VMAX cps	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_vmax_v	parent=axis_root	x=240	y=1180	w=300	h=44	text=0	color=#FBBF24	bg=#0F172A	border=#475569	bind=axis:detail:vmax	align=right	scale=2
+label	id=axis_accel_lbl	parent=axis_root	x=560	y=1186	w=200	h=32	text=ACCEL cps2	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_accel_v	parent=axis_root	x=760	y=1180	w=280	h=44	text=0	color=#FBBF24	bg=#0F172A	border=#475569	bind=axis:detail:accel	align=right	scale=2
+label	id=axis_jerk_lbl	parent=axis_root	x=40	y=1248	w=200	h=32	text=JERK cps3	color=#94A3B8	bg=#111827	scale=1
+label	id=axis_jerk_v	parent=axis_root	x=240	y=1242	w=800	h=44	text=0	color=#FBBF24	bg=#0F172A	border=#475569	bind=axis:detail:jerk	align=right	scale=2
+label	id=axis_tune_note	parent=axis_root	x=40	y=1310	w=1000	h=24	text=Tuning is read-only here; CLI axis_set_kinematics owns the writes.	color=#64748B	bg=#111827	scale=1
+label	id=axis_tune_note2	parent=axis_root	x=40	y=1340	w=1000	h=24	text=PEAK FE is the lifetime peak |cmd-act|; reset via fault_reset.	color=#64748B	bg=#111827	scale=1
+
+# --- CONTROLS row (y=1450, h=200) ---
+panel	id=axis_ctl_panel	parent=axis_root	x=20	y=1450	w=1040	h=200	bg=#111827	border=#334155
+label	id=axis_ctl_title	parent=axis_root	x=40	y=1464	w=400	h=28	text=CONTROLS	color=#94A3B8	bg=#111827	scale=2
+button	id=axis_btn_enable	parent=axis_root	x=40	y=1510	w=240	h=130	text=ENABLE	bg=#15803D	color=#FFFFFF	scale=2	focus=820
+button	id=axis_btn_disable	parent=axis_root	x=300	y=1510	w=240	h=130	text=DISABLE	bg=#B45309	color=#FFFFFF	scale=2	focus=822
+button	id=axis_btn_fault_reset	parent=axis_root	x=560	y=1510	w=240	h=130	text=FAULT RESET	bg=#B91C1C	color=#FFFFFF	scale=2	focus=824
+button	id=axis_btn_back	parent=axis_root	x=820	y=1510	w=220	h=130	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=826
+
+action	widget=axis_pick_x	event=click	target=jog:axis:0
+action	widget=axis_pick_y	event=click	target=jog:axis:1
+action	widget=axis_pick_z	event=click	target=jog:axis:2
+action	widget=axis_pick_a	event=click	target=jog:axis:3
+action	widget=axis_btn_enable	event=click	target=axis:detail:enable
+action	widget=axis_btn_disable	event=click	target=axis:detail:disable
+action	widget=axis_btn_fault_reset	event=click	target=axis:detail:fault_reset
+action	widget=axis_btn_back	event=click	target=goto:jog
+include	page=bottom_nav
+
+# ============================================================
+# tool_change -- operator-confirmation tool change wizard
+# Layout (1080 x 1740):
+#   y   20.. 70  page title
+#   y   90.. 350 CURRENT TOOL panel (active tool + pod + station + label)
+#   y  370.. 690 TARGET panel (target tool input + lookup result)
+#   y  710..1170 WIZARD panel (state hero + step/total + status message)
+#   y 1190..1500 CONTROLS row (START / ABORT / ACCEPT / BACK)
+# Operator path: type target tool number -> tap START. Wizard transitions
+# Idle -> Moving with a status message ("Manual tool change — verify pod,
+# then ACCEPT"). ACCEPT commits via toolpods::Service::accept_tool_change
+# which calls select_station() inline. ABORT reverts to Idle without
+# touching the active station. The state machine is intentionally a
+# confirmation flow, not an ATC controller — full kinematic sequencing
+# belongs in a follow-up (real changer hardware first).
+# ============================================================
+page	id=tool_change	title=Tool Change
+panel	id=tc_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=tc_title	parent=tc_root	x=40	y=30	w=1000	h=40	text=TOOL CHANGE	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- CURRENT panel (y=90, h=260) ---
+panel	id=tc_cur_panel	parent=tc_root	x=20	y=90	w=1040	h=260	bg=#111827	border=#334155
+label	id=tc_cur_title	parent=tc_root	x=40	y=104	w=400	h=28	text=CURRENT TOOL	color=#94A3B8	bg=#111827	scale=2
+label	id=tc_cur_lbl	parent=tc_root	x=40	y=158	w=160	h=32	text=ACTIVE	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_cur_v	parent=tc_root	x=210	y=150	w=300	h=80	text=---	color=#86EFAC	bg=#052E16	border=#22C55E	bind=tc:current	align=center	scale=3
+label	id=tc_cur_pod_lbl	parent=tc_root	x=540	y=158	w=160	h=32	text=POD	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_cur_pod_v	parent=tc_root	x=710	y=152	w=320	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#475569	bind=tc:current_pod	align=center	scale=2
+label	id=tc_cur_st_lbl	parent=tc_root	x=540	y=210	w=160	h=32	text=STATION	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_cur_st_v	parent=tc_root	x=710	y=204	w=320	h=44	text=0	color=#FBBF24	bg=#0F172A	border=#475569	bind=tc:current_st	align=center	scale=2
+label	id=tc_cur_lbl2	parent=tc_root	x=40	y=260	w=160	h=32	text=LABEL	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_cur_label	parent=tc_root	x=210	y=256	w=820	h=44	text=---	color=#CBD5E1	bg=#0F172A	border=#475569	bind=tc:current_lbl	align=center	scale=2
+
+# --- TARGET panel (y=370, h=320) ---
+panel	id=tc_tgt_panel	parent=tc_root	x=20	y=370	w=1040	h=320	bg=#111827	border=#334155
+label	id=tc_tgt_title	parent=tc_root	x=40	y=384	w=400	h=28	text=TARGET TOOL	color=#94A3B8	bg=#111827	scale=2
+label	id=tc_tgt_hint	parent=tc_root	x=440	y=390	w=600	h=24	text=Type tool number, press Enter, then START	color=#64748B	bg=#111827	align=right	scale=1
+
+label	id=tc_tgt_lbl	parent=tc_root	x=40	y=438	w=160	h=32	text=TARGET	color=#94A3B8	bg=#111827	scale=1
+input	id=tc_tgt_in	parent=tc_root	x=210	y=432	w=300	h=80	text=0	bg=#F8FAFC	border=#1D4ED8	color=#0F172A	bind=tc:target	action=commit:tc:target	focus=900
+label	id=tc_tgt_v	parent=tc_root	x=540	y=432	w=300	h=80	text=---	color=#FBBF24	bg=#0B1220	border=#1F2937	bind=tc:target	align=center	scale=3
+
+label	id=tc_tgt_pod_lbl	parent=tc_root	x=40	y=536	w=160	h=32	text=RESOLVED POD	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_tgt_pod_v	parent=tc_root	x=210	y=530	w=400	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#475569	bind=tc:target_pod	align=center	scale=2
+label	id=tc_tgt_st_lbl	parent=tc_root	x=640	y=536	w=160	h=32	text=STATION	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_tgt_st_v	parent=tc_root	x=820	y=530	w=220	h=44	text=0	color=#FBBF24	bg=#0F172A	border=#475569	bind=tc:target_st	align=center	scale=2
+
+label	id=tc_tgt_lbl2	parent=tc_root	x=40	y=600	w=160	h=32	text=LABEL	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_tgt_label	parent=tc_root	x=210	y=596	w=820	h=44	text=---	color=#CBD5E1	bg=#0F172A	border=#475569	bind=tc:target_lbl	align=center	scale=2
+
+# --- WIZARD panel (y=710, h=460) ---
+panel	id=tc_wiz_panel	parent=tc_root	x=20	y=710	w=1040	h=460	bg=#111827	border=#334155
+label	id=tc_wiz_title	parent=tc_root	x=40	y=724	w=400	h=28	text=WIZARD	color=#94A3B8	bg=#111827	scale=2
+
+label	id=tc_st_lbl	parent=tc_root	x=40	y=780	w=160	h=32	text=STATE	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_st_v	parent=tc_root	x=210	y=770	w=830	h=120	text=IDLE	color=#FEF3C7	bg=#451A03	border=#F59E0B	bind=tc:state	align=center	scale=3
+
+label	id=tc_step_lbl	parent=tc_root	x=40	y=910	w=160	h=32	text=STEP	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_step_v	parent=tc_root	x=210	y=904	w=180	h=44	text=0	color=#7DD3FC	bg=#0F172A	border=#475569	bind=tc:step	align=center	scale=2
+label	id=tc_total_lbl	parent=tc_root	x=420	y=910	w=160	h=32	text=TOTAL	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_total_v	parent=tc_root	x=580	y=904	w=180	h=44	text=0	color=#7DD3FC	bg=#0F172A	border=#475569	bind=tc:total	align=center	scale=2
+
+label	id=tc_msg_lbl	parent=tc_root	x=40	y=970	w=160	h=32	text=MESSAGE	color=#94A3B8	bg=#111827	scale=1
+label	id=tc_msg_v	parent=tc_root	x=210	y=964	w=830	h=180	text=---	color=#CBD5E1	bg=#0F172A	border=#475569	bind=tc:msg	align=center	scale=2
+
+# --- CONTROLS row (y=1190, h=310) ---
+panel	id=tc_ctl_panel	parent=tc_root	x=20	y=1190	w=1040	h=310	bg=#111827	border=#334155
+label	id=tc_ctl_title	parent=tc_root	x=40	y=1204	w=400	h=28	text=CONTROLS	color=#94A3B8	bg=#111827	scale=2
+button	id=tc_btn_start	parent=tc_root	x=40	y=1250	w=240	h=200	text=START	bg=#15803D	color=#FFFFFF	active_if=tc:state:0	scale=3	focus=910
+button	id=tc_btn_abort	parent=tc_root	x=300	y=1250	w=240	h=200	text=ABORT	bg=#B91C1C	color=#FFFFFF	scale=3	focus=912
+button	id=tc_btn_accept	parent=tc_root	x=560	y=1250	w=240	h=200	text=ACCEPT	bg=#1D4ED8	color=#FFFFFF	active_if=tc:state:2	scale=3	focus=914
+button	id=tc_btn_back	parent=tc_root	x=820	y=1250	w=220	h=200	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=916
+
+action	widget=tc_btn_start	event=click	target=tc:start
+action	widget=tc_btn_abort	event=click	target=tc:abort
+action	widget=tc_btn_accept	event=click	target=tc:accept
+action	widget=tc_btn_back	event=click	target=goto:offsets
 include	page=bottom_nav

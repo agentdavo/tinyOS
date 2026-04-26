@@ -335,6 +335,30 @@ void Service::apply_static_config() noexcept {
     dhcp_bound_.store(false, std::memory_order_relaxed);
 }
 
+void Service::set_dhcp_enabled(bool en) noexcept {
+    // Flipping off DHCP latches whatever live IP we already had into the
+    // static-config slot so the operator's "current" view doesn't blank out
+    // when they tap the toggle. Re-enabling DHCP just resets the bound
+    // flag; the worker thread's maybe_start_dhcp loop picks the request up.
+    config_.dhcp_enable = en;
+    if (!en) {
+        config_.static_ip = local_ip_.load(std::memory_order_relaxed);
+        config_.netmask   = netmask_.load(std::memory_order_relaxed);
+        config_.gateway   = gateway_.load(std::memory_order_relaxed);
+        apply_static_config();
+    } else {
+        dhcp_bound_.store(false, std::memory_order_relaxed);
+        dhcp_deadline_us_ = 0;
+    }
+}
+
+void Service::set_static_config(uint32_t ip, uint32_t netmask, uint32_t gateway) noexcept {
+    config_.static_ip = ip;
+    if (netmask) config_.netmask = netmask;
+    if (gateway) config_.gateway = gateway;
+    if (!config_.dhcp_enable) apply_static_config();
+}
+
 void Service::rx_trampoline(int, const uint8_t* data, size_t len, void* ctx) noexcept {
     auto* c = static_cast<Context*>(ctx);
     if (!c || !c->self || !c->nic) return;

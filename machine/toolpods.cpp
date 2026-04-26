@@ -266,4 +266,119 @@ const Station* Service::active_station(const char* pod_id) const noexcept {
     return find_pod(pod_id, idx) ? active_station(idx) : nullptr;
 }
 
+// ---- Tool change wizard (first-cut: operator-confirmation flow) -----------
+// The state machine is intentionally simple: request_tool_change() resolves
+// the target pod+station via lookup_virtual_tool() and sits in Moving until
+// the operator confirms with accept_tool_change(). accept then performs the
+// real station change via select_station(). abort returns to Idle without
+// touching the active station. The total_steps counter exists so the UI can
+// render progress; for first-cut both Releasing and Picking are skipped.
+
+namespace {
+void copy_msg(char* dst, size_t dst_size, const char* src) noexcept {
+    if (!dst || dst_size == 0) return;
+    size_t i = 0;
+    if (src) {
+        for (; src[i] && i + 1 < dst_size; ++i) dst[i] = src[i];
+    }
+    dst[i] = '\0';
+}
+}  // namespace
+
+Service::ChangeStatus Service::tool_change_state() const noexcept {
+    kernel::core::ScopedLock lock(lock_);
+    // Refresh current_tool against whatever the toolpod registry currently
+    // reports as active so the UI always sees a live value, not a stale
+    // capture from the last request_tool_change call.
+    ChangeStatus snap = change_status_;
+    for (size_t i = 0; i < count_; ++i) {
+        if (const Station* st = (pods_[i].active_station < pods_[i].station_count)
+                                 ? &pods_[i].stations[pods_[i].active_station]
+                                 : nullptr;
+            st && st->virtual_tool != 0) {
+            snap.current_tool = st->virtual_tool;
+            break;
+        }
+    }
+    return snap;
+}
+
+bool Service::request_tool_change(uint32_t target_tool) noexcept {
+    if (target_tool == 0 || target_tool > 0xFFFFu) return false;
+    kernel::core::ScopedLock lock(lock_);
+    change_status_.target_tool = static_cast<uint16_t>(target_tool);
+    change_status_.target_resolved = false;
+    change_status_.step = 0;
+    change_status_.total_steps = 3;  // Moving → Verifying → Done
+    // Resolve target → (pod, station) via the registry. Done inline rather
+    // than calling lookup_virtual_tool because we already hold the lock.
+    for (size_t i = 0; i < count_; ++i) {
+        for (size_t j = 0; j < pods_[i].station_count; ++j) {
+            if (pods_[i].stations[j].virtual_tool == target_tool) {
+                change_status_.target_pod_idx = i;
+                change_status_.target_station_idx = j;
+                change_status_.target_resolved = true;
+                break;
+            }
+        }
+        if (change_status_.target_resolved) break;
+    }
+    if (!change_status_.target_resolved) {
+        change_status_.state = ChangeState::Faulted;
+        copy_msg(change_status_.message, sizeof(change_status_.message),
+                 "target tool not assigned to any pod");
+        return false;
+    }
+    change_status_.state = ChangeState::Moving;
+    change_status_.step = 1;
+    copy_msg(change_status_.message, sizeof(change_status_.message),
+             "Manual tool change — verify pod, then ACCEPT");
+    return true;
+}
+
+bool Service::abort_tool_change() noexcept {
+    kernel::core::ScopedLock lock(lock_);
+    change_status_.state = ChangeState::Idle;
+    change_status_.step = 0;
+    change_status_.target_tool = 0;
+    change_status_.target_resolved = false;
+    copy_msg(change_status_.message, sizeof(change_status_.message), "Aborted");
+    return true;
+}
+
+bool Service::accept_tool_change() noexcept {
+    // Resolve target inside the lock, then drop it before calling
+    // select_station (which re-acquires) — same pattern probe_wizard_accept
+    // uses on operator_api's lock.
+    size_t pod_idx = 0, station_idx = 0;
+    bool resolved = false;
+    {
+        kernel::core::ScopedLock lock(lock_);
+        if (change_status_.state != ChangeState::Moving &&
+            change_status_.state != ChangeState::Verifying) {
+            return false;
+        }
+        if (!change_status_.target_resolved) return false;
+        pod_idx = change_status_.target_pod_idx;
+        station_idx = change_status_.target_station_idx;
+        change_status_.state = ChangeState::Verifying;
+        change_status_.step = 2;
+        resolved = true;
+    }
+    bool ok = false;
+    if (resolved) ok = select_station(pod_idx, station_idx);
+    kernel::core::ScopedLock lock(lock_);
+    if (ok) {
+        change_status_.state = ChangeState::Done;
+        change_status_.step = change_status_.total_steps;
+        copy_msg(change_status_.message, sizeof(change_status_.message),
+                 "Tool change confirmed");
+    } else {
+        change_status_.state = ChangeState::Faulted;
+        copy_msg(change_status_.message, sizeof(change_status_.message),
+                 "select_station failed");
+    }
+    return ok;
+}
+
 } // namespace machine::toolpods

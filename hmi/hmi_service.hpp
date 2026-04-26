@@ -51,6 +51,24 @@ public:
     PingResult ping_ipv4(uint32_t dst_ip, uint32_t timeout_ms, uint32_t& rtt_ms) noexcept;
     PingResult ping_ipv4_str(const char* dst_ip, uint32_t timeout_ms, uint32_t& rtt_ms) noexcept;
 
+    // NetworkSnapshot accessor — used by the operator UI's network setup
+    // page. Returns const-read state; no internals are exposed. The mac()
+    // pointer's lifetime matches the Service singleton.
+    bool dhcp_enabled() const noexcept { return config_.dhcp_enable; }
+    bool dhcp_in_progress() const noexcept {
+        // Discovery is in progress if dhcp is enabled, not yet bound, and
+        // the configured timeout window hasn't lapsed (deadline_us != 0).
+        return config_.dhcp_enable &&
+               !dhcp_bound_.load(std::memory_order_relaxed) &&
+               dhcp_deadline_us_ != 0;
+    }
+    bool ping_in_flight() const noexcept {
+        return ping_state_.load(std::memory_order_relaxed) != 0;
+    }
+    const uint8_t* mac() const noexcept { return mac_; }
+    void set_dhcp_enabled(bool en) noexcept;
+    void set_static_config(uint32_t ip, uint32_t netmask, uint32_t gateway) noexcept;
+
     static void thread_entry(void* arg);
 
 private:
