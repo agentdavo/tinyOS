@@ -41,6 +41,7 @@ struct AxisConfig {
     // on the rotation axis can be reseated without dragging the kinematics.
     gles1::Vec3f mesh_offset{};
     gles1::Vec3f mesh_rotation_deg{};
+    float mesh_scale = 1.0f;
 };
 
 struct LinkTransform {

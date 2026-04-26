@@ -67,6 +67,29 @@ function checkPods(relpath) {
   return ok;
 }
 
+// Synthetic 22-column TSV (mesh_scale set on one row) — verifies the editor
+// promotes to the new header width when scale != 1, and that round-tripping
+// the resulting text is byte-identical.
+function check22ColScale() {
+  const text =
+    "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z,mesh_scale\n" +
+    "base,Fixed,-1,0,0,0,0,0,0,0,0,none,0,-1,,0,0,0,0,0,0,1\n" +
+    "X,Linear,base,1,0,0,0,0,0,0,500,obj,0,0,part.stl,0,0,0,90,0,0,25.4\n";
+  const parsed = exported.parseKinematicTSV(text);
+  if (parsed.axes[1].mesh_scale !== 25.4) {
+    console.log(`[FAIL] 22-col parse: mesh_scale=${parsed.axes[1].mesh_scale}`);
+    return false;
+  }
+  const out = exported.serializeKinematicTSV(parsed);
+  const ok = out === text;
+  console.log(`[${ok ? "ok" : "FAIL"}] 22-col mesh_scale round-trip  (${text.length} -> ${out.length} bytes)`);
+  if (!ok) {
+    console.log(`  orig: ${JSON.stringify(text)}`);
+    console.log(`  out : ${JSON.stringify(out)}`);
+  }
+  return ok;
+}
+
 function checkForwardKinematics() {
   // Load mill3 and verify Z axis at position=100 is 100 above Y origin + Z offset.
   const text = fs.readFileSync(path.join(repo, "machines/kinematic_mill3.tsv"), "utf8");
@@ -90,6 +113,7 @@ for (const r of [
   checkKinematic("machines/kinematic_millturn.tsv"),
   checkKinematic("machines/kinematic_mx850.tsv"),
   checkPods("devices/embedded_toolpods.tsv"),
+  check22ColScale(),
   checkForwardKinematics(),
 ]) {
   if (r) ++pass; else ++fail;

@@ -70,16 +70,17 @@ no rotation, no coordinate-swap.
 
 ## Kinematic TSV schema
 
-Up to 21 comma-separated columns. The kernel parser accepts 14, 15, or 21;
-the editor saves the smallest header that captures every set field, so
+Up to 22 comma-separated columns. The kernel parser accepts 14, 15, 21, or
+22; the editor saves the smallest header that captures every set field, so
 14- and 15-column files round-trip byte-identically until you set an
-`obj_file` or a `mesh_off`/`mesh_rot` cell.
+`obj_file`, a `mesh_off`/`mesh_rot` cell, or a non-default `mesh_scale`.
 
 ```
 name, type, parent, dir_x, dir_y, dir_z, off_x, off_y, off_z,
 min, max, mesh, channel, motion_axis
 [, obj_file
- , mesh_off_x, mesh_off_y, mesh_off_z, mesh_rot_x, mesh_rot_y, mesh_rot_z]
+ , mesh_off_x, mesh_off_y, mesh_off_z, mesh_rot_x, mesh_rot_y, mesh_rot_z
+ , mesh_scale]
 ```
 
 | Inspector field | Column          | Notes                                               |
@@ -97,19 +98,40 @@ min, max, mesh, channel, motion_axis
 | obj_file        | 14              | Path relative to `devices/`; only saved if set.     |
 | mesh off        | 15..17          | Visual mesh offset inside the joint frame (mm).     |
 | mesh rpy        | 18..20          | Visual mesh rotation X→Y→Z, intrinsic, degrees.     |
+| mesh scale      | 21              | Uniform scalar applied to the visual mesh; default 1.0. Set automatically by the import dialog when units != mm. |
 
 Forward kinematics match the kernel's implementation exactly: translate by
 joint `off`, then translate-by-`dir` for linear or rotate around the `dir`
 axis (Rodrigues' formula, so non-axis-aligned `dir` like `(1,1,0)` rotates
 correctly) for rotary. The visual mesh is then drawn at
-`world * translate(mesh_off) * rotate_xyz_intrinsic_deg(mesh_rpy)` so the
-joint frame and the visual frame are independent — toolpods, motion math,
-and child links keep using the joint frame; only the rendered geometry
-moves with `mesh_off`/`mesh_rot`.
+`world * translate(mesh_off) * rotate_xyz_intrinsic_deg(mesh_rpy) * scale(mesh_scale)`
+so the joint frame and the visual frame are independent — toolpods, motion
+math, and child links keep using the joint frame; only the rendered geometry
+moves with `mesh_off` / `mesh_rot` / `mesh_scale`. The `T*R*S` order means
+the picked pivot point (mesh-local origin after Pick Pivot) lands at
+`mesh_offset` regardless of scale, so growing or shrinking the body keeps
+the pivot anchored on the rotation axis.
 
 The DRO panel at the bottom of the viewport shows each axis's current
 position, a slider bound to `[min, max]`, and the resolved world-space
 direction vector after parent rotations compose.
+
+### Mesh import normalisation
+
+Drag-drop or Browse for an `.obj` / `.stl` brings up a dialog before the
+mesh is wired to the axis:
+
+- **Up axis** — radio Z (CAD default) / Y (Maya, glTF, Three.js examples).
+  Y rotates the mesh +90° around X via `mesh_rot_x`.
+- **Units** — dropdown mm / cm / m / in. Anything other than mm sets
+  `mesh_scale` (cm → 10, m → 1000, in → 25.4).
+- **Detected** — one-line hint based on the parsed bounding box max
+  dimension. Suggestions only; the operator's pick wins.
+
+Inspector exposes a `Y → Z up` quick-toggle (flips `mesh_rot_x` between 0
+and 90) and a `Reset Scale` button (sets `mesh_scale` back to 1.0) on the
+mesh-scale row, so the same fix-up can be reapplied after the fact without
+re-importing.
 
 ### Pick Pivot
 
@@ -194,4 +216,5 @@ re-serialises the shipped files to assert byte equality.
 - Click-drag in 3D is not wired up; use the DRO sliders or the inspector
   offset fields to move things.
 - Setting `mesh_off` / `mesh_rot` on a row promotes the file to the 21-column
-  schema; older 14- and 15-column files round-trip unchanged until edited.
+  schema; setting a non-default `mesh_scale` promotes to 22; older 14- and
+  15-column files round-trip unchanged until edited.

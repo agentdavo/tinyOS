@@ -70,7 +70,8 @@ void set_axis(AxisConfig& ax, const char* name, AxisType type, const char* paren
               float ox, float oy, float oz, float tmin, float tmax,
               const char* mesh, const char* obj, int8_t motion_axis,
               float mox = 0.0f, float moy = 0.0f, float moz = 0.0f,
-              float mrx = 0.0f, float mry = 0.0f, float mrz = 0.0f) {
+              float mrx = 0.0f, float mry = 0.0f, float mrz = 0.0f,
+              float mscale = 1.0f) {
     copy_token(ax.name, sizeof(ax.name), name);
     ax.type = type;
     copy_token(ax.parent_name, sizeof(ax.parent_name), parent_name);
@@ -90,6 +91,7 @@ void set_axis(AxisConfig& ax, const char* name, AxisType type, const char* paren
     copy_token(ax.obj_file, sizeof(ax.obj_file), obj ? obj : "");
     ax.mesh_offset = {mox, moy, moz};
     ax.mesh_rotation_deg = {mrx, mry, mrz};
+    ax.mesh_scale = mscale;
 }
 
 size_t split_csv_fields(char* line, char* fields[], size_t max_fields) {
@@ -187,10 +189,13 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
         line[line_len] = '\0';
         if (line_len == 0 || line[0] == '#') continue;
         // Accept the 14-col legacy header, the 15-col header (with obj_file),
-        // or the 21-col URDF-style header (15 + mesh_off_x/y/z + mesh_rot_x/y/z).
+        // the 21-col URDF-style header (15 + mesh_off_x/y/z + mesh_rot_x/y/z),
+        // or the 22-col header (21 + mesh_scale) used after a unit-mismatch
+        // import normalises a CAD body authored in inches / metres / microns.
         if (kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis") == 0 ||
             kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file") == 0 ||
-            kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z") == 0) {
+            kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z") == 0 ||
+            kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z,mesh_scale") == 0) {
             continue;
         }
         if (chain.axis_count >= MAX_AXES) return false;
@@ -198,6 +203,9 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
         char* fields[24]{};
         const size_t field_count = split_csv_fields(line, fields, 24);
         if (field_count < 13) return false;
+        // mesh_scale defaults to 1.0 (not 0.0) when the column is absent —
+        // that's the difference between "no scaling applied" and "render
+        // collapses to a point".
 
         AxisConfig& axis = chain.axes[chain.axis_count];
         clear_axis(axis);
@@ -217,7 +225,8 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
                  field_count > 17 ? simple_atof(fields[17]) : 0.0f,
                  field_count > 18 ? simple_atof(fields[18]) : 0.0f,
                  field_count > 19 ? simple_atof(fields[19]) : 0.0f,
-                 field_count > 20 ? simple_atof(fields[20]) : 0.0f);
+                 field_count > 20 ? simple_atof(fields[20]) : 0.0f,
+                 field_count > 21 ? simple_atof(fields[21]) : 1.0f);
         if (axis.channel + 1 > chain.num_channels) chain.num_channels = static_cast<uint8_t>(axis.channel + 1);
         ++chain.axis_count;
     }
@@ -322,7 +331,13 @@ void compute_forward_kinematics(KinematicChain& chain) {
             axis.mesh_offset.x, axis.mesh_offset.y, axis.mesh_offset.z);
         const gles1::Mat4 mesh_r = gles1::make_rotation_xyz_intrinsic_deg(
             axis.mesh_rotation_deg.x, axis.mesh_rotation_deg.y, axis.mesh_rotation_deg.z);
-        transform.mesh_local_transform = gles1::multiply(mesh_t, mesh_r);
+        // Composition is T * R * S so the picked pivot point (which lives at
+        // mesh-local origin after Pick Pivot writes mesh_off = -hit) maps to
+        // mesh_offset regardless of scale; the body grows / shrinks around
+        // the picked feature instead of drifting off the rotation axis.
+        const gles1::Mat4 mesh_s = gles1::make_scale(axis.mesh_scale);
+        transform.mesh_local_transform =
+            gles1::multiply(mesh_t, gles1::multiply(mesh_r, mesh_s));
     }
 }
 

@@ -230,6 +230,11 @@ const KIN_HEADER_V15 = KIN_HEADER + ",obj_file";
 // visual mesh be reseated relative to the joint frame so a CAD body whose
 // geometric centre is not on the rotation axis still rotates in place.
 const KIN_HEADER_V21 = KIN_HEADER_V15 + ",mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z";
+// mesh_scale (column 22) is a uniform scalar applied to the mesh-local frame
+// so an STL/OBJ authored in inches/metres/microns can be normalised to mm
+// without re-export. Defaults to 1.0; only the import dialog and the
+// inspector "Reset Scale" button touch it.
+const KIN_HEADER_V22 = KIN_HEADER_V21 + ",mesh_scale";
 const MAX_AXES = 12;
 const MAX_CHANNELS = 2;
 const OBJ_MAX_POSITIONS = 1024;
@@ -331,7 +336,7 @@ function parseKinematicTSV(text) {
     }
     if (!seenHeader &&
         (line === KIN_HEADER || line === KIN_HEADER_V15 || line === KIN_HEADER_V21 ||
-         line.startsWith("name,type,parent,"))) {
+         line === KIN_HEADER_V22 || line.startsWith("name,type,parent,"))) {
       chain.header = line;
       chain.leadingRaw = pendingRaw;
       pendingRaw = [];
@@ -362,6 +367,7 @@ function parseKinematicTSV(text) {
         cols.length > 19 ? (+cols[19]||0) : 0,
         cols.length > 20 ? (+cols[20]||0) : 0,
       ],
+      mesh_scale: cols.length > 21 ? (+cols[21] || 1) : 1,
       position: 0,
       rawAbove: pendingRaw,
     };
@@ -399,11 +405,16 @@ function serializeKinematicTSV(chain, opts) {
   const meshLocal = (a) =>
     (a.mesh_off && (a.mesh_off[0] || a.mesh_off[1] || a.mesh_off[2])) ||
     (a.mesh_rot && (a.mesh_rot[0] || a.mesh_rot[1] || a.mesh_rot[2]));
+  const meshScaled = (a) => a.mesh_scale !== undefined && a.mesh_scale !== 1;
+  const anyScale = chain.axes.some(meshScaled);
   const anyMesh = chain.axes.some(meshLocal);
   const anyObj = chain.axes.some(a => (a.obj_file||"") !== "");
-  const useV21 = anyMesh || opts.force21 === true;
+  const useV22 = anyScale || opts.force22 === true;
+  const useV21 = useV22 || anyMesh || opts.force21 === true;
   const useV15 = useV21 || anyObj || opts.force15 === true;
-  out.push(useV21 ? KIN_HEADER_V21 : (useV15 ? KIN_HEADER_V15 : KIN_HEADER));
+  out.push(useV22 ? KIN_HEADER_V22
+                  : (useV21 ? KIN_HEADER_V21
+                            : (useV15 ? KIN_HEADER_V15 : KIN_HEADER)));
   emitRaw(chain.headerTrailingRaw);
   for (const a of chain.axes) {
     emitRaw(a.rawAbove);
@@ -422,6 +433,9 @@ function serializeKinematicTSV(chain, opts) {
       const mr = a.mesh_rot || [0,0,0];
       cells.push(fmtNum(mo[0]), fmtNum(mo[1]), fmtNum(mo[2]),
                  fmtNum(mr[0]), fmtNum(mr[1]), fmtNum(mr[2]));
+    }
+    if (useV22) {
+      cells.push(fmtNum(a.mesh_scale === undefined ? 1 : a.mesh_scale));
     }
     out.push(cells.join(","));
   }
@@ -587,11 +601,20 @@ const DEG2RAD = Math.PI / 180;
 function rotationXYZIntrinsicDeg(rxDeg, ryDeg, rzDeg) {
   return multiply(multiply(rotationX(rxDeg*DEG2RAD), rotationY(ryDeg*DEG2RAD)), rotationZ(rzDeg*DEG2RAD));
 }
+function scaleMat(s) {
+  const m = identityMat();
+  m[0] = s; m[5] = s; m[10] = s;
+  return m;
+}
 function meshLocalMatrix(a) {
   const mo = a.mesh_off || [0,0,0];
   const mr = a.mesh_rot || [0,0,0];
+  const ms = (a.mesh_scale === undefined) ? 1 : a.mesh_scale;
+  // T * R * S so the picked pivot (mesh-local origin) lands at mesh_offset
+  // independent of scale — see render/kinematic_model.cpp.
   return multiply(translation(mo[0], mo[1], mo[2]),
-                  rotationXYZIntrinsicDeg(mr[0], mr[1], mr[2]));
+                  multiply(rotationXYZIntrinsicDeg(mr[0], mr[1], mr[2]),
+                           scaleMat(ms)));
 }
 
 function resolveParentIndex(chain, axis) {
@@ -856,7 +879,7 @@ function templateToChain(tpl) {
     name, type, parent,
     dir: [...dir], off: [...off],
     min, max, mesh, channel: ch, motion_axis: mot,
-    obj_file: "", mesh_off: [0,0,0], mesh_rot: [0,0,0],
+    obj_file: "", mesh_off: [0,0,0], mesh_rot: [0,0,0], mesh_scale: 1,
     position: 0, rawAbove: [],
   }));
   return {
@@ -1642,10 +1665,32 @@ function renderAxisInspector(p) {
   // hand-editable for fine tuning.
   if (!a.mesh_off) a.mesh_off = [0,0,0];
   if (!a.mesh_rot) a.mesh_rot = [0,0,0];
+  if (a.mesh_scale === undefined) a.mesh_scale = 1;
   const moInputs = [0,1,2].map(i => mkInput(() => a.mesh_off[i], (v) => { a.mesh_off[i] = +v; }, "number", { step: "0.01" }));
   addRow(p, "mesh off", moInputs, "split");
   const mrInputs = [0,1,2].map(i => mkInput(() => a.mesh_rot[i], (v) => { a.mesh_rot[i] = +v; }, "number", { step: "0.1" }));
   addRow(p, "mesh rpy", mrInputs, "split");
+  // mesh import-normalisation row: scale (unit fix-up) + Y→Z up flip + reset.
+  // These are render-only — the joint frame is untouched, so motion math /
+  // toolpods / child links keep using the unscaled / unrotated frame.
+  const msInput = mkInput(() => a.mesh_scale, (v) => { a.mesh_scale = +v || 1; }, "number", { step: "0.01" });
+  const yzBtn = document.createElement("button");
+  yzBtn.textContent = "Y → Z up";
+  yzBtn.title = "Toggle mesh_rot_x between 0 and 90 — quick fix for a Y-up (Maya/glTF) import";
+  yzBtn.addEventListener("click", () => {
+    pushUndo();
+    a.mesh_rot[0] = (a.mesh_rot[0] === 0) ? 90 : 0;
+    saveLocal(); renderInspector(); softRefresh();
+  });
+  const rsBtn = document.createElement("button");
+  rsBtn.textContent = "Reset Scale";
+  rsBtn.title = "mesh_scale ← 1.0";
+  rsBtn.addEventListener("click", () => {
+    pushUndo();
+    a.mesh_scale = 1;
+    saveLocal(); renderInspector(); softRefresh();
+  });
+  addRow(p, "mesh scale", [msInput, yzBtn, rsBtn], "split");
   // Pick Pivot: raycast the next click against this body's mesh, set
   // mesh_off to the negative of the picked point in mesh-local space so
   // the picked feature snaps onto the joint origin (rotation axis).
@@ -1701,13 +1746,15 @@ function renderAxisInspector(p) {
         setStatus("Only .obj and .stl files supported"); return;
       }
       const text = await f.text();
+      const isStl = lower.endsWith(".stl");
+      const choice = await showImportDialog(f.name, text, isStl);
+      if (!choice) { setStatus("Import cancelled"); return; }
       pushUndo();
       a.obj_file = f.name;
-      state.objCache[f.name] = { text, parsed: null, bytes: f.size };
-      // objStats understands OBJ only; STL triangle-count stats can be
-      // added later (needed for kernel cap validation). Leave null for STL.
-      state.objCache[f.name].stats = lower.endsWith(".obj") ? objStats(text) : null;
+      state.objCache[f.name] = { text, parsed: null, bytes: f.size, isStl };
+      state.objCache[f.name].stats = isStl ? null : objStats(text);
       a.mesh = "obj";
+      applyImportNormalisation(a, choice);
       saveLocal(); renderAll();
     };
     fi.click();
@@ -2015,6 +2062,151 @@ async function exportBundle() {
 function setStatus(t) { document.getElementById("status").textContent = t; }
 
 /* =========================================================================
+ *  Mesh import normalisation.
+ *
+ *  STL / OBJ files don't carry up-axis or unit metadata. CAD tools
+ *  (SolidWorks/Fusion/Inventor/Blender) ship Z-up + millimetre — what the
+ *  kernel expects. Imports from Maya / glTF / Three.js examples ship Y-up
+ *  + metres (or inches, microns, ...). Without normalisation the operator
+ *  has to type mesh_rot_x=90 manually and re-export the part to fix units.
+ *
+ *  showImportDialog() returns { rotX, scale } chosen by the operator, or
+ *  null on cancel. Auto-detect inspects the bounding box and *suggests* a
+ *  scale; the operator's pick always wins.
+ * ========================================================================= */
+function meshBoundsMaxDim(text, isStl) {
+  // Parse just to size; the cached body re-parses through the normal path
+  // when it's actually rendered, so we don't keep this geometry around.
+  try {
+    let bbox = null;
+    if (isStl && typeof THREE.STLLoader === "function") {
+      const geom = new THREE.STLLoader().parse(text);
+      geom.computeBoundingBox();
+      bbox = geom.boundingBox;
+    } else if (typeof THREE.OBJLoader === "function") {
+      const grp = new THREE.OBJLoader().parse(text);
+      bbox = new THREE.Box3().setFromObject(grp);
+    }
+    if (!bbox || bbox.isEmpty()) return 0;
+    const size = new THREE.Vector3(); bbox.getSize(size);
+    return Math.max(size.x, size.y, size.z);
+  } catch (_e) { return 0; }
+}
+
+function autoDetectHint(maxDim) {
+  if (!(maxDim > 0)) return { text: "Bounding box unknown.", suggestUnit: null };
+  const fmt = (n) => n.toFixed(n < 10 ? 3 : 1);
+  if (maxDim < 1) {
+    return { text: `Bounding box ~${fmt(maxDim)} mm — looks like metres? Suggest scale 1000.`, suggestUnit: "m" };
+  }
+  if (maxDim <= 3) {
+    return { text: `Bounding box ~${fmt(maxDim)} mm — could be metres or a small mm part.`, suggestUnit: null };
+  }
+  if (maxDim < 25) {
+    return { text: `Bounding box ~${fmt(maxDim)} mm — could be inches (~${fmt(maxDim/25.4)} in).`, suggestUnit: "in" };
+  }
+  if (maxDim <= 2000) {
+    return { text: `Bounding box ~${fmt(maxDim)} mm — looks like mm.`, suggestUnit: null };
+  }
+  if (maxDim <= 50800) {
+    return { text: `Bounding box ~${fmt(maxDim)} mm — could be inches (~${fmt(maxDim/25.4)} in).`, suggestUnit: "in" };
+  }
+  return { text: `Bounding box ~${fmt(maxDim)} mm — looks like microns? Suggest scale 0.001.`, suggestUnit: "um" };
+}
+
+const UNIT_TO_MM = { mm: 1, cm: 10, m: 1000, in: 25.4, um: 0.001 };
+
+function showImportDialog(filename, text, isStl) {
+  return new Promise((resolve) => {
+    const maxDim = meshBoundsMaxDim(text, isStl);
+    const hint = autoDetectHint(maxDim);
+
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed; inset:0; background:rgba(2,6,23,0.78); z-index:1000;" +
+      "display:flex; align-items:center; justify-content:center;";
+    const panel = document.createElement("div");
+    panel.style.cssText =
+      "background:var(--panel); border:1px solid var(--border); border-radius:6px;" +
+      "padding:16px 18px; min-width:420px; max-width:560px; color:var(--ink);" +
+      "font-family:inherit; font-size:13px;";
+    overlay.appendChild(panel);
+
+    const title = document.createElement("div");
+    title.textContent = "Import mesh: " + filename;
+    title.style.cssText = "font-weight:600; font-size:14px; margin-bottom:10px;";
+    panel.appendChild(title);
+
+    const hintEl = document.createElement("div");
+    hintEl.textContent = hint.text;
+    hintEl.style.cssText = "color:var(--muted); font-size:11px; margin-bottom:12px;";
+    panel.appendChild(hintEl);
+
+    // Up-axis. Z is the kernel default and matches CAD exports; Y is the
+    // Maya / glTF convention that comes in lying on its side.
+    const upRow = document.createElement("div");
+    upRow.style.cssText = "margin-bottom:10px;";
+    upRow.innerHTML =
+      "<div style='color:var(--muted); font-size:11px; margin-bottom:4px'>Up axis</div>" +
+      "<label style='margin-right:14px'><input type='radio' name='impUp' value='Z' checked> Z (CAD default)</label>" +
+      "<label><input type='radio' name='impUp' value='Y'> Y (Maya / glTF)</label>";
+    panel.appendChild(upRow);
+
+    const unitRow = document.createElement("div");
+    unitRow.style.cssText = "margin-bottom:14px;";
+    const unitLbl = document.createElement("div");
+    unitLbl.textContent = "Units";
+    unitLbl.style.cssText = "color:var(--muted); font-size:11px; margin-bottom:4px";
+    const unitSel = document.createElement("select");
+    for (const [v, label] of [["mm","mm"],["cm","cm"],["m","m"],["in","in (25.4 mm)"]]) {
+      const o = document.createElement("option"); o.value = v; o.textContent = label;
+      unitSel.appendChild(o);
+    }
+    // Pre-select the auto-detect suggestion when one applies; operator can
+    // still override before clicking OK.
+    unitSel.value = (hint.suggestUnit && unitSel.querySelector(`option[value='${hint.suggestUnit}']`))
+                    ? hint.suggestUnit : "mm";
+    unitRow.appendChild(unitLbl); unitRow.appendChild(unitSel);
+    panel.appendChild(unitRow);
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex; gap:8px; justify-content:flex-end;";
+    const cancelBtn = document.createElement("button"); cancelBtn.textContent = "Cancel";
+    const okBtn = document.createElement("button"); okBtn.textContent = "OK"; okBtn.className = "primary";
+    btnRow.appendChild(cancelBtn); btnRow.appendChild(okBtn);
+    panel.appendChild(btnRow);
+
+    const finish = (result) => { document.body.removeChild(overlay); resolve(result); };
+    cancelBtn.addEventListener("click", () => finish(null));
+    okBtn.addEventListener("click", () => {
+      const up = (panel.querySelector("input[name='impUp']:checked") || {}).value || "Z";
+      const unit = unitSel.value;
+      const scale = UNIT_TO_MM[unit] || 1;
+      // Y-up rotates +90° around X to bring the model upright into the
+      // Z-up world; for hint, scale that handles inches/cm/m/microns.
+      finish({ rotX: up === "Y" ? 90 : 0, scale });
+    });
+    document.addEventListener("keydown", function esc(e) {
+      if (e.key === "Escape") { document.removeEventListener("keydown", esc); finish(null); }
+    });
+
+    document.body.appendChild(overlay);
+    okBtn.focus();
+  });
+}
+
+// Apply the import-dialog choices to an axis row. Render-only — the joint
+// frame (off, dir, motion_axis) is untouched; only mesh_rot_x and mesh_scale
+// shift, so motion math / toolpods / child links keep using the unscaled
+// joint frame.
+function applyImportNormalisation(axis, choice) {
+  if (!choice) return;
+  if (!axis.mesh_rot) axis.mesh_rot = [0,0,0];
+  axis.mesh_rot[0] = choice.rotX;
+  axis.mesh_scale = choice.scale;
+}
+
+/* =========================================================================
  *  Wire-up.
  * ========================================================================= */
 function renderAll() {
@@ -2151,7 +2343,7 @@ function bindUI() {
     if (!isObj && !isStl) return null;
     const text = await fileObj.text();
     const stats = isObj ? objStats(text) : null;
-    const entry = { text, parsed: null, bytes: fileObj.size, stats };
+    const entry = { text, parsed: null, bytes: fileObj.size, stats, isStl };
     // Key under both the relative path ("mx850/foo.stl") and the basename
     // ("foo.stl") so TSV references of either form resolve.
     const rel = relPath || fileObj.name;
@@ -2198,16 +2390,32 @@ function bindUI() {
     // dropped mesh gets auto-attached to the selected axis; the rest just
     // populate the cache so TSV references resolve.
     const loaded = [];
+    let cancelled = false;
     const ensureAttach = async (relPath) => {
       loaded.push(relPath);
       if (loaded.length > 1) return;  // only attach the first
       let targetIdx = state.selection && state.selection.kind === "axis"
         ? state.selection.idx : state.chain.axes.length - 1;
       if (targetIdx < 0) return;
+      // Pop the import dialog BEFORE the live preview rebuilds so the up-axis
+      // and unit choices land in mesh_rot_x / mesh_scale on the first frame.
+      const entry = state.objCache[relPath] || state.objCache[relPath.split("/").pop()];
+      const choice = await showImportDialog(relPath, entry ? entry.text : "",
+                                            !!(entry && entry.isStl));
+      if (!choice) {
+        cancelled = true;
+        if (entry) {
+          delete state.objCache[relPath];
+          const base = relPath.split("/").pop();
+          if (base && base !== relPath) delete state.objCache[base];
+        }
+        return;
+      }
       pushUndo();
       const a = state.chain.axes[targetIdx];
       a.obj_file = relPath;
       a.mesh = "obj";
+      applyImportNormalisation(a, choice);
     };
 
     const items = e.dataTransfer.items;
@@ -2229,7 +2437,8 @@ function bindUI() {
     }
 
     saveLocal(); renderAll();
-    if (loaded.length === 1) setStatus("Loaded " + loaded[0]);
+    if (cancelled) setStatus("Import cancelled");
+    else if (loaded.length === 1) setStatus("Loaded " + loaded[0]);
     else if (loaded.length > 1) setStatus("Loaded " + loaded.length + " meshes");
     else if (handled === 0) setStatus("Nothing loaded — drop .obj / .stl or a folder containing them");
   });
@@ -2267,6 +2476,7 @@ function addAxis(type) {
     dir: type === "Rotary" ? [0,0,1] : [1,0,0],
     off: [0,0,0], min: 0, max: type === "Rotary" ? 360 : 100,
     mesh: "box", channel: 0, motion_axis: -1, obj_file: "",
+    mesh_off: [0,0,0], mesh_rot: [0,0,0], mesh_scale: 1,
     position: 0, rawAbove: [],
   });
   state.selection = { kind: "axis", idx: state.chain.axes.length - 1 };

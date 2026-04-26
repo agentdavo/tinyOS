@@ -252,6 +252,10 @@ Mat4 make_scale(float x, float y, float z) {
     return out;
 }
 
+Mat4 make_scale(float s) {
+    return make_scale(s, s, s);
+}
+
 Mat4 make_look_at(const Vec3f& eye, const Vec3f& center, const Vec3f& up) {
     Vec3f f = normalize_v3_fast(Vec3f{center.x - eye.x, center.y - eye.y, center.z - eye.z});
     Vec3f s = normalize_v3_fast(cross_v3v3(f, up));
