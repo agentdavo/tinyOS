@@ -217,7 +217,17 @@ const BIND_GROUPS = {
         "axis:x:homed","axis:y:homed","axis:z:homed","axis:a:homed",
         "axis:x:near_limit","axis:y:near_limit","axis:z:near_limit","axis:a:near_limit"],
   Program: ["program_name","program_count","program_blocks","program_bytes",
-            "preview_points"],
+            "preview_points",
+            "program:0:name","program:0:size","program:0:selected","program:0:loaded",
+            "program:1:name","program:1:size","program:1:selected","program:1:loaded",
+            "program:2:name","program:2:size","program:2:selected","program:2:loaded",
+            "program:3:name","program:3:size","program:3:selected","program:3:loaded",
+            "program:4:name","program:4:size","program:4:selected","program:4:loaded",
+            "program:5:name","program:5:size","program:5:selected","program:5:loaded",
+            "program:6:name","program:6:size","program:6:selected","program:6:loaded",
+            "program:7:name","program:7:size","program:7:selected","program:7:loaded"],
+  Homing: ["homing:axis","homing:method","homing:state","homing:message",
+           "homing:fast","homing:slow"],
   Offsets: ["work_name","work_offset:x","work_offset:y","work_offset:z","work_offset:a",
             "wcs:G54:x","wcs:G54:y","wcs:G54:z","wcs:G54:a",
             "wcs:G55:x","wcs:G55:y","wcs:G55:z","wcs:G55:a",
@@ -257,7 +267,11 @@ const ACTION_GROUPS = {
           "page:alarms","page:setup"],
   Demo: ["demo:cycle","demo:hold","demo:reset","demo:home","demo:jog+",
          "demo:jog-","demo:estop"],
-  Program: ["program:prev","program:next","program:simulate"],
+  Program: ["program:prev","program:next","program:simulate",
+            "program:select:0","program:select:1","program:select:2","program:select:3",
+            "program:select:4","program:select:5","program:select:6","program:select:7"],
+  Homing: ["homing:axis:0","homing:axis:1","homing:axis:2","homing:axis:3",
+           "homing:start","homing:abort"],
   Macro: ["macro:prev","macro:next","macro:run","macro:abort"],
   Setup: ["setup:save","setup:load"],
   MDI: ["mdi:submit","mdi:clear","mdi:abort"],
@@ -293,6 +307,9 @@ function actionIsValid(target, doc) {
   if (target.startsWith("offset:work:") || target.startsWith("offset:tool:")) return true;
   if (target.startsWith("jog:axis:") || target.startsWith("jog:inc:")) return true;
   if (target.startsWith("jog:hold:") || target.startsWith("jog:stop:")) return true;
+  if (target.startsWith("program:select:")) return true;
+  if (target.startsWith("homing:method:")) return true;
+  if (target.startsWith("homing:axis:")) return true;
   for (const list of Object.values(ACTION_GROUPS))
     if (list.includes(target)) return true;
   return false;

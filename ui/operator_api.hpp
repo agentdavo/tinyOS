@@ -252,6 +252,34 @@ struct SetupSnapshot {
     SystemInfo system{};
 };
 
+// Operator-driven homing wizard. The dashboard `HOME` button still kicks
+// the legacy single-axis sequence; this snapshot powers the dedicated
+// wizard page where the operator picks an axis + a strategy from a
+// pre-set library before tapping HOME. State is the wizard's own view of
+// progress, derived from the cyclic snapshot of motion::HomingEngine and
+// the EtherCAT master deadline-fault latch.
+struct HomingSnapshot {
+    int32_t selected_axis = 0;
+    const char* method_name = "(none)";
+    int32_t method_id = 0;          // CiA-402 homing method number
+    int32_t fast_cps = 50000;       // fast-search velocity (counts/s)
+    int32_t slow_cps = 5000;        // slow-approach velocity (counts/s)
+    int32_t accel_cps2 = 100000;
+    int32_t torque_permille = 0;    // hardstop torque limit
+    int32_t offset_counts = 0;
+    enum class State : uint8_t { Idle, Configuring, Searching, Approaching, Done, Faulted };
+    State state = State::Idle;
+    const char* status_message = "Idle";
+    bool homed_axes[4]{false, false, false, false};
+};
+
+HomingSnapshot homing_snapshot();
+void set_homing_axis(uint32_t axis);
+void set_homing_method(int32_t method_id, const char* name);
+void set_homing_speeds(int32_t fast_cps, int32_t slow_cps);
+void start_homing();
+void abort_homing();
+
 struct FileSnapshot {
     struct FileEntry {
         const char* name = "";

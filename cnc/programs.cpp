@@ -2,6 +2,7 @@
 
 #include "programs.hpp"
 #include "../util.hpp"
+#include "../fs/vfs.hpp"
 
 namespace cnc::programs {
 
@@ -266,6 +267,52 @@ bool Store::rebuild_preview(size_t idx) noexcept {
     if (idx >= count_) return false;
     kernel::core::ScopedLock lock(lock_);
     return parse_preview(programs_[idx]);
+}
+
+namespace {
+
+bool path_basename_is_ngc(const char* path) noexcept {
+    if (!path) return false;
+    size_t n = 0;
+    while (path[n] != '\0') ++n;
+    if (n < 4) return false;
+    const char* ext = path + (n - 4);
+    auto lower = [](char c) -> char {
+        return (c >= 'A' && c <= 'Z') ? char(c + 32) : c;
+    };
+    return ext[0] == '.' && lower(ext[1]) == 'n' && lower(ext[2]) == 'g' && lower(ext[3]) == 'c';
+}
+
+const char* path_basename(const char* path) noexcept {
+    const char* base = path;
+    for (const char* p = path; *p; ++p) {
+        if (*p == '/' || *p == '\\') base = p + 1;
+    }
+    return base;
+}
+
+struct ScanCtx {
+    Store* store;
+    size_t loaded;
+};
+
+bool walk_cb(const char* path, const char* data, size_t size, void* user) noexcept {
+    auto* ctx = static_cast<ScanCtx*>(user);
+    if (!path_basename_is_ngc(path) || size == 0 || size >= MAX_PROGRAM_SIZE) return true;
+    char text[MAX_PROGRAM_SIZE];
+    const size_t copy = size < (MAX_PROGRAM_SIZE - 1) ? size : (MAX_PROGRAM_SIZE - 1);
+    for (size_t i = 0; i < copy; ++i) text[i] = data[i];
+    text[copy] = '\0';
+    if (ctx->store->write_program(path_basename(path), text)) ++ctx->loaded;
+    return true;
+}
+
+}  // namespace
+
+size_t Store::scan_filesystem() noexcept {
+    ScanCtx ctx{this, 0};
+    kernel::vfs::walk("", &walk_cb, &ctx);
+    return ctx.loaded;
 }
 
 bool Store::add_seed(const char* name, const char* text) noexcept {

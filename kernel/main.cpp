@@ -17,6 +17,7 @@ namespace kernel { namespace core { void run_benchmark_test(); } }
 #endif
 #include "motion/motion.hpp"
 #include "cnc/interpreter.hpp"
+#include "cnc/programs.hpp"
 #include "automation/macro_runtime.hpp"
 #include "automation/ladder_runtime.hpp"
 #include "automation/probe_runtime.hpp"
@@ -491,6 +492,15 @@ void init_vfs() {
     const bool blk_ok = kernel::g_platform->init_block_device();
     if (uart) uart->puts(blk_ok ? "[vfs] block device ready\n" : "[vfs] no block device\n");
     (void)kernel::vfs::mount_sd();
+    // Layer SD-card *.ngc files behind the seeded program slots so the
+    // operator's file browser surfaces real card contents, not just demo seeds.
+    const size_t adopted = cnc::programs::g_store.scan_filesystem();
+    if (uart && adopted > 0) {
+        char msg[64];
+        kernel::util::k_snprintf(msg, sizeof(msg), "[vfs] %u program file(s) adopted\n",
+                                 static_cast<unsigned>(adopted));
+        uart->puts(msg);
+    }
 }
 
 void load_runtime_tsvs() {

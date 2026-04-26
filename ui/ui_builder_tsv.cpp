@@ -461,6 +461,20 @@ enum class BindKind : uint8_t {
     Tool7Length, Tool7Radius, Tool7Wear,
     AxisXNearLimit, AxisYNearLimit, AxisZNearLimit, AxisANearLimit,
     OperatorMode,
+    // Per-row program browser readouts (slot 0..7) — name / size / selected /
+    // loaded laid out as field-major within each row so the dispatch in
+    // bound_numeric_value / format_bind_value stays a single arithmetic step.
+    Program0Name, Program0Size, Program0Selected, Program0Loaded,
+    Program1Name, Program1Size, Program1Selected, Program1Loaded,
+    Program2Name, Program2Size, Program2Selected, Program2Loaded,
+    Program3Name, Program3Size, Program3Selected, Program3Loaded,
+    Program4Name, Program4Size, Program4Selected, Program4Loaded,
+    Program5Name, Program5Size, Program5Selected, Program5Loaded,
+    Program6Name, Program6Size, Program6Selected, Program6Loaded,
+    Program7Name, Program7Size, Program7Selected, Program7Loaded,
+    // Guided-homing wizard — operator-driven plan state surfaced from
+    // ui::operator_api::homing_snapshot().
+    HomingAxis, HomingMethod, HomingState, HomingMessage, HomingFastCps, HomingSlowCps,
 };
 
 BindKind parse_bind(const char* s) {
@@ -615,6 +629,33 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "alarm:3:axis") == 0) return BindKind::Alarm3Axis;
     if (strcmp(s, "alarm:3:msg")  == 0) return BindKind::Alarm3Message;
     if (strcmp(s, "alarm:3:time") == 0) return BindKind::Alarm3Time;
+    {
+        static const struct { const char* s; BindKind b; } kPrograms[] = {
+            {"program:0:name", BindKind::Program0Name}, {"program:0:size", BindKind::Program0Size},
+            {"program:0:selected", BindKind::Program0Selected}, {"program:0:loaded", BindKind::Program0Loaded},
+            {"program:1:name", BindKind::Program1Name}, {"program:1:size", BindKind::Program1Size},
+            {"program:1:selected", BindKind::Program1Selected}, {"program:1:loaded", BindKind::Program1Loaded},
+            {"program:2:name", BindKind::Program2Name}, {"program:2:size", BindKind::Program2Size},
+            {"program:2:selected", BindKind::Program2Selected}, {"program:2:loaded", BindKind::Program2Loaded},
+            {"program:3:name", BindKind::Program3Name}, {"program:3:size", BindKind::Program3Size},
+            {"program:3:selected", BindKind::Program3Selected}, {"program:3:loaded", BindKind::Program3Loaded},
+            {"program:4:name", BindKind::Program4Name}, {"program:4:size", BindKind::Program4Size},
+            {"program:4:selected", BindKind::Program4Selected}, {"program:4:loaded", BindKind::Program4Loaded},
+            {"program:5:name", BindKind::Program5Name}, {"program:5:size", BindKind::Program5Size},
+            {"program:5:selected", BindKind::Program5Selected}, {"program:5:loaded", BindKind::Program5Loaded},
+            {"program:6:name", BindKind::Program6Name}, {"program:6:size", BindKind::Program6Size},
+            {"program:6:selected", BindKind::Program6Selected}, {"program:6:loaded", BindKind::Program6Loaded},
+            {"program:7:name", BindKind::Program7Name}, {"program:7:size", BindKind::Program7Size},
+            {"program:7:selected", BindKind::Program7Selected}, {"program:7:loaded", BindKind::Program7Loaded},
+        };
+        for (const auto& e : kPrograms) if (strcmp(s, e.s) == 0) return e.b;
+    }
+    if (strcmp(s, "homing:axis")    == 0) return BindKind::HomingAxis;
+    if (strcmp(s, "homing:method")  == 0) return BindKind::HomingMethod;
+    if (strcmp(s, "homing:state")   == 0) return BindKind::HomingState;
+    if (strcmp(s, "homing:message") == 0) return BindKind::HomingMessage;
+    if (strcmp(s, "homing:fast")    == 0) return BindKind::HomingFastCps;
+    if (strcmp(s, "homing:slow")    == 0) return BindKind::HomingSlowCps;
     return BindKind::None;
 }
 
@@ -945,6 +986,47 @@ int32_t bound_numeric_value(BindKind bind) {
             const auto snap = kernel::ui::operator_api::machine_snapshot();
             return static_cast<int32_t>(snap.operator_mode);
         }
+        case BindKind::Program0Name: case BindKind::Program0Size: case BindKind::Program0Selected: case BindKind::Program0Loaded:
+        case BindKind::Program1Name: case BindKind::Program1Size: case BindKind::Program1Selected: case BindKind::Program1Loaded:
+        case BindKind::Program2Name: case BindKind::Program2Size: case BindKind::Program2Selected: case BindKind::Program2Loaded:
+        case BindKind::Program3Name: case BindKind::Program3Size: case BindKind::Program3Selected: case BindKind::Program3Loaded:
+        case BindKind::Program4Name: case BindKind::Program4Size: case BindKind::Program4Selected: case BindKind::Program4Loaded:
+        case BindKind::Program5Name: case BindKind::Program5Size: case BindKind::Program5Selected: case BindKind::Program5Loaded:
+        case BindKind::Program6Name: case BindKind::Program6Size: case BindKind::Program6Selected: case BindKind::Program6Loaded:
+        case BindKind::Program7Name: case BindKind::Program7Size: case BindKind::Program7Selected: case BindKind::Program7Loaded: {
+            const auto& ps = kernel::ui::operator_api::program_snapshot();
+            const int delta = static_cast<int>(bind) - static_cast<int>(BindKind::Program0Name);
+            const size_t slot = static_cast<size_t>(delta / 4);
+            const int field = delta % 4;
+            if (slot >= ps.programs.size() || slot >= ps.program_count) return 0;
+            switch (field) {
+                case 0: return 0;  // name surfaced via format_bind_value
+                case 1: return static_cast<int32_t>(ps.programs[slot].bytes);
+                case 2: return ps.programs[slot].selected ? 1 : 0;
+                case 3: return ps.programs[slot].loaded ? 1 : 0;
+            }
+            return 0;
+        }
+        case BindKind::HomingAxis: {
+            const auto h = kernel::ui::operator_api::homing_snapshot();
+            return h.selected_axis;
+        }
+        case BindKind::HomingMethod: {
+            const auto h = kernel::ui::operator_api::homing_snapshot();
+            return h.method_id;
+        }
+        case BindKind::HomingState: {
+            const auto h = kernel::ui::operator_api::homing_snapshot();
+            return static_cast<int32_t>(h.state);
+        }
+        case BindKind::HomingFastCps: {
+            const auto h = kernel::ui::operator_api::homing_snapshot();
+            return h.fast_cps;
+        }
+        case BindKind::HomingSlowCps: {
+            const auto h = kernel::ui::operator_api::homing_snapshot();
+            return h.slow_cps;
+        }
         default: return 0;
     }
 }
@@ -1220,6 +1302,81 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
                 default: break;
             }
             kernel::util::k_snprintf(buf, buf_size, "%s%llu", prefix ? prefix : "", v);
+            return;
+        }
+        case BindKind::Program0Name: case BindKind::Program1Name:
+        case BindKind::Program2Name: case BindKind::Program3Name:
+        case BindKind::Program4Name: case BindKind::Program5Name:
+        case BindKind::Program6Name: case BindKind::Program7Name: {
+            const auto& ps = kernel::ui::operator_api::program_snapshot();
+            const size_t slot = static_cast<size_t>(
+                (static_cast<int>(bind) - static_cast<int>(BindKind::Program0Name)) / 4);
+            const char* text = (slot < ps.programs.size() && slot < ps.program_count &&
+                                ps.programs[slot].name) ? ps.programs[slot].name : "---";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::Program0Size: case BindKind::Program1Size:
+        case BindKind::Program2Size: case BindKind::Program3Size:
+        case BindKind::Program4Size: case BindKind::Program5Size:
+        case BindKind::Program6Size: case BindKind::Program7Size: {
+            const int32_t bytes = bound_numeric_value(bind);
+            if (bytes <= 0) {
+                copy_field(buf, buf_size, "---", 3);
+                return;
+            }
+            if (bytes < 1024) {
+                kernel::util::k_snprintf(buf, buf_size, "%s%ld B", prefix ? prefix : "",
+                                         static_cast<long>(bytes));
+            } else {
+                const float kb = static_cast<float>(bytes) / 1024.0f;
+                kernel::util::k_snprintf(buf, buf_size, "%s%.1f kB", prefix ? prefix : "",
+                                         static_cast<double>(kb));
+            }
+            return;
+        }
+        case BindKind::Program0Selected: case BindKind::Program1Selected:
+        case BindKind::Program2Selected: case BindKind::Program3Selected:
+        case BindKind::Program4Selected: case BindKind::Program5Selected:
+        case BindKind::Program6Selected: case BindKind::Program7Selected:
+        case BindKind::Program0Loaded: case BindKind::Program1Loaded:
+        case BindKind::Program2Loaded: case BindKind::Program3Loaded:
+        case BindKind::Program4Loaded: case BindKind::Program5Loaded:
+        case BindKind::Program6Loaded: case BindKind::Program7Loaded: {
+            const char* text = bound_numeric_value(bind) ? "*" : "";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::HomingMessage: {
+            const auto h = kernel::ui::operator_api::homing_snapshot();
+            copy_field(buf, buf_size, h.status_message ? h.status_message : "",
+                       h.status_message ? strlen(h.status_message) : 0);
+            return;
+        }
+        case BindKind::HomingAxis: {
+            static const char* kNames[4] = {"X", "Y", "Z", "A"};
+            const int32_t v = bound_numeric_value(bind);
+            const char* name = (v >= 0 && v < 4) ? kNames[v] : "?";
+            copy_field(buf, buf_size, name, strlen(name));
+            return;
+        }
+        case BindKind::HomingState: {
+            const int32_t v = bound_numeric_value(bind);
+            const char* names[6] = {"IDLE", "READY", "SEARCH", "APPROACH", "DONE", "FAULT"};
+            const char* text = (v >= 0 && v < 6) ? names[v] : "?";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::HomingMethod: {
+            const auto h = kernel::ui::operator_api::homing_snapshot();
+            copy_field(buf, buf_size, h.method_name ? h.method_name : "(none)",
+                       h.method_name ? strlen(h.method_name) : 6);
+            return;
+        }
+        case BindKind::HomingFastCps:
+        case BindKind::HomingSlowCps: {
+            kernel::util::k_snprintf(buf, buf_size, "%s%ld cps", prefix ? prefix : "",
+                                     static_cast<long>(bound_numeric_value(bind)));
             return;
         }
         default:
@@ -1516,6 +1673,30 @@ void run_action_target(const char* target) {
         if (strcmp(command, "prev") == 0) select_prev_program();
         else if (strcmp(command, "next") == 0) select_next_program();
         else if (strcmp(command, "simulate") == 0) request_program_simulation();
+        else if (strncmp(command, "select:", 7) == 0) {
+            const int row = simple_atoi(command + 7);
+            if (row >= 0) select_program(0, static_cast<size_t>(row));
+        }
+        return;
+    }
+    if (strncmp(target, "homing:", 7) == 0) {
+        const char* command = target + 7;
+        if (strncmp(command, "axis:", 5) == 0) {
+            set_homing_axis(static_cast<uint32_t>(simple_atoi(command + 5)));
+        } else if (strncmp(command, "method:", 7) == 0) {
+            // homing:method:<id>:<name?>  — name is rendered in the wizard,
+            // id is the CiA-402 method number passed to run_homing_sequence.
+            const char* p = command + 7;
+            const int32_t id = simple_atoi(p);
+            const char* colon = nullptr;
+            for (const char* q = p; *q; ++q) if (*q == ':') { colon = q; break; }
+            const char* name = colon ? (colon + 1) : "Method";
+            set_homing_method(id, name);
+        } else if (strcmp(command, "start") == 0) {
+            start_homing();
+        } else if (strcmp(command, "abort") == 0) {
+            abort_homing();
+        }
         return;
     }
     if (strncmp(target, "macro:", 6) == 0) {
@@ -1776,10 +1957,11 @@ public:
           bind_(parse_bind(spec.bind)) {
         // Labels honour active_if by swapping foreground to the design
         // system's fault red. Used by DRO digits to flag soft-limit
-        // proximity. Same parser shape as BuilderButton.
+        // proximity. Same parser shape as BuilderButton — split on the
+        // LAST colon so multi-segment bind tokens are preserved.
         if (spec.active_if[0] != '\0') {
             const char* colon = nullptr;
-            for (const char* p = spec.active_if; *p; ++p) if (*p == ':') { colon = p; break; }
+            for (const char* p = spec.active_if; *p; ++p) if (*p == ':') colon = p;
             if (colon) {
                 char bind_buf[MAX_FIELD_LEN] = {};
                 copy_field(bind_buf, sizeof(bind_buf), spec.active_if,
@@ -1860,7 +2042,8 @@ public:
                              spec.text),
           spec_(spec),
           base_bg_(to_color(spec.bg_color != kTransparent ? spec.bg_color : spec.color, Color(64, 64, 64))),
-          fg_(to_color(spec.color, Color::White())) {
+          fg_(to_color(spec.color, Color::White())),
+          bind_(parse_bind(spec.bind)) {
         // Dimmed variant (for goto: tabs on the current page — keeps the
         // "you are here" hint quiet).
         dim_bg_ = Color(base_bg_.r > 40 ? base_bg_.r - 40 : 0,
@@ -1873,10 +2056,12 @@ public:
                            static_cast<uint8_t>(base_bg_.b < 215 ? base_bg_.b + 40 : 255));
         set_colors(base_bg_, base_bg_, Color(base_bg_.r / 2, base_bg_.g / 2, base_bg_.b / 2), fg_);
 
-        // Parse active_if = "<bind>:<int>".
+        // Parse active_if = "<bind>:<int>". Split on the LAST colon so
+        // multi-segment bind tokens (program:0:loaded, homing:method, etc.)
+        // are preserved. A bind name with no colon-suffixed integer is rejected.
         if (spec.active_if[0] != '\0') {
             const char* colon = nullptr;
-            for (const char* p = spec.active_if; *p; ++p) if (*p == ':') { colon = p; break; }
+            for (const char* p = spec.active_if; *p; ++p) if (*p == ':') colon = p;
             if (colon) {
                 char bind_buf[MAX_FIELD_LEN] = {};
                 copy_field(bind_buf, sizeof(bind_buf), spec.active_if,
@@ -1909,6 +2094,15 @@ public:
         }
         set_colors(bg, bg, Color(bg.r / 2, bg.g / 2, bg.b / 2), fg_);
 
+        // Buttons may bind their label to a string snapshot field (e.g. the
+        // file-browser row buttons read program:N:name). Resolve once into a
+        // local buffer and treat it as the label below.
+        char label_buf[MAX_FIELD_LEN] = {};
+        const char* label = spec_.text;
+        if (bind_ != BindKind::None) {
+            format_bind_value(bind_, label_buf, sizeof(label_buf), "");
+            if (label_buf[0] != '\0') label = label_buf;
+        }
         // If the spec asked for scaled label text, bypass the base Button
         // renderer's draw_text call by painting the box ourselves and then
         // drawing label with draw_text_scaled.
@@ -1917,12 +2111,28 @@ public:
             fb.fill_rect(x_, y_, width_, height_, bg);
             fb.draw_rect(x_, y_, width_, height_, fg_, 3);
             fb.fill_rect(x_ + 8, y_ + 8, width_ - 16, height_ - 16, bg);
-            const char* label = spec_.text;
             const int32_t text_w = static_cast<int32_t>(strlen(label) * 8U * scale);
             const int32_t text_h = static_cast<int32_t>(16U * scale);
-            const int32_t lx = x_ + static_cast<int32_t>(width_) / 2 - text_w / 2;
+            const int32_t lx = spec_.align == Align::Left
+                ? x_ + 16
+                : (spec_.align == Align::Right
+                    ? x_ + static_cast<int32_t>(width_) - text_w - 16
+                    : x_ + static_cast<int32_t>(width_) / 2 - text_w / 2);
             const int32_t ly = y_ + static_cast<int32_t>(height_) / 2 - text_h / 2;
             fb.draw_text_scaled(lx, ly, label, fg_, bg, scale);
+        } else if (bind_ != BindKind::None) {
+            // Honour the resolved label even at scale 1; the base Button
+            // renderer would re-draw the static spec_.text otherwise.
+            fb.fill_rect(x_, y_, width_, height_, bg);
+            fb.draw_rect(x_, y_, width_, height_, fg_, 2);
+            const int32_t text_w = static_cast<int32_t>(strlen(label) * 8U);
+            const int32_t lx = spec_.align == Align::Left
+                ? x_ + 8
+                : (spec_.align == Align::Right
+                    ? x_ + static_cast<int32_t>(width_) - text_w - 8
+                    : x_ + static_cast<int32_t>(width_) / 2 - text_w / 2);
+            const int32_t ly = y_ + static_cast<int32_t>(height_) / 2 - 8;
+            fb.draw_text(lx, ly, label, fg_, bg);
         } else {
             kernel::ui::Button::render(fb);
         }
@@ -1966,6 +2176,7 @@ private:
     Color fg_;
     BindKind active_bind_ = BindKind::None;
     int32_t active_value_ = 0;
+    BindKind bind_ = BindKind::None;
 };
 
 class BuilderPanel final : public Panel {

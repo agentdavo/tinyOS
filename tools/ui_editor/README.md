@@ -51,7 +51,12 @@ Grouped exactly as in the inspector:
   pair with `active_if=axis:x:near_limit:1` on a label to colour the
   digit fault-red)
 - **Program** program_name, program_count, program_blocks, program_bytes,
-  preview_points
+  preview_points, plus per-row file browser tokens
+  program:0..7:{name,size,selected,loaded} (size renders as `B` or `kB`,
+  loaded paints `*` when bound to channel 0)
+- **Homing** homing:{axis,method,state,message,fast,slow} (state cycles
+  IDLE / READY / SEARCH / APPROACH / DONE / FAULT; method renders the
+  human-readable strategy name set by the wizard buttons)
 - **Offsets** work_name, work_offset:{x,y,z,a}, plus per-slot
   wcs:G54..G59:{x,y,z,a} (3-decimal mm or deg)
 - **Tool** tool_name, tool_length, tool_radius, tool_wear, active_tool,
@@ -70,7 +75,16 @@ Grouped exactly as in the inspector:
 - `page:{position,program,offsets,ethercat,alarms,setup}`
 - `demo:{cycle,hold,reset,home,jog+,jog-,estop}`
 - `program:{prev,next,simulate}`
+- `program:select:<n>` (n=0..7) — load program from row N of the file
+  browser
 - `macro:{prev,next,run,abort}` and `macro:run:<name>`
+- `homing:axis:<n>` (n=0..3) — pick axis for the wizard
+- `homing:method:<id>:<name>` — pick CiA-402 method (Touch+ = 1,
+  Touch- = 2, Index Mark = 33, Hardstop+ = -2, Hardstop- = -1, Set Here
+  = 35); the optional `name` is the label rendered in the wizard
+- `homing:start` / `homing:abort` — kick / stop the configured cycle.
+  `homing:start` is a no-op while either EtherCAT master holds a
+  deadline-fault latch.
 - `setup:{save,load}`
 - `offset:work:<n>` (0..5), `offset:tool:<n>` (0..7), `offset:nudge:<axis><delta>`
 - `mdi:{submit,clear,abort}`

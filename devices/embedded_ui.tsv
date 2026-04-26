@@ -463,27 +463,66 @@ action	widget=mv_home	event=click	target=demo:home
 include	page=bottom_nav
 
 # ============================================================
-# program -- browser + preview + restart
+# program -- file browser + preview + restart
+# Layout (1080 x 1740):
+#   y   20.. 70  page title
+#   y   90.. 950 two-column row: file list (left, w=540) + preview (right, w=480)
+#   y  970..1090 transport buttons (PREV / NEXT / REBUILD / CYCLE)
+#   y 1110..1310 restart strip (GOTO LINE + AT BLOCK + BLOCKS)
+# Each list row uses a button + 3 labels: the button highlights via
+# active_if=program:N:loaded:1 so the operator sees which file is bound to
+# channel 0; the labels surface name and human-readable size from the
+# FAT32 mount. Tapping a row fires program:select:N (load + open).
 # ============================================================
 page	id=program	title=Program
 panel	id=program_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
 label	id=program_title	parent=program_root	x=40	y=30	w=1000	h=40	text=PROGRAM BROWSER	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
 
-# --- selector panel ---
-panel	id=program_sel_panel	parent=program_root	x=20	y=110	w=1040	h=240	bg=#111827	border=#334155
-label	id=program_sel_title	parent=program_root	x=40	y=124	w=400	h=28	text=SELECT FILE	color=#94A3B8	bg=#111827	scale=2
-input	id=program_name	parent=program_root	x=40	y=170	w=1000	h=64	text=program.ngc	bg=#F8FAFC	border=#0EA5E9	color=#0F172A	bind=program_name	focus=130
-label	id=program_blocks_lbl	parent=program_root	x=40	y=260	w=120	h=24	text=BLOCKS	color=#94A3B8	bg=#111827	scale=1
-label	id=program_blocks	parent=program_root	x=170	y=258	w=200	h=32	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=program_blocks	align=right	scale=2
-label	id=program_bytes_lbl	parent=program_root	x=400	y=260	w=120	h=24	text=BYTES	color=#94A3B8	bg=#111827	scale=1
-label	id=program_bytes	parent=program_root	x=530	y=258	w=200	h=32	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=program_bytes	align=right	scale=2
-label	id=program_pp_lbl	parent=program_root	x=760	y=260	w=120	h=24	text=PREVIEW	color=#94A3B8	bg=#111827	scale=1
-label	id=program_preview_pts	parent=program_root	x=890	y=258	w=150	h=32	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=preview_points	align=right	scale=2
+# --- file list panel (left) ---
+panel	id=program_list_panel	parent=program_root	x=20	y=90	w=560	h=860	bg=#111827	border=#334155
+label	id=program_list_title	parent=program_root	x=40	y=104	w=520	h=28	text=FILES	color=#94A3B8	bg=#111827	scale=2
+label	id=program_list_count_lbl	parent=program_root	x=400	y=104	w=80	h=28	text=COUNT	color=#64748B	bg=#111827	align=right	scale=1
+label	id=program_list_count	parent=program_root	x=490	y=100	w=70	h=36	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=program_count	align=center	scale=2
+label	id=program_list_h_name	parent=program_root	x=40	y=140	w=380	h=24	text=NAME	color=#64748B	bg=#111827	scale=1
+label	id=program_list_h_size	parent=program_root	x=420	y=140	w=140	h=24	text=SIZE	color=#64748B	bg=#111827	align=right	scale=1
+# Row pitch = 90 px starting at y=170 -> 8 rows occupy y=170..890
+button	id=program_row_0	parent=program_root	x=40	y=170	w=520	h=80	text=---	bg=#1E293B	color=#F8FAFC	border=#475569	bind=program:0:name	active_if=program:0:loaded:1	align=left	scale=2	focus=120
+label	id=program_size_0	parent=program_root	x=420	y=200	w=130	h=24	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=program:0:size	align=right	scale=1
+label	id=program_load_0	parent=program_root	x=44	y=180	w=24	h=24	text=*	color=#86EFAC	bg=#1E293B	bind=program:0:loaded	align=center	scale=1
+button	id=program_row_1	parent=program_root	x=40	y=260	w=520	h=80	text=---	bg=#1E293B	color=#F8FAFC	border=#475569	bind=program:1:name	active_if=program:1:loaded:1	align=left	scale=2	focus=121
+label	id=program_size_1	parent=program_root	x=420	y=290	w=130	h=24	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=program:1:size	align=right	scale=1
+label	id=program_load_1	parent=program_root	x=44	y=270	w=24	h=24	text=*	color=#86EFAC	bg=#1E293B	bind=program:1:loaded	align=center	scale=1
+button	id=program_row_2	parent=program_root	x=40	y=350	w=520	h=80	text=---	bg=#1E293B	color=#F8FAFC	border=#475569	bind=program:2:name	active_if=program:2:loaded:1	align=left	scale=2	focus=122
+label	id=program_size_2	parent=program_root	x=420	y=380	w=130	h=24	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=program:2:size	align=right	scale=1
+label	id=program_load_2	parent=program_root	x=44	y=360	w=24	h=24	text=*	color=#86EFAC	bg=#1E293B	bind=program:2:loaded	align=center	scale=1
+button	id=program_row_3	parent=program_root	x=40	y=440	w=520	h=80	text=---	bg=#1E293B	color=#F8FAFC	border=#475569	bind=program:3:name	active_if=program:3:loaded:1	align=left	scale=2	focus=123
+label	id=program_size_3	parent=program_root	x=420	y=470	w=130	h=24	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=program:3:size	align=right	scale=1
+label	id=program_load_3	parent=program_root	x=44	y=450	w=24	h=24	text=*	color=#86EFAC	bg=#1E293B	bind=program:3:loaded	align=center	scale=1
+button	id=program_row_4	parent=program_root	x=40	y=530	w=520	h=80	text=---	bg=#1E293B	color=#F8FAFC	border=#475569	bind=program:4:name	active_if=program:4:loaded:1	align=left	scale=2	focus=124
+label	id=program_size_4	parent=program_root	x=420	y=560	w=130	h=24	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=program:4:size	align=right	scale=1
+label	id=program_load_4	parent=program_root	x=44	y=540	w=24	h=24	text=*	color=#86EFAC	bg=#1E293B	bind=program:4:loaded	align=center	scale=1
+button	id=program_row_5	parent=program_root	x=40	y=620	w=520	h=80	text=---	bg=#1E293B	color=#F8FAFC	border=#475569	bind=program:5:name	active_if=program:5:loaded:1	align=left	scale=2	focus=125
+label	id=program_size_5	parent=program_root	x=420	y=650	w=130	h=24	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=program:5:size	align=right	scale=1
+label	id=program_load_5	parent=program_root	x=44	y=630	w=24	h=24	text=*	color=#86EFAC	bg=#1E293B	bind=program:5:loaded	align=center	scale=1
+button	id=program_row_6	parent=program_root	x=40	y=710	w=520	h=80	text=---	bg=#1E293B	color=#F8FAFC	border=#475569	bind=program:6:name	active_if=program:6:loaded:1	align=left	scale=2	focus=126
+label	id=program_size_6	parent=program_root	x=420	y=740	w=130	h=24	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=program:6:size	align=right	scale=1
+label	id=program_load_6	parent=program_root	x=44	y=720	w=24	h=24	text=*	color=#86EFAC	bg=#1E293B	bind=program:6:loaded	align=center	scale=1
+button	id=program_row_7	parent=program_root	x=40	y=800	w=520	h=80	text=---	bg=#1E293B	color=#F8FAFC	border=#475569	bind=program:7:name	active_if=program:7:loaded:1	align=left	scale=2	focus=127
+label	id=program_size_7	parent=program_root	x=420	y=830	w=130	h=24	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=program:7:size	align=right	scale=1
+label	id=program_load_7	parent=program_root	x=44	y=810	w=24	h=24	text=*	color=#86EFAC	bg=#1E293B	bind=program:7:loaded	align=center	scale=1
 
-# --- preview panel ---
-panel	id=program_prev_panel	parent=program_root	x=20	y=370	w=1040	h=580	bg=#111827	border=#334155
-label	id=program_prev_title	parent=program_root	x=40	y=384	w=400	h=28	text=PREVIEW	color=#94A3B8	bg=#111827	scale=2
-image	id=program_preview	parent=program_root	x=40	y=420	w=1000	h=510	text=gles1:program	bg=#0F172A	border=#334155	color=#E5E7EB
+# --- preview + meta panel (right) ---
+panel	id=program_prev_panel	parent=program_root	x=600	y=90	w=460	h=860	bg=#111827	border=#334155
+label	id=program_prev_title	parent=program_root	x=620	y=104	w=400	h=28	text=PREVIEW	color=#94A3B8	bg=#111827	scale=2
+label	id=program_loaded_lbl	parent=program_root	x=620	y=150	w=140	h=24	text=LOADED	color=#94A3B8	bg=#111827	scale=1
+label	id=program_loaded_v	parent=program_root	x=770	y=146	w=270	h=36	text=---	color=#86EFAC	bg=#052E16	border=#22C55E	bind=program_name	align=center	scale=1
+label	id=program_blocks_lbl	parent=program_root	x=620	y=200	w=120	h=24	text=BLOCKS	color=#94A3B8	bg=#111827	scale=1
+label	id=program_blocks	parent=program_root	x=770	y=196	w=120	h=32	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=program_blocks	align=right	scale=2
+label	id=program_bytes_lbl	parent=program_root	x=900	y=200	w=80	h=24	text=B	color=#94A3B8	bg=#111827	scale=1
+label	id=program_bytes	parent=program_root	x=940	y=196	w=100	h=32	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=program_bytes	align=right	scale=2
+label	id=program_pp_lbl	parent=program_root	x=620	y=250	w=120	h=24	text=PREVIEW	color=#94A3B8	bg=#111827	scale=1
+label	id=program_preview_pts	parent=program_root	x=770	y=246	w=270	h=32	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=preview_points	align=right	scale=2
+image	id=program_preview	parent=program_root	x=620	y=300	w=420	h=620	text=gles1:program	bg=#0F172A	border=#334155	color=#E5E7EB
 
 # --- transport buttons ---
 button	id=prog_prev	parent=program_root	x=20	y=970	w=255	h=120	text=PREV	bg=#334155	color=#F8FAFC	scale=2	focus=140
@@ -502,6 +541,14 @@ label	id=restart_cur	parent=program_root	x=260	y=1252	w=300	h=40	text=0	color=#F
 label	id=restart_blkn_lbl	parent=program_root	x=580	y=1255	w=160	h=32	text=BLOCKS	color=#94A3B8	bg=#111827	scale=1
 label	id=restart_blkn	parent=program_root	x=740	y=1252	w=300	h=40	text=---	color=#7DD3FC	bg=#0F172A	border=#475569	bind=program_blocks	align=center	scale=2
 
+action	widget=program_row_0	event=click	target=program:select:0
+action	widget=program_row_1	event=click	target=program:select:1
+action	widget=program_row_2	event=click	target=program:select:2
+action	widget=program_row_3	event=click	target=program:select:3
+action	widget=program_row_4	event=click	target=program:select:4
+action	widget=program_row_5	event=click	target=program:select:5
+action	widget=program_row_6	event=click	target=program:select:6
+action	widget=program_row_7	event=click	target=program:select:7
 action	widget=prog_prev	event=click	target=program:prev
 action	widget=prog_next	event=click	target=program:next
 action	widget=prog_sim	event=click	target=program:simulate
@@ -673,11 +720,15 @@ button	id=setup_save	parent=service_root	x=380	y=490	w=320	h=120	text=SAVE SETUP
 button	id=service_probe	parent=service_root	x=720	y=490	w=320	h=120	text=PROBE CYCLES	bg=#0F766E	color=#FFFFFF	scale=2	focus=310
 
 # --- diagnostics panel ---
+# Two rows: ETHERCAT / ALARMS / MACROS on top, HOMING wizard solo on the
+# second so it has full-width visibility — operators land on this page when
+# something is wrong, the homing wizard is part of recovery.
 panel	id=service_diag_panel	parent=service_root	x=20	y=650	w=1040	h=200	bg=#111827	border=#334155
 label	id=service_diag_title	parent=service_root	x=40	y=664	w=400	h=28	text=DIAGNOSTICS	color=#94A3B8	bg=#111827	scale=2
-button	id=service_ethercat	parent=service_root	x=40	y=710	w=320	h=120	text=ETHERCAT	bg=#0E7490	color=#FFFFFF	scale=2	focus=320
-button	id=service_alarms	parent=service_root	x=380	y=710	w=320	h=120	text=ALARMS	bg=#B91C1C	color=#FFFFFF	scale=2	focus=330
-button	id=service_macros	parent=service_root	x=720	y=710	w=320	h=120	text=MACROS	bg=#5B21B6	color=#FFFFFF	scale=2	focus=340
+button	id=service_ethercat	parent=service_root	x=40	y=710	w=240	h=120	text=ETHERCAT	bg=#0E7490	color=#FFFFFF	scale=2	focus=320
+button	id=service_alarms	parent=service_root	x=300	y=710	w=240	h=120	text=ALARMS	bg=#B91C1C	color=#FFFFFF	scale=2	focus=330
+button	id=service_macros	parent=service_root	x=560	y=710	w=240	h=120	text=MACROS	bg=#5B21B6	color=#FFFFFF	scale=2	focus=340
+button	id=service_homing	parent=service_root	x=820	y=710	w=220	h=120	text=HOMING	bg=#0F766E	color=#FFFFFF	scale=2	focus=345
 
 # --- info panel ---
 panel	id=service_info_panel	parent=service_root	x=20	y=870	w=1040	h=300	bg=#111827	border=#334155
@@ -693,6 +744,7 @@ action	widget=service_probe	event=click	target=goto:probe
 action	widget=service_ethercat	event=click	target=goto:ethercat
 action	widget=service_alarms	event=click	target=goto:alarms
 action	widget=service_macros	event=click	target=goto:macros
+action	widget=service_homing	event=click	target=goto:homing
 include	page=bottom_nav
 
 # ============================================================
@@ -747,6 +799,92 @@ button	id=ec_back_btn	parent=ec_root	x=720	y=988	w=320	h=110	text=BACK	bg=#33415
 action	widget=ec_clear_fault_btn	event=click	target=ec:clear_fault
 action	widget=ec_estop_btn	event=click	target=ec:estop
 action	widget=ec_back_btn	event=click	target=goto:service
+include	page=bottom_nav
+
+# ============================================================
+# homing -- guided homing wizard
+# Layout (1080 x 1740):
+#   y   20.. 70  page title
+#   y   90.. 270 axis selector (4 buttons + per-axis homed indicators)
+#   y  290.. 690 method library (6 strategies, 2 rows of 3)
+#   y  710.. 880 speeds panel (fast / slow + accel notes)
+#   y  900..1180 status panel (state hero + message + per-axis homed strip)
+#   y 1200..1380 transport (HOME / ABORT / BACK)
+# Operator path: pick axis -> pick strategy -> tap HOME. The HOME button
+# routes to homing:start which calls ethercat::Master::run_homing_sequence
+# under the deadline-fault gate. ABORT zeroes axis velocity and resets the
+# wizard state to Idle.
+# ============================================================
+page	id=homing	title=Homing
+panel	id=homing_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=homing_title	parent=homing_root	x=40	y=30	w=1000	h=40	text=GUIDED HOMING WIZARD	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- axis selector panel (y=90, h=180) ---
+panel	id=homing_axis_panel	parent=homing_root	x=20	y=90	w=1040	h=180	bg=#111827	border=#334155
+label	id=homing_axis_title	parent=homing_root	x=40	y=104	w=400	h=28	text=SELECT AXIS	color=#94A3B8	bg=#111827	scale=2
+button	id=homing_axis_x	parent=homing_root	x=40	y=150	w=240	h=110	text=X	bg=#1E40AF	color=#FFFFFF	active_if=homing:axis:0	scale=3	focus=400
+button	id=homing_axis_y	parent=homing_root	x=300	y=150	w=240	h=110	text=Y	bg=#1E40AF	color=#FFFFFF	active_if=homing:axis:1	scale=3	focus=402
+button	id=homing_axis_z	parent=homing_root	x=560	y=150	w=240	h=110	text=Z	bg=#1E40AF	color=#FFFFFF	active_if=homing:axis:2	scale=3	focus=404
+button	id=homing_axis_a	parent=homing_root	x=820	y=150	w=220	h=110	text=A	bg=#92400E	color=#FFFFFF	active_if=homing:axis:3	scale=3	focus=406
+
+# --- method library panel (y=290, h=400) ---
+panel	id=homing_method_panel	parent=homing_root	x=20	y=290	w=1040	h=400	bg=#111827	border=#334155
+label	id=homing_method_title	parent=homing_root	x=40	y=304	w=400	h=28	text=STRATEGY	color=#94A3B8	bg=#111827	scale=2
+label	id=homing_method_active_lbl	parent=homing_root	x=440	y=308	w=120	h=28	text=ACTIVE	color=#64748B	bg=#111827	align=right	scale=1
+label	id=homing_method_active	parent=homing_root	x=570	y=304	w=470	h=36	text=(none)	color=#DDD6FE	bg=#1E1B4B	border=#7C3AED	bind=homing:method	align=center	scale=2
+# Row 1 (y=350): Touch+, Touch-, Index Mark
+button	id=homing_m_touch_pos	parent=homing_root	x=40	y=350	w=320	h=140	text=TOUCH +	bg=#0F766E	color=#FFFFFF	active_if=homing:method:1	scale=2	focus=410
+button	id=homing_m_touch_neg	parent=homing_root	x=380	y=350	w=320	h=140	text=TOUCH -	bg=#0F766E	color=#FFFFFF	active_if=homing:method:2	scale=2	focus=411
+button	id=homing_m_index	parent=homing_root	x=720	y=350	w=320	h=140	text=INDEX MARK	bg=#0E7490	color=#FFFFFF	active_if=homing:method:33	scale=2	focus=412
+# Row 2 (y=510): Hardstop+, Hardstop-, Set-Here
+button	id=homing_m_hard_pos	parent=homing_root	x=40	y=510	w=320	h=140	text=HARDSTOP +	bg=#B45309	color=#FFFFFF	active_if=homing:method:-2	scale=2	focus=413
+button	id=homing_m_hard_neg	parent=homing_root	x=380	y=510	w=320	h=140	text=HARDSTOP -	bg=#B45309	color=#FFFFFF	active_if=homing:method:-1	scale=2	focus=414
+button	id=homing_m_here	parent=homing_root	x=720	y=510	w=320	h=140	text=SET HERE	bg=#5B21B6	color=#FFFFFF	active_if=homing:method:35	scale=2	focus=415
+
+# --- speeds panel (y=710, h=170) ---
+panel	id=homing_speed_panel	parent=homing_root	x=20	y=710	w=1040	h=170	bg=#111827	border=#334155
+label	id=homing_speed_title	parent=homing_root	x=40	y=724	w=400	h=28	text=SPEEDS	color=#94A3B8	bg=#111827	scale=2
+label	id=homing_fast_lbl	parent=homing_root	x=40	y=780	w=200	h=32	text=FAST	color=#94A3B8	bg=#111827	scale=1
+label	id=homing_fast_v	parent=homing_root	x=240	y=776	w=280	h=64	text=---	color=#FBBF24	bg=#0F172A	border=#475569	bind=homing:fast	align=center	scale=2
+label	id=homing_slow_lbl	parent=homing_root	x=560	y=780	w=200	h=32	text=SLOW	color=#94A3B8	bg=#111827	scale=1
+label	id=homing_slow_v	parent=homing_root	x=760	y=776	w=280	h=64	text=---	color=#FBBF24	bg=#0F172A	border=#475569	bind=homing:slow	align=center	scale=2
+
+# --- status panel (y=900, h=300) ---
+panel	id=homing_status_panel	parent=homing_root	x=20	y=900	w=1040	h=300	bg=#111827	border=#334155
+label	id=homing_status_title	parent=homing_root	x=40	y=914	w=400	h=28	text=STATUS	color=#94A3B8	bg=#111827	scale=2
+label	id=homing_axis_lbl	parent=homing_root	x=40	y=970	w=160	h=32	text=AXIS	color=#94A3B8	bg=#111827	scale=1
+label	id=homing_axis_v	parent=homing_root	x=210	y=964	w=280	h=64	text=X	color=#7DD3FC	bg=#082F49	border=#0EA5E9	bind=homing:axis	align=center	scale=3
+label	id=homing_state_lbl	parent=homing_root	x=520	y=970	w=160	h=32	text=STATE	color=#94A3B8	bg=#111827	scale=1
+label	id=homing_state_v	parent=homing_root	x=690	y=964	w=350	h=64	text=IDLE	color=#FEF3C7	bg=#451A03	border=#F59E0B	bind=homing:state	align=center	scale=3
+label	id=homing_msg_lbl	parent=homing_root	x=40	y=1050	w=160	h=32	text=MSG	color=#94A3B8	bg=#111827	scale=1
+label	id=homing_msg_v	parent=homing_root	x=210	y=1046	w=830	h=44	text=---	color=#CBD5E1	bg=#0F172A	border=#475569	bind=homing:message	align=center	scale=2
+# Per-axis homed strip (mirrors the dashboard convention)
+label	id=homing_homed_lbl	parent=homing_root	x=40	y=1112	w=200	h=32	text=HOMED	color=#94A3B8	bg=#111827	scale=1
+label	id=homing_homed_x	parent=homing_root	x=240	y=1108	w=190	h=44	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=axis:x:homed	align=center	scale=2
+label	id=homing_homed_y	parent=homing_root	x=440	y=1108	w=190	h=44	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=axis:y:homed	align=center	scale=2
+label	id=homing_homed_z	parent=homing_root	x=640	y=1108	w=190	h=44	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=axis:z:homed	align=center	scale=2
+label	id=homing_homed_a	parent=homing_root	x=840	y=1108	w=200	h=44	text=---	color=#FCD34D	bg=#0F172A	border=#334155	bind=axis:a:homed	align=center	scale=2
+
+# --- transport panel (y=1220, h=180) ---
+panel	id=homing_act_panel	parent=homing_root	x=20	y=1220	w=1040	h=180	bg=#111827	border=#334155
+label	id=homing_act_title	parent=homing_root	x=40	y=1234	w=400	h=28	text=TRANSPORT	color=#94A3B8	bg=#111827	scale=2
+button	id=homing_btn_home	parent=homing_root	x=40	y=1280	w=320	h=110	text=HOME	bg=#15803D	color=#FFFFFF	scale=3	focus=420
+button	id=homing_btn_abort	parent=homing_root	x=380	y=1280	w=320	h=110	text=ABORT	bg=#B91C1C	color=#FFFFFF	scale=3	focus=422
+button	id=homing_btn_back	parent=homing_root	x=720	y=1280	w=320	h=110	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=424
+
+action	widget=homing_axis_x	event=click	target=homing:axis:0
+action	widget=homing_axis_y	event=click	target=homing:axis:1
+action	widget=homing_axis_z	event=click	target=homing:axis:2
+action	widget=homing_axis_a	event=click	target=homing:axis:3
+action	widget=homing_m_touch_pos	event=click	target=homing:method:1:Touch+
+action	widget=homing_m_touch_neg	event=click	target=homing:method:2:Touch-
+action	widget=homing_m_index	event=click	target=homing:method:33:Index Mark
+action	widget=homing_m_hard_pos	event=click	target=homing:method:-2:Hardstop+
+action	widget=homing_m_hard_neg	event=click	target=homing:method:-1:Hardstop-
+action	widget=homing_m_here	event=click	target=homing:method:35:Set Here
+action	widget=homing_btn_home	event=click	target=homing:start
+action	widget=homing_btn_abort	event=click	target=homing:abort
+action	widget=homing_btn_back	event=click	target=goto:service
 include	page=bottom_nav
 
 # ============================================================

@@ -61,6 +61,13 @@ public:
     size_t channel_count() const noexcept { return MAX_CHANNELS; }
     const ChannelProgramState& channel_state(size_t channel) const noexcept { return channels_[channel]; }
 
+    // Walk the VFS for *.ngc / *.NGC entries and adopt them as program
+    // slots, layered behind the boot-time seeds. Filesystem-backed entries
+    // are loaded once per call (idempotent on the same path) and capped at
+    // MAX_PROGRAMS so the operator never runs out of slots — extra files
+    // on the SD card are silently skipped. Safe to call from the UI tick.
+    size_t scan_filesystem() noexcept;
+
 private:
     bool add_seed(const char* name, const char* text) noexcept;
     bool parse_preview(ProgramEntry& entry) noexcept;

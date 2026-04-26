@@ -32,6 +32,8 @@ struct SpindleState {
 };
 SpindleState g_spindle{};
 
+HomingSnapshot g_homing{};
+
 bool any_master_deadline_faulted() {
     return ethercat::g_master_a.is_deadline_faulted() ||
            ethercat::g_master_b.is_deadline_faulted();
@@ -641,6 +643,7 @@ const ProgramSnapshot& program_snapshot() {
     snap.backend_note = kBackendNote;
 
     const size_t limit = snap.program_count < snap.programs.size() ? snap.program_count : snap.programs.size();
+    const size_t loaded_ch0 = cnc::programs::g_store.loaded(0);
     for (size_t i = 0; i < limit; ++i) {
         const auto& p = cnc::programs::g_store.program(i);
         snap.names[i] = p.name;
@@ -650,7 +653,11 @@ const ProgramSnapshot& program_snapshot() {
         snap.programs[i].blocks = p.preview.motion_blocks;
         snap.programs[i].bytes = p.text_size;
         snap.programs[i].selected = (i == snap.selected_index);
-        snap.programs[i].loaded = p.loaded && p.preview.valid;
+        // `loaded` here means "this slot is bound to channel 0 right now",
+        // which is what the operator wants highlighted in the file browser.
+        // The boolean p.loaded (== was-parsed-into-memory) is folded into
+        // `status` above for the textual readout.
+        snap.programs[i].loaded = (i == loaded_ch0) && p.loaded && p.preview.valid;
     }
 
     for (size_t ch = 0; ch < snap.channels.size(); ++ch) {
@@ -823,6 +830,118 @@ bool save_setup() {
 
 bool load_setup() {
     return true;
+}
+
+namespace {
+const char* homing_state_text(HomingSnapshot::State s) {
+    switch (s) {
+        case HomingSnapshot::State::Idle: return "Idle";
+        case HomingSnapshot::State::Configuring: return "Configuring";
+        case HomingSnapshot::State::Searching: return "Searching";
+        case HomingSnapshot::State::Approaching: return "Approaching";
+        case HomingSnapshot::State::Done: return "Done";
+        case HomingSnapshot::State::Faulted: return "Faulted";
+    }
+    return "?";
+}
+}  // namespace
+
+HomingSnapshot homing_snapshot() {
+    core::ScopedLock lock(g_lock);
+    for (size_t i = 0; i < 4; ++i) g_homing.homed_axes[i] = axis_homed_locked(i);
+    if (any_master_deadline_faulted()) {
+        g_homing.state = HomingSnapshot::State::Faulted;
+        g_homing.status_message = "EtherCAT deadline-fault latched";
+    } else if (g_homing.state == HomingSnapshot::State::Searching ||
+               g_homing.state == HomingSnapshot::State::Approaching) {
+        const auto& ax = motion::g_motion.axis(static_cast<size_t>(g_homing.selected_axis & 3));
+        const auto phase = ax.homing.phase();
+        if (phase == motion::HomingEngine::Phase::Done) {
+            g_homing.state = HomingSnapshot::State::Done;
+            g_homing.status_message = "Homing attained";
+        } else if (phase == motion::HomingEngine::Phase::Idle) {
+            g_homing.state = HomingSnapshot::State::Idle;
+            g_homing.status_message = "Idle";
+        } else {
+            g_homing.status_message = homing_state_text(g_homing.state);
+        }
+    } else {
+        g_homing.status_message = homing_state_text(g_homing.state);
+    }
+    return g_homing;
+}
+
+void set_homing_axis(uint32_t axis) {
+    core::ScopedLock lock(g_lock);
+    g_homing.selected_axis = static_cast<int32_t>(axis & 3u);
+    if (g_homing.state == HomingSnapshot::State::Idle ||
+        g_homing.state == HomingSnapshot::State::Done) {
+        g_homing.state = HomingSnapshot::State::Configuring;
+    }
+}
+
+void set_homing_method(int32_t method_id, const char* name) {
+    core::ScopedLock lock(g_lock);
+    g_homing.method_id = method_id;
+    g_homing.method_name = name ? name : "(none)";
+    g_homing.state = HomingSnapshot::State::Configuring;
+}
+
+void set_homing_speeds(int32_t fast_cps, int32_t slow_cps) {
+    core::ScopedLock lock(g_lock);
+    if (fast_cps > 0) g_homing.fast_cps = fast_cps;
+    if (slow_cps > 0) g_homing.slow_cps = slow_cps;
+}
+
+void start_homing() {
+    if (any_master_deadline_faulted()) return;
+    int8_t  method = 0;
+    uint16_t station = 0;
+    uint32_t fast = 0, slow = 0, accel = 0;
+    int32_t  off = 0;
+    uint16_t torque = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        if (g_homing.method_id == 0) {
+            g_homing.status_message = "Pick a homing strategy first";
+            return;
+        }
+        const size_t axis_idx = static_cast<size_t>(g_homing.selected_axis & 3);
+        if (axis_idx >= ethercat::MAX_SLAVES) return;
+        const auto& slave = ethercat::g_master_a.slave(axis_idx);
+        if (slave.station_addr == 0) {
+            g_homing.state = HomingSnapshot::State::Faulted;
+            g_homing.status_message = "Slave not discovered";
+            return;
+        }
+        station = slave.station_addr;
+        method  = static_cast<int8_t>(g_homing.method_id);
+        fast    = static_cast<uint32_t>(g_homing.fast_cps);
+        slow    = static_cast<uint32_t>(g_homing.slow_cps);
+        accel   = static_cast<uint32_t>(g_homing.accel_cps2);
+        off     = g_homing.offset_counts;
+        torque  = static_cast<uint16_t>(g_homing.torque_permille);
+        g_homing.state = HomingSnapshot::State::Searching;
+        g_homing.status_message = "Searching";
+    }
+    const bool ok = ethercat::g_master_a.run_homing_sequence(
+        station, method, fast, slow, accel, off, torque, /*timeout_ms*/5000);
+    core::ScopedLock lock(g_lock);
+    if (ok) {
+        g_homing.state = HomingSnapshot::State::Done;
+        g_homing.status_message = "Homing attained";
+    } else {
+        g_homing.state = HomingSnapshot::State::Faulted;
+        g_homing.status_message = "Homing failed or timed out";
+    }
+}
+
+void abort_homing() {
+    core::ScopedLock lock(g_lock);
+    const size_t axis_idx = static_cast<size_t>(g_homing.selected_axis & 3);
+    motion::g_motion.set_axis_velocity(axis_idx, 0);
+    g_homing.state = HomingSnapshot::State::Idle;
+    g_homing.status_message = "Aborted";
 }
 
 EthercatSnapshot ethercat_snapshot() {
