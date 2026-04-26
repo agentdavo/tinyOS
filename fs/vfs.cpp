@@ -195,21 +195,36 @@ bool write_blob(const char* path, const void* buf, size_t bytes, bool* persisten
     // setup.cfg intact; if rename() is unsupported, the write() landed
     // in place and we accept the small corruption window.
     if (auto* fs = kernel::g_platform ? kernel::g_platform->get_fs_ops() : nullptr) {
+        // Build a sibling temp path by swapping the file extension to `.tmp`.
+        // Keeping the basename intact and the extension at <= 3 chars keeps
+        // FAT32's 8.3-only write surface happy (long-name writes aren't
+        // supported on the persistent backend yet); a power-loss mid-write
+        // leaves the old setup.cfg intact and the .tmp gets cleaned up by
+        // chkdsk on the host.
         char tmp_path[kMaxPathLen];
         size_t plen = std::strlen(path);
-        if (plen + 4 < kMaxPathLen) {
-            for (size_t i = 0; i < plen; ++i) tmp_path[i] = path[i];
-            tmp_path[plen + 0] = '.';
-            tmp_path[plen + 1] = 't';
-            tmp_path[plen + 2] = 'm';
-            tmp_path[plen + 3] = 'p';
-            tmp_path[plen + 4] = '\0';
+        if (plen > 0 && plen + 5 < kMaxPathLen) {
+            size_t dot = plen;
+            for (size_t i = 0; i < plen; ++i) {
+                if (path[i] == '.') dot = i;
+            }
+            // dot==plen means no extension; in that case we just append .tmp.
+            for (size_t i = 0; i < dot; ++i) tmp_path[i] = path[i];
+            tmp_path[dot + 0] = '.';
+            tmp_path[dot + 1] = 't';
+            tmp_path[dot + 2] = 'm';
+            tmp_path[dot + 3] = 'p';
+            tmp_path[dot + 4] = '\0';
             if (fs->write(tmp_path, buf, bytes)) {
                 if (fs->rename(tmp_path, path) || fs->write(path, buf, bytes)) {
                     if (persistent_out) *persistent_out = true;
                     // Fall through to mirror in VFS so lookup() sees it
                     // immediately without re-scanning the FS.
                 }
+            } else if (fs->write(path, buf, bytes)) {
+                // Direct in-place write succeeded — accept the small
+                // corruption window when the .tmp pre-write doesn't fit.
+                if (persistent_out) *persistent_out = true;
             }
         }
     }

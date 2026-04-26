@@ -172,6 +172,78 @@ bool VirtioBlkDriver::read_sectors(uint64_t lba, uint32_t count, void* buf) {
     return status_byte_ == VIRTIO_BLK_S_OK;
 }
 
+bool VirtioBlkDriver::write_sectors(uint64_t lba, uint32_t count, const void* buf) {
+    if (!initialized_ || !buf) return false;
+    if (count == 0 || count > MAX_SECTORS_PER_REQ) return false;
+
+    // Mirror of read_sectors, but VIRTIO_BLK_T_OUT and the data descriptor
+    // is device-read (no VIRTQ_DESC_F_WRITE), so the device pulls payload
+    // from `buf` rather than writing into it.
+    req_hdr_.type = VIRTIO_BLK_T_OUT;
+    req_hdr_.reserved = 0;
+    req_hdr_.sector = lba;
+    status_byte_ = 0xFF;
+
+    q_.desc[0].addr  = reinterpret_cast<uint64_t>(&req_hdr_);
+    q_.desc[0].len   = sizeof(VirtioBlkReqHeader);
+    q_.desc[0].flags = VIRTQ_DESC_F_NEXT;
+    q_.desc[0].next  = 1;
+
+    q_.desc[1].addr  = reinterpret_cast<uint64_t>(buf);
+    q_.desc[1].len   = count * SECTOR_SIZE;
+    q_.desc[1].flags = VIRTQ_DESC_F_NEXT;  // device-read; no F_WRITE
+    q_.desc[1].next  = 2;
+
+    q_.desc[2].addr  = reinterpret_cast<uint64_t>(&status_byte_);
+    q_.desc[2].len   = 1;
+    q_.desc[2].flags = VIRTQ_DESC_F_WRITE;
+    q_.desc[2].next  = 0;
+
+    if (kernel::g_platform && kernel::g_platform->get_mem_ops()) {
+        auto* mem = kernel::g_platform->get_mem_ops();
+        mem->flush_cache_range(&q_.desc[0], sizeof(VirtqDesc) * 3);
+        mem->flush_cache_range(&req_hdr_, sizeof(req_hdr_));
+        // Flush the source payload so the device sees the written bytes,
+        // not stale cached lines from before the caller filled `buf`.
+        mem->flush_cache_range(const_cast<void*>(buf), count * SECTOR_SIZE);
+    }
+
+    const uint16_t avail_slot = q_.avail.idx % VIRTQ_SIZE;
+    q_.avail.ring[avail_slot] = 0;
+
+    if (kernel::g_platform && kernel::g_platform->get_mem_ops()) {
+        kernel::g_platform->get_mem_ops()->flush_cache_range(&q_.avail, sizeof(q_.avail));
+    }
+    __atomic_store_n(&q_.avail.idx, static_cast<uint16_t>(q_.avail.idx + 1),
+                     __ATOMIC_RELEASE);
+    if (kernel::g_platform && kernel::g_platform->get_mem_ops()) {
+        kernel::g_platform->get_mem_ops()->flush_cache_range(&q_.avail, sizeof(q_.avail));
+    }
+    kernel::hal::sync::barrier_dsb();
+    mmio_write(VMMIO_QUEUE_NOTIFY, 0);
+
+    const uint16_t want = static_cast<uint16_t>(q_.last_used + 1);
+    const uint32_t spin_limit = 200'000'000;
+    for (uint32_t i = 0; i < spin_limit; ++i) {
+        if (kernel::g_platform && kernel::g_platform->get_mem_ops()) {
+            kernel::g_platform->get_mem_ops()->flush_cache_range(&q_.used, sizeof(q_.used));
+        }
+        uint16_t cur = __atomic_load_n(&q_.used.idx, __ATOMIC_ACQUIRE);
+        if (cur == want) break;
+        kernel::util::cpu_relax();
+    }
+    if (__atomic_load_n(&q_.used.idx, __ATOMIC_ACQUIRE) != want) return false;
+    q_.last_used = want;
+
+    const uint32_t isr = mmio_read(VMMIO_INT_STATUS);
+    if (isr) mmio_write(VMMIO_INT_ACK, isr);
+
+    if (kernel::g_platform && kernel::g_platform->get_mem_ops()) {
+        kernel::g_platform->get_mem_ops()->flush_cache_range(&status_byte_, 1);
+    }
+    return status_byte_ == VIRTIO_BLK_S_OK;
+}
+
 VirtioBlkDriver* discover_virtio_blk(uint64_t base, size_t slot_size, size_t slot_count) {
     if (g_driver_bound) return &g_driver;
     for (size_t i = 0; i < slot_count; ++i) {

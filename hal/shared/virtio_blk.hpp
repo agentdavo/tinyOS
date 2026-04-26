@@ -70,6 +70,11 @@ public:
     // on error returns false and leaves `buf` in an indeterminate state.
     bool read_sectors(uint64_t lba, uint32_t count, void* buf);
 
+    // Write `count` consecutive sectors starting at `lba` from `buf`. Same
+    // descriptor-chain shape as the read path but with VIRTIO_BLK_T_OUT and
+    // the data descriptor flagged read-only-from-device. Polled / blocking.
+    bool write_sectors(uint64_t lba, uint32_t count, const void* buf);
+
     bool initialized() const { return initialized_; }
     uint64_t base() const { return base_; }
 

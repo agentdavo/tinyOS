@@ -231,6 +231,9 @@ private:
         bool read_sectors(uint64_t lba, uint32_t count, void* buf) override {
             return drv_ && drv_->read_sectors(lba, count, buf);
         }
+        bool write_sectors(uint64_t lba, uint32_t count, const void* buf) override {
+            return drv_ && drv_->write_sectors(lba, count, buf);
+        }
     private:
         ::hal::shared::virtio::VirtioBlkDriver* drv_ = nullptr;
     };

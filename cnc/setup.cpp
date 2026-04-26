@@ -439,15 +439,26 @@ bool load_from(const char* path) noexcept {
     if (!path || !*path) return false;
     const char* data = nullptr;
     size_t size = 0;
-    if (!kernel::vfs::lookup(path, data, size) || !data || size == 0) {
-        char msg[96];
-        kernel::util::k_snprintf(msg, sizeof(msg),
-                                 "[setup] load '%s' not found (skipping)\n", path);
-        log(msg);
-        return false;
+    bool from_vfs = kernel::vfs::lookup(path, data, size) && data && size > 0;
+    if (from_vfs) {
+        if (size > sizeof(g_load_buf)) size = sizeof(g_load_buf);
+        for (size_t i = 0; i < size; ++i) g_load_buf[i] = data[i];
+    } else {
+        // VFS shadow miss — try the persistent FS directly. A previous boot
+        // may have written setup.cfg to the SD card (the read on this boot
+        // hasn't pulled it into VFS because mount_sd only scans `system/`).
+        auto* fs = kernel::g_platform ? kernel::g_platform->get_fs_ops() : nullptr;
+        size_t got = 0;
+        if (fs && fs->read(path, g_load_buf, sizeof(g_load_buf), &got) && got > 0) {
+            size = got;
+        } else {
+            char msg[96];
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                                     "[setup] load '%s' not found (skipping)\n", path);
+            log(msg);
+            return false;
+        }
     }
-    if (size > sizeof(g_load_buf)) size = sizeof(g_load_buf);
-    for (size_t i = 0; i < size; ++i) g_load_buf[i] = data[i];
     LoadCtx ctx{};
     walk_ini(g_load_buf, size, &load_dispatch, &ctx);
     char msg[160];

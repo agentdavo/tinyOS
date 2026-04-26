@@ -36,10 +36,18 @@ bool Fat32FileSystem::sector_trampoline(uint64_t lba, uint32_t count, void* buf,
     return self->blk_->read_sectors(lba, count, buf);
 }
 
+bool Fat32FileSystem::sector_write_trampoline(uint64_t lba, uint32_t count,
+                                              const void* buf, void* user) {
+    auto* self = static_cast<Fat32FileSystem*>(user);
+    if (!self->blk_) return false;
+    return self->blk_->write_sectors(lba, count, buf);
+}
+
 bool Fat32FileSystem::mount() {
     if (!blk_) return false;
     if (vol_.mounted) return true;
-    return fat32::mount(vol_, &Fat32FileSystem::sector_trampoline, this);
+    return fat32::mount(vol_, &Fat32FileSystem::sector_trampoline,
+                        &Fat32FileSystem::sector_write_trampoline, this);
 }
 
 void Fat32FileSystem::unmount() {
@@ -59,6 +67,16 @@ bool Fat32FileSystem::read(const char* path, void* buf, size_t buf_size,
     const bool ok = fat32::read_file(vol_, path, buf, buf_size, &got);
     if (bytes_read) *bytes_read = got;
     return ok;
+}
+
+bool Fat32FileSystem::write(const char* path, const void* buf, size_t bytes) {
+    if (!vol_.mounted) return false;
+    return fat32::write_file(vol_, path, buf, bytes);
+}
+
+bool Fat32FileSystem::rename(const char* from_path, const char* to_path) {
+    if (!vol_.mounted) return false;
+    return fat32::rename_file(vol_, from_path, to_path);
 }
 
 size_t Fat32FileSystem::file_size(const char* path) {

@@ -375,12 +375,267 @@ bool recurse_walk(Volume& v, uint32_t dir_cluster, WalkState& ws) {
     return walk_directory(v, dir_cluster, &walk_entry_cb, &ws);
 }
 
+// --- write-side helpers ---------------------------------------------------
+//
+// All restricted to the root directory and 8.3 names. Each helper
+// independently validates volume state so any caller path that wanders
+// out of the supported envelope returns false instead of corrupting.
+
+inline void write_le16(void* p, uint16_t v) {
+    auto* b = static_cast<uint8_t*>(p);
+    b[0] = static_cast<uint8_t>(v & 0xFF);
+    b[1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+}
+inline void write_le32(void* p, uint32_t v) {
+    auto* b = static_cast<uint8_t*>(p);
+    b[0] = static_cast<uint8_t>(v & 0xFF);
+    b[1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+    b[2] = static_cast<uint8_t>((v >> 16) & 0xFF);
+    b[3] = static_cast<uint8_t>((v >> 24) & 0xFF);
+}
+
+// Encode a path-component into the 11-byte 8.3 packed form. Returns false
+// if the name doesn't fit the FAT short-name shape (uppercased ASCII,
+// 1-8 base chars, 0-3 ext chars, no embedded dots beyond the separator,
+// no spaces). setup.cfg passes; long names don't.
+bool encode_short_name(const char* name, size_t name_len, uint8_t out[11]) {
+    if (name_len == 0 || name_len > 12) return false;  // 8 + 1 + 3
+    for (int i = 0; i < 11; ++i) out[i] = 0x20;
+
+    size_t dot = name_len;
+    for (size_t i = 0; i < name_len; ++i) {
+        if (name[i] == '.') { dot = i; break; }
+    }
+    const size_t base_len = dot;
+    const size_t ext_len = (dot < name_len) ? (name_len - dot - 1) : 0;
+    if (base_len == 0 || base_len > 8) return false;
+    if (ext_len > 3) return false;
+
+    auto enc = [](char c) -> int {
+        if (c >= 'a' && c <= 'z') return c - 'a' + 'A';
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return c;
+        // Permit a small set of safe punctuation that's legal in 8.3.
+        if (c == '_' || c == '-' || c == '~' || c == '!' || c == '#' || c == '$') return c;
+        return -1;
+    };
+
+    for (size_t i = 0; i < base_len; ++i) {
+        const int e = enc(name[i]);
+        if (e < 0) return false;
+        out[i] = static_cast<uint8_t>(e);
+    }
+    for (size_t i = 0; i < ext_len; ++i) {
+        const int e = enc(name[dot + 1 + i]);
+        if (e < 0) return false;
+        out[8 + i] = static_cast<uint8_t>(e);
+    }
+    // 0xE5 in slot 0 means "deleted"; remap to 0x05 like the spec wants.
+    if (out[0] == 0xE5) out[0] = 0x05;
+    return true;
+}
+
+bool short_names_equal(const uint8_t a[11], const uint8_t b[11]) {
+    for (int i = 0; i < 11; ++i) if (a[i] != b[i]) return false;
+    return true;
+}
+
+// Write FAT entry [cluster] = value, replicating across all FAT copies so
+// host fsck doesn't whinge. Only updates the bottom 28 bits as the spec
+// reserves the top 4 bits of every entry.
+bool fat_set_entry(Volume& v, uint32_t cluster, uint32_t value) {
+    if (!v.write) return false;
+    const uint64_t entry_byte = static_cast<uint64_t>(cluster) * 4;
+    const uint64_t off_in_sec = entry_byte % v.bytes_per_sector;
+    alignas(8) uint8_t sec[SECTOR_SIZE];
+    for (uint32_t i = 0; i < v.num_fats; ++i) {
+        const uint64_t lba = v.fat_start_lba +
+                             static_cast<uint64_t>(i) * v.fat_size_sectors +
+                             entry_byte / v.bytes_per_sector;
+        if (!v.read(lba, 1, sec, v.user)) return false;
+        const uint32_t cur = read_le32(sec + off_in_sec) & 0xF0000000;  // preserve reserved bits
+        write_le32(sec + off_in_sec, cur | (value & 0x0FFFFFFF));
+        if (!v.write(lba, 1, sec, v.user)) return false;
+    }
+    return true;
+}
+
+uint32_t fat_get_entry(Volume& v, uint32_t cluster) {
+    alignas(8) uint8_t sec[SECTOR_SIZE];
+    const uint64_t entry_byte = static_cast<uint64_t>(cluster) * 4;
+    const uint64_t lba = v.fat_start_lba + entry_byte / v.bytes_per_sector;
+    if (!v.read(lba, 1, sec, v.user)) return 0x0FFFFFFF;
+    return read_le32(sec + (entry_byte % v.bytes_per_sector)) & 0x0FFFFFFF;
+}
+
+// Walk the existing chain starting at `start_cluster` and free every entry
+// (set to 0). Stops at EOC. Used to truncate before re-writing or to
+// reclaim deleted-file storage.
+bool fat_free_chain(Volume& v, uint32_t start_cluster) {
+    uint32_t cur = start_cluster;
+    // Bound the walk so a corrupt loop doesn't hang the kernel.
+    for (uint32_t guard = 0; guard < (1u << 20); ++guard) {
+        if (cur < 2 || cur >= 0x0FFFFFF8) return true;
+        const uint32_t nxt = fat_get_entry(v, cur);
+        if (!fat_set_entry(v, cur, 0)) return false;
+        cur = nxt;
+    }
+    return false;
+}
+
+// Linear scan of the FAT for the next free cluster (entry == 0). Starts at
+// cluster 2 (first usable) and stops at total cluster count derived from
+// the FAT size. Returns 0 if the volume is full.
+uint32_t fat_alloc_one(Volume& v) {
+    if (!v.write) return 0;
+    alignas(8) uint8_t sec[SECTOR_SIZE];
+    const uint32_t entries_per_sec = v.bytes_per_sector / 4;
+    const uint32_t total_entries = v.fat_size_sectors * entries_per_sec;
+    for (uint32_t cluster = 2; cluster < total_entries; ) {
+        const uint64_t entry_byte = static_cast<uint64_t>(cluster) * 4;
+        const uint64_t lba = v.fat_start_lba + entry_byte / v.bytes_per_sector;
+        if (!v.read(lba, 1, sec, v.user)) return 0;
+        const uint32_t off0 = static_cast<uint32_t>(entry_byte % v.bytes_per_sector);
+        for (uint32_t off = off0; off + 4 <= v.bytes_per_sector; off += 4, ++cluster) {
+            const uint32_t e = read_le32(sec + off) & 0x0FFFFFFF;
+            if (e == 0) return cluster;
+        }
+    }
+    return 0;
+}
+
+// Locate a directory entry slot in the root for `target_name` (8.3 packed).
+// On hit: returns true and fills *out_lba / *out_off / fills the 32-byte
+// entry into out_entry. On miss: returns true with *found == false and the
+// first reusable (0xE5) or end-of-dir (0x00) slot filled in for caller use.
+struct RootSlot {
+    bool found = false;       // existing entry with matching short name
+    uint64_t lba = 0;         // sector containing the slot
+    uint32_t off = 0;         // byte offset into that sector
+    uint8_t entry[32]{};      // a copy of the existing slot (only valid if found)
+
+    bool free_found = false;  // a 0x00/0xE5 slot we can reuse
+    uint64_t free_lba = 0;
+    uint32_t free_off = 0;
+    bool free_is_end = false; // true if the free slot was 0x00 (end marker)
+};
+
+bool root_scan_for_slot(Volume& v, const uint8_t target_name[11], RootSlot& slot) {
+    slot = RootSlot{};
+    alignas(8) uint8_t sec[SECTOR_SIZE];
+    alignas(8) uint8_t fat_sec[SECTOR_SIZE];
+    uint64_t fat_cached = 0xFFFFFFFFFFFFFFFFULL;
+    uint32_t cluster = v.root_cluster;
+    while (cluster >= 2 && cluster < 0x0FFFFFF8) {
+        const uint64_t base = cluster_to_lba(v, cluster);
+        for (uint32_t s = 0; s < v.sectors_per_cluster; ++s) {
+            const uint64_t lba = base + s;
+            if (!v.read(lba, 1, sec, v.user)) return false;
+            for (uint32_t off = 0; off + 32 <= v.bytes_per_sector; off += 32) {
+                const uint8_t first = sec[off];
+                if (first == 0x00) {
+                    // End of directory marker — claim it as the free slot.
+                    if (!slot.free_found) {
+                        slot.free_found = true;
+                        slot.free_lba = lba;
+                        slot.free_off = off;
+                        slot.free_is_end = true;
+                    }
+                    return true;  // can't see beyond end-of-dir
+                }
+                if (first == 0xE5) {
+                    if (!slot.free_found) {
+                        slot.free_found = true;
+                        slot.free_lba = lba;
+                        slot.free_off = off;
+                        slot.free_is_end = false;
+                    }
+                    continue;
+                }
+                const uint8_t attr = sec[off + 11];
+                if ((attr & ATTR_LFN) == ATTR_LFN) continue;  // skip LFN runs
+                if ((attr & ATTR_VOLUME_ID) != 0) continue;
+                // Compare short name.
+                if (short_names_equal(&sec[off], target_name)) {
+                    slot.found = true;
+                    slot.lba = lba;
+                    slot.off = off;
+                    for (int i = 0; i < 32; ++i) slot.entry[i] = sec[off + i];
+                    return true;
+                }
+            }
+        }
+        cluster = fat_next_cluster(v, cluster, fat_sec, fat_cached);
+    }
+    return true;  // not found, no free slot either (caller checks)
+}
+
+// Write `bytes` of `data` into the chain starting at `first_cluster`.
+// Allocates additional clusters if needed. Returns the chain head (==
+// first_cluster on success). Returns 0 on out-of-space / IO error.
+uint32_t write_chain(Volume& v, uint32_t first_cluster, const uint8_t* data, uint32_t bytes) {
+    if (!v.write) return 0;
+    const uint32_t cluster_bytes = v.bytes_per_sector * v.sectors_per_cluster;
+    alignas(8) uint8_t sec[SECTOR_SIZE];
+
+    uint32_t cur = first_cluster;
+    uint32_t prev = 0;
+    uint32_t written = 0;
+    while (written < bytes || prev == 0) {
+        if (cur < 2 || cur >= 0x0FFFFFF8) {
+            // Need to extend.
+            const uint32_t nxt = fat_alloc_one(v);
+            if (nxt == 0) return 0;
+            // Mark the new cluster as EOC; chain prev->nxt.
+            if (!fat_set_entry(v, nxt, 0x0FFFFFFF)) return 0;
+            if (prev != 0 && !fat_set_entry(v, prev, nxt)) return 0;
+            cur = nxt;
+        }
+        const uint64_t lba = cluster_to_lba(v, cur);
+        const uint32_t to_write_in_cluster =
+            (bytes - written) < cluster_bytes ? (bytes - written) : cluster_bytes;
+        for (uint32_t s = 0; s < v.sectors_per_cluster; ++s) {
+            const uint32_t off = s * v.bytes_per_sector;
+            if (off >= to_write_in_cluster) {
+                // Tail sector beyond the data — zero-fill so old bytes don't leak.
+                for (uint32_t i = 0; i < v.bytes_per_sector; ++i) sec[i] = 0;
+            } else {
+                const uint32_t copy =
+                    (to_write_in_cluster - off) < v.bytes_per_sector ?
+                        (to_write_in_cluster - off) : v.bytes_per_sector;
+                for (uint32_t i = 0; i < copy; ++i) sec[i] = data[written + off + i];
+                for (uint32_t i = copy; i < v.bytes_per_sector; ++i) sec[i] = 0;
+            }
+            if (!v.write(lba + s, 1, sec, v.user)) return 0;
+        }
+        written += to_write_in_cluster;
+        prev = cur;
+        // Move on to next cluster from FAT (might be EOC for the very last one).
+        if (written < bytes) {
+            cur = fat_get_entry(v, cur);
+        } else {
+            // Truncate any tail of the existing chain.
+            const uint32_t tail = fat_get_entry(v, cur);
+            if (!fat_set_entry(v, cur, 0x0FFFFFFF)) return 0;
+            if (tail >= 2 && tail < 0x0FFFFFF8) {
+                if (!fat_free_chain(v, tail)) return 0;
+            }
+            break;
+        }
+    }
+    return first_cluster;
+}
+
 }  // namespace
 
 bool mount(Volume& vol, SectorReader read, void* user) {
+    return mount(vol, read, nullptr, user);
+}
+
+bool mount(Volume& vol, SectorReader read, SectorWriter write, void* user) {
     if (!read) return false;
     vol = Volume{};
     vol.read = read;
+    vol.write = write;
     vol.user = user;
 
     alignas(8) uint8_t boot[SECTOR_SIZE];
@@ -462,6 +717,148 @@ bool read_file(Volume& vol, const char* path, void* buf, size_t buf_size,
         cur = fat_next_cluster(vol, cur, fat_sector, fat_cached_lba);
     }
     *bytes_read = written;
+    return true;
+}
+
+bool write_file(Volume& vol, const char* path, const void* buf, size_t bytes) {
+    if (!vol.mounted || !vol.write || !path || (!buf && bytes != 0)) return false;
+    if (bytes > kMaxWriteFileBytes) return false;
+
+    // Strip leading slashes; reject any embedded slash (root-only by design).
+    while (*path == '/') ++path;
+    size_t name_len = 0;
+    while (path[name_len]) {
+        if (path[name_len] == '/') return false;
+        ++name_len;
+    }
+    if (name_len == 0) return false;
+
+    uint8_t target[11];
+    if (!encode_short_name(path, name_len, target)) return false;
+
+    RootSlot slot{};
+    if (!root_scan_for_slot(vol, target, slot)) return false;
+
+    uint32_t first_cluster = 0;
+    if (slot.found) {
+        // Reuse existing chain head if present; otherwise allocate one.
+        first_cluster =
+            (static_cast<uint32_t>(read_le16(&slot.entry[0x14])) << 16) |
+            read_le16(&slot.entry[0x1A]);
+    }
+    if (first_cluster < 2 || first_cluster >= 0x0FFFFFF8) {
+        first_cluster = (bytes == 0) ? 0 : fat_alloc_one(vol);
+        if (bytes != 0 && first_cluster == 0) return false;
+        if (first_cluster != 0) {
+            if (!fat_set_entry(vol, first_cluster, 0x0FFFFFFF)) return false;
+        }
+    }
+
+    if (bytes > 0 && first_cluster != 0) {
+        if (write_chain(vol, first_cluster,
+                        static_cast<const uint8_t*>(buf),
+                        static_cast<uint32_t>(bytes)) == 0) {
+            return false;
+        }
+    } else if (bytes == 0 && slot.found) {
+        // Truncate existing chain to nothing.
+        const uint32_t old =
+            (static_cast<uint32_t>(read_le16(&slot.entry[0x14])) << 16) |
+            read_le16(&slot.entry[0x1A]);
+        if (old >= 2 && old < 0x0FFFFFF8) {
+            if (!fat_free_chain(vol, old)) return false;
+        }
+        first_cluster = 0;
+    }
+
+    // Build the directory entry.
+    alignas(8) uint8_t entry[32] = {};
+    for (int i = 0; i < 11; ++i) entry[i] = target[i];
+    entry[11] = ATTR_ARCHIVE;
+    write_le16(&entry[0x14], static_cast<uint16_t>((first_cluster >> 16) & 0xFFFF));
+    write_le16(&entry[0x1A], static_cast<uint16_t>(first_cluster & 0xFFFF));
+    write_le32(&entry[0x1C], static_cast<uint32_t>(bytes));
+
+    // Choose where to land the entry: existing slot (in place), or the first
+    // reusable / end-of-dir slot the scan found.
+    uint64_t target_lba = 0;
+    uint32_t target_off = 0;
+    bool was_end = false;
+    if (slot.found) {
+        target_lba = slot.lba;
+        target_off = slot.off;
+    } else if (slot.free_found) {
+        target_lba = slot.free_lba;
+        target_off = slot.free_off;
+        was_end = slot.free_is_end;
+    } else {
+        return false;  // root directory full — would need to grow it
+    }
+
+    alignas(8) uint8_t sec[SECTOR_SIZE];
+    if (!vol.read(target_lba, 1, sec, vol.user)) return false;
+    for (int i = 0; i < 32; ++i) sec[target_off + i] = entry[i];
+    // If we just consumed the end-of-dir marker, write a fresh terminator
+    // immediately after if room allows. If not (slot was last 32B of the
+    // sector / cluster), the next cluster's existing 0x00 slot keeps us
+    // honest — root_scan walks until it sees one anyway.
+    if (was_end && target_off + 64 <= vol.bytes_per_sector) {
+        sec[target_off + 32] = 0x00;
+    }
+    if (!vol.write(target_lba, 1, sec, vol.user)) return false;
+    return true;
+}
+
+bool rename_file(Volume& vol, const char* from, const char* to) {
+    if (!vol.mounted || !vol.write || !from || !to) return false;
+    while (*from == '/') ++from;
+    while (*to == '/') ++to;
+    size_t from_len = 0, to_len = 0;
+    while (from[from_len]) {
+        if (from[from_len] == '/') return false;
+        ++from_len;
+    }
+    while (to[to_len]) {
+        if (to[to_len] == '/') return false;
+        ++to_len;
+    }
+    if (from_len == 0 || to_len == 0) return false;
+
+    uint8_t from_n[11], to_n[11];
+    if (!encode_short_name(from, from_len, from_n)) return false;
+    if (!encode_short_name(to, to_len, to_n)) return false;
+    if (short_names_equal(from_n, to_n)) return true;  // no-op rename
+
+    // Find source.
+    RootSlot from_slot{};
+    if (!root_scan_for_slot(vol, from_n, from_slot)) return false;
+    if (!from_slot.found) return false;
+
+    // If `to` exists, free its chain and clear its dir entry first. This is
+    // the small atomicity weakness called out in CLAUDE.md — accepted for
+    // first-cut so write-then-rename works at all.
+    RootSlot to_slot{};
+    if (!root_scan_for_slot(vol, to_n, to_slot)) return false;
+    if (to_slot.found) {
+        const uint32_t old =
+            (static_cast<uint32_t>(read_le16(&to_slot.entry[0x14])) << 16) |
+            read_le16(&to_slot.entry[0x1A]);
+        if (old >= 2 && old < 0x0FFFFFF8) {
+            if (!fat_free_chain(vol, old)) return false;
+        }
+        alignas(8) uint8_t sec[SECTOR_SIZE];
+        if (!vol.read(to_slot.lba, 1, sec, vol.user)) return false;
+        sec[to_slot.off + 0] = 0xE5;  // delete marker
+        if (!vol.write(to_slot.lba, 1, sec, vol.user)) return false;
+    }
+
+    // Mutate the source entry's name in place. This is atomic at sector
+    // granularity (one 512 B write); on power loss the entry either has
+    // the old or the new name, never a torn 11-byte field.
+    alignas(8) uint8_t sec[SECTOR_SIZE];
+    if (!vol.read(from_slot.lba, 1, sec, vol.user)) return false;
+    for (int i = 0; i < 11; ++i) sec[from_slot.off + i] = to_n[i];
+    if (!vol.write(from_slot.lba, 1, sec, vol.user)) return false;
     return true;
 }
 
