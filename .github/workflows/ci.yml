@@ -30,7 +30,7 @@ jobs:
 
       - name: Verify ELF load addresses
         run: |
-          aarch64-linux-gnu-readelf -l miniOS_kernel.elf > elf_headers.txt
+          aarch64-linux-gnu-readelf -l build/arm64/miniOS_kernel_arm64.elf > elf_headers.txt
           grep -q "VirtAddr.*0x40000000" elf_headers.txt
           grep -q "VirtAddr.*0x40100000" elf_headers.txt
 
@@ -38,7 +38,7 @@ jobs:
         run: |
           timeout 15s sh -c 'printf "echo ci-ok\n" | qemu-system-aarch64 \
               -M virt -cpu max -smp 4 -m 128M -nographic \
-              -kernel miniOS_kernel.elf' > boot.log 2>&1 || true
+              -kernel build/arm64/miniOS_kernel_arm64.elf' > boot.log 2>&1 || true
           cat boot.log
           grep -q "miniOS CLI ready" boot.log
           # CLI echoes lines with CRLF; match the token loosely.
@@ -64,13 +64,62 @@ jobs:
             END { if (!found) { print "no parsable cycle banner"; exit 1 } }
           ' boot.log
 
+      - name: Gate measured cycle p99 (regression guard)
+        run: |
+          # The static cycle banner above only proves the configured period is
+          # legal. This step boots the kernel for ~90 s, drives `ec_hist` to
+          # dump the per-master LatencyHistogram (commit 69dbf4e), and parses
+          # the p99 line from `diag/histogram.cpp::dump`:
+          #   "  ec0:cycle: n=N min=Xus avg=Xus p50=Xus p99=Xus max=Xus"
+          #
+          # Threshold rationale: under QEMU TCG (especially on shared CI
+          # runners) the master sees hundreds of cycle_deadline_miss events
+          # in the first second of boot, with individual cycles occasionally
+          # blowing past 5 ms when the host scheduler preempts QEMU. The
+          # 5000 µs gate is comfortably above that observed drift while
+          # still catching a real regression like a stuck cycle, a runaway
+          # IRQ storm, or a 50 ms pathological outlier. Tighten as the host
+          # configuration stabilises and observed p99 trends down.
+          THRESHOLD_US=5000
+
+          bash scripts/qemu_run.sh arm64 90 "ec_hist" > qemu_p99.log 2>&1 || true
+          tail -n 200 qemu_p99.log
+
+          p99_a=$(grep -oP 'ec0:cycle.*p99=\K[0-9]+' qemu_p99.log | tail -1)
+          p99_b=$(grep -oP 'ec1:cycle.*p99=\K[0-9]+' qemu_p99.log | tail -1)
+
+          if [ -z "$p99_a" ]; then
+              echo "ERROR: did not find ec0 p99 reading — ec_hist may not have run"
+              echo "       (CLI prompt may have lost the input; rerun or extend timeout)"
+              exit 1
+          fi
+          # ec1 may legitimately be absent if no slaves enrolled on that bus.
+          # Gate strictly on ec0 (the loopback master populated by qemu_run.sh)
+          # and report ec1 informationally.
+          if [ -n "$p99_b" ]; then
+              if [ "$p99_b" -gt "$THRESHOLD_US" ]; then
+                  echo "ERROR: ec1 cycle p99 $p99_b us exceeds threshold $THRESHOLD_US us"
+                  exit 1
+              fi
+              echo "ec1 cycle p99=$p99_b us (threshold $THRESHOLD_US us)"
+          else
+              echo "note: no ec1 p99 line — bus likely has no slaves enrolled"
+          fi
+
+          if [ "$p99_a" -gt "$THRESHOLD_US" ]; then
+              echo "ERROR: ec0 cycle p99 $p99_a us exceeds threshold $THRESHOLD_US us"
+              exit 1
+          fi
+          echo "Cycle p99 within budget: ec0=$p99_a us (threshold $THRESHOLD_US us)"
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: miniOS-arm64
           path: |
-            miniOS_kernel.elf
-            miniOS_kernel.elf.map
+            build/arm64/miniOS_kernel_arm64.elf
+            build/arm64/miniOS_kernel_arm64.elf.map
             boot.log
+            qemu_p99.log
             elf_headers.txt
