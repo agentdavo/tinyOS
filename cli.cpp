@@ -3997,6 +3997,8 @@ CLI::CLI() {
     register_command("override", cmd_override, "override <ch> <feed|rapid|spindle> <permille> — per-channel speed override (9.7)");
     register_command("gears", cmd_gears, "List active electronic-gear links (9.5) + phase error (9.9)");
     register_command("axis_spin", cmd_axis_spin, "axis_spin <axis> <velocity_cps> — simulated leader spin (9.9 harness)");
+    register_command("jog_hold", cmd_jog_hold, "jog_hold <axis_idx> <sign> — start continuous jog at the operator jog feed-rate");
+    register_command("jog_stop", cmd_jog_stop, "jog_stop <axis_idx> — release continuous jog (velocity 0)");
     register_command("gear_engage", cmd_gear_engage, "gear_engage <leader> <follower> <ch> <k_num> <k_den> [ramp]");
     register_command("gear_disengage", cmd_gear_disengage, "gear_disengage <follower> [ramp]");
     register_command("gantry", cmd_gantry, "List active gantry links");

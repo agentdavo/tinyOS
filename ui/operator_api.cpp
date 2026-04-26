@@ -231,6 +231,38 @@ void set_jog_increment(int32_t counts) {
     g_machine.jog_increment = counts;
 }
 
+void set_jog_feed_cps(int32_t cps) {
+    core::ScopedLock lock(g_lock);
+    if (cps < 1) cps = 1;
+    if (cps > 10000000) cps = 10000000;
+    g_machine.jog_feed_cps = cps;
+}
+
+void start_continuous_jog(uint32_t axis, int32_t sign) {
+    core::ScopedLock lock(g_lock);
+    refresh_machine_snapshot_locked();
+    // Reject motion when any axis fault is latched, the channel is in Fault,
+    // or either EtherCAT master is sitting on a deadline trip — hold-to-move
+    // must never override an active safety latch.
+    if (g_machine.mode == Mode::Alarm) return;
+    if (ethercat::g_master_a.is_deadline_faulted() ||
+        ethercat::g_master_b.is_deadline_faulted()) return;
+    const uint32_t axis_idx = axis & 3u;
+    if (motion::g_motion.axis(axis_idx).fault_latched) return;
+    stop_preview_cycle_locked(false);
+    const int32_t velocity = (sign >= 0 ? 1 : -1) * g_machine.jog_feed_cps;
+    motion::g_motion.set_axis_velocity(axis_idx, velocity);
+    g_machine.selected_axis = axis_idx;
+    refresh_machine_snapshot_locked();
+}
+
+void stop_continuous_jog(uint32_t axis) {
+    core::ScopedLock lock(g_lock);
+    const uint32_t axis_idx = axis & 3u;
+    motion::g_motion.set_axis_velocity(axis_idx, 0);
+    refresh_machine_snapshot_locked();
+}
+
 void toggle_view_toolpath() {
     core::ScopedLock lock(g_lock);
     g_machine.view_toolpath = !g_machine.view_toolpath;

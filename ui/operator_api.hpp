@@ -32,6 +32,7 @@ struct MachineSnapshot {
     bool hold = false;
     uint32_t selected_axis = 0;
     int32_t jog_increment = 100;               // counts applied per JOG± click (default 0.1 mm)
+    int32_t jog_feed_cps = 10000;              // counts/s used by continuous (hold-to-move) jog
     int32_t axis_pos[4]{0, 0, 0, 0};           // actual feedback position (compat alias for axis:<n>)
     int32_t cmd_pos[4]{0, 0, 0, 0};            // commanded setpoint
     int32_t dtg[4]{0, 0, 0, 0};                // distance-to-go (target - actual)
@@ -246,8 +247,11 @@ PageId current_page();
 
 void jog_selected(int32_t delta);        // raw-counts delta (backward-compat path)
 void jog_axis_step(int32_t sign);        // sign in {-1,+1}; uses current axis + jog_increment
+void start_continuous_jog(uint32_t axis, int32_t sign);  // hold-to-move; sign in {-1,+1}
+void stop_continuous_jog(uint32_t axis);                  // release: drives axis velocity to 0
 void set_selected_axis(uint32_t idx);    // explicit axis pick (X=0..A=3), no rotation
 void set_jog_increment(int32_t counts);  // clamps to [1, 1_000_000]
+void set_jog_feed_cps(int32_t cps);      // clamps to [1, 10_000_000]
 void toggle_view_toolpath();             // machine-view overlay: program path
 void toggle_view_toolpods();             // machine-view overlay: toolpod markers
 void home_selected();
@@ -304,6 +308,28 @@ void request_ec_estop();
 void clear_ec_fault();
 bool save_setup();
 bool load_setup();
+
+// Spindle control. Sign of `rpm` selects direction (positive = forward,
+// negative = reverse). All three calls are no-ops while either EtherCAT
+// master has its deadline-fault latch set.
+void spindle_set_rpm(int32_t rpm);
+void spindle_start();
+void spindle_stop();
+
+struct SpindleStatus {
+    int32_t requested_rpm = 0;
+    int32_t actual_rpm = 0;
+    int32_t load_permille = 0;
+    int axis_index = 3;
+    bool running = false;
+    bool deadline_faulted = false;
+};
+SpindleStatus spindle_status();
+
+// Resolves the spindle's motion-axis index from the loaded topology
+// (binding name containing "spindle"); returns 3 when no such binding
+// is registered, matching the legacy snapshot reader.
+int spindle_axis_index() noexcept;
 
 FileSnapshot file_snapshot();
 bool create_file(const char* path);
