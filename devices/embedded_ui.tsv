@@ -1,186 +1,317 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# miniOS CNC operator UI — 1080x1920 portrait.
-# Conventions:
-#   - bottom_nav is a template page. Every real page ends with an
-#     `include page=bottom_nav` so the 6-button bar sits at y=1740..1880
-#     identically on every screen.
-#   - DRO rows on the dashboard use scale=3 (24x48 px glyph) for the
-#     commanded position and scale=1 for the actual/dtg detail row.
-#   - E-stop is the red button at the right of the cycle cluster.
-#   - Macros is reachable from the dashboard status bar (small button),
-#     deliberately NOT from the bottom nav (operator-critical routes only).
-
+# miniOS CNC operator UI -- 1080x1920 portrait canvas.
+#
 # ============================================================
-# bottom_nav — shared 7-button bar (included by every page).
+# DESIGN SYSTEM (read me before editing)
+# ============================================================
+# COORDINATE CONVENTION
+#   x and y on every widget are ABSOLUTE within the 1080x1920 page,
+#   even when parent= is set. The parent= field only governs grouping
+#   for show/hide and event routing -- it does NOT translate the
+#   widget's coordinates. A label "inside" a panel at y=120 needs its
+#   own absolute y (e.g. y=190 to sit 70 px below the panel top).
+#
+# PALETTE
+#   page bg          #0A0F1A   one tone, very dark slate
+#   panel bg         #111827   slightly lighter
+#   inset bg         #0F172A   nested cards / readout boxes
+#   border           #334155   default panel border
+#   border subtle    #1F2937
+#   section title    #94A3B8   panel section labels
+#   text primary     #F8FAFC
+#   text muted       #94A3B8
+#   text accent      #7DD3FC   axis letters, key data
+#   ok green         #22C55E
+#   warn amber       #F59E0B
+#   fault red        #EF4444
+#   info cyan        #0EA5E9
+#   primary action   #15803D   CYCLE START
+#   secondary action #B45309   HOLD
+#   neutral button   #334155   PREV / NEXT / CLEAR / BACK
+#   destructive      #B91C1C   E-STOP / ABORT
+#   DRO bg           #0B1220   monospace digit field
+#   DRO border lin   #1E40AF   X / Y / Z digit border
+#   DRO border rot   #92400E   A digit border
+#   readout amber    #FBBF24   counters / runtimes
+#   readout green    #86EFAC   bus traffic / OK
+#   wcs accent       #7C3AED   purple for active WCS
+#
+# TYPOGRAPHY (kernel scale= integer maps to 8x16 base glyph)
+#   xs body / units     scale=1   (8x16) -- captions, units, inline labels
+#   md section title    scale=2   (16x32) -- panel headers, section labels
+#   lg page title       scale=2   (16x32) -- centered page title at top
+#   lg button label     scale=2   (16x32) -- primary action buttons
+#   xl DRO digits       scale=3   (24x48) -- DRO commanded position
+#   2xl hero            scale=3   (24x48) -- master state hero
+#
+# PANEL TITLE CONVENTION
+#   The kernel Panel renders title= text at y+10, sitting on the top
+#   border. With our left margins it gets clipped. So we DROP panel
+#   title= entirely and use a dedicated label widget for the section
+#   header, placed at panel-top + 14 px (so a panel at y=120 has its
+#   header label at y=134, scale=2). The first 50 px of every content
+#   panel is reserved for the header strip.
+#
+# BOTTOM NAV
+#   bottom_nav owns y=1740..1880. Every page sets its root panel to
+#   h=1740 so it does not collide. The nav has 7 evenly-spaced buttons
+#   in one cool slate palette; the active page is highlighted via the
+#   button's brighter background only when the page id matches.
+#
+# ============================================================
+# bottom_nav -- shared 7-button bar (included by every page).
 # 7 tiles at 140 px with 10 px gaps fill 1040 px of the 1080-wide canvas.
-# Order mirrors the workflow: Jog -> MDI -> Program -> View -> Offsets ->
-# Macros -> Service.
+# Order mirrors the operator workflow:
+#   Dashboard . Jog . MDI . Program . View . Offsets . Service
+# Macros is reachable from the dashboard (operator-critical only here).
+# Buttons share the same neutral slate; their accent comes from the
+# small color stripe via the border. active_if=page:N does not work
+# because page binds to an integer page index, so we keep all buttons
+# uniform and let the user rely on the page title for orientation.
 # ============================================================
 page	id=bottom_nav	title=NavBar
-panel	id=nav_root	x=0	y=1740	w=1080	h=180	bg=#0B1220	border=#1F2937
-button	id=nav_jog	parent=nav_root	x=20	y=1760	w=140	h=140	text=JOG	bg=#1D4ED8	color=#FFFFFF	focus=900
-button	id=nav_mdi	parent=nav_root	x=170	y=1760	w=140	h=140	text=MDI	bg=#7C3AED	color=#FFFFFF	focus=910
-button	id=nav_program	parent=nav_root	x=320	y=1760	w=140	h=140	text=PROGRAM	bg=#0F766E	color=#FFFFFF	focus=920
-button	id=nav_view	parent=nav_root	x=470	y=1760	w=140	h=140	text=VIEW	bg=#0E7490	color=#FFFFFF	focus=925
-button	id=nav_offsets	parent=nav_root	x=620	y=1760	w=140	h=140	text=OFFSETS	bg=#2563EB	color=#FFFFFF	focus=930
-button	id=nav_macros	parent=nav_root	x=770	y=1760	w=140	h=140	text=MACROS	bg=#6D28D9	color=#FFFFFF	focus=940
-button	id=nav_service	parent=nav_root	x=920	y=1760	w=140	h=140	text=SERVICE	bg=#475569	color=#F8FAFC	focus=950
+panel	id=nav_root	x=0	y=1740	w=1080	h=180	bg=#0F172A	border=#1F2937
+button	id=nav_dashboard	parent=nav_root	x=20	y=1760	w=140	h=140	text=HOME	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=900
+button	id=nav_jog	parent=nav_root	x=170	y=1760	w=140	h=140	text=JOG	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=910
+button	id=nav_mdi	parent=nav_root	x=320	y=1760	w=140	h=140	text=MDI	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=920
+button	id=nav_program	parent=nav_root	x=470	y=1760	w=140	h=140	text=PROGRAM	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=930
+button	id=nav_view	parent=nav_root	x=620	y=1760	w=140	h=140	text=VIEW	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=940
+button	id=nav_offsets	parent=nav_root	x=770	y=1760	w=140	h=140	text=OFFSETS	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=950
+button	id=nav_service	parent=nav_root	x=920	y=1760	w=140	h=140	text=SERVICE	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=960
+action	widget=nav_dashboard	event=click	target=goto:dashboard
 action	widget=nav_jog	event=click	target=goto:jog
 action	widget=nav_mdi	event=click	target=goto:mdi
 action	widget=nav_program	event=click	target=goto:program
 action	widget=nav_view	event=click	target=goto:machine_view
 action	widget=nav_offsets	event=click	target=goto:offsets
-action	widget=nav_macros	event=click	target=goto:macros
 action	widget=nav_service	event=click	target=goto:service
 
 # ============================================================
-# dashboard — main operator page, DRO hero + cycle cluster
+# dashboard -- main operator page.
+# Layout (1080 x 1740):
+#   y    0..  90  (panel y=20, h=70)   status strip
+#   y  110..1030  (panel y=110, h=920) DRO + cycle row (split L/R)
+#   y 1050..1260  (panel y=1050, h=210) program info
+#   y 1280..1500  (panel y=1280, h=220) tool / work
+#   y 1520..1700  (panel y=1520, h=200) macros + alarms quick row
 # ============================================================
 page	id=dashboard	title=Dashboard
-panel	id=dash_root	x=0	y=0	w=1080	h=1740	bg=#050B15	border=#1F2937
-# --- status strip (top, 0..140) ---
-panel	id=dash_status	parent=dash_root	x=20	y=20	w=1040	h=130	bg=#0F172A	border=#334155	title=STATUS
-label	id=dash_alarm	parent=dash_status	x=40	y=68	w=240	h=44	text=ALARMS CLEAR	color=#BBF7D0	bg=#052E16	border=#166534	bind=alarm	align=center
-label	id=dash_mode	parent=dash_status	x=300	y=68	w=220	h=44	text=MODE READY	color=#DBEAFE	bg=#172554	border=#2563EB	bind=mode	align=center
-label	id=dash_wcs	parent=dash_status	x=540	y=68	w=120	h=44	text=G54	color=#C4B5FD	bg=#1E1B4B	border=#7C3AED	bind=wcs	align=center
-label	id=dash_units	parent=dash_status	x=680	y=68	w=100	h=44	text=mm	color=#FDE68A	bg=#451A03	border=#F59E0B	bind=units	align=center
-label	id=dash_runtime_hdr	parent=dash_status	x=800	y=68	w=240	h=44	text=00:00:00	color=#FBBF24	bg=#111827	border=#1F2937	bind=runtime	align=center
-# --- DRO hero (y=170..990): 4 rows of 200px each ---
-panel	id=dash_dro	parent=dash_root	x=20	y=170	w=680	h=820	bg=#0B1220	border=#334155	title=DRO
-# X axis row
-label	id=dro_x_letter	parent=dash_dro	x=40	y=220	w=80	h=56	text=X	color=#7DD3FC	bg=#0B1220	scale=3
-label	id=dro_x_cmd	parent=dash_dro	x=140	y=216	w=520	h=64	text=X:	color=#F0F9FF	bg=#082F49	border=#0284C7	bind=axis:x:cmd	scale=3	align=right
-label	id=dro_x_act	parent=dash_dro	x=140	y=290	w=260	h=24	text=act	color=#7DD3FC	bg=#0B1220	bind=axis:x:act
-label	id=dro_x_dtg	parent=dash_dro	x=410	y=290	w=180	h=24	text=dtg	color=#FBBF24	bg=#0B1220	bind=axis:x:dtg
-label	id=dro_x_homed	parent=dash_dro	x=600	y=290	w=60	h=24	text=---	color=#A7F3D0	bg=#0B1220	bind=axis:x:homed	align=center
-# Y axis row
-label	id=dro_y_letter	parent=dash_dro	x=40	y=370	w=80	h=56	text=Y	color=#7DD3FC	bg=#0B1220	scale=3
-label	id=dro_y_cmd	parent=dash_dro	x=140	y=366	w=520	h=64	text=Y:	color=#F0F9FF	bg=#082F49	border=#0284C7	bind=axis:y:cmd	scale=3	align=right
-label	id=dro_y_act	parent=dash_dro	x=140	y=440	w=260	h=24	text=act	color=#7DD3FC	bg=#0B1220	bind=axis:y:act
-label	id=dro_y_dtg	parent=dash_dro	x=410	y=440	w=180	h=24	text=dtg	color=#FBBF24	bg=#0B1220	bind=axis:y:dtg
-label	id=dro_y_homed	parent=dash_dro	x=600	y=440	w=60	h=24	text=---	color=#A7F3D0	bg=#0B1220	bind=axis:y:homed	align=center
-# Z axis row
-label	id=dro_z_letter	parent=dash_dro	x=40	y=520	w=80	h=56	text=Z	color=#7DD3FC	bg=#0B1220	scale=3
-label	id=dro_z_cmd	parent=dash_dro	x=140	y=516	w=520	h=64	text=Z:	color=#F0F9FF	bg=#082F49	border=#0284C7	bind=axis:z:cmd	scale=3	align=right
-label	id=dro_z_act	parent=dash_dro	x=140	y=590	w=260	h=24	text=act	color=#7DD3FC	bg=#0B1220	bind=axis:z:act
-label	id=dro_z_dtg	parent=dash_dro	x=410	y=590	w=180	h=24	text=dtg	color=#FBBF24	bg=#0B1220	bind=axis:z:dtg
-label	id=dro_z_homed	parent=dash_dro	x=600	y=590	w=60	h=24	text=---	color=#A7F3D0	bg=#0B1220	bind=axis:z:homed	align=center
-# A axis row
-label	id=dro_a_letter	parent=dash_dro	x=40	y=670	w=80	h=56	text=A	color=#FCD34D	bg=#0B1220	scale=3
-label	id=dro_a_cmd	parent=dash_dro	x=140	y=666	w=520	h=64	text=A:	color=#FEF3C7	bg=#451A03	border=#D97706	bind=axis:a:cmd	scale=3	align=right
-label	id=dro_a_act	parent=dash_dro	x=140	y=740	w=260	h=24	text=act	color=#FCD34D	bg=#0B1220	bind=axis:a:act
-label	id=dro_a_dtg	parent=dash_dro	x=410	y=740	w=180	h=24	text=dtg	color=#FBBF24	bg=#0B1220	bind=axis:a:dtg
-label	id=dro_a_homed	parent=dash_dro	x=600	y=740	w=60	h=24	text=---	color=#A7F3D0	bg=#0B1220	bind=axis:a:homed	align=center
-# Feed + spindle at bottom of DRO panel
-label	id=dro_feed_lbl	parent=dash_dro	x=40	y=820	w=120	h=24	text=FEED	color=#CBD5E1	bg=#0B1220
-label	id=dro_feed	parent=dash_dro	x=170	y=820	w=140	h=24	text=100	color=#7DD3FC	bg=#082F49	border=#0EA5E9	bind=feed
-label	id=dro_rpm_lbl	parent=dash_dro	x=340	y=820	w=120	h=24	text=RPM	color=#CBD5E1	bg=#0B1220
-label	id=dro_rpm	parent=dash_dro	x=470	y=820	w=180	h=24	text=0	color=#FCD34D	bg=#451A03	border=#F59E0B	bind=spindle_rpm
-label	id=dro_load_lbl	parent=dash_dro	x=40	y=855	w=120	h=24	text=LOAD	color=#CBD5E1	bg=#0B1220
-progress	id=dro_load	parent=dash_dro	x=170	y=860	w=480	h=20	max=1000	color=#F9A8D4	bg=#1E293B	bind=spindle_load
-# --- cycle cluster (y=170..990, right half) ---
-panel	id=dash_cycle	parent=dash_root	x=720	y=170	w=340	h=820	bg=#0B1220	border=#334155	title=CYCLE
-button	id=cyc_start	parent=dash_cycle	x=740	y=220	w=300	h=130	text=START	bg=#166534	color=#FFFFFF	scale=2	focus=20
-button	id=cyc_hold	parent=dash_cycle	x=740	y=370	w=300	h=130	text=HOLD	bg=#B45309	color=#FFFFFF	scale=2	focus=30
-button	id=cyc_reset	parent=dash_cycle	x=740	y=520	w=300	h=100	text=RESET	bg=#BE123C	color=#FFFFFF	scale=2	focus=40
-button	id=cyc_home	parent=dash_cycle	x=740	y=640	w=300	h=100	text=HOME	bg=#0F766E	color=#FFFFFF	scale=2	focus=50
-button	id=cyc_estop	parent=dash_cycle	x=740	y=760	w=300	h=220	text=E-STOP	bg=#7F1D1D	color=#FFFFFF	border=#FCA5A5	scale=3	focus=60
-# --- program info strip (y=1010..1220) ---
-panel	id=dash_prog	parent=dash_root	x=20	y=1010	w=1040	h=210	bg=#0F172A	border=#334155	title=PROGRAM
-label	id=prog_name	parent=dash_prog	x=40	y=1060	w=780	h=32	text=(no program)	color=#F8FAFC	bg=#111827	border=#1F2937	bind=program_name
-label	id=prog_block	parent=dash_prog	x=840	y=1060	w=200	h=32	text=blk	color=#BFDBFE	bg=#172554	border=#2563EB	bind=block_current	align=center
-label	id=prog_next_lbl	parent=dash_prog	x=40	y=1110	w=100	h=24	text=NEXT	color=#CBD5E1	bg=#0F172A
-label	id=prog_next	parent=dash_prog	x=150	y=1110	w=670	h=24	text=---	color=#CBD5E1	bg=#0F172A	bind=block_next
-label	id=prog_runtime	parent=dash_prog	x=840	y=1110	w=200	h=24	text=00:00:00	color=#FBBF24	bg=#111827	border=#1F2937	bind=runtime	align=center
-progress	id=prog_cycle	parent=dash_prog	x=40	y=1150	w=1000	h=40	max=100	color=#22C55E	bg=#1E293B	bind=cycle_progress
-# --- tool + work strip (y=1240..1400) ---
-panel	id=dash_tool	parent=dash_root	x=20	y=1240	w=1040	h=180	bg=#0F172A	border=#334155	title=TOOL / WORK
-label	id=tw_work	parent=dash_tool	x=40	y=1310	w=320	h=36	text=Work	color=#BFDBFE	bg=#1E3A8A	border=#3B82F6	bind=work_name
-label	id=tw_tool	parent=dash_tool	x=380	y=1310	w=320	h=36	text=Tool	color=#BBF7D0	bg=#052E16	border=#059669	bind=tool_name
-label	id=tw_torque	parent=dash_tool	x=720	y=1310	w=320	h=36	text=Torque	color=#F9A8D4	bg=#4A044E	border=#DB2777	bind=torque
-label	id=tw_length_lbl	parent=dash_tool	x=40	y=1360	w=120	h=32	text=LEN	color=#CBD5E1	bg=#0F172A
-label	id=tw_length	parent=dash_tool	x=170	y=1360	w=230	h=32	text=0.000	color=#BBF7D0	bg=#052E16	border=#059669	bind=tool_length
-label	id=tw_radius_lbl	parent=dash_tool	x=420	y=1360	w=120	h=32	text=R	color=#CBD5E1	bg=#0F172A
-label	id=tw_radius	parent=dash_tool	x=550	y=1360	w=230	h=32	text=0.000	color=#BBF7D0	bg=#052E16	border=#059669	bind=tool_radius
-label	id=tw_parts	parent=dash_tool	x=800	y=1360	w=240	h=32	text=parts=0	color=#CBD5E1	bg=#0F172A	border=#1F2937	bind=parts
+panel	id=dash_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+# --- status strip (panel y=20, h=70) ---
+panel	id=dash_status	parent=dash_root	x=20	y=20	w=1040	h=70	bg=#111827	border=#334155
+label	id=dash_alarm	parent=dash_root	x=40	y=34	w=240	h=44	text=ALARMS CLEAR	color=#86EFAC	bg=#052E16	border=#22C55E	bind=alarm	align=center	scale=1
+label	id=dash_mode	parent=dash_root	x=300	y=34	w=220	h=44	text=MODE READY	color=#BAE6FD	bg=#0C4A6E	border=#0EA5E9	bind=mode	align=center	scale=1
+label	id=dash_wcs	parent=dash_root	x=540	y=34	w=120	h=44	text=G54	color=#DDD6FE	bg=#1E1B4B	border=#7C3AED	bind=wcs	align=center	scale=1
+label	id=dash_units	parent=dash_root	x=680	y=34	w=100	h=44	text=mm	color=#FDE68A	bg=#451A03	border=#F59E0B	bind=units	align=center	scale=1
+label	id=dash_runtime_hdr	parent=dash_root	x=800	y=34	w=240	h=44	text=00:00:00	color=#FBBF24	bg=#0F172A	border=#334155	bind=runtime	align=center	scale=1
+
+# --- DRO panel (left, panel y=110, h=920) ---
+panel	id=dash_dro	parent=dash_root	x=20	y=110	w=720	h=920	bg=#111827	border=#334155
+label	id=dash_dro_title	parent=dash_root	x=40	y=124	w=300	h=28	text=DRO	color=#94A3B8	bg=#111827	scale=2
+label	id=dash_dro_unit	parent=dash_root	x=620	y=128	w=100	h=24	text=mm	color=#94A3B8	bg=#111827	bind=units	align=right	scale=1
+# X axis row -- letter at y=176, digit field y=170, sub-row y=240
+label	id=dro_x_letter	parent=dash_dro	x=40	y=176	w=80	h=56	text=X	color=#7DD3FC	bg=#111827	scale=3
+label	id=dro_x_cmd	parent=dash_dro	x=140	y=170	w=560	h=64	text=0.000	color=#F0F9FF	bg=#0B1220	border=#1E40AF	bind=axis:x:cmd	scale=3	align=right
+label	id=dro_x_act_lbl	parent=dash_dro	x=140	y=240	w=80	h=24	text=act	color=#94A3B8	bg=#111827	scale=1
+label	id=dro_x_act	parent=dash_dro	x=220	y=240	w=200	h=24	text=---	color=#7DD3FC	bg=#111827	bind=axis:x:act	scale=1
+label	id=dro_x_dtg_lbl	parent=dash_dro	x=440	y=240	w=80	h=24	text=dtg	color=#94A3B8	bg=#111827	scale=1
+label	id=dro_x_dtg	parent=dash_dro	x=520	y=240	w=120	h=24	text=---	color=#FBBF24	bg=#111827	bind=axis:x:dtg	scale=1
+label	id=dro_x_homed	parent=dash_dro	x=650	y=240	w=50	h=24	text=---	color=#86EFAC	bg=#111827	bind=axis:x:homed	align=center	scale=1
+# Y axis row -- y=290 / 360
+label	id=dro_y_letter	parent=dash_dro	x=40	y=296	w=80	h=56	text=Y	color=#7DD3FC	bg=#111827	scale=3
+label	id=dro_y_cmd	parent=dash_dro	x=140	y=290	w=560	h=64	text=0.000	color=#F0F9FF	bg=#0B1220	border=#1E40AF	bind=axis:y:cmd	scale=3	align=right
+label	id=dro_y_act_lbl	parent=dash_dro	x=140	y=360	w=80	h=24	text=act	color=#94A3B8	bg=#111827	scale=1
+label	id=dro_y_act	parent=dash_dro	x=220	y=360	w=200	h=24	text=---	color=#7DD3FC	bg=#111827	bind=axis:y:act	scale=1
+label	id=dro_y_dtg_lbl	parent=dash_dro	x=440	y=360	w=80	h=24	text=dtg	color=#94A3B8	bg=#111827	scale=1
+label	id=dro_y_dtg	parent=dash_dro	x=520	y=360	w=120	h=24	text=---	color=#FBBF24	bg=#111827	bind=axis:y:dtg	scale=1
+label	id=dro_y_homed	parent=dash_dro	x=650	y=360	w=50	h=24	text=---	color=#86EFAC	bg=#111827	bind=axis:y:homed	align=center	scale=1
+# Z axis row -- y=410 / 480
+label	id=dro_z_letter	parent=dash_dro	x=40	y=416	w=80	h=56	text=Z	color=#7DD3FC	bg=#111827	scale=3
+label	id=dro_z_cmd	parent=dash_dro	x=140	y=410	w=560	h=64	text=0.000	color=#F0F9FF	bg=#0B1220	border=#1E40AF	bind=axis:z:cmd	scale=3	align=right
+label	id=dro_z_act_lbl	parent=dash_dro	x=140	y=480	w=80	h=24	text=act	color=#94A3B8	bg=#111827	scale=1
+label	id=dro_z_act	parent=dash_dro	x=220	y=480	w=200	h=24	text=---	color=#7DD3FC	bg=#111827	bind=axis:z:act	scale=1
+label	id=dro_z_dtg_lbl	parent=dash_dro	x=440	y=480	w=80	h=24	text=dtg	color=#94A3B8	bg=#111827	scale=1
+label	id=dro_z_dtg	parent=dash_dro	x=520	y=480	w=120	h=24	text=---	color=#FBBF24	bg=#111827	bind=axis:z:dtg	scale=1
+label	id=dro_z_homed	parent=dash_dro	x=650	y=480	w=50	h=24	text=---	color=#86EFAC	bg=#111827	bind=axis:z:homed	align=center	scale=1
+# A axis row -- y=530 / 600
+label	id=dro_a_letter	parent=dash_dro	x=40	y=536	w=80	h=56	text=A	color=#FCD34D	bg=#111827	scale=3
+label	id=dro_a_cmd	parent=dash_dro	x=140	y=530	w=560	h=64	text=0.000	color=#FEF3C7	bg=#0B1220	border=#92400E	bind=axis:a:cmd	scale=3	align=right
+label	id=dro_a_act_lbl	parent=dash_dro	x=140	y=600	w=80	h=24	text=act	color=#94A3B8	bg=#111827	scale=1
+label	id=dro_a_act	parent=dash_dro	x=220	y=600	w=200	h=24	text=---	color=#FCD34D	bg=#111827	bind=axis:a:act	scale=1
+label	id=dro_a_dtg_lbl	parent=dash_dro	x=440	y=600	w=80	h=24	text=dtg	color=#94A3B8	bg=#111827	scale=1
+label	id=dro_a_dtg	parent=dash_dro	x=520	y=600	w=120	h=24	text=---	color=#FBBF24	bg=#111827	bind=axis:a:dtg	scale=1
+label	id=dro_a_homed	parent=dash_dro	x=650	y=600	w=50	h=24	text=---	color=#86EFAC	bg=#111827	bind=axis:a:homed	align=center	scale=1
+# Feed + spindle + load (inside DRO panel, y=680..1010)
+label	id=dro_feed_lbl	parent=dash_dro	x=40	y=690	w=120	h=32	text=FEED %	color=#94A3B8	bg=#111827	scale=1
+label	id=dro_feed	parent=dash_dro	x=170	y=686	w=200	h=40	text=100	color=#7DD3FC	bg=#0B1220	border=#0EA5E9	bind=feed	align=center	scale=2
+label	id=dro_rpm_lbl	parent=dash_dro	x=400	y=690	w=120	h=32	text=RPM	color=#94A3B8	bg=#111827	scale=1
+label	id=dro_rpm	parent=dash_dro	x=510	y=686	w=200	h=40	text=0	color=#FCD34D	bg=#0B1220	border=#F59E0B	bind=spindle_rpm	align=center	scale=2
+label	id=dro_load_lbl	parent=dash_dro	x=40	y=760	w=120	h=24	text=LOAD	color=#94A3B8	bg=#111827	scale=1
+progress	id=dro_load	parent=dash_dro	x=170	y=762	w=540	h=20	max=1000	color=#0EA5E9	bg=#1E293B	bind=spindle_load
+label	id=dro_torque_lbl	parent=dash_dro	x=40	y=810	w=120	h=24	text=TORQUE	color=#94A3B8	bg=#111827	scale=1
+progress	id=dro_torque	parent=dash_dro	x=170	y=812	w=540	h=20	max=1000	color=#F59E0B	bg=#1E293B	bind=torque
+label	id=dro_torque_v	parent=dash_dro	x=40	y=850	w=300	h=24	text=---	color=#FBBF24	bg=#111827	bind=torque	scale=1
+label	id=dro_parts_v	parent=dash_dro	x=400	y=850	w=300	h=24	text=parts=0	color=#94A3B8	bg=#111827	bind=parts	align=right	scale=1
+
+# --- cycle cluster (right, panel y=110, h=920) ---
+panel	id=dash_cycle	parent=dash_root	x=760	y=110	w=300	h=920	bg=#111827	border=#334155
+label	id=dash_cycle_title	parent=dash_root	x=780	y=124	w=260	h=28	text=CYCLE	color=#94A3B8	bg=#111827	scale=2
+button	id=cyc_start	parent=dash_root	x=780	y=170	w=260	h=160	text=START	bg=#15803D	color=#FFFFFF	scale=3	focus=20
+button	id=cyc_hold	parent=dash_root	x=780	y=350	w=260	h=130	text=HOLD	bg=#B45309	color=#FFFFFF	scale=2	focus=30
+button	id=cyc_reset	parent=dash_root	x=780	y=500	w=260	h=110	text=RESET	bg=#334155	color=#F8FAFC	scale=2	focus=40
+button	id=cyc_home	parent=dash_root	x=780	y=630	w=260	h=110	text=HOME	bg=#0F766E	color=#FFFFFF	scale=2	focus=50
+button	id=cyc_estop	parent=dash_root	x=780	y=760	w=260	h=250	text=E-STOP	bg=#B91C1C	color=#FFFFFF	border=#FCA5A5	scale=3	focus=60
+
+# --- program info (panel y=1050, h=210) ---
+panel	id=dash_prog	parent=dash_root	x=20	y=1050	w=1040	h=210	bg=#111827	border=#334155
+label	id=dash_prog_title	parent=dash_root	x=40	y=1064	w=300	h=28	text=PROGRAM	color=#94A3B8	bg=#111827	scale=2
+label	id=prog_name	parent=dash_root	x=40	y=1110	w=780	h=36	text=(no program)	color=#F8FAFC	bg=#0F172A	border=#1F2937	bind=program_name	scale=1
+label	id=prog_block	parent=dash_root	x=840	y=1110	w=200	h=36	text=blk 0	color=#BAE6FD	bg=#0C4A6E	border=#0EA5E9	bind=block_current	align=center	scale=1
+label	id=dash_prog_next_lbl	parent=dash_root	x=40	y=1156	w=100	h=24	text=NEXT	color=#94A3B8	bg=#111827	scale=1
+label	id=dash_prog_next	parent=dash_root	x=150	y=1156	w=670	h=24	text=---	color=#CBD5E1	bg=#111827	bind=block_next	scale=1
+label	id=dash_prog_runtime	parent=dash_root	x=840	y=1156	w=200	h=24	text=00:00:00	color=#FBBF24	bg=#0F172A	border=#334155	bind=runtime	align=center	scale=1
+progress	id=dash_prog_cycle	parent=dash_root	x=40	y=1200	w=1000	h=40	max=100	color=#22C55E	bg=#1E293B	bind=cycle_progress
+
+# --- tool / work strip (panel y=1280, h=220) ---
+panel	id=dash_tool	parent=dash_root	x=20	y=1280	w=1040	h=220	bg=#111827	border=#334155
+label	id=dash_tool_title	parent=dash_root	x=40	y=1294	w=400	h=28	text=TOOL / WORK	color=#94A3B8	bg=#111827	scale=2
+label	id=tw_work_lbl	parent=dash_root	x=40	y=1340	w=120	h=24	text=WORK	color=#94A3B8	bg=#111827	scale=1
+label	id=tw_work	parent=dash_root	x=170	y=1336	w=300	h=36	text=---	color=#BAE6FD	bg=#0C4A6E	border=#0EA5E9	bind=work_name	align=center	scale=1
+label	id=tw_tool_lbl	parent=dash_root	x=500	y=1340	w=120	h=24	text=TOOL	color=#94A3B8	bg=#111827	scale=1
+label	id=tw_tool	parent=dash_root	x=630	y=1336	w=410	h=36	text=---	color=#86EFAC	bg=#052E16	border=#22C55E	bind=tool_name	align=center	scale=1
+label	id=tw_length_lbl	parent=dash_root	x=40	y=1400	w=120	h=24	text=LEN	color=#94A3B8	bg=#111827	scale=1
+label	id=tw_length	parent=dash_root	x=170	y=1396	w=200	h=36	text=0.000	color=#86EFAC	bg=#0F172A	border=#334155	bind=tool_length	align=right	scale=2
+label	id=tw_radius_lbl	parent=dash_root	x=400	y=1400	w=80	h=24	text=R	color=#94A3B8	bg=#111827	scale=1
+label	id=tw_radius	parent=dash_root	x=490	y=1396	w=200	h=36	text=0.000	color=#86EFAC	bg=#0F172A	border=#334155	bind=tool_radius	align=right	scale=2
+label	id=tw_torque_lbl	parent=dash_root	x=720	y=1400	w=100	h=24	text=TORQUE	color=#94A3B8	bg=#111827	scale=1
+label	id=tw_torque	parent=dash_root	x=830	y=1396	w=210	h=36	text=---	color=#F9A8D4	bg=#0F172A	border=#334155	bind=torque	align=right	scale=2
+label	id=tw_parts	parent=dash_root	x=40	y=1450	w=480	h=32	text=parts=0	color=#94A3B8	bg=#111827	bind=parts	scale=1
+
+# --- macros / alarms quick row (panel y=1520, h=200) ---
+panel	id=dash_quick	parent=dash_root	x=20	y=1520	w=1040	h=200	bg=#111827	border=#334155
+label	id=dash_quick_title	parent=dash_root	x=40	y=1534	w=400	h=28	text=QUICK ACTIONS	color=#94A3B8	bg=#111827	scale=2
+button	id=dash_btn_macros	parent=dash_root	x=40	y=1580	w=320	h=120	text=MACROS	bg=#5B21B6	color=#FFFFFF	scale=2	focus=70
+button	id=dash_btn_alarms	parent=dash_root	x=380	y=1580	w=320	h=120	text=ALARMS	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=72
+button	id=dash_btn_probe	parent=dash_root	x=720	y=1580	w=320	h=120	text=PROBE	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=74
+
 # --- action wiring ---
 action	widget=cyc_start	event=click	target=demo:cycle
 action	widget=cyc_hold	event=click	target=demo:hold
 action	widget=cyc_reset	event=click	target=demo:reset
 action	widget=cyc_home	event=click	target=demo:home
 action	widget=cyc_estop	event=click	target=demo:estop
+action	widget=dash_btn_macros	event=click	target=goto:macros
+action	widget=dash_btn_alarms	event=click	target=goto:service
+action	widget=dash_btn_probe	event=click	target=goto:probe
 include	page=bottom_nav
 
 # ============================================================
-# jog — manual axis jog with selectable axis and increment
+# jog -- manual axis jog with selectable axis and increment.
+# Layout (1080 x 1740):
+#   y   20.. 460  position panel (h=440)
+#   y  480.. 620  axis selector
+#   y  640.. 780  step selector
+#   y  800.. 870  feed override
+#   y  890..1070  jog -/+ pad (large)
+#   y 1090..1240  cycle / hold / reset / home
+#   y 1260..1700  status panel (h=440)
 # ============================================================
 page	id=jog	title=Jog
-panel	id=jog_root	x=0	y=0	w=1080	h=1740	bg=#0B1220	border=#1F2937	title=JOG
-# --- axis readouts (y=40..430) ---
-panel	id=jog_dro	parent=jog_root	x=20	y=40	w=1040	h=400	bg=#0F172A	border=#334155	title=POSITION
-label	id=jog_x_letter	parent=jog_dro	x=40	y=90	w=80	h=56	text=X	color=#7DD3FC	bg=#0F172A	scale=3
-label	id=jog_x_val	parent=jog_dro	x=140	y=86	w=870	h=64	text=X:	color=#F0F9FF	bg=#082F49	border=#0284C7	bind=axis:x:act	scale=3	align=right
-label	id=jog_y_letter	parent=jog_dro	x=40	y=170	w=80	h=56	text=Y	color=#7DD3FC	bg=#0F172A	scale=3
-label	id=jog_y_val	parent=jog_dro	x=140	y=166	w=870	h=64	text=Y:	color=#F0F9FF	bg=#082F49	border=#0284C7	bind=axis:y:act	scale=3	align=right
-label	id=jog_z_letter	parent=jog_dro	x=40	y=250	w=80	h=56	text=Z	color=#7DD3FC	bg=#0F172A	scale=3
-label	id=jog_z_val	parent=jog_dro	x=140	y=246	w=870	h=64	text=Z:	color=#F0F9FF	bg=#082F49	border=#0284C7	bind=axis:z:act	scale=3	align=right
-label	id=jog_a_letter	parent=jog_dro	x=40	y=330	w=80	h=56	text=A	color=#FCD34D	bg=#0F172A	scale=3
-label	id=jog_a_val	parent=jog_dro	x=140	y=326	w=870	h=64	text=A:	color=#FEF3C7	bg=#451A03	border=#D97706	bind=axis:a:act	scale=3	align=right
-# --- axis selector (y=460..580) ---
-label	id=jog_axis_lbl	parent=jog_root	x=40	y=470	w=200	h=40	text=AXIS	color=#CBD5E1	bg=#0B1220	scale=2
-label	id=jog_axis_cur	parent=jog_root	x=240	y=470	w=120	h=48	text=X	color=#7DD3FC	bg=#172554	border=#3B82F6	bind=selected_axis	align=center	scale=2
-button	id=jog_ax_x	parent=jog_root	x=400	y=460	w=155	h=90	text=X	bg=#1E3A8A	color=#FFFFFF	active_if=selected_axis:0	scale=2	focus=60
-button	id=jog_ax_y	parent=jog_root	x=565	y=460	w=155	h=90	text=Y	bg=#1E3A8A	color=#FFFFFF	active_if=selected_axis:1	scale=2	focus=62
-button	id=jog_ax_z	parent=jog_root	x=730	y=460	w=155	h=90	text=Z	bg=#1E3A8A	color=#FFFFFF	active_if=selected_axis:2	scale=2	focus=64
-button	id=jog_ax_a	parent=jog_root	x=895	y=460	w=155	h=90	text=A	bg=#92400E	color=#FFFFFF	active_if=selected_axis:3	scale=2	focus=66
-# --- jog increment selector (y=590..720) ---
-label	id=jog_inc_lbl	parent=jog_root	x=40	y=600	w=200	h=40	text=STEP	color=#CBD5E1	bg=#0B1220	scale=2
-label	id=jog_inc_cur	parent=jog_root	x=240	y=600	w=180	h=48	text=0.100 mm	color=#BBF7D0	bg=#052E16	border=#059669	bind=jog_increment	align=center
-button	id=jog_inc_001	parent=jog_root	x=440	y=590	w=150	h=90	text=0.001	bg=#064E3B	color=#FFFFFF	active_if=jog_increment:1	focus=70
-button	id=jog_inc_01	parent=jog_root	x=600	y=590	w=150	h=90	text=0.010	bg=#064E3B	color=#FFFFFF	active_if=jog_increment:10	focus=72
-button	id=jog_inc_1	parent=jog_root	x=760	y=590	w=150	h=90	text=0.100	bg=#064E3B	color=#FFFFFF	active_if=jog_increment:100	focus=74
-button	id=jog_inc_10	parent=jog_root	x=920	y=590	w=130	h=90	text=1.000	bg=#064E3B	color=#FFFFFF	active_if=jog_increment:1000	focus=76
-# --- feed override slider (y=720..790) ---
-label	id=jog_feed_lbl	parent=jog_root	x=40	y=730	w=200	h=32	text=FEED %	color=#CBD5E1	bg=#0B1220
-label	id=jog_feed_val	parent=jog_root	x=920	y=730	w=130	h=32	text=100	color=#7DD3FC	bg=#082F49	border=#0EA5E9	bind=feed	align=center
-slider	id=jog_feed	parent=jog_root	x=240	y=735	w=670	h=42	min=0	max=150	value=100	color=#2563EB	bg=#334155	bind=feed	focus=80
-# --- jog action buttons (y=810..970) ---
-button	id=jog_minus	parent=jog_root	x=40	y=810	w=495	h=160	text=JOG -	bg=#1D4ED8	color=#FFFFFF	focus=90
-button	id=jog_plus	parent=jog_root	x=545	y=810	w=495	h=160	text=JOG +	bg=#1D4ED8	color=#FFFFFF	focus=92
-# --- cycle / hold / home / reset (y=990..1140) ---
-button	id=jog_cycle	parent=jog_root	x=40	y=990	w=240	h=150	text=CYCLE	bg=#166534	color=#FFFFFF	focus=100
-button	id=jog_hold	parent=jog_root	x=290	y=990	w=240	h=150	text=HOLD	bg=#B45309	color=#FFFFFF	focus=102
-button	id=jog_reset	parent=jog_root	x=540	y=990	w=240	h=150	text=RESET	bg=#BE123C	color=#FFFFFF	focus=104
-button	id=jog_home	parent=jog_root	x=790	y=990	w=260	h=150	text=HOME AXIS	bg=#0F766E	color=#FFFFFF	focus=106
-# --- axis status readouts (y=1160..1320) ---
-panel	id=jog_status	parent=jog_root	x=20	y=1160	w=1040	h=540	bg=#0F172A	border=#334155	title=AXIS STATUS
-label	id=jog_sx_h	parent=jog_status	x=40	y=1210	w=80	h=32	text=X	color=#7DD3FC	bg=#0F172A
-label	id=jog_sx_cmd	parent=jog_status	x=140	y=1210	w=300	h=32	text=cmd	color=#E0F2FE	bg=#0F172A	bind=axis:x:cmd
-label	id=jog_sx_act	parent=jog_status	x=460	y=1210	w=300	h=32	text=act	color=#7DD3FC	bg=#0F172A	bind=axis:x:act
-label	id=jog_sx_dtg	parent=jog_status	x=780	y=1210	w=200	h=32	text=dtg	color=#FBBF24	bg=#0F172A	bind=axis:x:dtg
-label	id=jog_sx_homed	parent=jog_status	x=1000	y=1210	w=40	h=32	text=---	color=#A7F3D0	bg=#0F172A	bind=axis:x:homed	align=center
-label	id=jog_sy_h	parent=jog_status	x=40	y=1260	w=80	h=32	text=Y	color=#7DD3FC	bg=#0F172A
-label	id=jog_sy_cmd	parent=jog_status	x=140	y=1260	w=300	h=32	text=cmd	color=#E0F2FE	bg=#0F172A	bind=axis:y:cmd
-label	id=jog_sy_act	parent=jog_status	x=460	y=1260	w=300	h=32	text=act	color=#7DD3FC	bg=#0F172A	bind=axis:y:act
-label	id=jog_sy_dtg	parent=jog_status	x=780	y=1260	w=200	h=32	text=dtg	color=#FBBF24	bg=#0F172A	bind=axis:y:dtg
-label	id=jog_sy_homed	parent=jog_status	x=1000	y=1260	w=40	h=32	text=---	color=#A7F3D0	bg=#0F172A	bind=axis:y:homed	align=center
-label	id=jog_sz_h	parent=jog_status	x=40	y=1310	w=80	h=32	text=Z	color=#7DD3FC	bg=#0F172A
-label	id=jog_sz_cmd	parent=jog_status	x=140	y=1310	w=300	h=32	text=cmd	color=#E0F2FE	bg=#0F172A	bind=axis:z:cmd
-label	id=jog_sz_act	parent=jog_status	x=460	y=1310	w=300	h=32	text=act	color=#7DD3FC	bg=#0F172A	bind=axis:z:act
-label	id=jog_sz_dtg	parent=jog_status	x=780	y=1310	w=200	h=32	text=dtg	color=#FBBF24	bg=#0F172A	bind=axis:z:dtg
-label	id=jog_sz_homed	parent=jog_status	x=1000	y=1310	w=40	h=32	text=---	color=#A7F3D0	bg=#0F172A	bind=axis:z:homed	align=center
-label	id=jog_sa_h	parent=jog_status	x=40	y=1360	w=80	h=32	text=A	color=#FCD34D	bg=#0F172A
-label	id=jog_sa_cmd	parent=jog_status	x=140	y=1360	w=300	h=32	text=cmd	color=#FEF3C7	bg=#0F172A	bind=axis:a:cmd
-label	id=jog_sa_act	parent=jog_status	x=460	y=1360	w=300	h=32	text=act	color=#FCD34D	bg=#0F172A	bind=axis:a:act
-label	id=jog_sa_dtg	parent=jog_status	x=780	y=1360	w=200	h=32	text=dtg	color=#FBBF24	bg=#0F172A	bind=axis:a:dtg
-label	id=jog_sa_homed	parent=jog_status	x=1000	y=1360	w=40	h=32	text=---	color=#A7F3D0	bg=#0F172A	bind=axis:a:homed	align=center
-label	id=jog_torque_lbl	parent=jog_status	x=40	y=1430	w=200	h=32	text=LOAD	color=#CBD5E1	bg=#0F172A
-progress	id=jog_torque	parent=jog_status	x=240	y=1435	w=720	h=24	max=1000	color=#F9A8D4	bg=#1E293B	bind=torque
-label	id=jog_torque_val	parent=jog_status	x=980	y=1430	w=60	h=32	text=0	color=#F9A8D4	bg=#0F172A	bind=torque	align=center
-label	id=jog_spindle_lbl	parent=jog_status	x=40	y=1480	w=200	h=32	text=SPINDLE	color=#CBD5E1	bg=#0F172A
-label	id=jog_spindle_val	parent=jog_status	x=240	y=1480	w=300	h=32	text=0	color=#FCD34D	bg=#451A03	border=#F59E0B	bind=spindle_rpm	align=center
-label	id=jog_mode_lbl	parent=jog_status	x=580	y=1480	w=160	h=32	text=MODE	color=#CBD5E1	bg=#0F172A
-label	id=jog_mode_val	parent=jog_status	x=740	y=1480	w=300	h=32	text=MODE READY	color=#DBEAFE	bg=#172554	border=#2563EB	bind=mode	align=center
+panel	id=jog_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+# --- position panel ---
+panel	id=jog_dro	parent=jog_root	x=20	y=20	w=1040	h=440	bg=#111827	border=#334155
+label	id=jog_dro_title	parent=jog_root	x=40	y=34	w=400	h=28	text=POSITION	color=#94A3B8	bg=#111827	scale=2
+label	id=jog_dro_unit	parent=jog_root	x=940	y=38	w=100	h=24	text=mm	color=#94A3B8	bg=#111827	bind=units	align=right	scale=1
+# X
+label	id=jog_x_letter	parent=jog_dro	x=40	y=86	w=80	h=56	text=X	color=#7DD3FC	bg=#111827	scale=3
+label	id=jog_x_val	parent=jog_dro	x=140	y=80	w=900	h=64	text=0.000	color=#F0F9FF	bg=#0B1220	border=#1E40AF	bind=axis:x:act	scale=3	align=right
+# Y
+label	id=jog_y_letter	parent=jog_dro	x=40	y=166	w=80	h=56	text=Y	color=#7DD3FC	bg=#111827	scale=3
+label	id=jog_y_val	parent=jog_dro	x=140	y=160	w=900	h=64	text=0.000	color=#F0F9FF	bg=#0B1220	border=#1E40AF	bind=axis:y:act	scale=3	align=right
+# Z
+label	id=jog_z_letter	parent=jog_dro	x=40	y=246	w=80	h=56	text=Z	color=#7DD3FC	bg=#111827	scale=3
+label	id=jog_z_val	parent=jog_dro	x=140	y=240	w=900	h=64	text=0.000	color=#F0F9FF	bg=#0B1220	border=#1E40AF	bind=axis:z:act	scale=3	align=right
+# A
+label	id=jog_a_letter	parent=jog_dro	x=40	y=326	w=80	h=56	text=A	color=#FCD34D	bg=#111827	scale=3
+label	id=jog_a_val	parent=jog_dro	x=140	y=320	w=900	h=64	text=0.000	color=#FEF3C7	bg=#0B1220	border=#92400E	bind=axis:a:act	scale=3	align=right
+
+# --- axis selector ---
+label	id=jog_axis_lbl	parent=jog_root	x=40	y=494	w=160	h=44	text=AXIS	color=#94A3B8	bg=#0A0F1A	scale=2
+label	id=jog_axis_cur	parent=jog_root	x=210	y=490	w=120	h=56	text=X	color=#7DD3FC	bg=#0C4A6E	border=#0EA5E9	bind=selected_axis	align=center	scale=2
+button	id=jog_ax_x	parent=jog_root	x=360	y=480	w=170	h=80	text=X	bg=#1E40AF	color=#FFFFFF	active_if=selected_axis:0	scale=2	focus=60
+button	id=jog_ax_y	parent=jog_root	x=540	y=480	w=170	h=80	text=Y	bg=#1E40AF	color=#FFFFFF	active_if=selected_axis:1	scale=2	focus=62
+button	id=jog_ax_z	parent=jog_root	x=720	y=480	w=170	h=80	text=Z	bg=#1E40AF	color=#FFFFFF	active_if=selected_axis:2	scale=2	focus=64
+button	id=jog_ax_a	parent=jog_root	x=900	y=480	w=160	h=80	text=A	bg=#92400E	color=#FFFFFF	active_if=selected_axis:3	scale=2	focus=66
+
+# --- step selector ---
+label	id=jog_inc_lbl	parent=jog_root	x=40	y=654	w=160	h=44	text=STEP	color=#94A3B8	bg=#0A0F1A	scale=2
+label	id=jog_inc_cur	parent=jog_root	x=210	y=650	w=180	h=56	text=0.100 mm	color=#86EFAC	bg=#052E16	border=#22C55E	bind=jog_increment	align=center	scale=1
+button	id=jog_inc_001	parent=jog_root	x=420	y=640	w=155	h=80	text=0.001	bg=#0F766E	color=#FFFFFF	active_if=jog_increment:1	scale=2	focus=70
+button	id=jog_inc_01	parent=jog_root	x=585	y=640	w=155	h=80	text=0.010	bg=#0F766E	color=#FFFFFF	active_if=jog_increment:10	scale=2	focus=72
+button	id=jog_inc_1	parent=jog_root	x=750	y=640	w=155	h=80	text=0.100	bg=#0F766E	color=#FFFFFF	active_if=jog_increment:100	scale=2	focus=74
+button	id=jog_inc_10	parent=jog_root	x=915	y=640	w=145	h=80	text=1.000	bg=#0F766E	color=#FFFFFF	active_if=jog_increment:1000	scale=2	focus=76
+
+# --- feed override slider ---
+label	id=jog_feed_lbl	parent=jog_root	x=40	y=812	w=160	h=32	text=FEED %	color=#94A3B8	bg=#0A0F1A	scale=1
+slider	id=jog_feed	parent=jog_root	x=210	y=810	w=720	h=42	min=0	max=150	value=100	color=#0EA5E9	bg=#1F2937	bind=feed	focus=80
+label	id=jog_feed_val	parent=jog_root	x=950	y=812	w=110	h=32	text=100	color=#7DD3FC	bg=#0B1220	border=#0EA5E9	bind=feed	align=center	scale=1
+
+# --- jog -/+ pad ---
+button	id=jog_minus	parent=jog_root	x=20	y=890	w=510	h=180	text=JOG -	bg=#1D4ED8	color=#FFFFFF	scale=3	focus=90
+button	id=jog_plus	parent=jog_root	x=550	y=890	w=510	h=180	text=JOG +	bg=#1D4ED8	color=#FFFFFF	scale=3	focus=92
+
+# --- cycle / hold / reset / home ---
+button	id=jog_cycle	parent=jog_root	x=20	y=1090	w=250	h=150	text=CYCLE	bg=#15803D	color=#FFFFFF	scale=2	focus=100
+button	id=jog_hold	parent=jog_root	x=280	y=1090	w=250	h=150	text=HOLD	bg=#B45309	color=#FFFFFF	scale=2	focus=102
+button	id=jog_reset	parent=jog_root	x=540	y=1090	w=250	h=150	text=RESET	bg=#334155	color=#F8FAFC	scale=2	focus=104
+button	id=jog_home	parent=jog_root	x=800	y=1090	w=260	h=150	text=HOME	bg=#0F766E	color=#FFFFFF	scale=2	focus=106
+
+# --- status panel ---
+panel	id=jog_status	parent=jog_root	x=20	y=1260	w=1040	h=440	bg=#111827	border=#334155
+label	id=jog_status_title	parent=jog_root	x=40	y=1274	w=400	h=28	text=AXIS STATUS	color=#94A3B8	bg=#111827	scale=2
+# Headers
+label	id=jog_h_axis	parent=jog_status	x=40	y=1320	w=80	h=24	text=AX	color=#94A3B8	bg=#111827	scale=1
+label	id=jog_h_cmd	parent=jog_status	x=140	y=1320	w=300	h=24	text=CMD	color=#94A3B8	bg=#111827	scale=1
+label	id=jog_h_act	parent=jog_status	x=460	y=1320	w=300	h=24	text=ACT	color=#94A3B8	bg=#111827	scale=1
+label	id=jog_h_dtg	parent=jog_status	x=780	y=1320	w=200	h=24	text=DTG	color=#94A3B8	bg=#111827	scale=1
+label	id=jog_h_homed	parent=jog_status	x=990	y=1320	w=50	h=24	text=H	color=#94A3B8	bg=#111827	align=center	scale=1
+# X row
+label	id=jog_sx_h	parent=jog_status	x=40	y=1354	w=80	h=28	text=X	color=#7DD3FC	bg=#111827	scale=1
+label	id=jog_sx_cmd	parent=jog_status	x=140	y=1354	w=300	h=28	text=---	color=#E0F2FE	bg=#111827	bind=axis:x:cmd	scale=1
+label	id=jog_sx_act	parent=jog_status	x=460	y=1354	w=300	h=28	text=---	color=#7DD3FC	bg=#111827	bind=axis:x:act	scale=1
+label	id=jog_sx_dtg	parent=jog_status	x=780	y=1354	w=200	h=28	text=---	color=#FBBF24	bg=#111827	bind=axis:x:dtg	scale=1
+label	id=jog_sx_homed	parent=jog_status	x=990	y=1354	w=50	h=28	text=---	color=#86EFAC	bg=#111827	bind=axis:x:homed	align=center	scale=1
+# Y row
+label	id=jog_sy_h	parent=jog_status	x=40	y=1390	w=80	h=28	text=Y	color=#7DD3FC	bg=#111827	scale=1
+label	id=jog_sy_cmd	parent=jog_status	x=140	y=1390	w=300	h=28	text=---	color=#E0F2FE	bg=#111827	bind=axis:y:cmd	scale=1
+label	id=jog_sy_act	parent=jog_status	x=460	y=1390	w=300	h=28	text=---	color=#7DD3FC	bg=#111827	bind=axis:y:act	scale=1
+label	id=jog_sy_dtg	parent=jog_status	x=780	y=1390	w=200	h=28	text=---	color=#FBBF24	bg=#111827	bind=axis:y:dtg	scale=1
+label	id=jog_sy_homed	parent=jog_status	x=990	y=1390	w=50	h=28	text=---	color=#86EFAC	bg=#111827	bind=axis:y:homed	align=center	scale=1
+# Z row
+label	id=jog_sz_h	parent=jog_status	x=40	y=1426	w=80	h=28	text=Z	color=#7DD3FC	bg=#111827	scale=1
+label	id=jog_sz_cmd	parent=jog_status	x=140	y=1426	w=300	h=28	text=---	color=#E0F2FE	bg=#111827	bind=axis:z:cmd	scale=1
+label	id=jog_sz_act	parent=jog_status	x=460	y=1426	w=300	h=28	text=---	color=#7DD3FC	bg=#111827	bind=axis:z:act	scale=1
+label	id=jog_sz_dtg	parent=jog_status	x=780	y=1426	w=200	h=28	text=---	color=#FBBF24	bg=#111827	bind=axis:z:dtg	scale=1
+label	id=jog_sz_homed	parent=jog_status	x=990	y=1426	w=50	h=28	text=---	color=#86EFAC	bg=#111827	bind=axis:z:homed	align=center	scale=1
+# A row
+label	id=jog_sa_h	parent=jog_status	x=40	y=1462	w=80	h=28	text=A	color=#FCD34D	bg=#111827	scale=1
+label	id=jog_sa_cmd	parent=jog_status	x=140	y=1462	w=300	h=28	text=---	color=#FEF3C7	bg=#111827	bind=axis:a:cmd	scale=1
+label	id=jog_sa_act	parent=jog_status	x=460	y=1462	w=300	h=28	text=---	color=#FCD34D	bg=#111827	bind=axis:a:act	scale=1
+label	id=jog_sa_dtg	parent=jog_status	x=780	y=1462	w=200	h=28	text=---	color=#FBBF24	bg=#111827	bind=axis:a:dtg	scale=1
+label	id=jog_sa_homed	parent=jog_status	x=990	y=1462	w=50	h=28	text=---	color=#86EFAC	bg=#111827	bind=axis:a:homed	align=center	scale=1
+# Load / spindle / mode
+label	id=jog_load_lbl	parent=jog_status	x=40	y=1520	w=200	h=28	text=LOAD	color=#94A3B8	bg=#111827	scale=1
+progress	id=jog_torque	parent=jog_status	x=240	y=1524	w=720	h=24	max=1000	color=#F59E0B	bg=#1F2937	bind=torque
+label	id=jog_torque_val	parent=jog_status	x=980	y=1520	w=60	h=28	text=0	color=#FBBF24	bg=#111827	bind=torque	align=center	scale=1
+label	id=jog_spindle_lbl	parent=jog_status	x=40	y=1570	w=200	h=32	text=SPINDLE	color=#94A3B8	bg=#111827	scale=1
+label	id=jog_spindle_val	parent=jog_status	x=240	y=1568	w=300	h=36	text=0	color=#FCD34D	bg=#0B1220	border=#F59E0B	bind=spindle_rpm	align=center	scale=2
+label	id=jog_mode_lbl	parent=jog_status	x=580	y=1570	w=160	h=32	text=MODE	color=#94A3B8	bg=#111827	scale=1
+label	id=jog_mode_val	parent=jog_status	x=740	y=1568	w=300	h=36	text=MODE READY	color=#BAE6FD	bg=#0C4A6E	border=#0EA5E9	bind=mode	align=center	scale=1
+label	id=jog_wcs_lbl	parent=jog_status	x=40	y=1620	w=200	h=32	text=WCS	color=#94A3B8	bg=#111827	scale=1
+label	id=jog_wcs_val	parent=jog_status	x=240	y=1618	w=160	h=36	text=G54	color=#DDD6FE	bg=#1E1B4B	border=#7C3AED	bind=wcs	align=center	scale=1
+label	id=jog_alarm_lbl	parent=jog_status	x=420	y=1620	w=160	h=32	text=ALARM	color=#94A3B8	bg=#111827	scale=1
+label	id=jog_alarm_val	parent=jog_status	x=580	y=1618	w=460	h=36	text=---	color=#86EFAC	bg=#052E16	border=#22C55E	bind=alarm	align=center	scale=1
+
 # --- actions ---
 action	widget=jog_minus	event=click	target=demo:jog-
 action	widget=jog_plus	event=click	target=demo:jog+
@@ -199,71 +330,90 @@ action	widget=jog_inc_10	event=click	target=jog:inc:1000
 include	page=bottom_nav
 
 # ============================================================
-# mdi — manual data input
+# mdi -- manual data input.
 # ============================================================
 page	id=mdi	title=MDI
-panel	id=mdi_root	x=0	y=0	w=1080	h=1740	bg=#0B1220	border=#1F2937	title=MDI
-label	id=mdi_title	parent=mdi_root	x=40	y=40	w=1000	h=40	text=Manual Data Input	color=#F5F3FF	bg=#0B1220	align=center	scale=2
-input	id=mdi_edit	parent=mdi_root	x=40	y=140	w=1000	h=80	text=G0 X0 Y0	bg=#F3F4F6	border=#7C3AED	color=#111827	bind=mdi:input	focus=200
-button	id=mdi_submit	parent=mdi_root	x=40	y=250	w=320	h=120	text=SUBMIT	bg=#059669	color=#FFFFFF	focus=210
-button	id=mdi_clear	parent=mdi_root	x=380	y=250	w=320	h=120	text=CLEAR	bg=#475569	color=#F8FAFC	focus=220
-button	id=mdi_abort	parent=mdi_root	x=720	y=250	w=320	h=120	text=ABORT	bg=#BE123C	color=#FFFFFF	focus=230
-label	id=mdi_status_lbl	parent=mdi_root	x=40	y=400	w=200	h=40	text=STATUS	color=#CBD5E1	bg=#0B1220
-label	id=mdi_status	parent=mdi_root	x=250	y=400	w=300	h=40	text=IDLE	color=#FDE68A	bg=#1E293B	border=#64748B	bind=mdi:status	align=center
-label	id=mdi_depth_lbl	parent=mdi_root	x=580	y=400	w=160	h=40	text=DEPTH	color=#CBD5E1	bg=#0B1220
-label	id=mdi_depth	parent=mdi_root	x=750	y=400	w=290	h=40	text=0	color=#FDE68A	bg=#1E293B	border=#64748B	bind=mdi:depth	align=center
-label	id=mdi_last_lbl	parent=mdi_root	x=40	y=460	w=200	h=32	text=LAST	color=#CBD5E1	bg=#0B1220
-label	id=mdi_last	parent=mdi_root	x=250	y=460	w=790	h=32	text=---	color=#C4B5FD	bg=#1E1B4B	border=#7C3AED	bind=mdi:last
-label	id=mdi_msg_lbl	parent=mdi_root	x=40	y=510	w=200	h=32	text=MSG	color=#CBD5E1	bg=#0B1220
-label	id=mdi_msg	parent=mdi_root	x=250	y=510	w=790	h=32	text=---	color=#BBF7D0	bg=#052E16	border=#059669	bind=mdi:message
-label	id=mdi_hist_title	parent=mdi_root	x=40	y=570	w=1000	h=32	text=History (newest first)	color=#E5E7EB	bg=#0B1220
-panel	id=mdi_hist	parent=mdi_root	x=40	y=610	w=1000	h=1100	bg=#111827	border=#1F2937
-label	id=mdi_hint	parent=mdi_hist	x=60	y=640	w=960	h=28	text=Type a G-code line then press Enter or SUBMIT. History is in-RAM only.	color=#94A3B8	bg=#111827
+panel	id=mdi_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=mdi_title	parent=mdi_root	x=40	y=30	w=1000	h=40	text=MANUAL DATA INPUT	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- input panel ---
+panel	id=mdi_input_panel	parent=mdi_root	x=20	y=110	w=1040	h=300	bg=#111827	border=#334155
+label	id=mdi_input_title	parent=mdi_root	x=40	y=124	w=400	h=28	text=COMMAND	color=#94A3B8	bg=#111827	scale=2
+input	id=mdi_edit	parent=mdi_root	x=40	y=170	w=1000	h=80	text=G0 X0 Y0	bg=#F8FAFC	border=#7C3AED	color=#0F172A	bind=mdi:input	focus=200
+button	id=mdi_submit	parent=mdi_root	x=40	y=270	w=320	h=120	text=SUBMIT	bg=#15803D	color=#FFFFFF	scale=2	focus=210
+button	id=mdi_clear	parent=mdi_root	x=380	y=270	w=320	h=120	text=CLEAR	bg=#334155	color=#F8FAFC	scale=2	focus=220
+button	id=mdi_abort	parent=mdi_root	x=720	y=270	w=320	h=120	text=ABORT	bg=#B91C1C	color=#FFFFFF	scale=2	focus=230
+
+# --- status panel ---
+panel	id=mdi_status_panel	parent=mdi_root	x=20	y=430	w=1040	h=240	bg=#111827	border=#334155
+label	id=mdi_status_title	parent=mdi_root	x=40	y=444	w=400	h=28	text=STATUS	color=#94A3B8	bg=#111827	scale=2
+label	id=mdi_status_lbl	parent=mdi_root	x=40	y=490	w=200	h=36	text=STATE	color=#94A3B8	bg=#111827	scale=1
+label	id=mdi_status	parent=mdi_root	x=240	y=486	w=300	h=44	text=IDLE	color=#FDE68A	bg=#0F172A	border=#475569	bind=mdi:status	align=center	scale=2
+label	id=mdi_depth_lbl	parent=mdi_root	x=580	y=490	w=160	h=36	text=DEPTH	color=#94A3B8	bg=#111827	scale=1
+label	id=mdi_depth	parent=mdi_root	x=740	y=486	w=300	h=44	text=0	color=#FDE68A	bg=#0F172A	border=#475569	bind=mdi:depth	align=center	scale=2
+label	id=mdi_last_lbl	parent=mdi_root	x=40	y=550	w=200	h=32	text=LAST	color=#94A3B8	bg=#111827	scale=1
+label	id=mdi_last	parent=mdi_root	x=240	y=548	w=800	h=36	text=---	color=#DDD6FE	bg=#1E1B4B	border=#7C3AED	bind=mdi:last	scale=1
+label	id=mdi_msg_lbl	parent=mdi_root	x=40	y=608	w=200	h=32	text=MSG	color=#94A3B8	bg=#111827	scale=1
+label	id=mdi_msg	parent=mdi_root	x=240	y=606	w=800	h=36	text=---	color=#86EFAC	bg=#052E16	border=#22C55E	bind=mdi:message	scale=1
+
+# --- history panel ---
+panel	id=mdi_hist	parent=mdi_root	x=20	y=690	w=1040	h=1020	bg=#111827	border=#334155
+label	id=mdi_hist_title	parent=mdi_root	x=40	y=704	w=600	h=28	text=HISTORY (newest first)	color=#94A3B8	bg=#111827	scale=2
+label	id=mdi_hint	parent=mdi_root	x=40	y=750	w=1000	h=28	text=Type a G-code line then press Enter or SUBMIT. History is in-RAM only.	color=#64748B	bg=#111827	scale=1
+
 action	widget=mdi_submit	event=click	target=mdi:submit
 action	widget=mdi_clear	event=click	target=mdi:clear
 action	widget=mdi_abort	event=click	target=mdi:abort
 include	page=bottom_nav
 
 # ============================================================
-# machine_view — full-screen GLES1 machine viewport.
-# Renders the authored kinematic chain (with OBJ-imported meshes when the
-# registry carries them) through the same render_live_machine path the
-# Program / Probe pages use. Toggle buttons flip operator_api view flags
-# that render_live_machine consults each frame.
+# machine_view -- full-screen machine viewport.
+# Renders the authored kinematic chain through render_live_machine.
+# Toggle buttons flip operator_api view flags consulted each frame.
 # ============================================================
 page	id=machine_view	title=Machine View
-panel	id=mv_root	x=0	y=0	w=1080	h=1740	bg=#050B15	border=#1F2937	title=MACHINE
-# Toolbar (y=40..130): toolpath / toolpods toggles + jog axis selector.
-button	id=mv_toolpath	parent=mv_root	x=20	y=40	w=240	h=90	text=TOOLPATH	bg=#0F766E	color=#FFFFFF	active_if=view_toolpath:1	scale=2	focus=10
-button	id=mv_toolpods	parent=mv_root	x=270	y=40	w=240	h=90	text=TOOLPODS	bg=#6D28D9	color=#FFFFFF	active_if=view_toolpods:1	scale=2	focus=12
-label	id=mv_ax_lbl	parent=mv_root	x=540	y=50	w=140	h=40	text=AXIS	color=#CBD5E1	bg=#050B15	scale=2
-button	id=mv_ax_x	parent=mv_root	x=680	y=40	w=80	h=90	text=X	bg=#1E3A8A	color=#FFFFFF	active_if=selected_axis:0	scale=2	focus=14
-button	id=mv_ax_y	parent=mv_root	x=770	y=40	w=80	h=90	text=Y	bg=#1E3A8A	color=#FFFFFF	active_if=selected_axis:1	scale=2	focus=16
-button	id=mv_ax_z	parent=mv_root	x=860	y=40	w=80	h=90	text=Z	bg=#1E3A8A	color=#FFFFFF	active_if=selected_axis:2	scale=2	focus=18
-button	id=mv_ax_a	parent=mv_root	x=950	y=40	w=90	h=90	text=A	bg=#92400E	color=#FFFFFF	active_if=selected_axis:3	scale=2	focus=20
-# Viewport (y=150..1440): 1040x1290 — as large as fits above the controls.
-image	id=mv_view	parent=mv_root	x=20	y=150	w=1040	h=1290	text=gles1:machine	bg=#0F172A	border=#334155	color=#E5E7EB
-# Live DRO strip (y=1450..1550): compact read of all four axes + current step.
-panel	id=mv_dro	parent=mv_root	x=20	y=1450	w=1040	h=110	bg=#0F172A	border=#334155
-label	id=mv_x	parent=mv_dro	x=40	y=1470	w=240	h=32	text=X:	color=#7DD3FC	bg=#082F49	border=#0284C7	bind=axis:x:act
-label	id=mv_y	parent=mv_dro	x=290	y=1470	w=240	h=32	text=Y:	color=#7DD3FC	bg=#082F49	border=#0284C7	bind=axis:y:act
-label	id=mv_z	parent=mv_dro	x=540	y=1470	w=240	h=32	text=Z:	color=#7DD3FC	bg=#082F49	border=#0284C7	bind=axis:z:act
-label	id=mv_a	parent=mv_dro	x=790	y=1470	w=250	h=32	text=A:	color=#FCD34D	bg=#451A03	border=#D97706	bind=axis:a:act
-label	id=mv_step_lbl	parent=mv_dro	x=40	y=1510	w=140	h=32	text=STEP	color=#CBD5E1	bg=#0F172A
-label	id=mv_step	parent=mv_dro	x=180	y=1510	w=180	h=32	text=0.100 mm	color=#BBF7D0	bg=#052E16	border=#059669	bind=jog_increment
-label	id=mv_mode	parent=mv_dro	x=380	y=1510	w=260	h=32	text=MODE	color=#DBEAFE	bg=#172554	border=#2563EB	bind=mode	align=center
-label	id=mv_wcs	parent=mv_dro	x=650	y=1510	w=120	h=32	text=G54	color=#C4B5FD	bg=#1E1B4B	border=#7C3AED	bind=wcs	align=center
-label	id=mv_units	parent=mv_dro	x=780	y=1510	w=120	h=32	text=mm	color=#FDE68A	bg=#451A03	border=#F59E0B	bind=units	align=center
-# Jog row (y=1570..1730): drive motion while watching the viewport.
-button	id=mv_jog_minus	parent=mv_root	x=20	y=1570	w=320	h=150	text=JOG -	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=30
-button	id=mv_jog_plus	parent=mv_root	x=350	y=1570	w=320	h=150	text=JOG +	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=32
-button	id=mv_home	parent=mv_root	x=680	y=1570	w=380	h=150	text=HOME	bg=#0F766E	color=#FFFFFF	scale=2	focus=34
-# Camera controls — overlayed on the viewport bottom-right. Buttons are
-# small because orbit is primary (drag the viewport); these are handy
-# backups for non-touch inputs. Keyboard +/- and 0 also work globally.
-button	id=mv_zoom_in	parent=mv_root	x=940	y=1350	w=50	h=60	text=+	bg=#1F2937	color=#E5E7EB	scale=2	focus=40
-button	id=mv_zoom_out	parent=mv_root	x=995	y=1350	w=50	h=60	text=-	bg=#1F2937	color=#E5E7EB	scale=2	focus=42
-button	id=mv_reset	parent=mv_root	x=940	y=1270	w=105	h=60	text=FIT	bg=#1F2937	color=#A7F3D0	focus=44
+panel	id=mv_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+
+# --- toolbar (y=20..120) ---
+panel	id=mv_toolbar	parent=mv_root	x=20	y=20	w=1040	h=100	bg=#111827	border=#334155
+button	id=mv_toolpath	parent=mv_root	x=40	y=35	w=220	h=70	text=TOOLPATH	bg=#0F766E	color=#FFFFFF	active_if=view_toolpath:1	scale=2	focus=10
+button	id=mv_toolpods	parent=mv_root	x=270	y=35	w=220	h=70	text=TOOLPODS	bg=#5B21B6	color=#FFFFFF	active_if=view_toolpods:1	scale=2	focus=12
+label	id=mv_ax_lbl	parent=mv_root	x=520	y=52	w=120	h=40	text=AXIS	color=#94A3B8	bg=#111827	scale=2
+button	id=mv_ax_x	parent=mv_root	x=650	y=35	w=90	h=70	text=X	bg=#1E40AF	color=#FFFFFF	active_if=selected_axis:0	scale=2	focus=14
+button	id=mv_ax_y	parent=mv_root	x=750	y=35	w=90	h=70	text=Y	bg=#1E40AF	color=#FFFFFF	active_if=selected_axis:1	scale=2	focus=16
+button	id=mv_ax_z	parent=mv_root	x=850	y=35	w=90	h=70	text=Z	bg=#1E40AF	color=#FFFFFF	active_if=selected_axis:2	scale=2	focus=18
+button	id=mv_ax_a	parent=mv_root	x=950	y=35	w=90	h=70	text=A	bg=#92400E	color=#FFFFFF	active_if=selected_axis:3	scale=2	focus=20
+
+# --- viewport (y=140..1380) ---
+image	id=mv_view	parent=mv_root	x=20	y=140	w=1040	h=1240	text=gles1:machine	bg=#0F172A	border=#334155	color=#E5E7EB
+# Overlay camera controls in viewport bottom-right (absolute coords)
+button	id=mv_reset	parent=mv_root	x=920	y=1230	w=120	h=60	text=FIT	bg=#1F2937	color=#A7F3D0	border=#475569	scale=2	focus=44
+button	id=mv_zoom_in	parent=mv_root	x=920	y=1300	w=58	h=60	text=+	bg=#1F2937	color=#E5E7EB	border=#475569	scale=2	focus=40
+button	id=mv_zoom_out	parent=mv_root	x=982	y=1300	w=58	h=60	text=-	bg=#1F2937	color=#E5E7EB	border=#475569	scale=2	focus=42
+
+# --- DRO strip (y=1400..1520) ---
+panel	id=mv_dro	parent=mv_root	x=20	y=1400	w=1040	h=120	bg=#111827	border=#334155
+label	id=mv_x_lbl	parent=mv_dro	x=40	y=1416	w=30	h=24	text=X	color=#7DD3FC	bg=#111827	scale=1
+label	id=mv_x	parent=mv_dro	x=70	y=1414	w=200	h=32	text=0.000	color=#7DD3FC	bg=#0B1220	border=#1E40AF	bind=axis:x:act	align=right	scale=1
+label	id=mv_y_lbl	parent=mv_dro	x=290	y=1416	w=30	h=24	text=Y	color=#7DD3FC	bg=#111827	scale=1
+label	id=mv_y	parent=mv_dro	x=320	y=1414	w=200	h=32	text=0.000	color=#7DD3FC	bg=#0B1220	border=#1E40AF	bind=axis:y:act	align=right	scale=1
+label	id=mv_z_lbl	parent=mv_dro	x=540	y=1416	w=30	h=24	text=Z	color=#7DD3FC	bg=#111827	scale=1
+label	id=mv_z	parent=mv_dro	x=570	y=1414	w=200	h=32	text=0.000	color=#7DD3FC	bg=#0B1220	border=#1E40AF	bind=axis:z:act	align=right	scale=1
+label	id=mv_a_lbl	parent=mv_dro	x=790	y=1416	w=30	h=24	text=A	color=#FCD34D	bg=#111827	scale=1
+label	id=mv_a	parent=mv_dro	x=820	y=1414	w=220	h=32	text=0.000	color=#FCD34D	bg=#0B1220	border=#92400E	bind=axis:a:act	align=right	scale=1
+label	id=mv_step_lbl	parent=mv_dro	x=40	y=1466	w=80	h=28	text=STEP	color=#94A3B8	bg=#111827	scale=1
+label	id=mv_step	parent=mv_dro	x=130	y=1464	w=180	h=32	text=0.100 mm	color=#86EFAC	bg=#052E16	border=#22C55E	bind=jog_increment	align=center	scale=1
+label	id=mv_mode_lbl	parent=mv_dro	x=330	y=1466	w=80	h=28	text=MODE	color=#94A3B8	bg=#111827	scale=1
+label	id=mv_mode	parent=mv_dro	x=420	y=1464	w=240	h=32	text=READY	color=#BAE6FD	bg=#0C4A6E	border=#0EA5E9	bind=mode	align=center	scale=1
+label	id=mv_wcs_lbl	parent=mv_dro	x=680	y=1466	w=60	h=28	text=WCS	color=#94A3B8	bg=#111827	scale=1
+label	id=mv_wcs	parent=mv_dro	x=750	y=1464	w=140	h=32	text=G54	color=#DDD6FE	bg=#1E1B4B	border=#7C3AED	bind=wcs	align=center	scale=1
+label	id=mv_units	parent=mv_dro	x=920	y=1464	w=120	h=32	text=mm	color=#FDE68A	bg=#451A03	border=#F59E0B	bind=units	align=center	scale=1
+
+# --- jog row (y=1540..1700) ---
+button	id=mv_jog_minus	parent=mv_root	x=20	y=1540	w=320	h=160	text=JOG -	bg=#1D4ED8	color=#FFFFFF	scale=3	focus=30
+button	id=mv_jog_plus	parent=mv_root	x=350	y=1540	w=320	h=160	text=JOG +	bg=#1D4ED8	color=#FFFFFF	scale=3	focus=32
+button	id=mv_home	parent=mv_root	x=680	y=1540	w=380	h=160	text=HOME	bg=#0F766E	color=#FFFFFF	scale=2	focus=34
+
 action	widget=mv_toolpath	event=click	target=view:toolpath:toggle
 action	widget=mv_toolpods	event=click	target=view:toolpods:toggle
 action	widget=mv_zoom_in	event=click	target=view:zoom:in
@@ -279,25 +429,45 @@ action	widget=mv_home	event=click	target=demo:home
 include	page=bottom_nav
 
 # ============================================================
-# program
+# program -- browser + preview + restart
 # ============================================================
 page	id=program	title=Program
-panel	id=program_root	x=0	y=0	w=1080	h=1740	bg=#0B1220	border=#1F2937	title=PROGRAM
-label	id=program_title	parent=program_root	x=40	y=40	w=1000	h=40	text=Program Browser And Preview	color=#F9FAFB	bg=#0B1220	align=center	scale=2
-input	id=program_name	parent=program_root	x=40	y=140	w=1000	h=64	text=program.ngc	bg=#F3F4F6	border=#2563EB	color=#111827	bind=program_name	focus=130
-label	id=program_blocks	parent=program_root	x=40	y=230	w=320	h=32	text=Blocks: 	color=#93C5FD	bg=#0B1220	border=#1F2937	bind=program_blocks
-label	id=program_bytes	parent=program_root	x=380	y=230	w=320	h=32	text=Bytes: 	color=#93C5FD	bg=#0B1220	border=#1F2937	bind=program_bytes
-label	id=program_preview_pts	parent=program_root	x=720	y=230	w=320	h=32	text=Preview: 	color=#93C5FD	bg=#0B1220	border=#1F2937	bind=preview_points
-image	id=program_preview	parent=program_root	x=40	y=290	w=1000	h=520	text=gles1:program	bg=#1F2937	border=#94A3B8	color=#E5E7EB
-button	id=prog_prev	parent=program_root	x=40	y=850	w=240	h=100	text=PREV	bg=#334155	color=#E2E8F0	focus=140
-button	id=prog_next	parent=program_root	x=300	y=850	w=240	h=100	text=NEXT	bg=#334155	color=#E2E8F0	focus=150
-button	id=prog_sim	parent=program_root	x=560	y=850	w=240	h=100	text=REBUILD	bg=#0F766E	color=#FFFFFF	focus=160
-button	id=prog_cycle	parent=program_root	x=820	y=850	w=240	h=100	text=CYCLE	bg=#1D4ED8	color=#FFFFFF	focus=170
-label	id=restart_lbl	parent=program_root	x=40	y=980	w=240	h=56	text=GOTO LINE	color=#CBD5E1	bg=#0B1220	scale=2
-input	id=restart_line	parent=program_root	x=300	y=975	w=360	h=70	text=0	bg=#F3F4F6	border=#7C3AED	color=#111827	action=commit:restart:line	focus=180
-label	id=restart_hint	parent=program_root	x=680	y=980	w=380	h=32	text=type N, press Enter	color=#94A3B8	bg=#0B1220
-label	id=restart_cur_lbl	parent=program_root	x=40	y=1060	w=240	h=32	text=AT BLOCK	color=#CBD5E1	bg=#0B1220
-label	id=restart_cur	parent=program_root	x=300	y=1060	w=360	h=32	text=0	color=#FDE68A	bg=#1E293B	border=#64748B	bind=block_current	align=center
+panel	id=program_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=program_title	parent=program_root	x=40	y=30	w=1000	h=40	text=PROGRAM BROWSER	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- selector panel ---
+panel	id=program_sel_panel	parent=program_root	x=20	y=110	w=1040	h=240	bg=#111827	border=#334155
+label	id=program_sel_title	parent=program_root	x=40	y=124	w=400	h=28	text=SELECT FILE	color=#94A3B8	bg=#111827	scale=2
+input	id=program_name	parent=program_root	x=40	y=170	w=1000	h=64	text=program.ngc	bg=#F8FAFC	border=#0EA5E9	color=#0F172A	bind=program_name	focus=130
+label	id=program_blocks_lbl	parent=program_root	x=40	y=260	w=120	h=24	text=BLOCKS	color=#94A3B8	bg=#111827	scale=1
+label	id=program_blocks	parent=program_root	x=170	y=258	w=200	h=32	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=program_blocks	align=right	scale=2
+label	id=program_bytes_lbl	parent=program_root	x=400	y=260	w=120	h=24	text=BYTES	color=#94A3B8	bg=#111827	scale=1
+label	id=program_bytes	parent=program_root	x=530	y=258	w=200	h=32	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=program_bytes	align=right	scale=2
+label	id=program_pp_lbl	parent=program_root	x=760	y=260	w=120	h=24	text=PREVIEW	color=#94A3B8	bg=#111827	scale=1
+label	id=program_preview_pts	parent=program_root	x=890	y=258	w=150	h=32	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=preview_points	align=right	scale=2
+
+# --- preview panel ---
+panel	id=program_prev_panel	parent=program_root	x=20	y=370	w=1040	h=580	bg=#111827	border=#334155
+label	id=program_prev_title	parent=program_root	x=40	y=384	w=400	h=28	text=PREVIEW	color=#94A3B8	bg=#111827	scale=2
+image	id=program_preview	parent=program_root	x=40	y=420	w=1000	h=510	text=gles1:program	bg=#0F172A	border=#334155	color=#E5E7EB
+
+# --- transport buttons ---
+button	id=prog_prev	parent=program_root	x=20	y=970	w=255	h=120	text=PREV	bg=#334155	color=#F8FAFC	scale=2	focus=140
+button	id=prog_next	parent=program_root	x=285	y=970	w=255	h=120	text=NEXT	bg=#334155	color=#F8FAFC	scale=2	focus=150
+button	id=prog_sim	parent=program_root	x=550	y=970	w=255	h=120	text=REBUILD	bg=#0F766E	color=#FFFFFF	scale=2	focus=160
+button	id=prog_cycle	parent=program_root	x=815	y=970	w=245	h=120	text=CYCLE	bg=#15803D	color=#FFFFFF	scale=2	focus=170
+
+# --- restart strip ---
+panel	id=program_restart_panel	parent=program_root	x=20	y=1110	w=1040	h=200	bg=#111827	border=#334155
+label	id=program_restart_title	parent=program_root	x=40	y=1124	w=400	h=28	text=RESTART AT LINE	color=#94A3B8	bg=#111827	scale=2
+label	id=restart_lbl	parent=program_root	x=40	y=1180	w=200	h=44	text=GOTO LINE	color=#F8FAFC	bg=#111827	scale=2
+input	id=restart_line	parent=program_root	x=260	y=1175	w=300	h=64	text=0	bg=#F8FAFC	border=#7C3AED	color=#0F172A	action=commit:restart:line	focus=180
+label	id=restart_hint	parent=program_root	x=580	y=1186	w=460	h=32	text=type N, press Enter to restart	color=#64748B	bg=#111827	scale=1
+label	id=restart_cur_lbl	parent=program_root	x=40	y=1255	w=200	h=32	text=AT BLOCK	color=#94A3B8	bg=#111827	scale=1
+label	id=restart_cur	parent=program_root	x=260	y=1252	w=300	h=40	text=0	color=#FBBF24	bg=#0F172A	border=#475569	bind=block_current	align=center	scale=2
+label	id=restart_blkn_lbl	parent=program_root	x=580	y=1255	w=160	h=32	text=BLOCKS	color=#94A3B8	bg=#111827	scale=1
+label	id=restart_blkn	parent=program_root	x=740	y=1252	w=300	h=40	text=---	color=#7DD3FC	bg=#0F172A	border=#475569	bind=program_blocks	align=center	scale=2
+
 action	widget=prog_prev	event=click	target=program:prev
 action	widget=prog_next	event=click	target=program:next
 action	widget=prog_sim	event=click	target=program:simulate
@@ -305,64 +475,83 @@ action	widget=prog_cycle	event=click	target=demo:cycle
 include	page=bottom_nav
 
 # ============================================================
-# offsets — full tabular view of all 6 WCS + 8 tools.
-# Active row is the one currently selected; the commit inputs always
-# edit the active row, so tap a WCS/Tool row to make it active then
-# type new values into the inputs below. Readouts for non-active rows
-# need per-slot binds which the binder doesn't yet expose — they show
-# as "---" placeholders until that wiring lands.
+# offsets -- WCS table + tool table + active editor.
+# Layout (1080 x 1740):
+#   y   20.. 70  page title
+#   y   90..170  active readout strip (work + tool)
+#   y  190..330  active editor strip (X Y Z A inputs)
+#   y  350..930  WCS panel (h=580)  G54..G59
+#   y  950..1700 tool panel (h=750) T1..T8
 # ============================================================
 page	id=offsets	title=Offsets
-panel	id=offsets_root	x=0	y=0	w=1080	h=1740	bg=#0B1220	border=#1F2937	title=OFFSETS
-label	id=offsets_title	parent=offsets_root	x=40	y=30	w=1000	h=40	text=Offsets / Tool Table	color=#DBEAFE	bg=#0B1220	align=center	scale=2
-# --- active readout strip (y=90..160) ---
-label	id=offsets_work	parent=offsets_root	x=40	y=100	w=500	h=44	text=Active Work: 	color=#DBEAFE	bg=#1E3A8A	border=#3B82F6	bind=work_name
-label	id=offsets_tool	parent=offsets_root	x=560	y=100	w=500	h=44	text=Active Tool: 	color=#D1FAE5	bg=#064E3B	border=#059669	bind=tool_name
-# --- editor strip for active row (y=170..260) ---
-label	id=offsets_edit_hdr	parent=offsets_root	x=40	y=175	w=1000	h=28	text=Edit active work offset (type + Enter to commit)	color=#94A3B8	bg=#0B1220
-input	id=offset_x	parent=offsets_root	x=40	y=210	w=245	h=64	text=0.000	bg=#DBEAFE	border=#2563EB	color=#0F172A	bind=work_offset:x	action=commit:offset:x	focus=180
-input	id=offset_y	parent=offsets_root	x=295	y=210	w=245	h=64	text=0.000	bg=#DBEAFE	border=#2563EB	color=#0F172A	bind=work_offset:y	action=commit:offset:y	focus=182
-input	id=offset_z	parent=offsets_root	x=550	y=210	w=245	h=64	text=0.000	bg=#DBEAFE	border=#2563EB	color=#0F172A	bind=work_offset:z	action=commit:offset:z	focus=184
-input	id=offset_a	parent=offsets_root	x=805	y=210	w=245	h=64	text=0.000	bg=#FEF3C7	border=#D97706	color=#451A03	bind=work_offset:a	action=commit:offset:a	focus=186
-# --- WCS table: 6 rows, header + G54..G59 (y=290..640) ---
-panel	id=wcs_panel	parent=offsets_root	x=20	y=290	w=1040	h=360	bg=#0F172A	border=#334155	title=WORK COORDINATE SYSTEMS
-label	id=wcs_h_id	parent=wcs_panel	x=40	y=335	w=160	h=32	text=WCS	color=#94A3B8	bg=#0F172A
-label	id=wcs_h_x	parent=wcs_panel	x=220	y=335	w=195	h=32	text=X	color=#94A3B8	bg=#0F172A	align=center
-label	id=wcs_h_y	parent=wcs_panel	x=425	y=335	w=195	h=32	text=Y	color=#94A3B8	bg=#0F172A	align=center
-label	id=wcs_h_z	parent=wcs_panel	x=630	y=335	w=195	h=32	text=Z	color=#94A3B8	bg=#0F172A	align=center
-label	id=wcs_h_a	parent=wcs_panel	x=835	y=335	w=195	h=32	text=A	color=#94A3B8	bg=#0F172A	align=center
-button	id=wcs_g54	parent=wcs_panel	x=40	y=370	w=160	h=42	text=G54	bg=#2563EB	color=#FFFFFF	active_if=wcs:0	focus=220
-button	id=wcs_g55	parent=wcs_panel	x=40	y=415	w=160	h=42	text=G55	bg=#2563EB	color=#FFFFFF	active_if=wcs:1	focus=222
-button	id=wcs_g56	parent=wcs_panel	x=40	y=460	w=160	h=42	text=G56	bg=#2563EB	color=#FFFFFF	active_if=wcs:2	focus=224
-button	id=wcs_g57	parent=wcs_panel	x=40	y=505	w=160	h=42	text=G57	bg=#2563EB	color=#FFFFFF	active_if=wcs:3	focus=226
-button	id=wcs_g58	parent=wcs_panel	x=40	y=550	w=160	h=42	text=G58	bg=#2563EB	color=#FFFFFF	active_if=wcs:4	focus=228
-button	id=wcs_g59	parent=wcs_panel	x=40	y=595	w=160	h=42	text=G59	bg=#2563EB	color=#FFFFFF	active_if=wcs:5	focus=230
-# active row shows live values; other rows will be "---" until per-slot binds exist
-label	id=wcs_r0_x	parent=wcs_panel	x=220	y=378	w=195	h=28	text=---	color=#E2E8F0	bg=#0F172A	bind=work_offset:x	align=center
-label	id=wcs_r0_y	parent=wcs_panel	x=425	y=378	w=195	h=28	text=---	color=#E2E8F0	bg=#0F172A	bind=work_offset:y	align=center
-label	id=wcs_r0_z	parent=wcs_panel	x=630	y=378	w=195	h=28	text=---	color=#E2E8F0	bg=#0F172A	bind=work_offset:z	align=center
-label	id=wcs_r0_a	parent=wcs_panel	x=835	y=378	w=195	h=28	text=---	color=#E2E8F0	bg=#0F172A	bind=work_offset:a	align=center
-# --- Tool table: 8 rows T1..T8, header (y=670..1470) ---
-panel	id=tool_panel	parent=offsets_root	x=20	y=680	w=1040	h=800	bg=#0F172A	border=#334155	title=TOOL TABLE
-label	id=tool_h_id	parent=tool_panel	x=40	y=725	w=160	h=32	text=TOOL	color=#94A3B8	bg=#0F172A
-label	id=tool_h_len	parent=tool_panel	x=220	y=725	w=260	h=32	text=LENGTH	color=#94A3B8	bg=#0F172A	align=center
-label	id=tool_h_rad	parent=tool_panel	x=490	y=725	w=260	h=32	text=RADIUS	color=#94A3B8	bg=#0F172A	align=center
-label	id=tool_h_wear	parent=tool_panel	x=760	y=725	w=260	h=32	text=WEAR	color=#94A3B8	bg=#0F172A	align=center
-button	id=tool_t1	parent=tool_panel	x=40	y=760	w=160	h=82	text=T1	bg=#0F766E	color=#FFFFFF	active_if=active_tool:0	focus=250
-button	id=tool_t2	parent=tool_panel	x=40	y=850	w=160	h=82	text=T2	bg=#0F766E	color=#FFFFFF	active_if=active_tool:1	focus=252
-button	id=tool_t3	parent=tool_panel	x=40	y=940	w=160	h=82	text=T3	bg=#0F766E	color=#FFFFFF	active_if=active_tool:2	focus=254
-button	id=tool_t4	parent=tool_panel	x=40	y=1030	w=160	h=82	text=T4	bg=#0F766E	color=#FFFFFF	active_if=active_tool:3	focus=256
-button	id=tool_t5	parent=tool_panel	x=40	y=1120	w=160	h=82	text=T5	bg=#0F766E	color=#FFFFFF	active_if=active_tool:4	focus=258
-button	id=tool_t6	parent=tool_panel	x=40	y=1210	w=160	h=82	text=T6	bg=#0F766E	color=#FFFFFF	active_if=active_tool:5	focus=260
-button	id=tool_t7	parent=tool_panel	x=40	y=1300	w=160	h=82	text=T7	bg=#0F766E	color=#FFFFFF	active_if=active_tool:6	focus=262
-button	id=tool_t8	parent=tool_panel	x=40	y=1390	w=160	h=82	text=T8	bg=#0F766E	color=#FFFFFF	active_if=active_tool:7	focus=264
-# active-tool readouts (same caveat as WCS rows)
-label	id=tool_r0_len	parent=tool_panel	x=220	y=785	w=260	h=32	text=---	color=#E2E8F0	bg=#0F172A	bind=tool_length	align=center
-label	id=tool_r0_rad	parent=tool_panel	x=490	y=785	w=260	h=32	text=---	color=#E2E8F0	bg=#0F172A	bind=tool_radius	align=center
-label	id=tool_r0_wear	parent=tool_panel	x=760	y=785	w=260	h=32	text=---	color=#E2E8F0	bg=#0F172A	bind=tool_wear	align=center
-input	id=tool_length	parent=tool_panel	x=220	y=830	w=260	h=46	text=0.000	bg=#DCFCE7	border=#059669	color=#052E16	bind=tool_length	action=commit:tool:length	focus=240
-input	id=tool_radius_in	parent=tool_panel	x=490	y=830	w=260	h=46	text=0.000	bg=#DCFCE7	border=#059669	color=#052E16	bind=tool_radius	action=commit:tool:radius	focus=242
-input	id=tool_wear_in	parent=tool_panel	x=760	y=830	w=260	h=46	text=0.000	bg=#DCFCE7	border=#059669	color=#052E16	bind=tool_wear	action=commit:tool:wear	focus=244
+panel	id=offsets_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=offsets_title	parent=offsets_root	x=40	y=30	w=1000	h=40	text=OFFSETS / TOOL TABLE	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- active readouts ---
+label	id=offsets_work_lbl	parent=offsets_root	x=40	y=104	w=120	h=32	text=ACTIVE WORK	color=#94A3B8	bg=#0A0F1A	scale=1
+label	id=offsets_work	parent=offsets_root	x=170	y=100	w=350	h=44	text=---	color=#BAE6FD	bg=#0C4A6E	border=#0EA5E9	bind=work_name	align=center	scale=2
+label	id=offsets_tool_lbl	parent=offsets_root	x=560	y=104	w=120	h=32	text=ACTIVE TOOL	color=#94A3B8	bg=#0A0F1A	scale=1
+label	id=offsets_tool	parent=offsets_root	x=690	y=100	w=350	h=44	text=---	color=#86EFAC	bg=#052E16	border=#22C55E	bind=tool_name	align=center	scale=2
+
+# --- active-row editor strip (panel y=170, h=170) ---
+panel	id=offsets_edit_panel	parent=offsets_root	x=20	y=170	w=1040	h=170	bg=#111827	border=#334155
+label	id=offsets_edit_hdr	parent=offsets_root	x=40	y=184	w=600	h=28	text=EDIT ACTIVE WORK OFFSET	color=#94A3B8	bg=#111827	scale=2
+label	id=offsets_edit_hint	parent=offsets_root	x=620	y=190	w=420	h=24	text=type value + Enter to commit	color=#64748B	bg=#111827	align=right	scale=1
+label	id=oe_x_lbl	parent=offsets_root	x=40	y=230	w=245	h=24	text=X	color=#94A3B8	bg=#111827	align=center	scale=1
+label	id=oe_y_lbl	parent=offsets_root	x=295	y=230	w=245	h=24	text=Y	color=#94A3B8	bg=#111827	align=center	scale=1
+label	id=oe_z_lbl	parent=offsets_root	x=550	y=230	w=245	h=24	text=Z	color=#94A3B8	bg=#111827	align=center	scale=1
+label	id=oe_a_lbl	parent=offsets_root	x=805	y=230	w=245	h=24	text=A	color=#FCD34D	bg=#111827	align=center	scale=1
+input	id=offset_x	parent=offsets_root	x=40	y=260	w=245	h=64	text=0.000	bg=#F8FAFC	border=#1E40AF	color=#0F172A	bind=work_offset:x	action=commit:offset:x	focus=180
+input	id=offset_y	parent=offsets_root	x=295	y=260	w=245	h=64	text=0.000	bg=#F8FAFC	border=#1E40AF	color=#0F172A	bind=work_offset:y	action=commit:offset:y	focus=182
+input	id=offset_z	parent=offsets_root	x=550	y=260	w=245	h=64	text=0.000	bg=#F8FAFC	border=#1E40AF	color=#0F172A	bind=work_offset:z	action=commit:offset:z	focus=184
+input	id=offset_a	parent=offsets_root	x=805	y=260	w=245	h=64	text=0.000	bg=#FEF3C7	border=#92400E	color=#451A03	bind=work_offset:a	action=commit:offset:a	focus=186
+
+# --- WCS table (panel y=360, h=560) ---
+panel	id=wcs_panel	parent=offsets_root	x=20	y=360	w=1040	h=560	bg=#111827	border=#334155
+label	id=wcs_panel_title	parent=offsets_root	x=40	y=374	w=400	h=28	text=WORK COORDINATE SYSTEMS	color=#94A3B8	bg=#111827	scale=2
+label	id=wcs_h_id	parent=offsets_root	x=40	y=420	w=160	h=28	text=WCS	color=#64748B	bg=#111827	scale=1
+label	id=wcs_h_x	parent=offsets_root	x=220	y=420	w=195	h=28	text=X	color=#64748B	bg=#111827	align=center	scale=1
+label	id=wcs_h_y	parent=offsets_root	x=425	y=420	w=195	h=28	text=Y	color=#64748B	bg=#111827	align=center	scale=1
+label	id=wcs_h_z	parent=offsets_root	x=630	y=420	w=195	h=28	text=Z	color=#64748B	bg=#111827	align=center	scale=1
+label	id=wcs_h_a	parent=offsets_root	x=835	y=420	w=195	h=28	text=A	color=#64748B	bg=#111827	align=center	scale=1
+button	id=wcs_g54	parent=offsets_root	x=40	y=460	w=160	h=64	text=G54	bg=#1E40AF	color=#FFFFFF	active_if=wcs:0	scale=2	focus=220
+button	id=wcs_g55	parent=offsets_root	x=40	y=530	w=160	h=64	text=G55	bg=#1E40AF	color=#FFFFFF	active_if=wcs:1	scale=2	focus=222
+button	id=wcs_g56	parent=offsets_root	x=40	y=600	w=160	h=64	text=G56	bg=#1E40AF	color=#FFFFFF	active_if=wcs:2	scale=2	focus=224
+button	id=wcs_g57	parent=offsets_root	x=40	y=670	w=160	h=64	text=G57	bg=#1E40AF	color=#FFFFFF	active_if=wcs:3	scale=2	focus=226
+button	id=wcs_g58	parent=offsets_root	x=40	y=740	w=160	h=64	text=G58	bg=#1E40AF	color=#FFFFFF	active_if=wcs:4	scale=2	focus=228
+button	id=wcs_g59	parent=offsets_root	x=40	y=810	w=160	h=64	text=G59	bg=#1E40AF	color=#FFFFFF	active_if=wcs:5	scale=2	focus=230
+# Active-row live readouts (per-slot binds not yet wired -- shows active row only)
+label	id=wcs_r0_x	parent=offsets_root	x=220	y=478	w=195	h=28	text=---	color=#E2E8F0	bg=#111827	bind=work_offset:x	align=center	scale=1
+label	id=wcs_r0_y	parent=offsets_root	x=425	y=478	w=195	h=28	text=---	color=#E2E8F0	bg=#111827	bind=work_offset:y	align=center	scale=1
+label	id=wcs_r0_z	parent=offsets_root	x=630	y=478	w=195	h=28	text=---	color=#E2E8F0	bg=#111827	bind=work_offset:z	align=center	scale=1
+label	id=wcs_r0_a	parent=offsets_root	x=835	y=478	w=195	h=28	text=---	color=#FCD34D	bg=#111827	bind=work_offset:a	align=center	scale=1
+label	id=wcs_note	parent=offsets_root	x=220	y=860	w=820	h=32	text=Per-slot live readouts arrive when the binder exposes them. Tap a row to make it active.	color=#64748B	bg=#111827	scale=1
+
+# --- Tool table (panel y=940, h=760) ---
+panel	id=tool_panel	parent=offsets_root	x=20	y=940	w=1040	h=760	bg=#111827	border=#334155
+label	id=tool_panel_title	parent=offsets_root	x=40	y=954	w=400	h=28	text=TOOL TABLE	color=#94A3B8	bg=#111827	scale=2
+label	id=tool_h_id	parent=offsets_root	x=40	y=1000	w=160	h=28	text=TOOL	color=#64748B	bg=#111827	scale=1
+label	id=tool_h_len	parent=offsets_root	x=220	y=1000	w=260	h=28	text=LENGTH	color=#64748B	bg=#111827	align=center	scale=1
+label	id=tool_h_rad	parent=offsets_root	x=490	y=1000	w=260	h=28	text=RADIUS	color=#64748B	bg=#111827	align=center	scale=1
+label	id=tool_h_wear	parent=offsets_root	x=760	y=1000	w=260	h=28	text=WEAR	color=#64748B	bg=#111827	align=center	scale=1
+button	id=tool_t1	parent=offsets_root	x=40	y=1040	w=160	h=70	text=T1	bg=#0F766E	color=#FFFFFF	active_if=active_tool:0	scale=2	focus=250
+button	id=tool_t2	parent=offsets_root	x=40	y=1115	w=160	h=70	text=T2	bg=#0F766E	color=#FFFFFF	active_if=active_tool:1	scale=2	focus=252
+button	id=tool_t3	parent=offsets_root	x=40	y=1190	w=160	h=70	text=T3	bg=#0F766E	color=#FFFFFF	active_if=active_tool:2	scale=2	focus=254
+button	id=tool_t4	parent=offsets_root	x=40	y=1265	w=160	h=70	text=T4	bg=#0F766E	color=#FFFFFF	active_if=active_tool:3	scale=2	focus=256
+button	id=tool_t5	parent=offsets_root	x=40	y=1340	w=160	h=70	text=T5	bg=#0F766E	color=#FFFFFF	active_if=active_tool:4	scale=2	focus=258
+button	id=tool_t6	parent=offsets_root	x=40	y=1415	w=160	h=70	text=T6	bg=#0F766E	color=#FFFFFF	active_if=active_tool:5	scale=2	focus=260
+button	id=tool_t7	parent=offsets_root	x=40	y=1490	w=160	h=70	text=T7	bg=#0F766E	color=#FFFFFF	active_if=active_tool:6	scale=2	focus=262
+button	id=tool_t8	parent=offsets_root	x=40	y=1565	w=160	h=70	text=T8	bg=#0F766E	color=#FFFFFF	active_if=active_tool:7	scale=2	focus=264
+# Active tool live readouts
+label	id=tool_r0_len	parent=offsets_root	x=220	y=1058	w=260	h=32	text=---	color=#E2E8F0	bg=#111827	bind=tool_length	align=center	scale=2
+label	id=tool_r0_rad	parent=offsets_root	x=490	y=1058	w=260	h=32	text=---	color=#E2E8F0	bg=#111827	bind=tool_radius	align=center	scale=2
+label	id=tool_r0_wear	parent=offsets_root	x=760	y=1058	w=260	h=32	text=---	color=#E2E8F0	bg=#111827	bind=tool_wear	align=center	scale=2
+label	id=tool_edit_hdr	parent=offsets_root	x=220	y=1110	w=820	h=24	text=EDIT ACTIVE TOOL (type value + Enter)	color=#94A3B8	bg=#111827	scale=1
+input	id=tool_length	parent=offsets_root	x=220	y=1140	w=260	h=64	text=0.000	bg=#DCFCE7	border=#22C55E	color=#052E16	bind=tool_length	action=commit:tool:length	focus=240
+input	id=tool_radius_in	parent=offsets_root	x=490	y=1140	w=260	h=64	text=0.000	bg=#DCFCE7	border=#22C55E	color=#052E16	bind=tool_radius	action=commit:tool:radius	focus=242
+input	id=tool_wear_in	parent=offsets_root	x=760	y=1140	w=260	h=64	text=0.000	bg=#DCFCE7	border=#22C55E	color=#052E16	bind=tool_wear	action=commit:tool:wear	focus=244
+label	id=tool_note	parent=offsets_root	x=220	y=1220	w=820	h=32	text=Tap a tool row on the left to switch which tool the inputs edit.	color=#64748B	bg=#111827	scale=1
+
 action	widget=wcs_g54	event=click	target=offset:work:0
 action	widget=wcs_g55	event=click	target=offset:work:1
 action	widget=wcs_g56	event=click	target=offset:work:2
@@ -380,88 +569,152 @@ action	widget=tool_t8	event=click	target=offset:tool:7
 include	page=bottom_nav
 
 # ============================================================
-# service
+# service -- alarm recovery, setup, diagnostics
 # ============================================================
 page	id=service	title=Service
-panel	id=service_root	x=0	y=0	w=1080	h=1740	bg=#111827	border=#475569	title=SERVICE
-label	id=service_title	parent=service_root	x=40	y=40	w=1000	h=40	text=Alarm Recovery, Setup, Diagnostics	color=#F8FAFC	bg=#111827	align=center	scale=2
-label	id=service_alarm	parent=service_root	x=40	y=120	w=1000	h=40	text=Alarm State: 	color=#FCA5A5	bg=#1F2937	border=#475569	bind=alarm
-label	id=service_prompt	parent=service_root	x=40	y=180	w=1000	h=40	text=Operator State: 	color=#CBD5E1	bg=#1F2937	border=#475569	bind=prompt
-progress	id=service_cycle	parent=service_root	x=40	y=260	w=1000	h=40	max=100	color=#60A5FA	bg=#172554	bind=cycle_progress
-label	id=service_programs	parent=service_root	x=40	y=320	w=500	h=32	text=Programs Loaded: 	color=#93C5FD	bg=#0B1220	border=#1F2937	bind=program_count
-button	id=setup_load	parent=service_root	x=40	y=400	w=320	h=120	text=LOAD SETUP	bg=#475569	color=#F8FAFC	focus=290
-button	id=setup_save	parent=service_root	x=380	y=400	w=320	h=120	text=SAVE SETUP	bg=#1D4ED8	color=#FFFFFF	focus=300
-button	id=service_probe	parent=service_root	x=720	y=400	w=320	h=120	text=PROBE CYCLES	bg=#0F766E	color=#FFFFFF	focus=310
-button	id=service_ethercat	parent=service_root	x=40	y=540	w=320	h=120	text=ETHERCAT	bg=#0E7490	color=#FFFFFF	focus=320
-button	id=service_alarms	parent=service_root	x=380	y=540	w=320	h=120	text=ALARMS	bg=#B91C1C	color=#FFFFFF	focus=330
+panel	id=service_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=service_title	parent=service_root	x=40	y=30	w=1000	h=40	text=SERVICE / DIAGNOSTICS	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- alarm + state panel ---
+panel	id=service_state_panel	parent=service_root	x=20	y=110	w=1040	h=300	bg=#111827	border=#334155
+label	id=service_state_title	parent=service_root	x=40	y=124	w=400	h=28	text=MACHINE STATE	color=#94A3B8	bg=#111827	scale=2
+label	id=service_alarm_lbl	parent=service_root	x=40	y=180	w=160	h=32	text=ALARM	color=#94A3B8	bg=#111827	scale=1
+label	id=service_alarm	parent=service_root	x=210	y=176	w=830	h=44	text=---	color=#FCA5A5	bg=#7F1D1D	border=#EF4444	bind=alarm	align=center	scale=2
+label	id=service_prompt_lbl	parent=service_root	x=40	y=240	w=160	h=32	text=OPERATOR	color=#94A3B8	bg=#111827	scale=1
+label	id=service_prompt	parent=service_root	x=210	y=236	w=830	h=44	text=---	color=#CBD5E1	bg=#0F172A	border=#475569	bind=prompt	align=center	scale=2
+label	id=service_progress_lbl	parent=service_root	x=40	y=300	w=160	h=32	text=CYCLE	color=#94A3B8	bg=#111827	scale=1
+progress	id=service_cycle	parent=service_root	x=210	y=304	w=720	h=32	max=100	color=#22C55E	bg=#1E293B	bind=cycle_progress
+label	id=service_progress_v	parent=service_root	x=940	y=300	w=100	h=32	text=---	color=#86EFAC	bg=#111827	bind=cycle_progress	align=center	scale=1
+label	id=service_progs_lbl	parent=service_root	x=40	y=358	w=200	h=32	text=PROGRAMS	color=#94A3B8	bg=#111827	scale=1
+label	id=service_programs	parent=service_root	x=240	y=354	w=300	h=40	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=program_count	align=center	scale=2
+
+# --- setup panel ---
+panel	id=service_setup_panel	parent=service_root	x=20	y=430	w=1040	h=200	bg=#111827	border=#334155
+label	id=service_setup_title	parent=service_root	x=40	y=444	w=400	h=28	text=SETUP	color=#94A3B8	bg=#111827	scale=2
+button	id=setup_load	parent=service_root	x=40	y=490	w=320	h=120	text=LOAD SETUP	bg=#334155	color=#F8FAFC	scale=2	focus=290
+button	id=setup_save	parent=service_root	x=380	y=490	w=320	h=120	text=SAVE SETUP	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=300
+button	id=service_probe	parent=service_root	x=720	y=490	w=320	h=120	text=PROBE CYCLES	bg=#0F766E	color=#FFFFFF	scale=2	focus=310
+
+# --- diagnostics panel ---
+panel	id=service_diag_panel	parent=service_root	x=20	y=650	w=1040	h=200	bg=#111827	border=#334155
+label	id=service_diag_title	parent=service_root	x=40	y=664	w=400	h=28	text=DIAGNOSTICS	color=#94A3B8	bg=#111827	scale=2
+button	id=service_ethercat	parent=service_root	x=40	y=710	w=320	h=120	text=ETHERCAT	bg=#0E7490	color=#FFFFFF	scale=2	focus=320
+button	id=service_alarms	parent=service_root	x=380	y=710	w=320	h=120	text=ALARMS	bg=#B91C1C	color=#FFFFFF	scale=2	focus=330
+button	id=service_macros	parent=service_root	x=720	y=710	w=320	h=120	text=MACROS	bg=#5B21B6	color=#FFFFFF	scale=2	focus=340
+
+# --- info panel ---
+panel	id=service_info_panel	parent=service_root	x=20	y=870	w=1040	h=300	bg=#111827	border=#334155
+label	id=service_info_title	parent=service_root	x=40	y=884	w=400	h=28	text=NOTES	color=#94A3B8	bg=#111827	scale=2
+label	id=service_info_1	parent=service_root	x=40	y=930	w=1000	h=32	text=- Setup snapshots persist offsets, tool table and active modes.	color=#94A3B8	bg=#111827	scale=1
+label	id=service_info_2	parent=service_root	x=40	y=970	w=1000	h=32	text=- ETHERCAT shows live bus health (period, p99, max, fault).	color=#94A3B8	bg=#111827	scale=1
+label	id=service_info_3	parent=service_root	x=40	y=1010	w=1000	h=32	text=- ALARMS routes to recovery + acknowledgement workflow.	color=#94A3B8	bg=#111827	scale=1
+label	id=service_info_4	parent=service_root	x=40	y=1050	w=1000	h=32	text=- PROBE CYCLES launches the qualified macro library.	color=#94A3B8	bg=#111827	scale=1
+
 action	widget=setup_load	event=click	target=setup:load
 action	widget=setup_save	event=click	target=setup:save
 action	widget=service_probe	event=click	target=goto:probe
 action	widget=service_ethercat	event=click	target=goto:ethercat
 action	widget=service_alarms	event=click	target=goto:service
+action	widget=service_macros	event=click	target=goto:macros
 include	page=bottom_nav
 
 # ============================================================
-# ethercat — bus diagnostics page (master state, cycle health, fault)
-# Coordinate convention: x and y are ABSOLUTE within the 1080x1920 page,
-# even when parent= is set. parent= only governs grouping for show/hide
-# and event routing, not positioning.
+# ethercat -- bus diagnostics page (master state, cycle health, fault)
 # ============================================================
 page	id=ethercat	title=EtherCAT
-panel	id=ec_root	x=0	y=0	w=1080	h=1740	bg=#0C1A24	border=#0E7490	title=ETHERCAT
-label	id=ec_title	parent=ec_root	x=40	y=40	w=1000	h=44	text=EtherCAT Bus Diagnostics	color=#E0F2FE	bg=#0C1A24	align=center	scale=2
-# --- master state hero (y 120..320) ---
-panel	id=ec_state_panel	parent=ec_root	x=40	y=120	w=1000	h=200	bg=#082F49	border=#0E7490	title=MASTER
-label	id=ec_state_label	parent=ec_state_panel	x=80	y=190	w=380	h=110	text=STATE: 	color=#E0F2FE	bg=#082F49	border=#0EA5E9	scale=3	bind=ec:state	align=center
-label	id=ec_fault_label	parent=ec_state_panel	x=480	y=190	w=520	h=110	text=FAULT: 	color=#FEF3C7	bg=#7F1D1D	border=#F59E0B	scale=3	bind=ec:fault	align=center
-# --- cycle timing (y 340..580) ---
-panel	id=ec_cycle_panel	parent=ec_root	x=40	y=340	w=1000	h=240	bg=#0F172A	border=#475569	title=CYCLE TIMING
-label	id=ec_period_h	parent=ec_cycle_panel	x=80	y=410	w=180	h=40	text=Period (us)	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_p99_h	parent=ec_cycle_panel	x=280	y=410	w=180	h=40	text=p99 (us)	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_max_h	parent=ec_cycle_panel	x=480	y=410	w=180	h=40	text=Max (us)	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_miss_h	parent=ec_cycle_panel	x=680	y=410	w=160	h=40	text=Miss	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_trips_h	parent=ec_cycle_panel	x=860	y=410	w=160	h=40	text=Trips	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_period_v	parent=ec_cycle_panel	x=80	y=460	w=180	h=80	text=0	color=#FBBF24	bg=#1F2937	border=#475569	scale=2	bind=ec:period	align=center
-label	id=ec_p99_v	parent=ec_cycle_panel	x=280	y=460	w=180	h=80	text=0	color=#FBBF24	bg=#1F2937	border=#475569	scale=2	bind=ec:p99	align=center
-label	id=ec_max_v	parent=ec_cycle_panel	x=480	y=460	w=180	h=80	text=0	color=#FCA5A5	bg=#1F2937	border=#475569	scale=2	bind=ec:max	align=center
-label	id=ec_miss_v	parent=ec_cycle_panel	x=680	y=460	w=160	h=80	text=0	color=#FCA5A5	bg=#1F2937	border=#475569	scale=2	bind=ec:miss	align=center
-label	id=ec_trips_v	parent=ec_cycle_panel	x=860	y=460	w=160	h=80	text=0	color=#FCA5A5	bg=#1F2937	border=#475569	scale=2	bind=ec:trips	align=center
-# --- bus traffic (y 600..800) ---
-panel	id=ec_traffic_panel	parent=ec_root	x=40	y=600	w=1000	h=200	bg=#0F172A	border=#475569	title=BUS TRAFFIC
-label	id=ec_slaves_h	parent=ec_traffic_panel	x=80	y=670	w=200	h=40	text=Slaves	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_cycles_h	parent=ec_traffic_panel	x=300	y=670	w=240	h=40	text=Cycles	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_tx_h	parent=ec_traffic_panel	x=560	y=670	w=200	h=40	text=TX Frames	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_rx_h	parent=ec_traffic_panel	x=780	y=670	w=240	h=40	text=RX Frames	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_slaves_v	parent=ec_traffic_panel	x=80	y=720	w=200	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:slaves	align=center
-label	id=ec_cycles_v	parent=ec_traffic_panel	x=300	y=720	w=240	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:cycles	align=center
-label	id=ec_tx_v	parent=ec_traffic_panel	x=560	y=720	w=200	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:tx	align=center
-label	id=ec_rx_v	parent=ec_traffic_panel	x=780	y=720	w=240	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:rx	align=center
-# --- actions (y 820..980) ---
-panel	id=ec_actions_panel	parent=ec_root	x=40	y=820	w=1000	h=160	bg=#0F172A	border=#475569	title=ACTIONS
-button	id=ec_clear_fault_btn	parent=ec_actions_panel	x=80	y=890	w=300	h=80	text=CLEAR FAULT	bg=#16A34A	color=#FFFFFF	focus=340
-button	id=ec_estop_btn	parent=ec_actions_panel	x=400	y=890	w=300	h=80	text=E-STOP	bg=#DC2626	color=#FFFFFF	focus=350
-button	id=ec_back_btn	parent=ec_actions_panel	x=720	y=890	w=300	h=80	text=BACK	bg=#475569	color=#F8FAFC	focus=360
+panel	id=ec_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=ec_title	parent=ec_root	x=40	y=30	w=1000	h=40	text=ETHERCAT BUS DIAGNOSTICS	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- master state hero (panel y=110, h=240) ---
+panel	id=ec_state_panel	parent=ec_root	x=20	y=110	w=1040	h=240	bg=#111827	border=#334155
+label	id=ec_state_title	parent=ec_root	x=40	y=124	w=400	h=28	text=MASTER	color=#94A3B8	bg=#111827	scale=2
+label	id=ec_state_lbl	parent=ec_root	x=40	y=180	w=140	h=44	text=STATE	color=#94A3B8	bg=#111827	scale=2
+label	id=ec_state_label	parent=ec_root	x=190	y=170	w=380	h=160	text=---	color=#BAE6FD	bg=#082F49	border=#0EA5E9	bind=ec:state	scale=3	align=center
+label	id=ec_fault_lbl	parent=ec_root	x=590	y=180	w=140	h=44	text=FAULT	color=#94A3B8	bg=#111827	scale=2
+label	id=ec_fault_label	parent=ec_root	x=740	y=170	w=300	h=160	text=---	color=#FEF3C7	bg=#7F1D1D	border=#F59E0B	bind=ec:fault	scale=3	align=center
+
+# --- cycle timing (panel y=370, h=280) ---
+panel	id=ec_cycle_panel	parent=ec_root	x=20	y=370	w=1040	h=280	bg=#111827	border=#334155
+label	id=ec_cycle_title	parent=ec_root	x=40	y=384	w=400	h=28	text=CYCLE TIMING	color=#94A3B8	bg=#111827	scale=2
+label	id=ec_period_h	parent=ec_root	x=40	y=434	w=190	h=32	text=PERIOD us	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_p99_h	parent=ec_root	x=240	y=434	w=190	h=32	text=p99 us	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_max_h	parent=ec_root	x=440	y=434	w=190	h=32	text=MAX us	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_miss_h	parent=ec_root	x=640	y=434	w=190	h=32	text=MISS	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_trips_h	parent=ec_root	x=840	y=434	w=200	h=32	text=TRIPS	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_period_v	parent=ec_root	x=40	y=476	w=190	h=128	text=0	color=#FBBF24	bg=#0F172A	border=#475569	scale=3	bind=ec:period	align=center
+label	id=ec_p99_v	parent=ec_root	x=240	y=476	w=190	h=128	text=0	color=#FBBF24	bg=#0F172A	border=#475569	scale=3	bind=ec:p99	align=center
+label	id=ec_max_v	parent=ec_root	x=440	y=476	w=190	h=128	text=0	color=#FCA5A5	bg=#0F172A	border=#475569	scale=3	bind=ec:max	align=center
+label	id=ec_miss_v	parent=ec_root	x=640	y=476	w=190	h=128	text=0	color=#FCA5A5	bg=#0F172A	border=#475569	scale=3	bind=ec:miss	align=center
+label	id=ec_trips_v	parent=ec_root	x=840	y=476	w=200	h=128	text=0	color=#FCA5A5	bg=#0F172A	border=#475569	scale=3	bind=ec:trips	align=center
+label	id=ec_cycle_note	parent=ec_root	x=40	y=614	w=1000	h=24	text=Master target cycle: 250 us. Miss = late delivery; trips = deadline-fault latches.	color=#64748B	bg=#111827	scale=1
+
+# --- bus traffic (panel y=670, h=240) ---
+panel	id=ec_traffic_panel	parent=ec_root	x=20	y=670	w=1040	h=240	bg=#111827	border=#334155
+label	id=ec_traffic_title	parent=ec_root	x=40	y=684	w=400	h=28	text=BUS TRAFFIC	color=#94A3B8	bg=#111827	scale=2
+label	id=ec_slaves_h	parent=ec_root	x=40	y=730	w=240	h=32	text=SLAVES	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_cycles_h	parent=ec_root	x=290	y=730	w=240	h=32	text=CYCLES	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_tx_h	parent=ec_root	x=540	y=730	w=240	h=32	text=TX FRAMES	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_rx_h	parent=ec_root	x=790	y=730	w=250	h=32	text=RX FRAMES	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_slaves_v	parent=ec_root	x=40	y=772	w=240	h=110	text=0	color=#86EFAC	bg=#0F172A	border=#475569	scale=3	bind=ec:slaves	align=center
+label	id=ec_cycles_v	parent=ec_root	x=290	y=772	w=240	h=110	text=0	color=#86EFAC	bg=#0F172A	border=#475569	scale=3	bind=ec:cycles	align=center
+label	id=ec_tx_v	parent=ec_root	x=540	y=772	w=240	h=110	text=0	color=#86EFAC	bg=#0F172A	border=#475569	scale=3	bind=ec:tx	align=center
+label	id=ec_rx_v	parent=ec_root	x=790	y=772	w=250	h=110	text=0	color=#86EFAC	bg=#0F172A	border=#475569	scale=3	bind=ec:rx	align=center
+
+# --- actions (panel y=930, h=180) ---
+panel	id=ec_actions_panel	parent=ec_root	x=20	y=930	w=1040	h=180	bg=#111827	border=#334155
+label	id=ec_actions_title	parent=ec_root	x=40	y=944	w=400	h=28	text=ACTIONS	color=#94A3B8	bg=#111827	scale=2
+button	id=ec_clear_fault_btn	parent=ec_root	x=40	y=988	w=320	h=110	text=CLEAR FAULT	bg=#15803D	color=#FFFFFF	scale=2	focus=340
+button	id=ec_estop_btn	parent=ec_root	x=380	y=988	w=320	h=110	text=E-STOP	bg=#B91C1C	color=#FFFFFF	scale=2	focus=350
+button	id=ec_back_btn	parent=ec_root	x=720	y=988	w=320	h=110	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=360
+
 action	widget=ec_clear_fault_btn	event=click	target=ec:clear_fault
 action	widget=ec_estop_btn	event=click	target=ec:estop
 action	widget=ec_back_btn	event=click	target=goto:service
 include	page=bottom_nav
 
 # ============================================================
-# macros
+# macros -- macro library + run / abort
 # ============================================================
 page	id=macros	title=Macros
-panel	id=macro_root	x=0	y=0	w=1080	h=1740	bg=#1E1B4B	border=#8B5CF6	title=MACROS
-label	id=macro_title	parent=macro_root	x=40	y=40	w=1000	h=40	text=Machine Macros And Sequences	color=#F5F3FF	bg=#1E1B4B	align=center	scale=2
-label	id=macro_selected	parent=macro_root	x=40	y=120	w=1000	h=40	text=Selected: 	color=#DDD6FE	bg=#312E81	border=#8B5CF6	bind=macro_name
-label	id=macro_active	parent=macro_root	x=40	y=180	w=1000	h=40	text=Active: 	color=#DDD6FE	bg=#312E81	border=#8B5CF6	bind=macro_active
-label	id=macro_status	parent=macro_root	x=40	y=240	w=500	h=40	text=Status: 	color=#C4B5FD	bg=#312E81	border=#8B5CF6	bind=macro_status
-label	id=macro_step	parent=macro_root	x=560	y=240	w=500	h=40	text=Step: 	color=#C4B5FD	bg=#312E81	border=#8B5CF6	bind=macro_step
-label	id=macro_message	parent=macro_root	x=40	y=300	w=1020	h=40	text=Message: 	color=#FCA5A5	bg=#312E81	border=#8B5CF6	bind=macro_message
-label	id=macro_count	parent=macro_root	x=40	y=360	w=500	h=40	text=Loaded Macros: 	color=#C4B5FD	bg=#312E81	border=#8B5CF6	bind=macro_count
-button	id=macro_prev	parent=macro_root	x=40	y=440	w=240	h=120	text=PREV	bg=#5B21B6	color=#FFFFFF	focus=320
-button	id=macro_next	parent=macro_root	x=300	y=440	w=240	h=120	text=NEXT	bg=#5B21B6	color=#FFFFFF	focus=330
-button	id=macro_run	parent=macro_root	x=560	y=440	w=240	h=120	text=RUN	bg=#059669	color=#FFFFFF	focus=340
-button	id=macro_abort	parent=macro_root	x=820	y=440	w=240	h=120	text=ABORT	bg=#BE123C	color=#FFFFFF	focus=350
+panel	id=macro_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=macro_title	parent=macro_root	x=40	y=30	w=1000	h=40	text=MACROS / SEQUENCES	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- selection panel ---
+panel	id=macro_sel_panel	parent=macro_root	x=20	y=110	w=1040	h=260	bg=#111827	border=#334155
+label	id=macro_sel_title	parent=macro_root	x=40	y=124	w=400	h=28	text=SELECTION	color=#94A3B8	bg=#111827	scale=2
+label	id=macro_selected_lbl	parent=macro_root	x=40	y=180	w=160	h=32	text=SELECTED	color=#94A3B8	bg=#111827	scale=1
+label	id=macro_selected	parent=macro_root	x=210	y=176	w=830	h=44	text=---	color=#DDD6FE	bg=#1E1B4B	border=#7C3AED	bind=macro_name	align=center	scale=2
+label	id=macro_active_lbl	parent=macro_root	x=40	y=240	w=160	h=32	text=ACTIVE	color=#94A3B8	bg=#111827	scale=1
+label	id=macro_active	parent=macro_root	x=210	y=236	w=830	h=44	text=---	color=#86EFAC	bg=#052E16	border=#22C55E	bind=macro_active	align=center	scale=2
+label	id=macro_count_lbl	parent=macro_root	x=40	y=300	w=160	h=32	text=LOADED	color=#94A3B8	bg=#111827	scale=1
+label	id=macro_count	parent=macro_root	x=210	y=296	w=300	h=40	text=0	color=#7DD3FC	bg=#0F172A	border=#475569	bind=macro_count	align=center	scale=2
+
+# --- progress panel ---
+panel	id=macro_prog_panel	parent=macro_root	x=20	y=390	w=1040	h=200	bg=#111827	border=#334155
+label	id=macro_prog_title	parent=macro_root	x=40	y=404	w=400	h=28	text=PROGRESS	color=#94A3B8	bg=#111827	scale=2
+label	id=macro_status_lbl	parent=macro_root	x=40	y=460	w=160	h=32	text=STATUS	color=#94A3B8	bg=#111827	scale=1
+label	id=macro_status	parent=macro_root	x=210	y=456	w=400	h=40	text=---	color=#BAE6FD	bg=#0C4A6E	border=#0EA5E9	bind=macro_status	align=center	scale=2
+label	id=macro_step_lbl	parent=macro_root	x=640	y=460	w=120	h=32	text=STEP	color=#94A3B8	bg=#111827	scale=1
+label	id=macro_step	parent=macro_root	x=770	y=456	w=270	h=40	text=---	color=#FBBF24	bg=#0F172A	border=#475569	bind=macro_step	align=center	scale=2
+label	id=macro_message_lbl	parent=macro_root	x=40	y=520	w=160	h=32	text=MSG	color=#94A3B8	bg=#111827	scale=1
+label	id=macro_message	parent=macro_root	x=210	y=518	w=830	h=36	text=---	color=#FCA5A5	bg=#0F172A	border=#475569	bind=macro_message	scale=1
+
+# --- transport panel ---
+panel	id=macro_act_panel	parent=macro_root	x=20	y=610	w=1040	h=200	bg=#111827	border=#334155
+label	id=macro_act_title	parent=macro_root	x=40	y=624	w=400	h=28	text=TRANSPORT	color=#94A3B8	bg=#111827	scale=2
+button	id=macro_prev	parent=macro_root	x=40	y=670	w=240	h=120	text=PREV	bg=#334155	color=#F8FAFC	scale=2	focus=320
+button	id=macro_next	parent=macro_root	x=300	y=670	w=240	h=120	text=NEXT	bg=#334155	color=#F8FAFC	scale=2	focus=330
+button	id=macro_run	parent=macro_root	x=560	y=670	w=240	h=120	text=RUN	bg=#15803D	color=#FFFFFF	scale=2	focus=340
+button	id=macro_abort	parent=macro_root	x=820	y=670	w=240	h=120	text=ABORT	bg=#B91C1C	color=#FFFFFF	scale=2	focus=350
+
+# --- info panel ---
+panel	id=macro_info_panel	parent=macro_root	x=20	y=830	w=1040	h=350	bg=#111827	border=#334155
+label	id=macro_info_title	parent=macro_root	x=40	y=844	w=400	h=28	text=NOTES	color=#94A3B8	bg=#111827	scale=2
+label	id=macro_info_1	parent=macro_root	x=40	y=890	w=1000	h=32	text=- PREV / NEXT walks the loaded macro library.	color=#94A3B8	bg=#111827	scale=1
+label	id=macro_info_2	parent=macro_root	x=40	y=930	w=1000	h=32	text=- RUN executes the selected macro on its target channel.	color=#94A3B8	bg=#111827	scale=1
+label	id=macro_info_3	parent=macro_root	x=40	y=970	w=1000	h=32	text=- ABORT stops the active macro and restores READY.	color=#94A3B8	bg=#111827	scale=1
+label	id=macro_info_4	parent=macro_root	x=40	y=1010	w=1000	h=32	text=- Probe macros are surfaced on the PROBE page.	color=#94A3B8	bg=#111827	scale=1
+
 action	widget=macro_prev	event=click	target=macro:prev
 action	widget=macro_next	event=click	target=macro:next
 action	widget=macro_run	event=click	target=macro:run
@@ -469,33 +722,64 @@ action	widget=macro_abort	event=click	target=macro:abort
 include	page=bottom_nav
 
 # ============================================================
-# probe
+# probe -- probe cycle library
 # ============================================================
 page	id=probe	title=Probe
-panel	id=probe_root	x=0	y=0	w=1080	h=1740	bg=#052E2B	border=#14B8A6	title=PROBE
-label	id=probe_title	parent=probe_root	x=40	y=40	w=1000	h=40	text=Renishaw Probe Cycles	color=#CCFBF1	bg=#052E2B	align=center	scale=2
-label	id=probe_status_label	parent=probe_root	x=40	y=120	w=500	h=32	text=Probe Cycle: 	color=#99F6E4	bg=#134E4A	border=#14B8A6	bind=probe_done
-label	id=probe_stylus_label	parent=probe_root	x=560	y=120	w=500	h=32	text=Stylus: 	color=#99F6E4	bg=#134E4A	border=#14B8A6	bind=probe_stylus
-label	id=probe_x_label	parent=probe_root	x=40	y=170	w=320	h=32	text=Probe X: 	color=#A7F3D0	bg=#134E4A	border=#14B8A6	bind=probe_x
-label	id=probe_y_label	parent=probe_root	x=380	y=170	w=320	h=32	text=Probe Y: 	color=#A7F3D0	bg=#134E4A	border=#14B8A6	bind=probe_y
-label	id=probe_z_label	parent=probe_root	x=720	y=170	w=320	h=32	text=Probe Z: 	color=#A7F3D0	bg=#134E4A	border=#14B8A6	bind=probe_z
-image	id=probe_preview	parent=probe_root	x=40	y=220	w=1000	h=300	text=gles1:machine	bg=#1F2937	border=#94A3B8	color=#E5E7EB
-label	id=probe_center_x_label	parent=probe_root	x=40	y=540	w=320	h=32	text=Center X: 	color=#CCFBF1	bg=#134E4A	border=#14B8A6	bind=probe_center_x
-label	id=probe_center_y_label	parent=probe_root	x=380	y=540	w=320	h=32	text=Center Y: 	color=#CCFBF1	bg=#134E4A	border=#14B8A6	bind=probe_center_y
-label	id=probe_size_x_label	parent=probe_root	x=720	y=540	w=320	h=32	text=Pocket X: 	color=#CCFBF1	bg=#134E4A	border=#14B8A6	bind=probe_size_x
-label	id=probe_size_y_label	parent=probe_root	x=40	y=590	w=320	h=32	text=Pocket Y: 	color=#CCFBF1	bg=#134E4A	border=#14B8A6	bind=probe_size_y
-label	id=probe_shift_x_label	parent=probe_root	x=380	y=590	w=320	h=32	text=Shift X: 	color=#CCFBF1	bg=#134E4A	border=#14B8A6	bind=probe_shift_x
-label	id=probe_shift_y_label	parent=probe_root	x=720	y=590	w=320	h=32	text=Shift Y: 	color=#CCFBF1	bg=#134E4A	border=#14B8A6	bind=probe_shift_y
-label	id=probe_shift_z_label	parent=probe_root	x=40	y=640	w=320	h=32	text=Shift Z: 	color=#CCFBF1	bg=#134E4A	border=#14B8A6	bind=probe_shift_z
-label	id=probe_sphere_state	parent=probe_root	x=380	y=640	w=320	h=32	text=Sphere: 	color=#CCFBF1	bg=#134E4A	border=#14B8A6	bind=probe_sphere_ready
-label	id=probe_sphere_pts	parent=probe_root	x=720	y=640	w=320	h=32	text=Sphere Pts: 	color=#CCFBF1	bg=#134E4A	border=#14B8A6	bind=probe_sphere_points
-button	id=probe_qualify	parent=probe_root	x=40	y=700	w=320	h=100	text=QUALIFY	bg=#0F766E	color=#FFFFFF	focus=370
-button	id=probe_z_surface	parent=probe_root	x=380	y=700	w=320	h=100	text=Z SURFACE	bg=#0F766E	color=#FFFFFF	focus=380
-button	id=probe_x_edge	parent=probe_root	x=720	y=700	w=320	h=100	text=X EDGE	bg=#0F766E	color=#FFFFFF	focus=390
-button	id=probe_y_edge	parent=probe_root	x=40	y=820	w=320	h=100	text=Y EDGE	bg=#0F766E	color=#FFFFFF	focus=400
-button	id=probe_bore	parent=probe_root	x=380	y=820	w=320	h=100	text=BORE XY	bg=#0F766E	color=#FFFFFF	focus=410
-button	id=probe_pocket_cal	parent=probe_root	x=720	y=820	w=320	h=100	text=3D POCKET	bg=#0F766E	color=#FFFFFF	focus=415
-button	id=probe_sphere_cal	parent=probe_root	x=40	y=940	w=1020	h=100	text=REFERENCE SPHERE	bg=#115E59	color=#FFFFFF	focus=418
+panel	id=probe_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=probe_title	parent=probe_root	x=40	y=30	w=1000	h=40	text=PROBE CYCLES	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- status panel ---
+panel	id=probe_status_panel	parent=probe_root	x=20	y=110	w=1040	h=180	bg=#111827	border=#334155
+label	id=probe_status_title	parent=probe_root	x=40	y=124	w=400	h=28	text=PROBE STATUS	color=#94A3B8	bg=#111827	scale=2
+label	id=probe_cyc_lbl	parent=probe_root	x=40	y=170	w=160	h=32	text=CYCLE	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_status_label	parent=probe_root	x=210	y=166	w=400	h=40	text=---	color=#86EFAC	bg=#0F172A	border=#22C55E	bind=probe_done	align=center	scale=2
+label	id=probe_styl_lbl	parent=probe_root	x=640	y=170	w=120	h=32	text=STYLUS	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_stylus_label	parent=probe_root	x=770	y=166	w=270	h=40	text=---	color=#86EFAC	bg=#0F172A	border=#22C55E	bind=probe_stylus	align=center	scale=2
+label	id=probe_x_lbl	parent=probe_root	x=40	y=232	w=80	h=32	text=PX	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_x_label	parent=probe_root	x=130	y=230	w=200	h=36	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=probe_x	align=right	scale=1
+label	id=probe_y_lbl	parent=probe_root	x=350	y=232	w=80	h=32	text=PY	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_y_label	parent=probe_root	x=440	y=230	w=200	h=36	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=probe_y	align=right	scale=1
+label	id=probe_z_lbl	parent=probe_root	x=660	y=232	w=80	h=32	text=PZ	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_z_label	parent=probe_root	x=750	y=230	w=290	h=36	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=probe_z	align=right	scale=1
+
+# --- preview panel ---
+panel	id=probe_prev_panel	parent=probe_root	x=20	y=310	w=1040	h=340	bg=#111827	border=#334155
+label	id=probe_prev_title	parent=probe_root	x=40	y=324	w=400	h=28	text=MACHINE PREVIEW	color=#94A3B8	bg=#111827	scale=2
+image	id=probe_preview	parent=probe_root	x=40	y=360	w=1000	h=270	text=gles1:machine	bg=#0F172A	border=#334155	color=#E5E7EB
+
+# --- results panel ---
+panel	id=probe_results_panel	parent=probe_root	x=20	y=670	w=1040	h=200	bg=#111827	border=#334155
+label	id=probe_results_title	parent=probe_root	x=40	y=684	w=400	h=28	text=LAST RESULTS	color=#94A3B8	bg=#111827	scale=2
+label	id=probe_cx_lbl	parent=probe_root	x=40	y=730	w=80	h=24	text=CX	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_center_x_label	parent=probe_root	x=130	y=728	w=200	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_center_x	align=right	scale=1
+label	id=probe_cy_lbl	parent=probe_root	x=350	y=730	w=80	h=24	text=CY	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_center_y_label	parent=probe_root	x=440	y=728	w=200	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_center_y	align=right	scale=1
+label	id=probe_px_lbl	parent=probe_root	x=660	y=730	w=80	h=24	text=PX	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_size_x_label	parent=probe_root	x=750	y=728	w=290	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_size_x	align=right	scale=1
+label	id=probe_py_lbl	parent=probe_root	x=40	y=770	w=80	h=24	text=PY	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_size_y_label	parent=probe_root	x=130	y=768	w=200	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_size_y	align=right	scale=1
+label	id=probe_sx_lbl	parent=probe_root	x=350	y=770	w=80	h=24	text=SX	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_shift_x_label	parent=probe_root	x=440	y=768	w=200	h=32	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=probe_shift_x	align=right	scale=1
+label	id=probe_sy_lbl	parent=probe_root	x=660	y=770	w=80	h=24	text=SY	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_shift_y_label	parent=probe_root	x=750	y=768	w=290	h=32	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=probe_shift_y	align=right	scale=1
+label	id=probe_sz_lbl	parent=probe_root	x=40	y=810	w=80	h=24	text=SZ	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_shift_z_label	parent=probe_root	x=130	y=808	w=200	h=32	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=probe_shift_z	align=right	scale=1
+label	id=probe_sph_lbl	parent=probe_root	x=350	y=810	w=80	h=24	text=SPH	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_sphere_state	parent=probe_root	x=440	y=808	w=200	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_sphere_ready	align=right	scale=1
+label	id=probe_pts_lbl	parent=probe_root	x=660	y=810	w=80	h=24	text=PTS	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_sphere_pts	parent=probe_root	x=750	y=808	w=290	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_sphere_points	align=right	scale=1
+
+# --- cycle library panel ---
+panel	id=probe_lib_panel	parent=probe_root	x=20	y=890	w=1040	h=400	bg=#111827	border=#334155
+label	id=probe_lib_title	parent=probe_root	x=40	y=904	w=400	h=28	text=CYCLE LIBRARY	color=#94A3B8	bg=#111827	scale=2
+button	id=probe_qualify	parent=probe_root	x=40	y=950	w=320	h=100	text=QUALIFY	bg=#0F766E	color=#FFFFFF	scale=2	focus=370
+button	id=probe_z_surface	parent=probe_root	x=380	y=950	w=320	h=100	text=Z SURFACE	bg=#0F766E	color=#FFFFFF	scale=2	focus=380
+button	id=probe_x_edge	parent=probe_root	x=720	y=950	w=320	h=100	text=X EDGE	bg=#0F766E	color=#FFFFFF	scale=2	focus=390
+button	id=probe_y_edge	parent=probe_root	x=40	y=1070	w=320	h=100	text=Y EDGE	bg=#0F766E	color=#FFFFFF	scale=2	focus=400
+button	id=probe_bore	parent=probe_root	x=380	y=1070	w=320	h=100	text=BORE XY	bg=#0F766E	color=#FFFFFF	scale=2	focus=410
+button	id=probe_pocket_cal	parent=probe_root	x=720	y=1070	w=320	h=100	text=3D POCKET	bg=#0F766E	color=#FFFFFF	scale=2	focus=415
+button	id=probe_sphere_cal	parent=probe_root	x=40	y=1190	w=1000	h=80	text=REFERENCE SPHERE	bg=#115E59	color=#FFFFFF	scale=2	focus=418
+
 action	widget=probe_qualify	event=click	target=macro:run:probe_qualify
 action	widget=probe_z_surface	event=click	target=macro:run:probe_z_surface
 action	widget=probe_x_edge	event=click	target=macro:run:probe_x_edge
