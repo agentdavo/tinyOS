@@ -5,6 +5,7 @@
 #include "../cnc/offsets.hpp"
 #include "../cnc/interpreter.hpp"
 #include "../cnc/programs.hpp"
+#include "../cnc/setup.hpp"
 #include "../core.hpp"
 #include "../ethercat/master.hpp"
 #include "../automation/macro_runtime.hpp"
@@ -838,11 +839,24 @@ void clear_alarm_history() {
 }
 
 bool save_setup() {
-    return true;
+    // First-cut path: setup.cfg at the FAT32 root. The persistence layer
+    // handles real FS write vs in-RAM shadow internally; this entry point
+    // just snapshots the live state. Lock-tap is brief — cnc::setup
+    // re-acquires per-subsystem locks (offsets, motion) inside its own
+    // serializers so we don't hold g_lock across long writes.
+    {
+        core::ScopedLock lock(g_lock);
+        refresh_machine_snapshot_locked();
+    }
+    return cnc::setup::save_to("setup.cfg");
 }
 
 bool load_setup() {
-    return true;
+    // Operator-triggered: pulls setup.cfg back into the live offset/cal
+    // tables via the same setters the CLI verbs use. Boot-time auto-load
+    // is deliberately not wired here — it would race with the TSV-driven
+    // init that runs before the operator reaches the LOAD SETUP button.
+    return cnc::setup::load_from("setup.cfg");
 }
 
 namespace {

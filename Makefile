@@ -34,6 +34,7 @@ CORE_CPP = core.cpp hal.cpp util.cpp trace.cpp cli.cpp kernel_globals.cpp kernel
 ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
              ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp hmi/hmi_service.cpp \
               cnc/offsets.cpp cnc/programs.cpp cnc/interpreter.cpp cnc/mdi.cpp \
+              cnc/setup.cpp \
              render/gles1.cpp render/machine_model.cpp render/kinematic_model.cpp \
              render/obj_importer.cpp render/obj_registry.cpp render/stl_importer.cpp \
              render/benchmark.cpp fs/vfs.cpp fs/fat32.cpp fs/fs_fat32.cpp
@@ -173,6 +174,7 @@ CORE_CPP  = kernel/main.cpp core.cpp util.cpp trace.cpp cli.cpp kernel_globals.c
                 ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
                 ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp hmi/hmi_service.cpp \
                 cnc/offsets.cpp cnc/programs.cpp cnc/interpreter.cpp cnc/mdi.cpp \
+                cnc/setup.cpp \
                 render/gles1.cpp render/machine_model.cpp render/kinematic_model.cpp \
                 render/obj_importer.cpp render/obj_registry.cpp render/stl_importer.cpp render/benchmark.cpp \
                 fs/vfs.cpp fs/fat32.cpp fs/fs_fat32.cpp
@@ -341,6 +343,8 @@ $(OBJDIR)/programs.o: cnc/programs.cpp | $(OBJDIR)
 $(OBJDIR)/interpreter.o: cnc/interpreter.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(OBJDIR)/mdi.o: cnc/mdi.cpp | $(OBJDIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+$(OBJDIR)/setup.o: cnc/setup.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(OBJDIR)/splash.o: ui/splash.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<

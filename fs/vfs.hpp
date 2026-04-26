@@ -65,6 +65,17 @@ void register_embedded_defaults() noexcept;
 // embedded defaults). Return false if no card is present / FS is unreadable.
 bool mount_sd() noexcept;
 
+// Write `bytes` from `buf` to `path`. First tries the HAL FileSystemOps
+// backend (real persistent storage); if that returns false (e.g. today's
+// read-only FAT32 reader), falls back to a small writable arena and
+// registers the result in the VFS so subsequent lookup() calls see it
+// for the rest of the kernel session. Returns true if the bytes are
+// retrievable via lookup() afterward, regardless of which backend won.
+// `persistent_out` (optional) tells the caller whether the bytes
+// survived to actual storage (true) or only the in-memory shadow (false).
+bool write_blob(const char* path, const void* buf, size_t bytes,
+                bool* persistent_out = nullptr) noexcept;
+
 }  // namespace kernel::vfs
 
 #endif

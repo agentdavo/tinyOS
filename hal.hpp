@@ -421,6 +421,16 @@ struct FileSystemOps {
 
     // Optional helper: file size without a read. Return 0 if unknown.
     virtual size_t file_size(const char* /*path*/) { return 0; }
+
+    // Optional: write (or overwrite) `path` with `bytes` from `buf`. Default
+    // returns false — backends that are read-only (today's FAT32 reader)
+    // signal "no persistent media" this way so callers can fall back.
+    virtual bool write(const char* /*path*/, const void* /*buf*/, size_t /*bytes*/) { return false; }
+
+    // Optional: rename `from` -> `to`. Default returns false. Used by
+    // crash-safe write-then-rename patterns; callers must accept in-place
+    // overwrite when this returns false.
+    virtual bool rename(const char* /*from*/, const char* /*to*/) { return false; }
 };
 
 class Platform {

@@ -158,6 +158,85 @@ bool scan_cb(const kernel::hal::FileSystemOps::Entry& entry, void* user) noexcep
 
 }  // namespace
 
+// Writable shadow arena. Distinct from `g_fs_arena` so an in-memory write
+// can update an existing blob (in place if it fits, else by appending) without
+// disturbing the read-only FS-mount cache that lives in `g_fs_arena`.
+namespace {
+constexpr size_t kWriteArenaBytes = 256 * 1024;  // 256 KiB suffices for setup.cfg + a few small blobs
+alignas(8) char g_write_arena[kWriteArenaBytes];
+size_t g_write_arena_used = 0;
+
+// Track each VFS path that points into g_write_arena along with the slot
+// size, so a re-write of the same path can reuse the existing slot when
+// the new payload is no larger.
+struct WriteSlot {
+    char path[kMaxPathLen]{};
+    char* data = nullptr;
+    size_t capacity = 0;
+};
+constexpr size_t kMaxWriteSlots = 16;
+WriteSlot g_write_slots[kMaxWriteSlots]{};
+size_t g_write_slot_count = 0;
+
+WriteSlot* find_write_slot(const char* path) noexcept {
+    for (size_t i = 0; i < g_write_slot_count; ++i) {
+        if (std::strcmp(g_write_slots[i].path, path) == 0) return &g_write_slots[i];
+    }
+    return nullptr;
+}
+}  // namespace
+
+bool write_blob(const char* path, const void* buf, size_t bytes, bool* persistent_out) noexcept {
+    if (persistent_out) *persistent_out = false;
+    if (!path || !*path || !buf || bytes == 0) return false;
+
+    // Prefer real persistence when the HAL backend supports it. Use a
+    // write-then-rename so a power-loss mid-write leaves the previous
+    // setup.cfg intact; if rename() is unsupported, the write() landed
+    // in place and we accept the small corruption window.
+    if (auto* fs = kernel::g_platform ? kernel::g_platform->get_fs_ops() : nullptr) {
+        char tmp_path[kMaxPathLen];
+        size_t plen = std::strlen(path);
+        if (plen + 4 < kMaxPathLen) {
+            for (size_t i = 0; i < plen; ++i) tmp_path[i] = path[i];
+            tmp_path[plen + 0] = '.';
+            tmp_path[plen + 1] = 't';
+            tmp_path[plen + 2] = 'm';
+            tmp_path[plen + 3] = 'p';
+            tmp_path[plen + 4] = '\0';
+            if (fs->write(tmp_path, buf, bytes)) {
+                if (fs->rename(tmp_path, path) || fs->write(path, buf, bytes)) {
+                    if (persistent_out) *persistent_out = true;
+                    // Fall through to mirror in VFS so lookup() sees it
+                    // immediately without re-scanning the FS.
+                }
+            }
+        }
+    }
+
+    // Mirror (or, when no persistent backend, hold) the bytes in the
+    // writable shadow arena and register a VFS entry that points at it.
+    auto* slot = find_write_slot(path);
+    if (slot && slot->capacity >= bytes) {
+        for (size_t i = 0; i < bytes; ++i) slot->data[i] = static_cast<const char*>(buf)[i];
+        return register_blob(path, slot->data, bytes);
+    }
+    if (g_write_slot_count >= kMaxWriteSlots) return false;
+    if (g_write_arena_used + bytes > kWriteArenaBytes) return false;
+    char* dst = &g_write_arena[g_write_arena_used];
+    g_write_arena_used += bytes;
+    for (size_t i = 0; i < bytes; ++i) dst[i] = static_cast<const char*>(buf)[i];
+    if (!slot) {
+        slot = &g_write_slots[g_write_slot_count++];
+        size_t n = 0;
+        while (path[n] && n + 1 < kMaxPathLen) { slot->path[n] = path[n]; ++n; }
+        slot->path[n] = '\0';
+    }
+    slot->data = dst;
+    slot->capacity = bytes;
+    return register_blob(path, dst, bytes);
+}
+
 bool mount_sd() noexcept {
     auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr;
     auto* fs = kernel::g_platform ? kernel::g_platform->get_fs_ops() : nullptr;
