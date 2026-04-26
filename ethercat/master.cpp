@@ -256,17 +256,25 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
 
         // --- LRW process-data reply ---
         // The master's cycle_lrw() ships one big LRW datagram at logical
-        // address 0 carrying slave_count_ * 16 bytes. The fake_slave rewrites
-        // its own 16-byte window with the RX-PDO layout and bumps WKC.
+        // address 0 carrying the concatenation of every enrolled slave's
+        // per-slave slot. Phase C: slot widths are per-slave (set by
+        // bus_config from the ESI catalog), so RX walks a running
+        // byte_offset accumulator instead of a fixed stride. Slaves with
+        // zero tx_size_bytes contribute nothing and are skipped — that
+        // matches what cycle_lrw packs.
         if (dg.cmd == Cmd::LRW && dg.wkc > 0 && dg.address == 0
             && dg.data != nullptr) {
-            const size_t slots = dg.data_len / PDO_SLOT_BYTES;
-            const size_t n = slots < slave_count_ ? slots : slave_count_;
-            for (size_t i = 0; i < n; ++i) {
-                const uint8_t* p = dg.data + i * PDO_SLOT_BYTES;
+            size_t byte_offset = 0;
+            for (size_t i = 0; i < slave_count_; ++i) {
                 auto& d = slaves_[i].drive;
                 const auto& lay = slaves_[i].pdo_layout;
-                const size_t tx_take = (lay.tx_size_bytes < PDO_SLOT_BYTES)
+                const uint8_t per_slave = (lay.rx_size_bytes > lay.tx_size_bytes)
+                    ? lay.rx_size_bytes : lay.tx_size_bytes;
+                if (per_slave == 0) continue;
+                if (byte_offset + per_slave > dg.data_len) break;
+                const uint8_t* p = dg.data + byte_offset;
+                byte_offset += per_slave;
+                const size_t tx_take = (lay.tx_size_bytes <= PDO_SLOT_BYTES)
                     ? lay.tx_size_bytes : PDO_SLOT_BYTES;
                 if (tx_take > 0) {
                     std::memcpy(slaves_[i].tx_process_data.data(), p, tx_take);
@@ -420,17 +428,21 @@ void Master::step_esm() {
 
 void Master::cycle_lrw() {
     // Exchange the process-data image with a single LRW datagram at logical
-    // address 0. Per slave, a 16-byte slot in pdo_buf_ is packed with the
-    // CiA-402 TX PDO layout that fake_slave expects:
-    //   [0..1]  controlword  (u16 LE)
-    //   [2]     mode_op      (i8)
-    //   [3..6]  target_pos   (i32 LE)
-    //   [7..8]  DO bitmap    (u16 LE, unused by master today — left 0)
-    //   [9..15] reserved (zero)
+    // address 0. Phase C: per-slave slot width comes from the slave's
+    // pdo_layout (rx_size_bytes / tx_size_bytes) populated by bus_config
+    // from the ESI catalog. The on-wire slot is sized to max(rx, tx) so
+    // both directions fit; bus_config rejects any topology whose total
+    // would overflow PDO_BUF_BYTES, so the running offset can't outrun
+    // pdo_buf_ here.
     //
-    // Total LRW length = slave_count_ * PDO_SLOT_BYTES (= slave_count_ * 16).
+    // RX entries are packed at the layout-derived offsets relative to the
+    // slot start; NOT_MAPPED = 0xFF skips the field for this PDO pair.
+    // Skipping a slave with zero size keeps cycle_lrw idempotent for
+    // couplers and digital-IO terminals before their layouts are set up
+    // (those don't appear in LRW at all).
     if (slave_count_ == 0) return;
 
+    size_t byte_offset = 0;
     for (size_t i = 0; i < slave_count_; ++i) {
         auto& d = slaves_[i].drive;
         // Before the slave has ever spoken to us the statusword is 0, which
@@ -438,12 +450,18 @@ void Master::cycle_lrw() {
         // controlword (CW_CMD_SHUTDOWN) targeting OperationEnabled.
         d.step();
 
-        uint8_t* p = &pdo_buf_[i * PDO_SLOT_BYTES];
         const auto& lay = slaves_[i].pdo_layout;
+        const uint8_t per_slave = (lay.rx_size_bytes > lay.tx_size_bytes)
+            ? lay.rx_size_bytes : lay.tx_size_bytes;
+        if (per_slave == 0) continue;
+        if (byte_offset + per_slave > pdo_buf_.size()) break;
 
-        // Task 1.8 — pack each Rx entry at its layout-derived offset.
-        // NOT_MAPPED = 0xFF skips the field for this PDO pair.
-        std::memcpy(p, slaves_[i].rx_process_data.data(), PDO_SLOT_BYTES);
+        uint8_t* p = &pdo_buf_[byte_offset];
+        // Seed the slot from the per-slave RX mirror (whatever upper layers
+        // staged via rx_process_data — e.g. AnalogInput passthroughs).
+        const size_t mirror_seed = (per_slave <= PDO_SLOT_BYTES)
+            ? per_slave : PDO_SLOT_BYTES;
+        std::memcpy(p, slaves_[i].rx_process_data.data(), mirror_seed);
         if (lay.rx_controlword_off     != 0xFF) put_u16_le(&p[lay.rx_controlword_off], d.controlword);
         if (lay.rx_mode_op_off         != 0xFF) p[lay.rx_mode_op_off] =
             static_cast<uint8_t>(static_cast<int8_t>(d.mode_op));
@@ -455,14 +473,16 @@ void Master::cycle_lrw() {
                                                            static_cast<uint16_t>(d.target_torque));
         if (lay.rx_digital_outputs_off != 0xFF) put_u32_le(&p[lay.rx_digital_outputs_off],
                                                            d.digital_outputs);
-        const size_t rx_take = (lay.rx_size_bytes < PDO_SLOT_BYTES)
+        const size_t rx_take = (lay.rx_size_bytes <= PDO_SLOT_BYTES)
             ? lay.rx_size_bytes : PDO_SLOT_BYTES;
         if (rx_take > 0) {
             std::memcpy(slaves_[i].rx_process_data.data(), p, rx_take);
         }
+        byte_offset += per_slave;
     }
 
-    const uint16_t len = static_cast<uint16_t>(slave_count_ * PDO_SLOT_BYTES);
+    if (byte_offset == 0) return; // nothing to ship — every slave is unsized
+    const uint16_t len = static_cast<uint16_t>(byte_offset);
     FrameBuilder fb(tx_scratch_.data(), tx_scratch_.size(), BROADCAST_MAC, SRC_MAC);
     (void)fb.add_datagram(Cmd::LRW, dgram_idx_++, 0, pdo_buf_.data(), len);
     send_frame(tx_scratch_.data(), fb.finalize());

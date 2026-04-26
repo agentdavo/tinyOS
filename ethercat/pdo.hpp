@@ -36,7 +36,19 @@ namespace devices { struct DeviceId; }
 
 namespace ethercat {
 
-constexpr size_t PDO_SLOT_BYTES = 32; // bytes of process image per slave
+// Per-slave hard ceiling on the process-image slot. Phase C ESI ingest sizes
+// each slave's slot from its actual PDO bit-widths (see SlaveInfo::pdo_layout
+// rx_size_bytes / tx_size_bytes), so most slaves consume far less than this.
+// The ceiling exists for two reasons:
+//   1. SlaveInfo::rx_process_data / tx_process_data are fixed-size mirrors
+//      sized at compile time, so a per-slave ceiling has to be statically
+//      knowable.
+//   2. Defends against a malformed ESI entry sizing a single slave's slot
+//      to something nonsensical (>256 B is almost certainly garbage).
+// 32 B is enough for every CiA-402 PDO pair we ship today (largest is the
+// CSP combined pair at ~24 B). Bump if a future device legitimately needs
+// more.
+constexpr size_t PDO_SLOT_BYTES = 32;
 
 class Master;
 

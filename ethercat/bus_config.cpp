@@ -54,6 +54,14 @@ void log_line(const Master& m, const char* msg) noexcept {
 
 void install_generic_pdo_sizes(const devices::DeviceEntry& dev,
                                SlaveInfo& slave) noexcept {
+    // Phase C — per-slave PDO sizing from the ESI catalog. Sum the bit widths
+    // declared in the device entry's pdo[] array; the per-direction byte size
+    // is the rounded-up bit total. Clip at PDO_SLOT_BYTES (the per-slave
+    // ceiling) — that's a defence against a corrupt ESI record claiming
+    // hundreds of bytes for a single slave, NOT a normalisation of small
+    // slaves up to a fixed 16 B slot. Slaves with no pdo[] entries (couplers,
+    // operator-curated TSV without a pdo block) end up at size 0 and
+    // contribute nothing to the LRW frame; cycle_lrw skips them.
     uint16_t rx_bits = 0;
     uint16_t tx_bits = 0;
     for (size_t i = 0; i < dev.num_pdo; ++i) {
@@ -63,10 +71,12 @@ void install_generic_pdo_sizes(const devices::DeviceEntry& dev,
     }
     const uint16_t rx_bytes = static_cast<uint16_t>((rx_bits + 7u) / 8u);
     const uint16_t tx_bytes = static_cast<uint16_t>((tx_bits + 7u) / 8u);
-    slave.pdo_layout.rx_size_bytes = static_cast<uint8_t>(
-        (rx_bytes < ethercat::PDO_SLOT_BYTES) ? rx_bytes : ethercat::PDO_SLOT_BYTES);
-    slave.pdo_layout.tx_size_bytes = static_cast<uint8_t>(
-        (tx_bytes < ethercat::PDO_SLOT_BYTES) ? tx_bytes : ethercat::PDO_SLOT_BYTES);
+    const uint16_t rx_clipped = (rx_bytes <= ethercat::PDO_SLOT_BYTES)
+        ? rx_bytes : static_cast<uint16_t>(ethercat::PDO_SLOT_BYTES);
+    const uint16_t tx_clipped = (tx_bytes <= ethercat::PDO_SLOT_BYTES)
+        ? tx_bytes : static_cast<uint16_t>(ethercat::PDO_SLOT_BYTES);
+    slave.pdo_layout.rx_size_bytes = static_cast<uint8_t>(rx_clipped);
+    slave.pdo_layout.tx_size_bytes = static_cast<uint8_t>(tx_clipped);
 }
 
 bool is_fixed_pdo_nomailbox_type(devices::DeviceType t) noexcept {
@@ -421,6 +431,36 @@ void bus_config_entry(void* arg) {
             kernel::util::k_snprintf(buf, sizeof(buf),
                 "%sE-bus current budget OK: %u / 2000 mA downstream\n",
                 prefix, (unsigned)downstream_ma);
+            log(buf);
+        }
+    }
+
+    // Phase C — total LRW process-image budget. With per-slave sizing, the
+    // sum of every enrolled slave's max(rx_size, tx_size) must fit inside the
+    // master's static pdo_buf_ (PDO_BUF_BYTES). Refuse to open the SafeOp
+    // gate if the bus would overrun the buffer; bumping it requires changing
+    // PDO_BUF_BYTES in master.hpp, which is a deliberate decision.
+    {
+        size_t total_bytes = 0;
+        for (size_t i = 0; i < n; ++i) {
+            const auto& slave = m.slave(i);
+            if (slave.station_addr == 0) continue;
+            const auto& lay = slave.pdo_layout;
+            const uint8_t per = (lay.rx_size_bytes > lay.tx_size_bytes)
+                ? lay.rx_size_bytes : lay.tx_size_bytes;
+            total_bytes += per;
+        }
+        if (total_bytes > ethercat::PDO_BUF_BYTES) {
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "%sPDO buffer overflow: total=%zu B > PDO_BUF_BYTES=%zu — "
+                "reduce slave count or extend PDO_BUF_BYTES (gate stays closed)\n",
+                prefix, total_bytes, ethercat::PDO_BUF_BYTES);
+            log(buf);
+            all_ok = false;
+        } else if (total_bytes > 0) {
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "%sPDO buffer usage: %zu / %zu B across %zu slave(s)\n",
+                prefix, total_bytes, ethercat::PDO_BUF_BYTES, n);
             log(buf);
         }
     }
