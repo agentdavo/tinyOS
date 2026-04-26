@@ -1576,9 +1576,80 @@ $("#gridToggle").addEventListener("change", (e) => {
 
 /* =========================================================================
  *  Boot.
+ *
+ *  URL params (used by the screenshot pipeline + ad-hoc deep links):
+ *    ?tsv=<server-relative-path>   fetch + load that TSV (e.g. devices/embedded_ui.tsv).
+ *                                  The path must be reachable from whatever HTTP root
+ *                                  is serving this file. Use tools/ui_editor/screenshot.sh
+ *                                  which serves from the repo root.
+ *    ?page=<page_id>               after load, switch the active tab to that page.
+ *    ?ready=1                      adds a hidden #__editor_ready marker once render
+ *                                  settles, so chrome --headless can wait for it
+ *                                  before screenshotting.
  * ========================================================================= */
+async function bootFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const tsvPath = params.get("tsv");
+  const pageId  = params.get("page");
+  const ready   = params.get("ready") === "1";
+  const canvasOnly = params.get("canvas_only") === "1";
+  if (canvasOnly) {
+    // Hide editor chrome and unzoom the canvas so a 1080x1920 viewport is
+    // exactly one page render. Used by tools/ui_editor/screenshot.sh.
+    const css = document.createElement("style");
+    css.textContent = `
+      body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+      #topbar, #palette, #inspector { display: none !important; }
+      #main { display: block !important; padding: 0 !important; margin: 0 !important; }
+      #canvaswrap { padding: 0 !important; margin: 0 !important; overflow: visible !important; background: transparent !important; }
+      #canvas { position: fixed !important; top: 0 !important; left: 0 !important;
+                transform: none !important; background-image: none !important; }
+    `;
+    document.head.appendChild(css);
+    // Force the renderer to drop its zoom-scale matrix on next render.
+    if (typeof zoom !== "undefined") { try { zoom = 1; } catch (e) {} }
+  }
+  if (tsvPath) {
+    try {
+      // Make the path server-absolute so the browser doesn't resolve it
+      // against the editor's own URL (which would prepend /tools/ui_editor/).
+      const fetchUrl = tsvPath.startsWith("/") ? tsvPath : "/" + tsvPath;
+      const r = await fetch(fetchUrl, { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const text = await r.text();
+      doc = parseTSV(text);
+      doc.fileName = tsvPath.split("/").pop();
+      activePageIdx = 0; selectedIdx = -1;
+      undoStack = []; redoStack = [];
+      saveLocal();
+    } catch (e) {
+      $("#status").textContent = "URL load failed: " + e.message;
+    }
+  }
+  if (pageId) {
+    const i = doc.pages.findIndex(p => p.id === pageId);
+    if (i >= 0) activePageIdx = i;
+  }
+  renderAll();
+  if (ready) {
+    // One animation frame so the canvas has a chance to paint before we
+    // signal readiness. Headless screenshotters poll for this element.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const m = document.createElement("div");
+      m.id = "__editor_ready";
+      m.style.cssText = "position:fixed;left:-9999px;width:1px;height:1px;";
+      document.body.appendChild(m);
+    }));
+  }
+}
+
 if (!loadLocal()) newDoc();
 renderAll();
+// Fire URL-param boot AFTER initial render so localStorage + URL coexist.
+const __urlParams = new URLSearchParams(window.location.search);
+if (__urlParams.has("tsv") || __urlParams.has("page") || __urlParams.has("ready")) {
+  bootFromUrl();
+}
 </script>
 </body>
 </html>

@@ -403,41 +403,44 @@ include	page=bottom_nav
 
 # ============================================================
 # ethercat — bus diagnostics page (master state, cycle health, fault)
+# Coordinate convention: x and y are ABSOLUTE within the 1080x1920 page,
+# even when parent= is set. parent= only governs grouping for show/hide
+# and event routing, not positioning.
 # ============================================================
 page	id=ethercat	title=EtherCAT
 panel	id=ec_root	x=0	y=0	w=1080	h=1740	bg=#0C1A24	border=#0E7490	title=ETHERCAT
 label	id=ec_title	parent=ec_root	x=40	y=40	w=1000	h=44	text=EtherCAT Bus Diagnostics	color=#E0F2FE	bg=#0C1A24	align=center	scale=2
-# --- master state hero ---
+# --- master state hero (y 120..320) ---
 panel	id=ec_state_panel	parent=ec_root	x=40	y=120	w=1000	h=200	bg=#082F49	border=#0E7490	title=MASTER
-label	id=ec_state_label	parent=ec_state_panel	x=40	y=70	w=380	h=80	text=STATE: 	color=#E0F2FE	bg=#082F49	border=#0EA5E9	scale=3	bind=ec:state	align=center
-label	id=ec_fault_label	parent=ec_state_panel	x=440	y=70	w=520	h=80	text=FAULT: 	color=#FEF3C7	bg=#7F1D1D	border=#F59E0B	scale=3	bind=ec:fault	align=center
-# --- cycle timing ---
+label	id=ec_state_label	parent=ec_state_panel	x=80	y=190	w=380	h=110	text=STATE: 	color=#E0F2FE	bg=#082F49	border=#0EA5E9	scale=3	bind=ec:state	align=center
+label	id=ec_fault_label	parent=ec_state_panel	x=480	y=190	w=520	h=110	text=FAULT: 	color=#FEF3C7	bg=#7F1D1D	border=#F59E0B	scale=3	bind=ec:fault	align=center
+# --- cycle timing (y 340..580) ---
 panel	id=ec_cycle_panel	parent=ec_root	x=40	y=340	w=1000	h=240	bg=#0F172A	border=#475569	title=CYCLE TIMING
-label	id=ec_period_h	parent=ec_cycle_panel	x=40	y=70	w=200	h=44	text=Period (us)	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_p99_h	parent=ec_cycle_panel	x=260	y=70	w=200	h=44	text=p99 (us)	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_max_h	parent=ec_cycle_panel	x=480	y=70	w=200	h=44	text=Max (us)	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_miss_h	parent=ec_cycle_panel	x=700	y=70	w=140	h=44	text=Miss	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_trips_h	parent=ec_cycle_panel	x=860	y=70	w=120	h=44	text=Trips	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_period_v	parent=ec_cycle_panel	x=40	y=130	w=200	h=80	text=0	color=#FBBF24	bg=#1F2937	border=#475569	scale=2	bind=ec:period	align=center
-label	id=ec_p99_v	parent=ec_cycle_panel	x=260	y=130	w=200	h=80	text=0	color=#FBBF24	bg=#1F2937	border=#475569	scale=2	bind=ec:p99	align=center
-label	id=ec_max_v	parent=ec_cycle_panel	x=480	y=130	w=200	h=80	text=0	color=#FCA5A5	bg=#1F2937	border=#475569	scale=2	bind=ec:max	align=center
-label	id=ec_miss_v	parent=ec_cycle_panel	x=700	y=130	w=140	h=80	text=0	color=#FCA5A5	bg=#1F2937	border=#475569	scale=2	bind=ec:miss	align=center
-label	id=ec_trips_v	parent=ec_cycle_panel	x=860	y=130	w=120	h=80	text=0	color=#FCA5A5	bg=#1F2937	border=#475569	scale=2	bind=ec:trips	align=center
-# --- bus traffic ---
+label	id=ec_period_h	parent=ec_cycle_panel	x=80	y=410	w=180	h=40	text=Period (us)	color=#94A3B8	bg=#0F172A	align=center
+label	id=ec_p99_h	parent=ec_cycle_panel	x=280	y=410	w=180	h=40	text=p99 (us)	color=#94A3B8	bg=#0F172A	align=center
+label	id=ec_max_h	parent=ec_cycle_panel	x=480	y=410	w=180	h=40	text=Max (us)	color=#94A3B8	bg=#0F172A	align=center
+label	id=ec_miss_h	parent=ec_cycle_panel	x=680	y=410	w=160	h=40	text=Miss	color=#94A3B8	bg=#0F172A	align=center
+label	id=ec_trips_h	parent=ec_cycle_panel	x=860	y=410	w=160	h=40	text=Trips	color=#94A3B8	bg=#0F172A	align=center
+label	id=ec_period_v	parent=ec_cycle_panel	x=80	y=460	w=180	h=80	text=0	color=#FBBF24	bg=#1F2937	border=#475569	scale=2	bind=ec:period	align=center
+label	id=ec_p99_v	parent=ec_cycle_panel	x=280	y=460	w=180	h=80	text=0	color=#FBBF24	bg=#1F2937	border=#475569	scale=2	bind=ec:p99	align=center
+label	id=ec_max_v	parent=ec_cycle_panel	x=480	y=460	w=180	h=80	text=0	color=#FCA5A5	bg=#1F2937	border=#475569	scale=2	bind=ec:max	align=center
+label	id=ec_miss_v	parent=ec_cycle_panel	x=680	y=460	w=160	h=80	text=0	color=#FCA5A5	bg=#1F2937	border=#475569	scale=2	bind=ec:miss	align=center
+label	id=ec_trips_v	parent=ec_cycle_panel	x=860	y=460	w=160	h=80	text=0	color=#FCA5A5	bg=#1F2937	border=#475569	scale=2	bind=ec:trips	align=center
+# --- bus traffic (y 600..800) ---
 panel	id=ec_traffic_panel	parent=ec_root	x=40	y=600	w=1000	h=200	bg=#0F172A	border=#475569	title=BUS TRAFFIC
-label	id=ec_slaves_h	parent=ec_traffic_panel	x=40	y=70	w=240	h=44	text=Slaves	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_cycles_h	parent=ec_traffic_panel	x=300	y=70	w=240	h=44	text=Cycles	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_tx_h	parent=ec_traffic_panel	x=560	y=70	w=200	h=44	text=TX Frames	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_rx_h	parent=ec_traffic_panel	x=780	y=70	w=200	h=44	text=RX Frames	color=#94A3B8	bg=#0F172A	align=center
-label	id=ec_slaves_v	parent=ec_traffic_panel	x=40	y=130	w=240	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:slaves	align=center
-label	id=ec_cycles_v	parent=ec_traffic_panel	x=300	y=130	w=240	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:cycles	align=center
-label	id=ec_tx_v	parent=ec_traffic_panel	x=560	y=130	w=200	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:tx	align=center
-label	id=ec_rx_v	parent=ec_traffic_panel	x=780	y=130	w=200	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:rx	align=center
-# --- actions ---
+label	id=ec_slaves_h	parent=ec_traffic_panel	x=80	y=670	w=200	h=40	text=Slaves	color=#94A3B8	bg=#0F172A	align=center
+label	id=ec_cycles_h	parent=ec_traffic_panel	x=300	y=670	w=240	h=40	text=Cycles	color=#94A3B8	bg=#0F172A	align=center
+label	id=ec_tx_h	parent=ec_traffic_panel	x=560	y=670	w=200	h=40	text=TX Frames	color=#94A3B8	bg=#0F172A	align=center
+label	id=ec_rx_h	parent=ec_traffic_panel	x=780	y=670	w=240	h=40	text=RX Frames	color=#94A3B8	bg=#0F172A	align=center
+label	id=ec_slaves_v	parent=ec_traffic_panel	x=80	y=720	w=200	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:slaves	align=center
+label	id=ec_cycles_v	parent=ec_traffic_panel	x=300	y=720	w=240	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:cycles	align=center
+label	id=ec_tx_v	parent=ec_traffic_panel	x=560	y=720	w=200	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:tx	align=center
+label	id=ec_rx_v	parent=ec_traffic_panel	x=780	y=720	w=240	h=60	text=0	color=#86EFAC	bg=#1F2937	border=#475569	scale=2	bind=ec:rx	align=center
+# --- actions (y 820..980) ---
 panel	id=ec_actions_panel	parent=ec_root	x=40	y=820	w=1000	h=160	bg=#0F172A	border=#475569	title=ACTIONS
-button	id=ec_clear_fault_btn	parent=ec_actions_panel	x=40	y=70	w=300	h=80	text=CLEAR FAULT	bg=#16A34A	color=#FFFFFF	focus=340
-button	id=ec_estop_btn	parent=ec_actions_panel	x=360	y=70	w=300	h=80	text=E-STOP	bg=#DC2626	color=#FFFFFF	focus=350
-button	id=ec_back_btn	parent=ec_actions_panel	x=680	y=70	w=300	h=80	text=BACK	bg=#475569	color=#F8FAFC	focus=360
+button	id=ec_clear_fault_btn	parent=ec_actions_panel	x=80	y=890	w=300	h=80	text=CLEAR FAULT	bg=#16A34A	color=#FFFFFF	focus=340
+button	id=ec_estop_btn	parent=ec_actions_panel	x=400	y=890	w=300	h=80	text=E-STOP	bg=#DC2626	color=#FFFFFF	focus=350
+button	id=ec_back_btn	parent=ec_actions_panel	x=720	y=890	w=300	h=80	text=BACK	bg=#475569	color=#F8FAFC	focus=360
 action	widget=ec_clear_fault_btn	event=click	target=ec:clear_fault
 action	widget=ec_estop_btn	event=click	target=ec:estop
 action	widget=ec_back_btn	event=click	target=goto:service
