@@ -93,7 +93,7 @@ Three-layer stack, each layer depends only on the ones below it:
 2. **`hal.hpp`** — abstract `Platform` plus `*Ops` interfaces (`UARTDriverOps`, `IRQControllerOps`, `TimerDriverOps`, `DMAControllerOps`, `I2SDriverOps`, `MemoryOps`, `NetworkDriverOps`, `PowerOps`, `GPIODriverOps`, `WatchdogOps`). Pure virtuals only.
 3. **`hal_qemu_arm64.{hpp,cpp}` + `cpu_arm64.S`** (arm64) or **`hal_qemu_rv64.{hpp,cpp}` + `cpu_rv64.S` + `rv64_stubs.cpp` + `rv64_sched.cpp`** (rv64) — per-arch concrete platforms. Boot/context-switch is in the `.S`; MMIO drivers are in the `.cpp`.
 
-`kernel_globals.cpp` defines the singletons (`g_platform`, `g_scheduler_ptr`, trace/IRQ locks). arm64's `kernel_main()` and rv64's `kernel_main_rv64()` each instantiate their concrete `Platform`, assign `g_platform`, then hand off to the shared `kernel::boot::*` helpers for the rest of bring-up. To port to new hardware: new `hal_*` pair, new `cpu_*.S`, a linker script, and a new `kernel_main_<arch>` that follows the same sequence.
+`kernel_globals.cpp` defines the singletons (`g_platform`, `g_scheduler_ptr`, trace/IRQ locks). arm64's `kernel_main()` and rv64's `kernel_main_rv64()` each instantiate their concrete `Platform`, assign `g_platform`, then hand off to the shared `kernel::boot::*` helpers for the rest of bring-up. To port to new hardware: new `hal_*` pair, new `cpu_*.S`, a linker script, and a new `kernel_main_<arch>` that follows the same sequence. For an arm64-SBC port specifically, see `HARDWARE_PORT.md` at the repo root — it walks through what's QEMU-only, what's real-hw-ready, and a 15-step bring-up checklist.
 
 ### Freestanding constraints
 
