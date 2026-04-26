@@ -216,6 +216,12 @@ alignas(64) std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
 uint32_t Spinlock::next_lock_id_ = 0;
 
 Spinlock::Spinlock() noexcept : lock_id_(next_lock_id_++) {}
+
+// ISR-safe paths intentionally skip priority inheritance. Inside an ISR there
+// is no meaningful "current TCB" to inherit from (the interrupted thread isn't
+// the requester), and the boost write would race with the scheduler without
+// any benefit — ISR critical sections are bounded by hardware mask state, not
+// by thread priority.
 void Spinlock::acquire_isr_safe() noexcept {
     bool expected = false;
     while (!lock_flag_.compare_exchange_strong(expected, true, std::memory_order_acquire, std::memory_order_relaxed)) {
@@ -226,16 +232,65 @@ void Spinlock::acquire_isr_safe() noexcept {
     }
 }
 void Spinlock::release_isr_safe() noexcept { lock_flag_.store(false, std::memory_order_release); }
+
 void Spinlock::acquire_general() noexcept {
+    // Resolve the requesting TCB once, before we start spinning. Early-boot
+    // callers (before g_platform is set, before per-CPU data is wired up) get
+    // nullptr here and silently skip the inheritance path — they still get the
+    // CAS spin, which is what they had before this change.
+    TCB* self = nullptr;
+    if (kernel::g_platform) {
+        const uint32_t cid = kernel::g_platform->get_core_id();
+        if (cid < MAX_CORES) self = g_per_cpu_data[cid].current_thread;
+    }
     bool expected = false;
+    bool boosted_owner = false;
     while (!lock_flag_.compare_exchange_strong(expected, true, std::memory_order_acquire, std::memory_order_relaxed)) {
         expected = false;
+        // First contention iteration: try to boost the current owner if our
+        // priority exceeds theirs. We only boost once per acquire attempt
+        // (boosted_owner guard) so a long spin doesn't keep rewriting the
+        // same fields, and so we don't repeatedly stomp transitive chains.
+        if (!boosted_owner && self) {
+            TCB* h = owner_.load(std::memory_order_acquire);
+            if (h && h != self) {
+                int holder_prio = __atomic_load_n(&h->priority, __ATOMIC_ACQUIRE);
+                int my_prio = __atomic_load_n(&self->priority, __ATOMIC_ACQUIRE);
+                if (my_prio > holder_prio) {
+                    // Capture the holder's original priority so release can
+                    // restore it. CAS on -1 ensures only the first booster
+                    // wins — subsequent waiters with even higher prio raise
+                    // priority but don't overwrite the saved original.
+                    int neg1 = -1;
+                    boosted_priority_.compare_exchange_strong(neg1, holder_prio,
+                        std::memory_order_acq_rel, std::memory_order_relaxed);
+                    __atomic_store_n(&h->priority, my_prio, __ATOMIC_RELEASE);
+                    boosted_owner = true;
+                }
+            }
+        }
         while (lock_flag_.load(std::memory_order_relaxed)) {
             MINIOS_CPU_RELAX();
         }
     }
+    // Lock acquired — record ownership and reset boost slot for the new owner.
+    owner_.store(self, std::memory_order_release);
+    boosted_priority_.store(-1, std::memory_order_release);
 }
-void Spinlock::release_general() noexcept { lock_flag_.store(false, std::memory_order_release); }
+
+void Spinlock::release_general() noexcept {
+    // Restore the holder's priority before clearing ownership, so a waiter
+    // observing owner_ == nullptr never sees an inflated priority on a TCB
+    // that no longer holds anything.
+    TCB* h = owner_.load(std::memory_order_acquire);
+    int boost = boosted_priority_.load(std::memory_order_acquire);
+    if (h && boost >= 0) {
+        __atomic_store_n(&h->priority, boost, __ATOMIC_RELEASE);
+        boosted_priority_.store(-1, std::memory_order_release);
+    }
+    owner_.store(nullptr, std::memory_order_release);
+    lock_flag_.store(false, std::memory_order_release);
+}
 
 bool FixedMemoryPool::init(void* base, size_t num_blocks, size_t blk_sz_user, size_t align_user_data) {
     if (!base || num_blocks == 0 || blk_sz_user == 0) return false;

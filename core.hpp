@@ -56,11 +56,25 @@ constexpr size_t  STACK_PAINT_SKIP_BOTTOM = 16;
 
 // Forward declarations
 struct PerCPUData; // Forward declaration
+struct TCB;        // Used by Spinlock for priority-inheritance bookkeeping.
 
 alignas(64) extern std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
 
+// Priority inheritance:
+//   When a higher-priority thread contends for a lock held by a lower-priority
+//   thread, the holder is temporarily boosted to the waiter's priority so it
+//   can run to completion and release. Without this, a medium-priority task
+//   could preempt the holder forever and the high-priority waiter would never
+//   make progress (classic priority inversion). Boost is one-level only:
+//   transitive chains (A waits on B which waits on C) only boost the immediate
+//   holder. Sufficient for the current kernel; the few RT critical sections
+//   are short and never nested across more than one shared lock. Re-entrant
+//   acquire by the same thread still deadlocks — pre-existing behaviour, not
+//   addressed here.
 class Spinlock {
     std::atomic<bool> lock_flag_{false};
+    std::atomic<TCB*> owner_{nullptr};
+    std::atomic<int>  boosted_priority_{-1};
     uint32_t lock_id_;
     static uint32_t next_lock_id_;
 public:
@@ -70,6 +84,10 @@ public:
     void acquire_general() noexcept;
     void release_general() noexcept;
     uint32_t get_id() const noexcept { return lock_id_; }
+    // Test/diag accessors. Returning the raw owner is safe because the TCB
+    // pool storage is static — pointers never become invalid.
+    TCB* owner() const noexcept { return owner_.load(std::memory_order_acquire); }
+    int  boosted_priority() const noexcept { return boosted_priority_.load(std::memory_order_acquire); }
 };
 
 class ScopedLock {
