@@ -9,6 +9,7 @@
 #include "../ethercat/master.hpp"
 #include "../automation/macro_runtime.hpp"
 #include "../machine/machine_registry.hpp"
+#include "../machine/machine_topology.hpp"
 #include "../motion/motion.hpp"
 #include "../machine/toolpods.hpp"
 #include "../util.hpp"
@@ -24,6 +25,33 @@ struct ProgramRunState {
     size_t point_index = 0;
 };
 ProgramRunState g_program_run{};
+
+struct SpindleState {
+    int32_t requested_rpm = 0;
+    bool running = false;
+};
+SpindleState g_spindle{};
+
+bool any_master_deadline_faulted() {
+    return ethercat::g_master_a.is_deadline_faulted() ||
+           ethercat::g_master_b.is_deadline_faulted();
+}
+
+bool name_has_spindle(const char* name) noexcept {
+    if (!name) return false;
+    for (size_t i = 0; name[i] != '\0' && i + 7 <= 24; ++i) {
+        const char* p = name + i;
+        const char s[] = "spindle";
+        bool match = true;
+        for (size_t k = 0; k < 7; ++k) {
+            const char c = p[k];
+            const char lc = (c >= 'A' && c <= 'Z') ? char(c + 32) : c;
+            if (lc != s[k]) { match = false; break; }
+        }
+        if (match) return true;
+    }
+    return false;
+}
 
 const ethercat::Master* primary_master() {
     return &ethercat::g_master_a;
@@ -171,9 +199,10 @@ void refresh_machine_snapshot_locked() {
     g_machine.feed = static_cast<int32_t>(current_feed_locked());
     g_machine.torque = static_cast<uint32_t>(
         motion::g_motion.axis(selected_axis).actual_torque_permille.load(std::memory_order_relaxed));
-    g_machine.spindle = motion::g_motion.axis(3).target_velocity;
-    g_machine.spindle_rpm = motion::g_motion.axis(3).target_velocity;
-    g_machine.spindle_load = motion::g_motion.axis(3).actual_torque_permille.load(std::memory_order_relaxed);
+    const size_t sp_idx = static_cast<size_t>(spindle_axis_index());
+    g_machine.spindle = motion::g_motion.axis(sp_idx).target_velocity;
+    g_machine.spindle_rpm = motion::g_motion.axis(sp_idx).target_velocity;
+    g_machine.spindle_load = motion::g_motion.axis(sp_idx).actual_torque_permille.load(std::memory_order_relaxed);
 
     const auto interp = cnc::interp::g_runtime.snapshot(0);
     g_machine.wcs_index = static_cast<uint32_t>(interp.active_work);
@@ -326,6 +355,59 @@ void request_ec_estop() {
 void clear_ec_fault() {
     ethercat::g_master_a.clear_deadline_fault();
     ethercat::g_master_b.clear_deadline_fault();
+}
+
+int spindle_axis_index() noexcept {
+    const auto& svc = machine::topology::g_service;
+    const size_t n = svc.binding_count();
+    for (size_t i = 0; i < n; ++i) {
+        const auto* b = svc.binding(i);
+        if (!b || !b->used || b->role != machine::topology::Role::Servo) continue;
+        if (name_has_spindle(b->name) && b->axis_index != 0xFF) {
+            return static_cast<int>(b->axis_index);
+        }
+    }
+    return 3;
+}
+
+void spindle_set_rpm(int32_t rpm) {
+    if (any_master_deadline_faulted()) return;
+    core::ScopedLock lock(g_lock);
+    g_spindle.requested_rpm = rpm;
+    if (g_spindle.running) {
+        motion::g_motion.set_axis_velocity(static_cast<size_t>(spindle_axis_index()), rpm);
+    }
+}
+
+void spindle_start() {
+    if (any_master_deadline_faulted()) return;
+    core::ScopedLock lock(g_lock);
+    if (g_spindle.requested_rpm == 0) return;
+    g_spindle.running = true;
+    motion::g_motion.set_axis_velocity(static_cast<size_t>(spindle_axis_index()),
+                                       g_spindle.requested_rpm);
+}
+
+void spindle_stop() {
+    if (any_master_deadline_faulted()) return;
+    core::ScopedLock lock(g_lock);
+    g_spindle.running = false;
+    motion::g_motion.set_axis_velocity(static_cast<size_t>(spindle_axis_index()), 0);
+}
+
+SpindleStatus spindle_status() {
+    SpindleStatus s{};
+    s.axis_index = spindle_axis_index();
+    s.deadline_faulted = any_master_deadline_faulted();
+    {
+        core::ScopedLock lock(g_lock);
+        s.requested_rpm = g_spindle.requested_rpm;
+        s.running = g_spindle.running;
+    }
+    const auto& ax = motion::g_motion.axis(static_cast<size_t>(s.axis_index));
+    s.actual_rpm = ax.target_velocity;
+    s.load_permille = ax.actual_torque_permille.load(std::memory_order_relaxed);
+    return s;
 }
 
 void reset_alarm() {

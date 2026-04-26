@@ -1368,6 +1368,45 @@ static int cmd_axis_spin(const char* args, kernel::hal::UARTDriverOps* uart) {
     uart->puts(buf);
     return ok ? 0 : 1;
 }
+static int cmd_spindle(const char* args, kernel::hal::UARTDriverOps* uart) {
+    namespace op = kernel::ui::operator_api;
+    if (!args || !*args) {
+        const auto st = op::spindle_status();
+        char buf[160];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "spindle ax%d req=%ld actual=%ld load=%ld%% %s%s\n",
+            st.axis_index,
+            (long)st.requested_rpm,
+            (long)st.actual_rpm,
+            (long)(st.load_permille / 10),
+            st.running ? "running" : "stopped",
+            st.deadline_faulted ? " (deadline-faulted)" : "");
+        uart->puts(buf);
+        return 0;
+    }
+    if (cstrcmp(args, "stop") == 0) {
+        op::spindle_stop();
+        uart->puts("spindle: stop\n");
+        return 0;
+    }
+    const char* p = args;
+    long rpm = 0;
+    if (!cli_parse_long(p, rpm)) {
+        uart->puts("usage: spindle | spindle <rpm> | spindle stop\n");
+        return 1;
+    }
+    op::spindle_set_rpm(static_cast<int32_t>(rpm));
+    if (rpm == 0) {
+        op::spindle_stop();
+    } else {
+        op::spindle_start();
+    }
+    char buf[80];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "spindle: rpm=%ld %s\n", rpm, rpm == 0 ? "stopped" : "running");
+    uart->puts(buf);
+    return 0;
+}
 static int cmd_jog_hold(const char* args, kernel::hal::UARTDriverOps* uart) {
     if (!args || !*args) {
         uart->puts("usage: jog_hold <axis_idx> <sign>\n"); return 1;
@@ -3997,6 +4036,7 @@ CLI::CLI() {
     register_command("override", cmd_override, "override <ch> <feed|rapid|spindle> <permille> — per-channel speed override (9.7)");
     register_command("gears", cmd_gears, "List active electronic-gear links (9.5) + phase error (9.9)");
     register_command("axis_spin", cmd_axis_spin, "axis_spin <axis> <velocity_cps> — simulated leader spin (9.9 harness)");
+    register_command("spindle", cmd_spindle, "spindle | spindle <rpm> | spindle stop — operator spindle control");
     register_command("jog_hold", cmd_jog_hold, "jog_hold <axis_idx> <sign> — start continuous jog at the operator jog feed-rate");
     register_command("jog_stop", cmd_jog_stop, "jog_stop <axis_idx> — release continuous jog (velocity 0)");
     register_command("gear_engage", cmd_gear_engage, "gear_engage <leader> <follower> <ch> <k_num> <k_den> [ramp]");
