@@ -1693,12 +1693,15 @@ public:
     void render(Framebuffer& fb) override {
         Color bg = base_bg_;
         bool highlight_border = false;
+        // "You are here" highlight on any button whose goto: target points to
+        // the current page. Same visual treatment as active_if (brightened bg
+        // + white border) so the bottom-nav tab for the active page is
+        // unmistakable. Applies uniformly to every page that includes
+        // bottom_nav, which keeps the nav consistent across the whole UI.
         const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action);
-        if (target && strncmp(target, "goto:", 5) == 0) {
-            const bool is_active = find_page_index_by_id(target + 5) == g_active_page;
-            if (is_active) bg = dim_bg_;
-        }
-        if (active_if_matches()) {
+        const bool is_goto_self = target && strncmp(target, "goto:", 5) == 0 &&
+                                  find_page_index_by_id(target + 5) == g_active_page;
+        if (is_goto_self || active_if_matches()) {
             bg = bright_bg_;
             highlight_border = true;
         }
