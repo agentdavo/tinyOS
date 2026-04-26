@@ -2519,7 +2519,7 @@ private:
             const auto* part = mesh_for_axis(model, axis, i);
             if (!part) continue;
             const gles1::Mat4 local_part = gles1::make_translation(part->offset_x, part->offset_y, part->offset_z);
-            renderer.set_model_matrix(gles1::multiply(kinematic::get_link_transform(sim.chain, i), local_part));
+            renderer.set_model_matrix(gles1::multiply(kinematic::get_mesh_world_transform(sim.chain, i), local_part));
             renderer.set_flat_color(wire_color_for_axis(axis));
             renderer.draw_mesh_wireframe({part->vertices, part->vertex_count, part->indices, part->index_count});
         }

@@ -35,11 +35,18 @@ struct AxisConfig {
     float position = 0.0f;
     char mesh[16]{};
     char obj_file[32]{};
+    // URDF-style separation: the joint frame (origin_offset + axis_direction)
+    // is where motion happens; the visual mesh sits at this offset/orientation
+    // relative to the joint frame, so a CAD mesh whose geometric centre is not
+    // on the rotation axis can be reseated without dragging the kinematics.
+    gles1::Vec3f mesh_offset{};
+    gles1::Vec3f mesh_rotation_deg{};
 };
 
 struct LinkTransform {
     gles1::Mat4 local_transform{};
     gles1::Mat4 world_transform{};
+    gles1::Mat4 mesh_local_transform{};
     int8_t parent_index = -1;
 };
 
@@ -66,6 +73,8 @@ void update_axis_position(KinematicChain& chain, size_t axis_idx, float position
 void update_axis_by_name(KinematicChain& chain, const char* name, float position);
 void compute_forward_kinematics(KinematicChain& chain);
 const gles1::Mat4& get_link_transform(const KinematicChain& chain, size_t link_idx);
+const gles1::Mat4& get_mesh_local_transform(const KinematicChain& chain, size_t link_idx);
+gles1::Mat4 get_mesh_world_transform(const KinematicChain& chain, size_t link_idx);
 size_t find_axis_by_name(const KinematicChain& chain, const char* name);
 
 size_t get_channel_axis_count(const KinematicChain& chain, uint8_t channel);

@@ -68,7 +68,9 @@ AxisType parse_axis_type(const char* s) {
 void set_axis(AxisConfig& ax, const char* name, AxisType type, const char* parent_name,
               uint8_t ch, float dx, float dy, float dz,
               float ox, float oy, float oz, float tmin, float tmax,
-              const char* mesh, const char* obj, int8_t motion_axis) {
+              const char* mesh, const char* obj, int8_t motion_axis,
+              float mox = 0.0f, float moy = 0.0f, float moz = 0.0f,
+              float mrx = 0.0f, float mry = 0.0f, float mrz = 0.0f) {
     copy_token(ax.name, sizeof(ax.name), name);
     ax.type = type;
     copy_token(ax.parent_name, sizeof(ax.parent_name), parent_name);
@@ -86,6 +88,8 @@ void set_axis(AxisConfig& ax, const char* name, AxisType type, const char* paren
     ax.position = 0.0f;
     copy_token(ax.mesh, sizeof(ax.mesh), mesh ? mesh : "box");
     copy_token(ax.obj_file, sizeof(ax.obj_file), obj ? obj : "");
+    ax.mesh_offset = {mox, moy, moz};
+    ax.mesh_rotation_deg = {mrx, mry, mrz};
 }
 
 size_t split_csv_fields(char* line, char* fields[], size_t max_fields) {
@@ -182,16 +186,17 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
         while (pos < len && (buf[pos] == '\n' || buf[pos] == '\r')) ++pos;
         line[line_len] = '\0';
         if (line_len == 0 || line[0] == '#') continue;
-        // Accept either the legacy 14-column header (obj_file implicit/empty)
-        // or the extended 15-column header the machine editor writes.
+        // Accept the 14-col legacy header, the 15-col header (with obj_file),
+        // or the 21-col URDF-style header (15 + mesh_off_x/y/z + mesh_rot_x/y/z).
         if (kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis") == 0 ||
-            kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file") == 0) {
+            kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file") == 0 ||
+            kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z") == 0) {
             continue;
         }
         if (chain.axis_count >= MAX_AXES) return false;
 
-        char* fields[16]{};
-        const size_t field_count = split_csv_fields(line, fields, 16);
+        char* fields[24]{};
+        const size_t field_count = split_csv_fields(line, fields, 24);
         if (field_count < 13) return false;
 
         AxisConfig& axis = chain.axes[chain.axis_count];
@@ -206,7 +211,13 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
                  simple_atof(fields[9]), simple_atof(fields[10]),
                  fields[11],
                  field_count > 14 ? fields[14] : "",
-                 field_count > 13 ? static_cast<int8_t>(simple_atoi(fields[13])) : -1);
+                 field_count > 13 ? static_cast<int8_t>(simple_atoi(fields[13])) : -1,
+                 field_count > 15 ? simple_atof(fields[15]) : 0.0f,
+                 field_count > 16 ? simple_atof(fields[16]) : 0.0f,
+                 field_count > 17 ? simple_atof(fields[17]) : 0.0f,
+                 field_count > 18 ? simple_atof(fields[18]) : 0.0f,
+                 field_count > 19 ? simple_atof(fields[19]) : 0.0f,
+                 field_count > 20 ? simple_atof(fields[20]) : 0.0f);
         if (axis.channel + 1 > chain.num_channels) chain.num_channels = static_cast<uint8_t>(axis.channel + 1);
         ++chain.axis_count;
     }
@@ -293,14 +304,7 @@ void compute_forward_kinematics(KinematicChain& chain) {
             transform.local_transform = gles1::multiply(origin, motion);
         } else if (axis.type == AxisType::Rotary) {
             const float angle = axis.position * 0.01745329252f;
-            gles1::Mat4 rotation = gles1::Mat4::identity();
-            if (axis.axis_direction.x != 0.0f) {
-                rotation = gles1::make_rotation_x(angle);
-            } else if (axis.axis_direction.y != 0.0f) {
-                rotation = gles1::make_rotation_y(angle);
-            } else {
-                rotation = gles1::make_rotation_z(angle);
-            }
+            const gles1::Mat4 rotation = gles1::make_rotation_axis_angle(axis.axis_direction, angle);
             transform.local_transform = gles1::multiply(origin, rotation);
         }
 
@@ -313,6 +317,12 @@ void compute_forward_kinematics(KinematicChain& chain) {
             transform.world_transform = gles1::multiply(chain.base_transform,
                                                         transform.local_transform);
         }
+
+        const gles1::Mat4 mesh_t = gles1::make_translation(
+            axis.mesh_offset.x, axis.mesh_offset.y, axis.mesh_offset.z);
+        const gles1::Mat4 mesh_r = gles1::make_rotation_xyz_intrinsic_deg(
+            axis.mesh_rotation_deg.x, axis.mesh_rotation_deg.y, axis.mesh_rotation_deg.z);
+        transform.mesh_local_transform = gles1::multiply(mesh_t, mesh_r);
     }
 }
 
@@ -320,6 +330,18 @@ const gles1::Mat4& get_link_transform(const KinematicChain& chain, size_t link_i
     static const gles1::Mat4 identity = gles1::Mat4::identity();
     if (link_idx >= chain.axis_count) return identity;
     return chain.transforms[link_idx].world_transform;
+}
+
+const gles1::Mat4& get_mesh_local_transform(const KinematicChain& chain, size_t link_idx) {
+    static const gles1::Mat4 identity = gles1::Mat4::identity();
+    if (link_idx >= chain.axis_count) return identity;
+    return chain.transforms[link_idx].mesh_local_transform;
+}
+
+gles1::Mat4 get_mesh_world_transform(const KinematicChain& chain, size_t link_idx) {
+    if (link_idx >= chain.axis_count) return gles1::Mat4::identity();
+    return gles1::multiply(chain.transforms[link_idx].world_transform,
+                           chain.transforms[link_idx].mesh_local_transform);
 }
 
 } // namespace render::kinematic

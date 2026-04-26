@@ -138,6 +138,8 @@ Mat4 make_translation(float x, float y, float z);
 Mat4 make_rotation_y(float radians);
 Mat4 make_rotation_x(float radians);
 Mat4 make_rotation_z(float radians);
+Mat4 make_rotation_axis_angle(const Vec3f& axis, float radians);
+Mat4 make_rotation_xyz_intrinsic_deg(float rx_deg, float ry_deg, float rz_deg);
 Mat4 make_scale(float x, float y, float z);
 Mat4 make_look_at(const Vec3f& eye, const Vec3f& center, const Vec3f& up);
 

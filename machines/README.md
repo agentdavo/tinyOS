@@ -70,11 +70,16 @@ no rotation, no coordinate-swap.
 
 ## Kinematic TSV schema
 
-15 comma-separated columns (existing 14-column files still load):
+Up to 21 comma-separated columns. The kernel parser accepts 14, 15, or 21;
+the editor saves the smallest header that captures every set field, so
+14- and 15-column files round-trip byte-identically until you set an
+`obj_file` or a `mesh_off`/`mesh_rot` cell.
 
 ```
 name, type, parent, dir_x, dir_y, dir_z, off_x, off_y, off_z,
-min, max, mesh, channel, motion_axis [, obj_file]
+min, max, mesh, channel, motion_axis
+[, obj_file
+ , mesh_off_x, mesh_off_y, mesh_off_z, mesh_rot_x, mesh_rot_y, mesh_rot_z]
 ```
 
 | Inspector field | Column          | Notes                                               |
@@ -82,20 +87,40 @@ min, max, mesh, channel, motion_axis [, obj_file]
 | name            | 0 name          | Axis identifier; children reference by name.        |
 | type            | 1 type          | `Linear` / `Rotary` / `Fixed`.                      |
 | parent          | 2 parent        | `-1` for root; otherwise another axis name.         |
-| dir preset +    | 3..5 dir_x/y/z  | Axis direction (unit vector).                       |
+| dir preset +    | 3..5 dir_x/y/z  | Joint axis direction (any unit vector).             |
 | dir x / y / z   |                 | Editable raw components.                            |
-| offset x / y / z| 6..8 off_x/y/z  | Per-parent origin offset.                           |
+| offset x / y / z| 6..8 off_x/y/z  | Per-parent joint origin offset.                     |
 | min / max       | 9..10           | Travel limits (mm for linear, deg for rotary).      |
 | mesh            | 11              | Built-in slot / `box` / `cylinder` / `obj` / `none`.|
 | channel         | 12              | 0 or 1 (mill vs lathe on mill-turn).                |
 | motion_axis     | 13              | 0..31 or -1 (unbound).                              |
 | obj_file        | 14              | Path relative to `devices/`; only saved if set.     |
+| mesh off        | 15..17          | Visual mesh offset inside the joint frame (mm).     |
+| mesh rpy        | 18..20          | Visual mesh rotation X→Y→Z, intrinsic, degrees.     |
 
-Forward kinematics match the kernel's implementation exactly (translate by
-offset, then translate-by-dir for linear or rotate-around-dir for rotary,
-degrees). The DRO panel at the bottom of the viewport shows each axis's
-current position, a slider bound to `[min, max]`, and the resolved world-space
+Forward kinematics match the kernel's implementation exactly: translate by
+joint `off`, then translate-by-`dir` for linear or rotate around the `dir`
+axis (Rodrigues' formula, so non-axis-aligned `dir` like `(1,1,0)` rotates
+correctly) for rotary. The visual mesh is then drawn at
+`world * translate(mesh_off) * rotate_xyz_intrinsic_deg(mesh_rpy)` so the
+joint frame and the visual frame are independent — toolpods, motion math,
+and child links keep using the joint frame; only the rendered geometry
+moves with `mesh_off`/`mesh_rot`.
+
+The DRO panel at the bottom of the viewport shows each axis's current
+position, a slider bound to `[min, max]`, and the resolved world-space
 direction vector after parent rotations compose.
+
+### Pick Pivot
+
+For a CAD-exported body whose centroid does not lie on the rotation axis
+(the classic "rotary swings like a pendulum" symptom), select the body
+and click **Pick Pivot** in the inspector. The cursor enters pick mode;
+click the point on the mesh that should sit on the rotation axis. The
+editor raycasts against the body's mesh, transforms the hit back into
+mesh-local space, and writes `mesh_off = -hit` so that point lands on
+the joint origin. **Reset** clears `mesh_off` back to zero. Esc cancels
+pick mode without changing anything.
 
 ## Toolpods TSV schema
 
@@ -139,7 +164,7 @@ blank lines stick with the following record.
 | Ctrl+Z / Y   | Undo / redo                         |
 | F            | Frame viewport on the chain         |
 | T            | Start test-cycle sweep              |
-| Esc          | Clear selection                     |
+| Esc          | Cancel pivot pick / clear selection |
 
 ## Round-trip
 
@@ -168,6 +193,5 @@ re-serialises the shipped files to assert byte equality.
 - OBJLoader renders triangles and quads; materials and groups are ignored.
 - Click-drag in 3D is not wired up; use the DRO sliders or the inspector
   offset fields to move things.
-- Changing the `obj_file=` column requires a kernel parser that accepts 15
-  columns — the editor assumes that extension lands in parallel. Existing
-  14-column behaviour still round-trips.
+- Setting `mesh_off` / `mesh_rot` on a row promotes the file to the 21-column
+  schema; older 14- and 15-column files round-trip unchanged until edited.

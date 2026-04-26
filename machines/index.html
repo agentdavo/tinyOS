@@ -226,6 +226,10 @@
 const KIN_HEADER =
   "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis";
 const KIN_HEADER_V15 = KIN_HEADER + ",obj_file";
+// URDF-style joint-vs-visual frame separation: mesh_off* / mesh_rot* let the
+// visual mesh be reseated relative to the joint frame so a CAD body whose
+// geometric centre is not on the rotation axis still rotates in place.
+const KIN_HEADER_V21 = KIN_HEADER_V15 + ",mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z";
 const MAX_AXES = 12;
 const MAX_CHANNELS = 2;
 const OBJ_MAX_POSITIONS = 1024;
@@ -326,7 +330,7 @@ function parseKinematicTSV(text) {
       continue;
     }
     if (!seenHeader &&
-        (line === KIN_HEADER || line === KIN_HEADER_V15 ||
+        (line === KIN_HEADER || line === KIN_HEADER_V15 || line === KIN_HEADER_V21 ||
          line.startsWith("name,type,parent,"))) {
       chain.header = line;
       chain.leadingRaw = pendingRaw;
@@ -348,6 +352,16 @@ function parseKinematicTSV(text) {
       channel: (+cols[12])|0,
       motion_axis: cols.length > 13 ? (+cols[13])|0 : -1,
       obj_file: cols.length > 14 ? (cols[14] || "") : "",
+      mesh_off: [
+        cols.length > 15 ? (+cols[15]||0) : 0,
+        cols.length > 16 ? (+cols[16]||0) : 0,
+        cols.length > 17 ? (+cols[17]||0) : 0,
+      ],
+      mesh_rot: [
+        cols.length > 18 ? (+cols[18]||0) : 0,
+        cols.length > 19 ? (+cols[19]||0) : 0,
+        cols.length > 20 ? (+cols[20]||0) : 0,
+      ],
       position: 0,
       rawAbove: pendingRaw,
     };
@@ -378,12 +392,18 @@ function serializeKinematicTSV(chain, opts) {
     }
   };
   emitRaw(chain.leadingRaw);
-  // Header choice: if we loaded a 14-col file and no axis has obj_file set,
-  // keep emitting 14 cols so the round-trip is byte-identical. Otherwise we
-  // must emit 15 cols.
+  // Header choice: emit the smallest header that captures all set fields, so
+  // 14-col files that haven't grown an obj_file or mesh_off round-trip
+  // byte-identically. Once any axis carries mesh_off/mesh_rot we must emit
+  // the 21-col header so the kernel parser picks them up.
+  const meshLocal = (a) =>
+    (a.mesh_off && (a.mesh_off[0] || a.mesh_off[1] || a.mesh_off[2])) ||
+    (a.mesh_rot && (a.mesh_rot[0] || a.mesh_rot[1] || a.mesh_rot[2]));
+  const anyMesh = chain.axes.some(meshLocal);
   const anyObj = chain.axes.some(a => (a.obj_file||"") !== "");
-  const useV15 = anyObj || opts.force15 === true;
-  out.push(useV15 ? KIN_HEADER_V15 : KIN_HEADER);
+  const useV21 = anyMesh || opts.force21 === true;
+  const useV15 = useV21 || anyObj || opts.force15 === true;
+  out.push(useV21 ? KIN_HEADER_V21 : (useV15 ? KIN_HEADER_V15 : KIN_HEADER));
   emitRaw(chain.headerTrailingRaw);
   for (const a of chain.axes) {
     emitRaw(a.rawAbove);
@@ -397,6 +417,12 @@ function serializeKinematicTSV(chain, opts) {
       (a.motion_axis|0).toString(),
     ];
     if (useV15) cells.push(a.obj_file || "");
+    if (useV21) {
+      const mo = a.mesh_off || [0,0,0];
+      const mr = a.mesh_rot || [0,0,0];
+      cells.push(fmtNum(mo[0]), fmtNum(mo[1]), fmtNum(mo[2]),
+                 fmtNum(mr[0]), fmtNum(mr[1]), fmtNum(mr[2]));
+    }
     out.push(cells.join(","));
   }
   emitRaw(chain.trailingRaw);
@@ -543,6 +569,30 @@ function rotationZ(angle) {
   m[0] = c; m[1] = s; m[4] = -s; m[5] = c;
   return m;
 }
+// Rodrigues' formula. Mirrors gles1::make_rotation_axis_angle so the
+// editor's preview lines up with the kernel's render-time math for joints
+// pointing along non-axis directions like dir=(1,1,0).
+function rotationAxisAngle(ax, ay, az, angle) {
+  const len = Math.hypot(ax, ay, az);
+  if (len < 1e-6) return identityMat();
+  const x = ax / len, y = ay / len, z = az / len;
+  const c = Math.cos(angle), s = Math.sin(angle), t = 1 - c;
+  const m = identityMat();
+  m[0]  = t*x*x + c;     m[1]  = t*x*y + s*z;   m[2]  = t*x*z - s*y;
+  m[4]  = t*x*y - s*z;   m[5]  = t*y*y + c;     m[6]  = t*y*z + s*x;
+  m[8]  = t*x*z + s*y;   m[9]  = t*y*z - s*x;   m[10] = t*z*z + c;
+  return m;
+}
+const DEG2RAD = Math.PI / 180;
+function rotationXYZIntrinsicDeg(rxDeg, ryDeg, rzDeg) {
+  return multiply(multiply(rotationX(rxDeg*DEG2RAD), rotationY(ryDeg*DEG2RAD)), rotationZ(rzDeg*DEG2RAD));
+}
+function meshLocalMatrix(a) {
+  const mo = a.mesh_off || [0,0,0];
+  const mr = a.mesh_rot || [0,0,0];
+  return multiply(translation(mo[0], mo[1], mo[2]),
+                  rotationXYZIntrinsicDeg(mr[0], mr[1], mr[2]));
+}
 
 function resolveParentIndex(chain, axis) {
   const pn = (axis.parent || "").trim();
@@ -555,6 +605,8 @@ function resolveParentIndex(chain, axis) {
 function computeForwardKinematics(chain) {
   const world = new Array(chain.axes.length);
   const local = new Array(chain.axes.length);
+  const meshLocal = new Array(chain.axes.length);
+  const meshWorld = new Array(chain.axes.length);
   for (let i = 0; i < chain.axes.length; ++i) {
     const a = chain.axes[i];
     const origin = translation(a.off[0], a.off[1], a.off[2]);
@@ -562,16 +614,15 @@ function computeForwardKinematics(chain) {
     if (a.type === "Linear") {
       motion = translation(a.dir[0]*a.position, a.dir[1]*a.position, a.dir[2]*a.position);
     } else if (a.type === "Rotary") {
-      const angle = a.position * Math.PI / 180;
-      if (a.dir[0] !== 0) motion = rotationX(angle);
-      else if (a.dir[1] !== 0) motion = rotationY(angle);
-      else motion = rotationZ(angle);
+      motion = rotationAxisAngle(a.dir[0], a.dir[1], a.dir[2], a.position * DEG2RAD);
     }
     local[i] = multiply(origin, motion);
     const pi = resolveParentIndex(chain, a);
     world[i] = pi < 0 ? local[i] : multiply(world[pi], local[i]);
+    meshLocal[i] = meshLocalMatrix(a);
+    meshWorld[i] = multiply(world[i], meshLocal[i]);
   }
-  return { local, world };
+  return { local, world, meshLocal, meshWorld };
 }
 
 // Extract the world-space direction of an axis as a unit vector.
@@ -805,7 +856,8 @@ function templateToChain(tpl) {
     name, type, parent,
     dir: [...dir], off: [...off],
     min, max, mesh, channel: ch, motion_axis: mot,
-    obj_file: "", position: 0, rawAbove: [],
+    obj_file: "", mesh_off: [0,0,0], mesh_rot: [0,0,0],
+    position: 0, rawAbove: [],
   }));
   return {
     header: KIN_HEADER,
@@ -962,6 +1014,13 @@ function animate() {
 // Build THREE.Group for an axis based on its mesh spec.
 function buildAxisGroup(a) {
   const g = new THREE.Group();
+  // Inner group carries the visual mesh in mesh-local frame so the joint
+  // helpers (arrow / torus) stay anchored on the rotation axis even when
+  // the mesh is reseated via mesh_off / mesh_rot (URDF visual frame).
+  const meshGroup = new THREE.Group();
+  meshGroup.name = "meshFrame";
+  g.add(meshGroup);
+  g.userData.meshGroup = meshGroup;
   const color = axisColor(a);
   let mesh = null;
   // flatShading: true draws each triangle with a single face normal — the
@@ -1052,7 +1111,7 @@ function buildAxisGroup(a) {
       case "none": mesh = null;
     }
   }
-  if (mesh) g.add(mesh);
+  if (mesh) meshGroup.add(mesh);
 
   // Direction arrow for Linear/Rotary axes.
   if (a.type === "Linear" && (a.dir[0] || a.dir[1] || a.dir[2])) {
@@ -1164,7 +1223,7 @@ function rebuildPods() {
 
 function updateWorldTransforms() {
   if (!state.chain) return;
-  const { world } = computeForwardKinematics(state.chain);
+  const { world, meshLocal } = computeForwardKinematics(state.chain);
   for (let i = 0; i < state.chain.axes.length; ++i) {
     const w = world[i];
     const obj = axisObjects[i];
@@ -1172,6 +1231,12 @@ function updateWorldTransforms() {
     obj.group.matrix.fromArray(w);
     obj.group.matrixAutoUpdate = false;
     obj.group.matrixWorldNeedsUpdate = true;
+    const meshGroup = obj.group.userData.meshGroup;
+    if (meshGroup) {
+      meshGroup.matrix.fromArray(meshLocal[i]);
+      meshGroup.matrixAutoUpdate = false;
+      meshGroup.matrixWorldNeedsUpdate = true;
+    }
     // Compute world-space AABB of this group for collision detection.
     obj.group.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(obj.group);
@@ -1514,6 +1579,22 @@ function softRefresh() {
   renderDRO();
 }
 
+function startPickPivot(axisIdx) {
+  if (state.pickPivotIdx === axisIdx) {
+    cancelPickPivot();
+    return;
+  }
+  state.pickPivotIdx = axisIdx;
+  if (renderer && renderer.domElement) renderer.domElement.style.cursor = "crosshair";
+  setStatus("Pick Pivot: click a point on the selected body. Esc to cancel.");
+  renderInspector();
+}
+
+function cancelPickPivot() {
+  state.pickPivotIdx = null;
+  if (renderer && renderer.domElement) renderer.domElement.style.cursor = "";
+}
+
 function renderAxisInspector(p) {
   const idx = state.selection.idx;
   const a = state.chain.axes[idx];
@@ -1554,6 +1635,38 @@ function renderAxisInspector(p) {
 
   const oInputs = [0,1,2].map(i => mkInput(() => a.off[i], (v) => { a.off[i] = +v; }, "number", { step: "0.01" }));
   addRow(p, "offset", oInputs, "split");
+
+  // mesh_off / mesh_rot reseat the visual mesh inside the joint frame so
+  // a CAD-exported body whose centroid is not on the axis still rotates
+  // in place. Pick Pivot fills mesh_off automatically; the cells stay
+  // hand-editable for fine tuning.
+  if (!a.mesh_off) a.mesh_off = [0,0,0];
+  if (!a.mesh_rot) a.mesh_rot = [0,0,0];
+  const moInputs = [0,1,2].map(i => mkInput(() => a.mesh_off[i], (v) => { a.mesh_off[i] = +v; }, "number", { step: "0.01" }));
+  addRow(p, "mesh off", moInputs, "split");
+  const mrInputs = [0,1,2].map(i => mkInput(() => a.mesh_rot[i], (v) => { a.mesh_rot[i] = +v; }, "number", { step: "0.1" }));
+  addRow(p, "mesh rpy", mrInputs, "split");
+  // Pick Pivot: raycast the next click against this body's mesh, set
+  // mesh_off to the negative of the picked point in mesh-local space so
+  // the picked feature snaps onto the joint origin (rotation axis).
+  const pivotRow = document.createElement("div");
+  pivotRow.className = "row";
+  const pivotLbl = document.createElement("label"); pivotLbl.textContent = "pivot";
+  const pivotBtn = document.createElement("button");
+  pivotBtn.textContent = state.pickPivotIdx === idx ? "Click on body…" : "Pick Pivot";
+  pivotBtn.title = "Click a point on the selected body's mesh to make it the rotation pivot";
+  pivotBtn.addEventListener("click", () => { startPickPivot(idx); });
+  const pivotReset = document.createElement("button");
+  pivotReset.textContent = "Reset";
+  pivotReset.style.marginLeft = "4px";
+  pivotReset.title = "Clear mesh_off (return mesh to joint origin)";
+  pivotReset.addEventListener("click", () => {
+    pushUndo(); a.mesh_off = [0,0,0]; saveLocal(); renderInspector(); softRefresh();
+  });
+  const pivotWrap = document.createElement("div"); pivotWrap.style.display = "flex"; pivotWrap.style.gap = "4px";
+  pivotWrap.appendChild(pivotBtn); pivotWrap.appendChild(pivotReset);
+  pivotRow.appendChild(pivotLbl); pivotRow.appendChild(pivotWrap);
+  p.appendChild(pivotRow);
 
   addRow(p, "min", mkInput(() => a.min, (v) => { a.min = +v; }, "number"));
   addRow(p, "max", mkInput(() => a.max, (v) => { a.max = +v; }, "number"));
@@ -1955,6 +2068,45 @@ function bindUI() {
   document.getElementById("btnAddStation").addEventListener("click", addStation);
   document.getElementById("btnDelPod").addEventListener("click", deletePodRec);
 
+  // Pivot pick: when a body's "Pick Pivot" button arms pick mode, the next
+  // canvas click raycasts against that body's mesh group only and writes
+  // mesh_off so the picked point lands on the joint origin.
+  const pickRaycaster = new THREE.Raycaster();
+  renderer.domElement.addEventListener("pointerdown", (e) => {
+    if (state.pickPivotIdx == null) return;
+    const idx = state.pickPivotIdx;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    pickRaycaster.setFromCamera(ndc, camera);
+    const obj = axisObjects[idx];
+    const meshGroup = obj && obj.group && obj.group.userData.meshGroup;
+    if (!meshGroup) { cancelPickPivot(); return; }
+    const hits = pickRaycaster.intersectObject(meshGroup, true);
+    if (!hits.length) {
+      setStatus("Pick Pivot: no hit — click on the body's mesh");
+      return;
+    }
+    // hits[0].point is in world space. Transform back into mesh-local
+    // (i.e. inside the mesh frame, before the meshLocal matrix is applied).
+    // Since meshGroup.matrixWorld = parent_world * meshLocal, inverting it
+    // gives us the picked point expressed in the same coordinate system as
+    // the mesh vertices — which is what we need to reseat the mesh.
+    const inv = new THREE.Matrix4().copy(meshGroup.matrixWorld).invert();
+    const local = hits[0].point.clone().applyMatrix4(inv);
+    pushUndo();
+    const a = state.chain.axes[idx];
+    if (!a.mesh_off) a.mesh_off = [0,0,0];
+    a.mesh_off = [-local.x, -local.y, -local.z];
+    cancelPickPivot();
+    saveLocal(); renderInspector(); softRefresh();
+    setStatus(`Pivot set: mesh_off=(${a.mesh_off[0].toFixed(3)}, ${a.mesh_off[1].toFixed(3)}, ${a.mesh_off[2].toFixed(3)})`);
+  }, true);
+
   window.addEventListener("keydown", (e) => {
     if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
     if (e.key === "Delete" || e.key === "Backspace") {
@@ -1970,7 +2122,10 @@ function bindUI() {
     else if (e.key === "y" || e.key === "Y") { fitView("front"); }
     else if (e.key === "x" || e.key === "X") { fitView("side"); }
     else if (e.key === "i" || e.key === "I") { fitView("iso"); }
-    else if (e.key === "Escape") { state.selection = null; renderAll(); }
+    else if (e.key === "Escape") {
+      if (state.pickPivotIdx != null) { cancelPickPivot(); renderInspector(); }
+      else { state.selection = null; renderAll(); }
+    }
   });
 
   // Drop .obj / .stl (or a whole folder of them) onto the viewport.

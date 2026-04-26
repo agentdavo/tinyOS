@@ -213,6 +213,37 @@ Mat4 make_rotation_z(float radians) {
     return out;
 }
 
+Mat4 make_rotation_axis_angle(const Vec3f& axis, float radians) {
+    // Rodrigues' formula. Falls back to identity for zero-length axes so
+    // callers don't have to special-case Fixed/degenerate links.
+    float len_sq = axis.x * axis.x + axis.y * axis.y + axis.z * axis.z;
+    if (len_sq <= 1e-8f) return Mat4::identity();
+    Vec3f n = normalize_v3_fast(axis);
+    float s, c;
+    sincos_approx(radians, s, c);
+    const float t = 1.0f - c;
+    const float x = n.x, y = n.y, z = n.z;
+    Mat4 out = Mat4::identity();
+    out.m[0]  = t * x * x + c;
+    out.m[1]  = t * x * y + s * z;
+    out.m[2]  = t * x * z - s * y;
+    out.m[4]  = t * x * y - s * z;
+    out.m[5]  = t * y * y + c;
+    out.m[6]  = t * y * z + s * x;
+    out.m[8]  = t * x * z + s * y;
+    out.m[9]  = t * y * z - s * x;
+    out.m[10] = t * z * z + c;
+    return out;
+}
+
+Mat4 make_rotation_xyz_intrinsic_deg(float rx_deg, float ry_deg, float rz_deg) {
+    constexpr float kDegToRad = 0.01745329252f;
+    const Mat4 rx = make_rotation_x(rx_deg * kDegToRad);
+    const Mat4 ry = make_rotation_y(ry_deg * kDegToRad);
+    const Mat4 rz = make_rotation_z(rz_deg * kDegToRad);
+    return multiply(multiply(rx, ry), rz);
+}
+
 Mat4 make_scale(float x, float y, float z) {
     Mat4 out = Mat4::identity();
     out.m[0] = x;
