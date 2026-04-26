@@ -32,7 +32,7 @@ CORE_CPP = core.cpp hal.cpp util.cpp trace.cpp cli.cpp kernel_globals.cpp kernel
             diag/histogram.cpp diag/jitter.cpp diag/cpu_load.cpp \
             rt/base_thread.cpp \
 ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
-             ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp machine/toolpods.cpp hmi/hmi_service.cpp \
+             ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp hmi/hmi_service.cpp \
               cnc/offsets.cpp cnc/programs.cpp cnc/interpreter.cpp cnc/mdi.cpp \
              render/gles1.cpp render/machine_model.cpp render/kinematic_model.cpp \
              render/obj_importer.cpp render/obj_registry.cpp render/stl_importer.cpp \
@@ -42,11 +42,11 @@ ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
 # TSV bytes get a predictable start/end symbol pair in .rodata.
 CORE_S_EXTRA =
 ifeq ($(TARGET),arm64)
-    CORE_S_EXTRA += devices/embedded_blob.S devices/embedded_ui.S devices/embedded_kinematics.S devices/embedded_kinematic_obj.S devices/embedded_automation.S devices/embedded_signals.S devices/embedded_topology.S devices/embedded_placement.S devices/embedded_hmi.S
+    CORE_S_EXTRA += devices/embedded_blob.S devices/embedded_ui.S devices/embedded_kinematics.S devices/embedded_kinematic_obj.S devices/embedded_automation.S devices/embedded_signals.S devices/embedded_topology.S devices/embedded_placement.S devices/embedded_hmi.S devices/embedded_esi.S
 endif
 
 ifeq ($(TARGET),riscv64)
-    CORE_S_EXTRA += devices/embedded_ui.S devices/embedded_kinematics.S devices/embedded_kinematic_obj.S devices/embedded_automation.S devices/embedded_signals.S devices/embedded_topology.S devices/embedded_placement.S devices/embedded_hmi.S
+    CORE_S_EXTRA += devices/embedded_ui.S devices/embedded_kinematics.S devices/embedded_kinematic_obj.S devices/embedded_automation.S devices/embedded_signals.S devices/embedded_topology.S devices/embedded_placement.S devices/embedded_hmi.S devices/embedded_esi.S
 endif
 
 ifeq ($(TARGET),arm64)
@@ -171,7 +171,7 @@ CORE_CPP  = kernel/main.cpp core.cpp util.cpp trace.cpp cli.cpp kernel_globals.c
                 diag/histogram.cpp diag/jitter.cpp diag/cpu_load.cpp \
                 rt/base_thread.cpp \
                 ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
-                ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp machine/toolpods.cpp hmi/hmi_service.cpp \
+                ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp hmi/hmi_service.cpp \
                 cnc/offsets.cpp cnc/programs.cpp cnc/interpreter.cpp cnc/mdi.cpp \
                 render/gles1.cpp render/machine_model.cpp render/kinematic_model.cpp \
                 render/obj_importer.cpp render/obj_registry.cpp render/stl_importer.cpp render/benchmark.cpp \
@@ -368,6 +368,22 @@ $(OBJDIR)/embedded_blob.o: devices/embedded_blob.S devices/clearpath_ec.tsv | $(
 $(OBJDIR)/embedded_kinematics.o: devices/embedded_kinematics.S machines/kinematic_mill3.tsv machines/kinematic_millturn.tsv machines/kinematic_mx850.tsv | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
 $(OBJDIR)/embedded_kinematic_obj.o: devices/embedded_kinematic_obj.S devices/demo_box.obj devices/demo_part.stl | $(OBJDIR)
+	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
+
+# Phase B ESI device blob — regenerated from ethercat/esi/*.xml by the
+# stdlib-only python tool. The .incbin in devices/embedded_esi.S resolves
+# this path relative to the project root, matching the other embedded_*.S
+# rules above. The XML filename list is *not* a Make prerequisite because
+# vendor filenames contain spaces (Make can't represent those in deps);
+# the rule re-runs whenever the python source changes, and the user can
+# `touch tools/esi_to_blob.py` to force a regenerate after editing XML.
+ESI_PAYLOAD := $(BUILD_DIR)/esi_payload.bin
+
+$(ESI_PAYLOAD): tools/esi_to_blob.py
+	@mkdir -p $(BUILD_DIR)
+	python3 tools/esi_to_blob.py --xml-dir ethercat/esi --output $@
+
+$(OBJDIR)/embedded_esi.o: devices/embedded_esi.S $(ESI_PAYLOAD) | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
 
 clean:

@@ -136,19 +136,39 @@ why the non-zero fallback matters.
 - Encoded record length is padded to an 8-byte boundary so the index
   table always points at aligned addresses.
 
-## Phase B (not in this scope)
+## Phase B — kernel integration
 
-The kernel-side parser will live next to `ethercat/master.cpp`, mmap or
-ROM-link the blob, and expose a `kernel::ec::esi::lookup(vid, pid, rev)`
-helper that returns a `DeviceDescriptor` view over the bytes. The TSV
-loader (`config/tsv` + `devices/clearpath_ec.tsv`) stays as the dev-loop
-override path: a TSV row supersedes the blob entry for the same VID/PID
-during slave bring-up. The blob is read-only at runtime; SDO inits and
-PDO remapping still come from the TSV / motion config.
+Shipped. The blob is linked into every kernel image (both arm64 and
+rv64) via `devices/embedded_esi.S`, which `.incbin`s
+`build/esi_payload.bin` into `.rodata`. The Makefile target rebuilds the
+blob automatically when `tools/esi_to_blob.py` changes, so a fresh
+checkout produces the same artefact CI sees. Vendor XML filenames
+contain spaces (Make can't represent those in dependency lists), so
+runtime XML edits need a manual `touch tools/esi_to_blob.py` to force
+regeneration; the python tool itself is stdlib-only and will run on any
+host that already builds the kernel.
+
+Boot flow (`devices/embedded.cpp::load_all_embedded`):
+
+1. The operator-curated TSV blobs are parsed first into `g_device_db`.
+2. `DeviceDB::load_esi_blob(_binary_esi_payload_start, _end, ...)`
+   walks the binary, validates magic / version / bounds, and inserts
+   each device record into the database.
+3. Any record whose `{VID, PID}` already exists in the table from the
+   TSV pass is skipped — TSV is authoritative for hand-curated devices
+   so its SDO inits and PDO remapping survive.
+4. The boot log emits a single line:
+   `[devices] ESI blob: <N> loaded, <M> skipped (TSV duplicate)`.
+
+`MAX_DEVICES` in `devices/device_db.hpp` is set to 600 (571 vendor
+devices + headroom for TSV entries on top). Bump it if a future vendor
+catalog grows past that — the loader logs a clean overflow rather than
+trampling memory.
 
 The format is versioned (`Format ver` field in the header) so the
-kernel can refuse a blob it does not understand. Bumping the version is
-required if any field shifts; adding an entirely new section at the end
+kernel can refuse a blob it does not understand. The kernel parser
+mirrors the layout constants documented above; bumping the version is
+required if any field shifts. Adding an entirely new section at the end
 of a device record without changing existing offsets does not need a
 bump as long as the kernel ignores trailing bytes.
 

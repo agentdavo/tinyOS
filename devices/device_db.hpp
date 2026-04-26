@@ -102,7 +102,11 @@ struct DeviceEntry {
     size_t   num_od;
 };
 
-constexpr size_t MAX_DEVICES = 16;
+// Sized for the Phase B ESI blob (571 vendor devices) plus headroom for
+// operator-curated TSV entries on top. Bump again if a future vendor catalog
+// grows the blob — the header gives device count up front so the loader can
+// log a clean overflow rather than trampling memory.
+constexpr size_t MAX_DEVICES = 600;
 
 class DeviceDB {
 public:
@@ -111,6 +115,16 @@ public:
     // Returns false only on malformed TSV; record-level overflow sets the
     // truncated() flag but returns true.
     [[nodiscard]] bool load_tsv(const char* buf, size_t len) noexcept;
+
+    // Parses the binary ESI descriptor blob emitted by `tools/esi_to_blob.py`
+    // (header magic "ESI\x01"). TSV is authoritative — devices already in the
+    // table at the same {VID,PID} are not overwritten; the count returns via
+    // out-params so the boot log can report duplicates skipped vs records
+    // ingested. Returns false only on a structurally invalid blob (bad magic,
+    // unsupported version, truncated header / index / records).
+    [[nodiscard]] bool load_esi_blob(const uint8_t* start, const uint8_t* end,
+                                     size_t* out_loaded = nullptr,
+                                     size_t* out_skipped = nullptr) noexcept;
 
     const DeviceEntry* find(DeviceId id) const noexcept;
 

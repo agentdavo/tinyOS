@@ -220,6 +220,153 @@ bool DeviceDB::load_tsv(const char* buf, size_t len) noexcept {
     return config::parse(buf, len, &record_cb, &ctx);
 }
 
+namespace {
+
+// Blob format constants — must mirror tools/esi_to_blob.py. The format is
+// versioned in the header and the loader refuses anything it doesn't know.
+constexpr uint8_t  kEsiMagic0 = 'E';
+constexpr uint8_t  kEsiMagic1 = 'S';
+constexpr uint8_t  kEsiMagic2 = 'I';
+constexpr uint8_t  kEsiMagic3 = 0x01;
+constexpr uint16_t kEsiFormatVersion = 0x0001;
+constexpr size_t   kEsiHeaderLen = 16;
+constexpr size_t   kEsiDevFixedLen = 64;
+constexpr size_t   kEsiSmRecordLen = 16;
+constexpr size_t   kEsiPdoRecordLen = 10;
+constexpr size_t   kEsiNameLen = 32;
+
+inline uint16_t rd_u16_le(const uint8_t* p) noexcept {
+    return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+inline uint32_t rd_u32_le(const uint8_t* p) noexcept {
+    return static_cast<uint32_t>(p[0])
+         | (static_cast<uint32_t>(p[1]) << 8)
+         | (static_cast<uint32_t>(p[2]) << 16)
+         | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+// Map the python-side device-type enum to the kernel's DeviceType. The two
+// agree on the "kind" axis but use different numeric encodings — kept as a
+// switch so the host tool stays free to renumber.
+DeviceType map_blob_type(uint8_t blob_type) noexcept {
+    switch (blob_type) {
+        case 1: return DeviceType::Servo;
+        case 2: return DeviceType::DigitalInput;
+        case 3: return DeviceType::DigitalOutput;
+        case 4: return DeviceType::AnalogInput;
+        case 5: return DeviceType::EncoderInput;
+        case 6: return DeviceType::Coupler;
+        // Generic (0) and MailboxGateway (7) have no first-class kernel
+        // equivalent yet — fall through to Servo so existing bus_config
+        // CSP wiring still picks them up if a TSV doesn't override.
+        default: return DeviceType::Servo;
+    }
+}
+
+} // namespace
+
+bool DeviceDB::load_esi_blob(const uint8_t* start, const uint8_t* end,
+                             size_t* out_loaded, size_t* out_skipped) noexcept {
+    if (out_loaded) *out_loaded = 0;
+    if (out_skipped) *out_skipped = 0;
+    if (!start || !end || end < start) return false;
+    const size_t blob_len = static_cast<size_t>(end - start);
+    if (blob_len < kEsiHeaderLen) return false;
+    if (start[0] != kEsiMagic0 || start[1] != kEsiMagic1
+            || start[2] != kEsiMagic2 || start[3] != kEsiMagic3) {
+        return false;
+    }
+    const uint16_t version = rd_u16_le(start + 4);
+    const uint16_t count   = rd_u16_le(start + 6);
+    if (version != kEsiFormatVersion) return false;
+
+    // Bounds: each device offset is uint32 starting at offset 16.
+    const size_t index_bytes = static_cast<size_t>(count) * sizeof(uint32_t);
+    if (kEsiHeaderLen + index_bytes > blob_len) return false;
+
+    size_t loaded = 0;
+    size_t skipped = 0;
+
+    for (uint16_t i = 0; i < count; ++i) {
+        const uint32_t off = rd_u32_le(start + kEsiHeaderLen + i * sizeof(uint32_t));
+        if (off > blob_len || blob_len - off < kEsiDevFixedLen) {
+            return false;
+        }
+        const uint8_t* d = start + off;
+        const uint32_t vid    = rd_u32_le(d + 0);
+        const uint32_t pid    = rd_u32_le(d + 4);
+        // d+8..11 = revision (not stored on DeviceEntry today).
+        const uint8_t  blob_t = d[44];
+        const uint8_t  sm_cnt = d[45];
+        // d+48..51 / d+52..55 = mailbox req/rsp timeouts (not stored yet).
+        const uint16_t dc_aa  = rd_u16_le(d + 56);
+
+        // SM array bounds check.
+        const size_t sm_total = static_cast<size_t>(sm_cnt) * kEsiSmRecordLen;
+        if (kEsiDevFixedLen + sm_total + sizeof(uint16_t) > blob_len - off) {
+            return false;
+        }
+        const uint8_t* pdo_hdr = d + kEsiDevFixedLen + sm_total;
+        const uint16_t pdo_cnt = rd_u16_le(pdo_hdr);
+        const size_t pdo_total = static_cast<size_t>(pdo_cnt) * kEsiPdoRecordLen;
+        if (sizeof(uint16_t) + pdo_total > blob_len - off
+                - kEsiDevFixedLen - sm_total) {
+            return false;
+        }
+
+        // TSV-wins policy: a curated TSV entry has SDO/PDO/OD payload the
+        // blob can't supply, so don't shadow it.
+        DeviceId id{ vid, pid };
+        if (find(id) != nullptr) {
+            ++skipped;
+            continue;
+        }
+
+        DeviceEntry* slot = allocate_slot();
+        if (!slot) {
+            mark_truncated();
+            break;
+        }
+        slot->id = id;
+        // Name is NUL-padded UTF-8 in the blob. Copy up to 31 bytes and
+        // ensure the local buffer is NUL-terminated regardless.
+        size_t n = 0;
+        while (n < kEsiNameLen && n + 1 < sizeof(slot->name) && d[12 + n] != 0) {
+            slot->name[n] = static_cast<char>(d[12 + n]);
+            ++n;
+        }
+        slot->name[n] = '\0';
+        slot->type = map_blob_type(blob_t);
+        slot->dc_assign_activate = dc_aa;
+
+        // Translate PDO records. The blob carries SM number per entry
+        // (matches PdoEntry::sm) and direction in the same 0=Rx/1=Tx
+        // convention, so the mapping is direct. Cap at the kernel's
+        // per-device PDO ceiling.
+        const uint8_t* pdo_p = pdo_hdr + sizeof(uint16_t);
+        for (uint16_t j = 0; j < pdo_cnt; ++j) {
+            if (slot->num_pdo >= DeviceEntry::MAX_PDO) {
+                mark_truncated();
+                break;
+            }
+            const uint8_t* e = pdo_p + j * kEsiPdoRecordLen;
+            PdoEntry& pe = slot->pdo[slot->num_pdo++];
+            pe.pdo_idx   = rd_u16_le(e + 0);
+            pe.entry_idx = rd_u16_le(e + 2);
+            pe.sub       = e[4];
+            pe.bits      = e[5];
+            pe.dir       = e[6];
+            pe.sm        = e[7];
+            pe.pin[0]    = '\0';
+        }
+        ++loaded;
+    }
+
+    if (out_loaded) *out_loaded = loaded;
+    if (out_skipped) *out_skipped = skipped;
+    return true;
+}
+
 const DeviceEntry* DeviceDB::find(DeviceId id) const noexcept {
     for (size_t i = 0; i < num_devices_; ++i) {
         if (devices_[i].id.vid == id.vid && devices_[i].id.pid == id.pid) {
