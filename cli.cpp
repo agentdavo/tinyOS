@@ -21,6 +21,7 @@
 #include "cnc/programs.hpp"
 #include "automation/ladder_runtime.hpp"
 #include "automation/macro_runtime.hpp"
+#include "automation/signals.hpp"
 #include "machine/machine_registry.hpp"
 #include "machine/motion_wiring.hpp"
 #include "machine/toolpods.hpp"
@@ -4028,6 +4029,180 @@ static int cmd_input(const char*, kernel::hal::UARTDriverOps* uart) {
                              touch_pressed ? "yes" : "no");
     uart->puts(buf);
     return 0;
+}
+
+// ===== mcode: operator surface for M-code-driven named signals =====
+//
+// Mirrors the M-code → digital-output wiring in cnc/interpreter.cpp so the
+// operator can drive coolant / chuck / aux DOUT / spindle directly without
+// loading a G-code program. All write paths funnel through
+// automation::signals::set_named_signal_bool, which silently no-ops when
+// either master is deadline-faulted (the existing asserted state holds —
+// only new writes are gated).
+namespace {
+bool mcode_parse_onoff(const char* s, bool& out) noexcept {
+    if (!s) return false;
+    if (cstrcmp(s, "on") == 0 || cstrcmp(s, "1") == 0 ||
+        cstrcmp(s, "true") == 0) { out = true; return true; }
+    if (cstrcmp(s, "off") == 0 || cstrcmp(s, "0") == 0 ||
+        cstrcmp(s, "false") == 0) { out = false; return true; }
+    return false;
+}
+
+void mcode_print_signal_state(kernel::hal::UARTDriverOps* uart, const char* name) noexcept {
+    bool value = false;
+    const bool ok = automation::signals::get_named_signal_bool(name, value);
+    // Walk the binding table to surface the slave/bit so operators can sanity-
+    // check what an M-code would actually drive. Linear scan is fine: the
+    // table maxes out at MAX_SIGNAL_BINDINGS=64.
+    const machine::Registry::SignalBinding* binding = nullptr;
+    for (size_t i = 0; i < machine::g_registry.signal_binding_count(); ++i) {
+        const auto* b = machine::g_registry.signal_binding(i);
+        if (!b) continue;
+        if (kernel::util::kstrcmp(b->name, name) == 0) { binding = b; break; }
+    }
+    char buf[128];
+    if (binding) {
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "  %-16s %-6s m=%u s=%u bit=%u\n", name,
+            ok ? (value ? "on" : "off") : "(?)",
+            static_cast<unsigned>(binding->master),
+            static_cast<unsigned>(binding->slave),
+            static_cast<unsigned>(binding->bit));
+    } else {
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "  %-16s (no binding)\n", name);
+    }
+    uart->puts(buf);
+}
+} // namespace
+
+static int cmd_mcode(const char* args, kernel::hal::UARTDriverOps* uart) {
+    if (!args || !*args) {
+        const bool a_fault = ethercat::g_master_a.is_deadline_faulted();
+        const bool b_fault = ethercat::g_master_b.is_deadline_faulted();
+        char buf[120];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "mcode: master_a=%s master_b=%s\n",
+            a_fault ? "DEADLINE-FAULT" : "ok",
+            b_fault ? "DEADLINE-FAULT" : "ok");
+        uart->puts(buf);
+        mcode_print_signal_state(uart, "coolant_flood");
+        mcode_print_signal_state(uart, "coolant_mist");
+        mcode_print_signal_state(uart, "chuck_clamp");
+        mcode_print_signal_state(uart, "spindle_brake");
+        for (uint32_t i = 0; i < automation::signals::MAX_AUX_DOUT; ++i) {
+            char nm[16];
+            (void)automation::signals::aux_dout_signal_name(i, nm, sizeof(nm));
+            mcode_print_signal_state(uart, nm);
+        }
+        const auto sp = kernel::ui::operator_api::spindle_status();
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "  spindle ax%d req=%ld actual=%ld %s\n",
+            sp.axis_index, (long)sp.requested_rpm, (long)sp.actual_rpm,
+            sp.running ? "running" : "stopped");
+        uart->puts(buf);
+        return 0;
+    }
+
+    // Tokenise: verb plus up to two whitespace-separated args. Same shape as
+    // cmd_symbol_set so behaviour is consistent across the operator surface.
+    const char* p = args;
+    while (*p == ' ') ++p;
+    char verb[16];
+    size_t n = 0;
+    while (*p && *p != ' ' && n + 1 < sizeof(verb)) verb[n++] = *p++;
+    verb[n] = '\0';
+    while (*p == ' ') ++p;
+    char arg1[32];
+    n = 0;
+    while (*p && *p != ' ' && n + 1 < sizeof(arg1)) arg1[n++] = *p++;
+    arg1[n] = '\0';
+    while (*p == ' ') ++p;
+    char arg2[32];
+    n = 0;
+    while (*p && *p != ' ' && n + 1 < sizeof(arg2)) arg2[n++] = *p++;
+    arg2[n] = '\0';
+
+    auto write_named = [&](const char* name, bool value) -> int {
+        const bool ok = automation::signals::set_named_signal_bool(name, value);
+        char buf[96];
+        kernel::util::k_snprintf(buf, sizeof(buf), "mcode %s %s -> %s\n",
+                                 name, value ? "on" : "off",
+                                 ok ? "ok" : "skipped (gated or unknown)");
+        uart->puts(buf);
+        return ok ? 0 : 1;
+    };
+
+    bool on = false;
+    if (cstrcmp(verb, "flood") == 0) {
+        if (!mcode_parse_onoff(arg1, on)) {
+            uart->puts("usage: mcode flood on|off\n"); return 1;
+        }
+        return write_named("coolant_flood", on);
+    }
+    if (cstrcmp(verb, "mist") == 0) {
+        if (!mcode_parse_onoff(arg1, on)) {
+            uart->puts("usage: mcode mist on|off\n"); return 1;
+        }
+        return write_named("coolant_mist", on);
+    }
+    if (cstrcmp(verb, "chuck") == 0) {
+        if (!mcode_parse_onoff(arg1, on)) {
+            uart->puts("usage: mcode chuck on|off\n"); return 1;
+        }
+        return write_named("chuck_clamp", on);
+    }
+    if (cstrcmp(verb, "brake") == 0) {
+        if (!mcode_parse_onoff(arg1, on)) {
+            uart->puts("usage: mcode brake on|off\n"); return 1;
+        }
+        return write_named("spindle_brake", on);
+    }
+    if (cstrcmp(verb, "dout") == 0) {
+        const char* qp = arg1;
+        long idx = 0;
+        if (!cli_parse_long(qp, idx) || !mcode_parse_onoff(arg2, on) ||
+            idx < 0 || idx >= static_cast<long>(automation::signals::MAX_AUX_DOUT)) {
+            char buf[80];
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "usage: mcode dout <0..%u> on|off\n",
+                static_cast<unsigned>(automation::signals::MAX_AUX_DOUT - 1));
+            uart->puts(buf);
+            return 1;
+        }
+        char nm[16];
+        (void)automation::signals::aux_dout_signal_name(static_cast<uint32_t>(idx),
+                                                        nm, sizeof(nm));
+        return write_named(nm, on);
+    }
+    if (cstrcmp(verb, "spindle") == 0) {
+        const char* qp = arg1;
+        long rpm = 0;
+        if (!cli_parse_long(qp, rpm)) {
+            uart->puts("usage: mcode spindle <rpm>  (sign for direction, 0 stops)\n");
+            return 1;
+        }
+        // Route through operator-API spindle path so behaviour matches
+        // M3/M4/M5 in the interpreter (same axis, same gate, same modal
+        // running flag).
+        kernel::ui::operator_api::spindle_set_rpm(static_cast<int32_t>(rpm));
+        if (rpm == 0) kernel::ui::operator_api::spindle_stop();
+        else kernel::ui::operator_api::spindle_start();
+        char buf[80];
+        kernel::util::k_snprintf(buf, sizeof(buf), "mcode spindle %ld\n", rpm);
+        uart->puts(buf);
+        return 0;
+    }
+    if (cstrcmp(verb, "signal") == 0) {
+        if (!arg1[0] || !mcode_parse_onoff(arg2, on)) {
+            uart->puts("usage: mcode signal <name> on|off\n");
+            return 1;
+        }
+        return write_named(arg1, on);
+    }
+    uart->puts("usage: mcode | mcode flood|mist|chuck|brake on|off | mcode dout <i> on|off | mcode spindle <rpm> | mcode signal <name> on|off\n");
+    return 1;
 }
 
 CLI::CLI() {

@@ -4,6 +4,9 @@
 
 #include "../cnc/offsets.hpp"
 #include "../automation/macro_runtime.hpp"
+#include "../automation/signals.hpp"
+#include "../ethercat/master.hpp"
+#include "../ui/operator_api.hpp"
 #include "../miniOS.hpp"
 
 namespace cnc::interp {
@@ -898,19 +901,62 @@ bool Runtime::tick_channel(size_t channel) noexcept {
     }
     if (parsed.m_code == 7) {
         state.coolant_mist = true;
+        // Modal flag mirrors the bus assertion so restart_at_line and the
+        // snapshot reader stay coherent even when the signal isn't bound.
+        (void)automation::signals::set_named_signal_bool("coolant_mist", true);
         return true;
     }
     if (parsed.m_code == 8) {
         state.coolant_flood = true;
+        (void)automation::signals::set_named_signal_bool("coolant_flood", true);
         return true;
     }
     if (parsed.m_code == 9) {
         state.coolant_mist = false;
         state.coolant_flood = false;
+        (void)automation::signals::set_named_signal_bool("coolant_mist", false);
+        (void)automation::signals::set_named_signal_bool("coolant_flood", false);
+        return true;
+    }
+    if (parsed.m_code == 10) {
+        // M10/M11 chuck/clamp engage/release. Optional per spec — silently
+        // no-ops when no chuck_clamp signal is bound to a real slot.
+        (void)automation::signals::set_named_signal_bool("chuck_clamp", true);
+        return true;
+    }
+    if (parsed.m_code == 11) {
+        (void)automation::signals::set_named_signal_bool("chuck_clamp", false);
+        return true;
+    }
+    if (parsed.m_code == 62 || parsed.m_code == 63 ||
+        parsed.m_code == 64 || parsed.m_code == 65) {
+        // LinuxCNC convention: M62/M63 sync to motion-queue end, M64/M65 set
+        // immediately. First-cut implementation treats both pairs as
+        // immediate (set/clear). Motion-sync deferred.
+        if (parsed.p_word < 0) return true;
+        const uint32_t idx = static_cast<uint32_t>(parsed.p_word);
+        char name[16];
+        if (!automation::signals::aux_dout_signal_name(idx, name, sizeof(name))) {
+            return true;  // out-of-range P-word: log-and-continue per spec
+        }
+        const bool on = (parsed.m_code == 62 || parsed.m_code == 64);
+        (void)automation::signals::set_named_signal_bool(name, on);
         return true;
     }
     if (parsed.m_code == 3 || parsed.m_code == 4 || parsed.m_code == 5) {
-        const int spindle_axis = spindle_axis_for_channel(channel);
+        // Skip when either master is deadline-faulted: same gate as the
+        // operator spindle button (operator_api::spindle_set_rpm). The
+        // already-running spindle keeps spinning via the held velocity
+        // command on the drive — we just don't push a new one.
+        if (ethercat::g_master_a.is_deadline_faulted() ||
+            ethercat::g_master_b.is_deadline_faulted()) {
+            return true;
+        }
+        // Resolve through operator_api::spindle_axis_index so M3/M4/M5 hit
+        // the same axis the operator's spindle button does, regardless of
+        // topology layout (legacy axis 3 vs whatever the loaded topology
+        // names "spindle").
+        const int spindle_axis = kernel::ui::operator_api::spindle_axis_index();
         if (spindle_axis >= 0) {
             int32_t speed = parsed.set_spindle ? parsed.spindle : state.spindle;
             if (speed < 0) speed = -speed;

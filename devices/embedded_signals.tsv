@@ -17,6 +17,26 @@ signal	name=probe_arm_request	source=ec.do	master=0	slave=2	bit=3	writable=1
 signal	name=coolant_cmd	source=ec.do	master=0	slave=2	bit=4	writable=1
 signal	name=air_blast_cmd	source=ec.do	master=0	slave=2	bit=5	writable=1
 
+# M-code → digital-output bindings. Slave/bit are placeholders that match a
+# generic 16-channel DO module; operator overrides via the TSV when wiring a
+# real coolant/clamp manifold. If the binding doesn't resolve to a real slot
+# the registry silently no-ops the write (per signals.cpp), so an unedited
+# build still parses M3/M7/M8/M62 without faulting.
+signal	name=coolant_flood	source=ec.do	master=0	slave=2	bit=6	writable=1
+signal	name=coolant_mist	source=ec.do	master=0	slave=2	bit=7	writable=1
+signal	name=chuck_clamp	source=ec.do	master=0	slave=2	bit=8	writable=1
+signal	name=spindle_brake	source=ec.do	master=0	slave=2	bit=9	writable=1
+
+# LinuxCNC M62/M63/M64/M65 P-word digital outputs. Indexed 0..7.
+signal	name=aux_dout_0	source=ec.do	master=0	slave=2	bit=10	writable=1
+signal	name=aux_dout_1	source=ec.do	master=0	slave=2	bit=11	writable=1
+signal	name=aux_dout_2	source=ec.do	master=0	slave=2	bit=12	writable=1
+signal	name=aux_dout_3	source=ec.do	master=0	slave=2	bit=13	writable=1
+signal	name=aux_dout_4	source=ec.do	master=0	slave=2	bit=14	writable=1
+signal	name=aux_dout_5	source=ec.do	master=0	slave=2	bit=15	writable=1
+signal	name=aux_dout_6	source=ec.do	master=0	slave=2	bit=16	writable=1
+signal	name=aux_dout_7	source=ec.do	master=0	slave=2	bit=17	writable=1
+
 signal	name=spindle_load_raw	source=ec.ai_uni	master=0	slave=3	channel=0	value_type=int
 signal	name=hydraulic_pressure_raw	source=ec.ai_uni	master=0	slave=3	channel=1	value_type=int
 signal	name=probe_signal_raw	source=ec.ai_bip	master=0	slave=3	channel=0	value_type=int
