@@ -231,7 +231,14 @@ Spinlock::Spinlock() noexcept : lock_id_(next_lock_id_++) {}
 // the requester), and the boost write would race with the scheduler without
 // any benefit — ISR critical sections are bounded by hardware mask state, not
 // by thread priority.
-void Spinlock::acquire_isr_safe() noexcept {
+//
+// IRQs are masked BEFORE the CAS spin so that a timer IRQ can't fire while
+// this CPU holds the lock and re-enter the same lock from the scheduler tick
+// path. The pre-acquire mask state is returned to the caller and round-tripped
+// through release_isr_safe so nested critical sections re-enable IRQs in the
+// correct stack order.
+uint64_t Spinlock::acquire_isr_safe() noexcept {
+    const uint64_t saved = minios_irq_save_disable();
     bool expected = false;
     while (!lock_flag_.compare_exchange_strong(expected, true, std::memory_order_acquire, std::memory_order_relaxed)) {
         expected = false;
@@ -239,8 +246,12 @@ void Spinlock::acquire_isr_safe() noexcept {
             MINIOS_CPU_RELAX();
         }
     }
+    return saved;
 }
-void Spinlock::release_isr_safe() noexcept { lock_flag_.store(false, std::memory_order_release); }
+void Spinlock::release_isr_safe(uint64_t saved_irq_state) noexcept {
+    lock_flag_.store(false, std::memory_order_release);
+    minios_irq_restore(saved_irq_state);
+}
 
 void Spinlock::acquire_general() noexcept {
     // Resolve the requesting TCB once, before we start spinning. Early-boot
@@ -369,7 +380,10 @@ T* SPSCQueue<T, Capacity>::dequeue() noexcept {
 TCB* EDFPolicy::select_next_task(uint32_t core_id, TCB* current_task) {
     if (core_id >= MAX_CORES || !kernel::g_scheduler_ptr) return nullptr;
     Scheduler* sched = kernel::g_scheduler_ptr;
-    ScopedLock lock(sched->per_core_locks_[core_id]);
+    // ScopedISRLock so a timer IRQ that arrives while another CPU (or the
+    // same CPU pre-mask) holds this per-core lock can't recurse into the
+    // scheduler from preemptive_tick and self-deadlock on the same lock.
+    ScopedISRLock lock(sched->per_core_locks_[core_id]);
     uint64_t earliest_deadline = std::numeric_limits<uint64_t>::max();
     TCB* earliest_task = nullptr; int chosen_priority_idx = -1; TCB* chosen_prev_in_list = nullptr;
     // Pass 1: pick the earliest-deadline task that is NOT the caller. This
@@ -424,7 +438,9 @@ TCB* EDFPolicy::select_next_task(uint32_t core_id, TCB* current_task) {
 void EDFPolicy::add_to_ready_queue(TCB* tcb, uint32_t core_id) {
     if (!tcb || tcb->priority < 0 || static_cast<size_t>(tcb->priority) >= MAX_PRIORITY_LEVELS || core_id >= MAX_CORES || !kernel::g_scheduler_ptr) return;
     Scheduler* sched = kernel::g_scheduler_ptr;
-    ScopedLock lock(sched->per_core_locks_[core_id]);
+    // ScopedISRLock for the same reason as select_next_task — preemptive_tick
+    // can recurse here from a timer IRQ via schedule().
+    ScopedISRLock lock(sched->per_core_locks_[core_id]);
     // FIFO enqueue (push to tail) so same-priority yielders go behind peers.
     // This is what makes cooperative yield() actually hand off CPU to another
     // ready task at the same priority level.

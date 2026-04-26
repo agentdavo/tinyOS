@@ -79,8 +79,13 @@ class Spinlock {
     static uint32_t next_lock_id_;
 public:
     Spinlock() noexcept;
-    void acquire_isr_safe() noexcept;
-    void release_isr_safe() noexcept;
+    // ISR-safe variants return/take the caller's interrupt-mask state so the
+    // critical section is entered with IRQs disabled and exited with the
+    // pre-acquire mask restored. This closes the window where a timer IRQ
+    // fires while a thread holds a per-core scheduler lock and the handler
+    // tries to re-acquire the same lock from preemptive_tick → schedule.
+    [[nodiscard]] uint64_t acquire_isr_safe() noexcept;
+    void release_isr_safe(uint64_t saved_irq_state) noexcept;
     void acquire_general() noexcept;
     void release_general() noexcept;
     uint32_t get_id() const noexcept { return lock_id_; }
@@ -101,9 +106,11 @@ public:
 
 class ScopedISRLock {
     Spinlock& lock_;
+    uint64_t saved_irq_state_;
 public:
-    explicit ScopedISRLock(Spinlock& l) noexcept : lock_(l) { lock_.acquire_isr_safe(); }
-    ~ScopedISRLock() { lock_.release_isr_safe(); }
+    explicit ScopedISRLock(Spinlock& l) noexcept
+        : lock_(l), saved_irq_state_(l.acquire_isr_safe()) {}
+    ~ScopedISRLock() { lock_.release_isr_safe(saved_irq_state_); }
     ScopedISRLock(const ScopedISRLock&) = delete;
     ScopedISRLock& operator=(const ScopedISRLock&) = delete;
 };
