@@ -36,6 +36,17 @@ SpindleState g_spindle{};
 HomingSnapshot g_homing{};
 ProbeWizardSnapshot g_probe_wiz{};
 
+// Calibration page state held in operator_api so a single-tap on either
+// COMP page lands on the same axis the operator was inspecting last.
+// pending_pos / pending_err buffer the two input fields on the PEC page;
+// commit_point flushes them to motion::g_motion.add_cal_point().
+struct CalUiState {
+    uint8_t  pec_axis    = 0;
+    int32_t  pending_pos = 0;
+    int32_t  pending_err = 0;
+};
+CalUiState g_cal_ui{};
+
 bool any_master_deadline_faulted() {
     return ethercat::g_master_a.is_deadline_faulted() ||
            ethercat::g_master_b.is_deadline_faulted();
@@ -1107,10 +1118,58 @@ void probe_wizard_abort() {
 }
 
 void probe_wizard_accept() {
-    core::ScopedLock lock(g_lock);
-    if (g_probe_wiz.state != ProbeWizardState::Inspecting) return;
-    g_probe_wiz.state = ProbeWizardState::Idle;
-    g_probe_wiz.status_message = "Accepted";
+    // Pull the cycle + captured counts under the lock, then drop it
+    // before calling into cnc::offsets (which has its own spinlock).
+    ProbeCycleKind cycle = ProbeCycleKind::None;
+    int32_t rx = 0, ry = 0, rz = 0;
+    bool result_valid = false;
+    {
+        core::ScopedLock lock(g_lock);
+        if (g_probe_wiz.state != ProbeWizardState::Inspecting) return;
+        cycle = g_probe_wiz.cycle;
+        rx = g_probe_wiz.result_x;
+        ry = g_probe_wiz.result_y;
+        rz = g_probe_wiz.result_z;
+        result_valid = g_probe_wiz.result_valid;
+        g_probe_wiz.state = ProbeWizardState::Idle;
+        g_probe_wiz.status_message = "Accepted";
+    }
+
+    // Counts -> mm using the same 1000 counts/mm convention as the DRO
+    // and offsets editor. Qualify and Sphere intentionally fall through
+    // without writing anything — they qualify the stylus / build the
+    // volumetric model and have their own commit path.
+    if (!result_valid) return;
+    auto& svc = cnc::offsets::g_service;
+    const size_t active = svc.active_work();
+    const float xmm = static_cast<float>(rx) / 1000.0f;
+    const float ymm = static_cast<float>(ry) / 1000.0f;
+    const float zmm = static_cast<float>(rz) / 1000.0f;
+    switch (cycle) {
+        case ProbeCycleKind::ZSurface:
+            svc.set_work_axis(active, 2, zmm);
+            break;
+        case ProbeCycleKind::EdgeX:
+            svc.set_work_axis(active, 0, xmm);
+            break;
+        case ProbeCycleKind::EdgeY:
+            svc.set_work_axis(active, 1, ymm);
+            break;
+        case ProbeCycleKind::BoreCenter:
+            svc.set_work_axis(active, 0, xmm);
+            svc.set_work_axis(active, 1, ymm);
+            break;
+        case ProbeCycleKind::Pocket3D:
+            svc.set_work_axis(active, 0, xmm);
+            svc.set_work_axis(active, 1, ymm);
+            svc.set_work_axis(active, 2, zmm);
+            break;
+        case ProbeCycleKind::Qualify:
+        case ProbeCycleKind::Sphere:
+        case ProbeCycleKind::None:
+        default:
+            break;
+    }
 }
 
 void probe_wizard_reject() {
@@ -1158,6 +1217,133 @@ EthercatSnapshot ethercat_snapshot() {
         snap.slaves[i].product_code = slave.product_code ? slave.product_code : slave.observed_pid;
     }
     return snap;
+}
+
+// ===== Calibration / compensation surface =====
+
+CalibrationSnapshot calibration_snapshot() {
+    CalibrationSnapshot snap{};
+    uint8_t axis = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        axis = g_cal_ui.pec_axis & 0x03;
+    }
+    snap.pec_axis = axis;
+    snap.pec_enabled = motion::g_motion.linear_cal_enabled(axis);
+    const uint16_t total = motion::g_motion.linear_cal_point_count(axis);
+    snap.pec_point_count = total;
+    const uint16_t shown = total > CalibrationSnapshot::kMaxPecRows
+        ? static_cast<uint16_t>(CalibrationSnapshot::kMaxPecRows) : total;
+    for (uint16_t i = 0; i < shown; ++i) {
+        const auto p = motion::g_motion.linear_cal_point(axis, i);
+        snap.pec_pos[i] = p.position_counts;
+        snap.pec_err[i] = p.error_counts;
+    }
+    snap.rotary_offset_a = motion::g_motion.get_rotary_correction(3);
+
+    snap.geom_enabled = motion::g_motion.geometry_enabled();
+    snap.geom_xy_urad = motion::g_motion.get_geometry_error("XY");
+    snap.geom_xz_urad = motion::g_motion.get_geometry_error("XZ");
+    snap.geom_yz_urad = motion::g_motion.get_geometry_error("YZ");
+
+    snap.sphere_enabled         = motion::g_motion.sphere_enabled();
+    snap.sphere_errors_computed = motion::g_motion.sphere_errors_computed();
+    snap.sphere_diameter_mm     = motion::g_motion.sphere_diameter();
+    snap.sphere_probe_radius_um = motion::g_motion.sphere_probe_radius();
+    snap.sphere_point_count     = motion::g_motion.sphere_point_count();
+    snap.sphere_err_pos_x_urad  = motion::g_motion.sphere_error_pos_x();
+    snap.sphere_err_pos_y_urad  = motion::g_motion.sphere_error_pos_y();
+    snap.sphere_err_pos_z_urad  = motion::g_motion.sphere_error_pos_z();
+    snap.sphere_err_sq_xy_urad  = motion::g_motion.sphere_error_sq_xy();
+    snap.sphere_err_sq_xz_urad  = motion::g_motion.sphere_error_sq_xz();
+    snap.sphere_err_sq_yz_urad  = motion::g_motion.sphere_error_sq_yz();
+    return snap;
+}
+
+void cal_pec_select_axis(uint32_t axis) {
+    core::ScopedLock lock(g_lock);
+    g_cal_ui.pec_axis = static_cast<uint8_t>(axis & 0x03);
+    g_cal_ui.pending_pos = 0;
+    g_cal_ui.pending_err = 0;
+}
+
+void cal_pec_set_pending_pos(int32_t counts) {
+    core::ScopedLock lock(g_lock);
+    g_cal_ui.pending_pos = counts;
+}
+
+void cal_pec_set_pending_err(int32_t counts) {
+    core::ScopedLock lock(g_lock);
+    g_cal_ui.pending_err = counts;
+}
+
+int32_t cal_pec_pending_pos() {
+    core::ScopedLock lock(g_lock);
+    return g_cal_ui.pending_pos;
+}
+
+int32_t cal_pec_pending_err() {
+    core::ScopedLock lock(g_lock);
+    return g_cal_ui.pending_err;
+}
+
+bool cal_pec_commit_point() {
+    if (any_master_deadline_faulted()) return false;
+    uint8_t axis = 0;
+    int32_t pos = 0, err = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        axis = g_cal_ui.pec_axis & 0x03;
+        pos  = g_cal_ui.pending_pos;
+        err  = g_cal_ui.pending_err;
+    }
+    return motion::g_motion.add_cal_point(axis, pos, err) >= 0;
+}
+
+void cal_pec_clear() {
+    if (any_master_deadline_faulted()) return;
+    uint8_t axis = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        axis = g_cal_ui.pec_axis & 0x03;
+    }
+    motion::g_motion.clear_linear_cal(axis);
+}
+
+void cal_pec_set_enabled(bool en) {
+    if (any_master_deadline_faulted()) return;
+    uint8_t axis = 0;
+    {
+        core::ScopedLock lock(g_lock);
+        axis = g_cal_ui.pec_axis & 0x03;
+    }
+    (void)motion::g_motion.enable_linear_cal(axis, en);
+}
+
+void cal_geom_set(const char* pair, int32_t urad) {
+    if (any_master_deadline_faulted()) return;
+    if (!pair || !*pair) return;
+    (void)motion::g_motion.set_geometry_error(pair, urad);
+}
+
+void cal_geom_set_enabled(bool en) {
+    if (any_master_deadline_faulted()) return;
+    (void)motion::g_motion.enable_geometry(en);
+}
+
+void cal_sphere_compute() {
+    if (any_master_deadline_faulted()) return;
+    (void)motion::g_motion.sphere_compute_errors();
+}
+
+void cal_sphere_set_enabled(bool en) {
+    if (any_master_deadline_faulted()) return;
+    motion::g_motion.sphere_enable(en);
+}
+
+void cal_sphere_clear() {
+    if (any_master_deadline_faulted()) return;
+    motion::g_motion.sphere_clear_points();
 }
 
 } // namespace kernel::ui::operator_api

@@ -720,23 +720,28 @@ button	id=setup_save	parent=service_root	x=380	y=490	w=320	h=120	text=SAVE SETUP
 button	id=service_probe	parent=service_root	x=720	y=490	w=320	h=120	text=PROBE CYCLES	bg=#0F766E	color=#FFFFFF	scale=2	focus=310
 
 # --- diagnostics panel ---
-# Two rows: ETHERCAT / ALARMS / MACROS on top, HOMING wizard solo on the
-# second so it has full-width visibility — operators land on this page when
-# something is wrong, the homing wizard is part of recovery.
-panel	id=service_diag_panel	parent=service_root	x=20	y=650	w=1040	h=200	bg=#111827	border=#334155
+# Two rows: ETHERCAT / ALARMS / MACROS / HOMING on top, three compensation
+# entries on the bottom — operators land on this page when something is
+# wrong, and the comp wizards are how they qualify the machine after a
+# rebuild or service swap.
+panel	id=service_diag_panel	parent=service_root	x=20	y=650	w=1040	h=370	bg=#111827	border=#334155
 label	id=service_diag_title	parent=service_root	x=40	y=664	w=400	h=28	text=DIAGNOSTICS	color=#94A3B8	bg=#111827	scale=2
 button	id=service_ethercat	parent=service_root	x=40	y=710	w=240	h=120	text=ETHERCAT	bg=#0E7490	color=#FFFFFF	scale=2	focus=320
 button	id=service_alarms	parent=service_root	x=300	y=710	w=240	h=120	text=ALARMS	bg=#B91C1C	color=#FFFFFF	scale=2	focus=330
 button	id=service_macros	parent=service_root	x=560	y=710	w=240	h=120	text=MACROS	bg=#5B21B6	color=#FFFFFF	scale=2	focus=340
 button	id=service_homing	parent=service_root	x=820	y=710	w=220	h=120	text=HOMING	bg=#0F766E	color=#FFFFFF	scale=2	focus=345
+label	id=service_comp_title	parent=service_root	x=40	y=850	w=400	h=24	text=COMPENSATION	color=#64748B	bg=#111827	scale=1
+button	id=service_pec	parent=service_root	x=40	y=880	w=320	h=120	text=PITCH ERROR	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=346
+button	id=service_geometry	parent=service_root	x=380	y=880	w=320	h=120	text=GEOMETRY	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=347
+button	id=service_sphere	parent=service_root	x=720	y=880	w=320	h=120	text=VOLUMETRIC	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=348
 
 # --- info panel ---
-panel	id=service_info_panel	parent=service_root	x=20	y=870	w=1040	h=300	bg=#111827	border=#334155
-label	id=service_info_title	parent=service_root	x=40	y=884	w=400	h=28	text=NOTES	color=#94A3B8	bg=#111827	scale=2
-label	id=service_info_1	parent=service_root	x=40	y=930	w=1000	h=32	text=- Setup snapshots persist offsets, tool table and active modes.	color=#94A3B8	bg=#111827	scale=1
-label	id=service_info_2	parent=service_root	x=40	y=970	w=1000	h=32	text=- ETHERCAT shows live bus health (period, p99, max, fault).	color=#94A3B8	bg=#111827	scale=1
-label	id=service_info_3	parent=service_root	x=40	y=1010	w=1000	h=32	text=- ALARMS routes to recovery + acknowledgement workflow.	color=#94A3B8	bg=#111827	scale=1
-label	id=service_info_4	parent=service_root	x=40	y=1050	w=1000	h=32	text=- PROBE CYCLES launches the qualified macro library.	color=#94A3B8	bg=#111827	scale=1
+panel	id=service_info_panel	parent=service_root	x=20	y=1040	w=1040	h=240	bg=#111827	border=#334155
+label	id=service_info_title	parent=service_root	x=40	y=1054	w=400	h=28	text=NOTES	color=#94A3B8	bg=#111827	scale=2
+label	id=service_info_1	parent=service_root	x=40	y=1100	w=1000	h=32	text=- Setup snapshots persist offsets, tool table and active modes.	color=#94A3B8	bg=#111827	scale=1
+label	id=service_info_2	parent=service_root	x=40	y=1140	w=1000	h=32	text=- ETHERCAT shows live bus health (period, p99, max, fault).	color=#94A3B8	bg=#111827	scale=1
+label	id=service_info_3	parent=service_root	x=40	y=1180	w=1000	h=32	text=- ALARMS routes to recovery + acknowledgement workflow.	color=#94A3B8	bg=#111827	scale=1
+label	id=service_info_4	parent=service_root	x=40	y=1220	w=1000	h=32	text=- PROBE / COMPENSATION wizards are gated by master deadline-fault.	color=#94A3B8	bg=#111827	scale=1
 
 action	widget=setup_load	event=click	target=setup:load
 action	widget=setup_save	event=click	target=setup:save
@@ -745,6 +750,9 @@ action	widget=service_ethercat	event=click	target=goto:ethercat
 action	widget=service_alarms	event=click	target=goto:alarms
 action	widget=service_macros	event=click	target=goto:macros
 action	widget=service_homing	event=click	target=goto:homing
+action	widget=service_pec	event=click	target=goto:pec
+action	widget=service_geometry	event=click	target=goto:geometry
+action	widget=service_sphere	event=click	target=goto:sphere
 include	page=bottom_nav
 
 # ============================================================
@@ -1102,4 +1110,209 @@ action	widget=probe_btn_start	event=click	target=probe:wizard:start
 action	widget=probe_btn_abort	event=click	target=probe:wizard:abort
 action	widget=probe_btn_accept	event=click	target=probe:wizard:accept
 action	widget=probe_btn_reject	event=click	target=probe:wizard:reject
+include	page=bottom_nav
+
+# ============================================================
+# pec -- pitch error compensation (linear PEC) operator surface
+# Layout (1080 x 1740):
+#   y   20.. 70  page title
+#   y   90.. 250 axis selector (X / Y / Z / A) + active indicator
+#   y  270.. 470 add-point input row (POS / ERR / ADD / CLEAR)
+#   y  490.. 970 PEC table (8 rows x [POS, ERR])
+#   y  990..1170 enable strip + back transport
+# Operator path: pick axis -> type pos + err in counts -> ADD ->
+# rows fill -> ENABLE. Deadline-fault gate is enforced inside
+# operator_api so pressing ADD with a faulted master is a no-op.
+# ============================================================
+page	id=pec	title=Pitch Error
+panel	id=pec_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=pec_title	parent=pec_root	x=40	y=30	w=1000	h=40	text=PITCH ERROR COMPENSATION	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- axis selector panel (y=90, h=160) ---
+panel	id=pec_axis_panel	parent=pec_root	x=20	y=90	w=1040	h=160	bg=#111827	border=#334155
+label	id=pec_axis_title	parent=pec_root	x=40	y=104	w=400	h=28	text=SELECT AXIS	color=#94A3B8	bg=#111827	scale=2
+button	id=pec_axis_x	parent=pec_root	x=40	y=140	w=240	h=100	text=X	bg=#1E40AF	color=#FFFFFF	active_if=cal:pec:axis:0	scale=3	focus=600
+button	id=pec_axis_y	parent=pec_root	x=300	y=140	w=240	h=100	text=Y	bg=#1E40AF	color=#FFFFFF	active_if=cal:pec:axis:1	scale=3	focus=602
+button	id=pec_axis_z	parent=pec_root	x=560	y=140	w=240	h=100	text=Z	bg=#1E40AF	color=#FFFFFF	active_if=cal:pec:axis:2	scale=3	focus=604
+button	id=pec_axis_a	parent=pec_root	x=820	y=140	w=220	h=100	text=A	bg=#92400E	color=#FFFFFF	active_if=cal:pec:axis:3	scale=3	focus=606
+
+# --- add-point panel (y=270, h=200) ---
+panel	id=pec_add_panel	parent=pec_root	x=20	y=270	w=1040	h=200	bg=#111827	border=#334155
+label	id=pec_add_title	parent=pec_root	x=40	y=284	w=400	h=28	text=ADD POINT (counts)	color=#94A3B8	bg=#111827	scale=2
+label	id=pec_add_pos_lbl	parent=pec_root	x=40	y=326	w=140	h=28	text=POSITION	color=#64748B	bg=#111827	align=center	scale=1
+input	id=pec_add_pos	parent=pec_root	x=40	y=358	w=300	h=72	text=0	bg=#F8FAFC	border=#0EA5E9	color=#0F172A	bind=cal:pec:pending_pos	action=commit:cal:pec:pos	focus=610
+label	id=pec_add_err_lbl	parent=pec_root	x=360	y=326	w=140	h=28	text=ERROR	color=#64748B	bg=#111827	align=center	scale=1
+input	id=pec_add_err	parent=pec_root	x=360	y=358	w=300	h=72	text=0	bg=#F8FAFC	border=#F59E0B	color=#0F172A	bind=cal:pec:pending_err	action=commit:cal:pec:err	focus=612
+button	id=pec_add_btn	parent=pec_root	x=680	y=358	w=170	h=72	text=ADD	bg=#15803D	color=#FFFFFF	scale=2	focus=614
+button	id=pec_clear_btn	parent=pec_root	x=860	y=358	w=180	h=72	text=CLEAR	bg=#B45309	color=#FFFFFF	scale=2	focus=616
+
+# --- table panel (y=490, h=480) ---
+# Eight rows of (index, position, error). Empty rows render as "---".
+panel	id=pec_table_panel	parent=pec_root	x=20	y=490	w=1040	h=480	bg=#111827	border=#334155
+label	id=pec_table_title	parent=pec_root	x=40	y=504	w=600	h=28	text=CORRECTION POINTS	color=#94A3B8	bg=#111827	scale=2
+label	id=pec_table_count_lbl	parent=pec_root	x=720	y=504	w=160	h=28	text=COUNT	color=#64748B	bg=#111827	align=right	scale=1
+label	id=pec_table_count_v	parent=pec_root	x=890	y=500	w=140	h=36	text=0	color=#86EFAC	bg=#0F172A	border=#475569	bind=cal:pec:count	align=center	scale=2
+label	id=pec_h_idx	parent=pec_root	x=40	y=546	w=80	h=28	text=#	color=#64748B	bg=#111827	align=center	scale=1
+label	id=pec_h_pos	parent=pec_root	x=140	y=546	w=420	h=28	text=POSITION	color=#64748B	bg=#111827	align=center	scale=1
+label	id=pec_h_err	parent=pec_root	x=580	y=546	w=420	h=28	text=ERROR	color=#64748B	bg=#111827	align=center	scale=1
+# Row 0
+label	id=pec_r0_i	parent=pec_root	x=40	y=580	w=80	h=42	text=0	color=#94A3B8	bg=#0F172A	border=#1F2937	align=center	scale=2
+label	id=pec_r0_p	parent=pec_root	x=140	y=580	w=420	h=42	text=---	color=#7DD3FC	bg=#0B1220	border=#1F2937	bind=cal:pec:0:pos	align=right	scale=2
+label	id=pec_r0_e	parent=pec_root	x=580	y=580	w=420	h=42	text=---	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:pec:0:err	align=right	scale=2
+# Row 1
+label	id=pec_r1_i	parent=pec_root	x=40	y=628	w=80	h=42	text=1	color=#94A3B8	bg=#0F172A	border=#1F2937	align=center	scale=2
+label	id=pec_r1_p	parent=pec_root	x=140	y=628	w=420	h=42	text=---	color=#7DD3FC	bg=#0B1220	border=#1F2937	bind=cal:pec:1:pos	align=right	scale=2
+label	id=pec_r1_e	parent=pec_root	x=580	y=628	w=420	h=42	text=---	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:pec:1:err	align=right	scale=2
+# Row 2
+label	id=pec_r2_i	parent=pec_root	x=40	y=676	w=80	h=42	text=2	color=#94A3B8	bg=#0F172A	border=#1F2937	align=center	scale=2
+label	id=pec_r2_p	parent=pec_root	x=140	y=676	w=420	h=42	text=---	color=#7DD3FC	bg=#0B1220	border=#1F2937	bind=cal:pec:2:pos	align=right	scale=2
+label	id=pec_r2_e	parent=pec_root	x=580	y=676	w=420	h=42	text=---	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:pec:2:err	align=right	scale=2
+# Row 3
+label	id=pec_r3_i	parent=pec_root	x=40	y=724	w=80	h=42	text=3	color=#94A3B8	bg=#0F172A	border=#1F2937	align=center	scale=2
+label	id=pec_r3_p	parent=pec_root	x=140	y=724	w=420	h=42	text=---	color=#7DD3FC	bg=#0B1220	border=#1F2937	bind=cal:pec:3:pos	align=right	scale=2
+label	id=pec_r3_e	parent=pec_root	x=580	y=724	w=420	h=42	text=---	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:pec:3:err	align=right	scale=2
+# Row 4
+label	id=pec_r4_i	parent=pec_root	x=40	y=772	w=80	h=42	text=4	color=#94A3B8	bg=#0F172A	border=#1F2937	align=center	scale=2
+label	id=pec_r4_p	parent=pec_root	x=140	y=772	w=420	h=42	text=---	color=#7DD3FC	bg=#0B1220	border=#1F2937	bind=cal:pec:4:pos	align=right	scale=2
+label	id=pec_r4_e	parent=pec_root	x=580	y=772	w=420	h=42	text=---	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:pec:4:err	align=right	scale=2
+# Row 5
+label	id=pec_r5_i	parent=pec_root	x=40	y=820	w=80	h=42	text=5	color=#94A3B8	bg=#0F172A	border=#1F2937	align=center	scale=2
+label	id=pec_r5_p	parent=pec_root	x=140	y=820	w=420	h=42	text=---	color=#7DD3FC	bg=#0B1220	border=#1F2937	bind=cal:pec:5:pos	align=right	scale=2
+label	id=pec_r5_e	parent=pec_root	x=580	y=820	w=420	h=42	text=---	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:pec:5:err	align=right	scale=2
+# Row 6
+label	id=pec_r6_i	parent=pec_root	x=40	y=868	w=80	h=42	text=6	color=#94A3B8	bg=#0F172A	border=#1F2937	align=center	scale=2
+label	id=pec_r6_p	parent=pec_root	x=140	y=868	w=420	h=42	text=---	color=#7DD3FC	bg=#0B1220	border=#1F2937	bind=cal:pec:6:pos	align=right	scale=2
+label	id=pec_r6_e	parent=pec_root	x=580	y=868	w=420	h=42	text=---	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:pec:6:err	align=right	scale=2
+# Row 7
+label	id=pec_r7_i	parent=pec_root	x=40	y=916	w=80	h=42	text=7	color=#94A3B8	bg=#0F172A	border=#1F2937	align=center	scale=2
+label	id=pec_r7_p	parent=pec_root	x=140	y=916	w=420	h=42	text=---	color=#7DD3FC	bg=#0B1220	border=#1F2937	bind=cal:pec:7:pos	align=right	scale=2
+label	id=pec_r7_e	parent=pec_root	x=580	y=916	w=420	h=42	text=---	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:pec:7:err	align=right	scale=2
+
+# --- enable + transport (y=990, h=180) ---
+panel	id=pec_ctl_panel	parent=pec_root	x=20	y=990	w=1040	h=180	bg=#111827	border=#334155
+label	id=pec_active_lbl	parent=pec_root	x=40	y=1004	w=200	h=28	text=ACTIVE	color=#64748B	bg=#111827	scale=1
+label	id=pec_active_v	parent=pec_root	x=240	y=1000	w=240	h=44	text=OFF	color=#FEF3C7	bg=#0F172A	border=#475569	bind=cal:pec:enabled	align=center	scale=2
+button	id=pec_enable_btn	parent=pec_root	x=40	y=1060	w=320	h=100	text=ENABLE / DISABLE	bg=#15803D	color=#FFFFFF	scale=2	focus=618
+button	id=pec_back_btn	parent=pec_root	x=720	y=1060	w=320	h=100	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=620
+
+action	widget=pec_axis_x	event=click	target=cal:pec:axis:0
+action	widget=pec_axis_y	event=click	target=cal:pec:axis:1
+action	widget=pec_axis_z	event=click	target=cal:pec:axis:2
+action	widget=pec_axis_a	event=click	target=cal:pec:axis:3
+action	widget=pec_add_btn	event=click	target=cal:pec:add
+action	widget=pec_clear_btn	event=click	target=cal:pec:clear
+action	widget=pec_enable_btn	event=click	target=cal:pec:enable:toggle
+action	widget=pec_back_btn	event=click	target=goto:service
+include	page=bottom_nav
+
+# ============================================================
+# geometry -- squareness compensation operator surface
+# Layout (1080 x 1740):
+#   y   20.. 70  page title
+#   y   90.. 410 squareness sliders (XY / XZ / YZ) with input + readout
+#   y  430.. 590 rotary index offset display
+#   y  610.. 790 enable strip + back transport
+# Squareness is in microradians; the kernel's set_geometry_error stores
+# the integer urad directly. Operator commits each pair via a numeric
+# input + Enter. ENABLE / DISABLE is a single-tap toggle.
+# ============================================================
+page	id=geometry	title=Geometry Comp
+panel	id=geom_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=geom_title	parent=geom_root	x=40	y=30	w=1000	h=40	text=GEOMETRY COMPENSATION	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- squareness panel (y=90, h=320) ---
+panel	id=geom_sq_panel	parent=geom_root	x=20	y=90	w=1040	h=320	bg=#111827	border=#334155
+label	id=geom_sq_title	parent=geom_root	x=40	y=104	w=600	h=28	text=SQUARENESS (urad)	color=#94A3B8	bg=#111827	scale=2
+
+label	id=geom_xy_lbl	parent=geom_root	x=40	y=148	w=120	h=44	text=XY	color=#7DD3FC	bg=#0F172A	border=#1E40AF	align=center	scale=2
+input	id=geom_xy_in	parent=geom_root	x=180	y=148	w=300	h=64	text=0	bg=#F8FAFC	border=#1E40AF	color=#0F172A	bind=cal:geom:xy	action=commit:cal:geom:xy	focus=630
+label	id=geom_xy_v	parent=geom_root	x=500	y=148	w=540	h=64	text=+0 urad	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:geom:xy	align=right	scale=2
+
+label	id=geom_xz_lbl	parent=geom_root	x=40	y=222	w=120	h=44	text=XZ	color=#7DD3FC	bg=#0F172A	border=#1E40AF	align=center	scale=2
+input	id=geom_xz_in	parent=geom_root	x=180	y=222	w=300	h=64	text=0	bg=#F8FAFC	border=#1E40AF	color=#0F172A	bind=cal:geom:xz	action=commit:cal:geom:xz	focus=632
+label	id=geom_xz_v	parent=geom_root	x=500	y=222	w=540	h=64	text=+0 urad	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:geom:xz	align=right	scale=2
+
+label	id=geom_yz_lbl	parent=geom_root	x=40	y=296	w=120	h=44	text=YZ	color=#7DD3FC	bg=#0F172A	border=#1E40AF	align=center	scale=2
+input	id=geom_yz_in	parent=geom_root	x=180	y=296	w=300	h=64	text=0	bg=#F8FAFC	border=#1E40AF	color=#0F172A	bind=cal:geom:yz	action=commit:cal:geom:yz	focus=634
+label	id=geom_yz_v	parent=geom_root	x=500	y=296	w=540	h=64	text=+0 urad	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:geom:yz	align=right	scale=2
+
+label	id=geom_note	parent=geom_root	x=40	y=370	w=1000	h=24	text=Positive XY = Y axis tilted +urad relative to X. Type integer, press Enter.	color=#64748B	bg=#111827	scale=1
+
+# --- rotary index offset panel (y=430, h=160) ---
+panel	id=geom_rot_panel	parent=geom_root	x=20	y=430	w=1040	h=160	bg=#111827	border=#334155
+label	id=geom_rot_title	parent=geom_root	x=40	y=444	w=600	h=28	text=ROTARY INDEX OFFSET (axis A)	color=#94A3B8	bg=#111827	scale=2
+label	id=geom_rot_lbl	parent=geom_root	x=40	y=494	w=200	h=64	text=A OFFSET	color=#94A3B8	bg=#111827	align=center	scale=2
+label	id=geom_rot_v	parent=geom_root	x=260	y=490	w=780	h=72	text=+0 cnt	color=#FBBF24	bg=#0F172A	border=#92400E	bind=cal:rotary:offset	align=center	scale=3
+
+# --- enable + transport (y=610, h=180) ---
+panel	id=geom_ctl_panel	parent=geom_root	x=20	y=610	w=1040	h=180	bg=#111827	border=#334155
+label	id=geom_active_lbl	parent=geom_root	x=40	y=624	w=200	h=28	text=ACTIVE	color=#64748B	bg=#111827	scale=1
+label	id=geom_active_v	parent=geom_root	x=240	y=620	w=240	h=44	text=OFF	color=#FEF3C7	bg=#0F172A	border=#475569	bind=cal:geom:enabled	align=center	scale=2
+button	id=geom_enable_btn	parent=geom_root	x=40	y=680	w=320	h=100	text=ENABLE / DISABLE	bg=#15803D	color=#FFFFFF	scale=2	focus=636
+button	id=geom_back_btn	parent=geom_root	x=720	y=680	w=320	h=100	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=638
+
+action	widget=geom_enable_btn	event=click	target=cal:geom:enable:toggle
+action	widget=geom_back_btn	event=click	target=goto:service
+include	page=bottom_nav
+
+# ============================================================
+# sphere -- volumetric compensation operator surface
+# Layout (1080 x 1740):
+#   y   20.. 70  page title
+#   y   90.. 290 sphere config readout (diameter / probe size / point count)
+#   y  310.. 690 last reported error stats (positional + squareness)
+#   y  710.. 870 transport (COMPUTE / ENABLE / CLEAR / BACK)
+# Volumetric uses the existing sphere_compute_errors fit; this page does
+# not collect points itself (the probe wizard's reference-sphere cycle
+# does that). COMPUTE only succeeds when 7+ measured points are present.
+# ============================================================
+page	id=sphere	title=Volumetric Comp
+panel	id=sphere_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=sphere_title	parent=sphere_root	x=40	y=30	w=1000	h=40	text=VOLUMETRIC COMPENSATION	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- config readout panel (y=90, h=200) ---
+panel	id=sphere_cfg_panel	parent=sphere_root	x=20	y=90	w=1040	h=200	bg=#111827	border=#334155
+label	id=sphere_cfg_title	parent=sphere_root	x=40	y=104	w=600	h=28	text=SPHERE CONFIG	color=#94A3B8	bg=#111827	scale=2
+label	id=sphere_diam_lbl	parent=sphere_root	x=40	y=148	w=200	h=28	text=DIAMETER	color=#64748B	bg=#111827	align=center	scale=1
+label	id=sphere_diam_v	parent=sphere_root	x=40	y=180	w=320	h=88	text=20.00 mm	color=#7DD3FC	bg=#0F172A	border=#475569	bind=cal:sphere:diameter	align=center	scale=3
+label	id=sphere_probe_lbl	parent=sphere_root	x=380	y=148	w=200	h=28	text=PROBE SIZE	color=#64748B	bg=#111827	align=center	scale=1
+label	id=sphere_probe_v	parent=sphere_root	x=380	y=180	w=320	h=88	text=0 um	color=#7DD3FC	bg=#0F172A	border=#475569	bind=cal:sphere:probe_um	align=center	scale=3
+label	id=sphere_pts_lbl	parent=sphere_root	x=720	y=148	w=200	h=28	text=POINTS	color=#64748B	bg=#111827	align=center	scale=1
+label	id=sphere_pts_v	parent=sphere_root	x=720	y=180	w=320	h=88	text=0	color=#86EFAC	bg=#0F172A	border=#475569	bind=cal:sphere:points	align=center	scale=3
+
+# --- error stats panel (y=310, h=380) ---
+panel	id=sphere_err_panel	parent=sphere_root	x=20	y=310	w=1040	h=380	bg=#111827	border=#334155
+label	id=sphere_err_title	parent=sphere_root	x=40	y=324	w=600	h=28	text=LAST REPORTED ERROR	color=#94A3B8	bg=#111827	scale=2
+label	id=sphere_err_status_lbl	parent=sphere_root	x=720	y=324	w=120	h=28	text=FIT	color=#64748B	bg=#111827	align=right	scale=1
+label	id=sphere_err_status_v	parent=sphere_root	x=850	y=320	w=180	h=36	text=PENDING	color=#FBBF24	bg=#0F172A	border=#475569	bind=cal:sphere:computed	align=center	scale=2
+
+label	id=sphere_pos_hdr	parent=sphere_root	x=40	y=370	w=300	h=28	text=POSITIONAL	color=#94A3B8	bg=#111827	scale=1
+label	id=sphere_pos_x_lbl	parent=sphere_root	x=40	y=406	w=120	h=44	text=X	color=#7DD3FC	bg=#0F172A	border=#1E40AF	align=center	scale=2
+label	id=sphere_pos_x_v	parent=sphere_root	x=180	y=406	w=860	h=44	text=+0 urad	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:sphere:err_pos_x	align=right	scale=2
+label	id=sphere_pos_y_lbl	parent=sphere_root	x=40	y=460	w=120	h=44	text=Y	color=#7DD3FC	bg=#0F172A	border=#1E40AF	align=center	scale=2
+label	id=sphere_pos_y_v	parent=sphere_root	x=180	y=460	w=860	h=44	text=+0 urad	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:sphere:err_pos_y	align=right	scale=2
+label	id=sphere_pos_z_lbl	parent=sphere_root	x=40	y=514	w=120	h=44	text=Z	color=#7DD3FC	bg=#0F172A	border=#1E40AF	align=center	scale=2
+label	id=sphere_pos_z_v	parent=sphere_root	x=180	y=514	w=860	h=44	text=+0 urad	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:sphere:err_pos_z	align=right	scale=2
+
+label	id=sphere_sq_hdr	parent=sphere_root	x=40	y=572	w=300	h=28	text=SQUARENESS	color=#94A3B8	bg=#111827	scale=1
+label	id=sphere_sq_xy_lbl	parent=sphere_root	x=40	y=608	w=120	h=44	text=XY	color=#7DD3FC	bg=#0F172A	border=#1E40AF	align=center	scale=2
+label	id=sphere_sq_xy_v	parent=sphere_root	x=180	y=608	w=270	h=44	text=+0	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:sphere:err_sq_xy	align=right	scale=2
+label	id=sphere_sq_xz_lbl	parent=sphere_root	x=470	y=608	w=80	h=44	text=XZ	color=#7DD3FC	bg=#0F172A	border=#1E40AF	align=center	scale=2
+label	id=sphere_sq_xz_v	parent=sphere_root	x=560	y=608	w=200	h=44	text=+0	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:sphere:err_sq_xz	align=right	scale=2
+label	id=sphere_sq_yz_lbl	parent=sphere_root	x=780	y=608	w=80	h=44	text=YZ	color=#7DD3FC	bg=#0F172A	border=#1E40AF	align=center	scale=2
+label	id=sphere_sq_yz_v	parent=sphere_root	x=870	y=608	w=170	h=44	text=+0	color=#FCD34D	bg=#0B1220	border=#1F2937	bind=cal:sphere:err_sq_yz	align=right	scale=2
+
+# --- transport panel (y=710, h=180) ---
+panel	id=sphere_ctl_panel	parent=sphere_root	x=20	y=710	w=1040	h=180	bg=#111827	border=#334155
+label	id=sphere_active_lbl	parent=sphere_root	x=40	y=724	w=200	h=28	text=ACTIVE	color=#64748B	bg=#111827	scale=1
+label	id=sphere_active_v	parent=sphere_root	x=240	y=720	w=240	h=44	text=OFF	color=#FEF3C7	bg=#0F172A	border=#475569	bind=cal:sphere:enabled	align=center	scale=2
+button	id=sphere_compute_btn	parent=sphere_root	x=40	y=780	w=240	h=100	text=COMPUTE	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=650
+button	id=sphere_enable_btn	parent=sphere_root	x=300	y=780	w=240	h=100	text=ENABLE	bg=#15803D	color=#FFFFFF	scale=2	focus=652
+button	id=sphere_clear_btn	parent=sphere_root	x=560	y=780	w=240	h=100	text=CLEAR PTS	bg=#B45309	color=#FFFFFF	scale=2	focus=654
+button	id=sphere_back_btn	parent=sphere_root	x=820	y=780	w=220	h=100	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=656
+
+action	widget=sphere_compute_btn	event=click	target=cal:sphere:compute
+action	widget=sphere_enable_btn	event=click	target=cal:sphere:enable:toggle
+action	widget=sphere_clear_btn	event=click	target=cal:sphere:clear
+action	widget=sphere_back_btn	event=click	target=goto:service
 include	page=bottom_nav

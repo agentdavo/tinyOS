@@ -263,6 +263,18 @@ const BIND_GROUPS = {
            "alarm:2:id","alarm:2:sev","alarm:2:axis","alarm:2:msg","alarm:2:time",
            "alarm:3:id","alarm:3:sev","alarm:3:axis","alarm:3:msg","alarm:3:time"],
   View: ["view_toolpath","view_toolpods"],
+  Compensation: ["cal:pec:axis","cal:pec:enabled","cal:pec:count",
+                 "cal:pec:pending_pos","cal:pec:pending_err",
+                 "cal:rotary:offset",
+                 "cal:pec:0:pos","cal:pec:0:err","cal:pec:1:pos","cal:pec:1:err",
+                 "cal:pec:2:pos","cal:pec:2:err","cal:pec:3:pos","cal:pec:3:err",
+                 "cal:pec:4:pos","cal:pec:4:err","cal:pec:5:pos","cal:pec:5:err",
+                 "cal:pec:6:pos","cal:pec:6:err","cal:pec:7:pos","cal:pec:7:err",
+                 "cal:geom:xy","cal:geom:xz","cal:geom:yz","cal:geom:enabled",
+                 "cal:sphere:enabled","cal:sphere:diameter","cal:sphere:probe_um",
+                 "cal:sphere:points","cal:sphere:computed",
+                 "cal:sphere:err_pos_x","cal:sphere:err_pos_y","cal:sphere:err_pos_z",
+                 "cal:sphere:err_sq_xy","cal:sphere:err_sq_xz","cal:sphere:err_sq_yz"],
 };
 const ALL_BINDS = new Set(Object.values(BIND_GROUPS).flat());
 
@@ -299,7 +311,13 @@ const ACTION_GROUPS = {
             "offset:tool:4","offset:tool:5","offset:tool:6","offset:tool:7"],
   Commit: ["commit:offset:x","commit:offset:y","commit:offset:z","commit:offset:a",
            "commit:tool:length","commit:tool:radius","commit:tool:wear",
-           "commit:restart:line","commit:spindle:rpm"],
+           "commit:restart:line","commit:spindle:rpm",
+           "commit:cal:pec:pos","commit:cal:pec:err",
+           "commit:cal:geom:xy","commit:cal:geom:xz","commit:cal:geom:yz"],
+  Compensation: ["cal:pec:axis:0","cal:pec:axis:1","cal:pec:axis:2","cal:pec:axis:3",
+                 "cal:pec:add","cal:pec:clear","cal:pec:enable:toggle",
+                 "cal:geom:enable:toggle",
+                 "cal:sphere:compute","cal:sphere:enable:toggle","cal:sphere:clear"],
   EtherCAT: ["ec:estop","ec:clear_fault"],
   Alarms: ["alarm:ack:0","alarm:ack:1","alarm:ack:2","alarm:ack:3",
            "alarm:clear_history"],
@@ -321,6 +339,7 @@ function actionIsValid(target, doc) {
   if (target.startsWith("homing:method:")) return true;
   if (target.startsWith("homing:axis:")) return true;
   if (target.startsWith("probe:wizard:select:")) return true;
+  if (target.startsWith("cal:pec:axis:")) return true;
   for (const list of Object.values(ACTION_GROUPS))
     if (list.includes(target)) return true;
   return false;

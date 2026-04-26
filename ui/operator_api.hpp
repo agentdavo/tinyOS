@@ -323,8 +323,74 @@ ProbeWizardSnapshot probe_wizard_snapshot();
 void probe_wizard_select(ProbeCycleKind kind);
 void probe_wizard_start();
 void probe_wizard_abort();
+// Inspecting -> commits captured result into the active WCS:
+//   ZSurface   -> Z;  EdgeX -> X;  EdgeY -> Y;
+//   BoreCenter -> XY; Pocket3D -> XYZ
+// Qualify and Sphere are calibration cycles and never write a WCS slot.
+// Captured counts are converted to mm using the 1000 counts/mm display scale
+// shared with the DRO and offsets editor.
 void probe_wizard_accept();
 void probe_wizard_reject();
+
+// Calibration / compensation operator surface. Surfaces the same backing
+// state the cal_* and sphere_* CLI commands mutate (motion::g_motion's
+// LinearCalibration / MachineGeometry / SphereCalibration tables) so the
+// operator UI is a peer of the CLI rather than a wrapper over a copy.
+struct CalibrationSnapshot {
+    // PEC — pitch error compensation, axis-scoped. The UI shows one axis
+    // at a time (selected by the operator); the backing motion table
+    // stores per-axis arrays.
+    int32_t  pec_axis        = 0;     // 0..3 selected by the operator
+    bool     pec_enabled     = false; // axis-local enable flag
+    uint16_t pec_point_count = 0;
+    static constexpr size_t kMaxPecRows = 8; // rows displayed on the PEC page
+    int32_t  pec_pos[kMaxPecRows]{};
+    int32_t  pec_err[kMaxPecRows]{};
+    int32_t  rotary_offset_a = 0;     // index offset for the A axis (counts)
+
+    // Geometry — squareness errors between axis pairs (microradians).
+    bool     geom_enabled = false;
+    int32_t  geom_xy_urad = 0;
+    int32_t  geom_xz_urad = 0;
+    int32_t  geom_yz_urad = 0;
+
+    // Volumetric (sphere) compensation.
+    bool     sphere_enabled         = false;
+    bool     sphere_errors_computed = false;
+    float    sphere_diameter_mm     = 0.0f;
+    int32_t  sphere_probe_radius_um = 0;
+    size_t   sphere_point_count     = 0;
+    // Last computed error stats (positional + squareness).
+    int32_t  sphere_err_pos_x_urad = 0;
+    int32_t  sphere_err_pos_y_urad = 0;
+    int32_t  sphere_err_pos_z_urad = 0;
+    int32_t  sphere_err_sq_xy_urad = 0;
+    int32_t  sphere_err_sq_xz_urad = 0;
+    int32_t  sphere_err_sq_yz_urad = 0;
+};
+
+CalibrationSnapshot calibration_snapshot();
+
+// PEC mutators. The UI's ADD POINT input writes pos/err into a small
+// pending struct; cal_pec_commit_point() flushes it through to motion's
+// add_cal_point. All mutators are no-ops while either master is in
+// deadline-fault — the kernel cannot guarantee correction safety while
+// the bus is offline.
+void cal_pec_select_axis(uint32_t axis);
+void cal_pec_set_pending_pos(int32_t counts);
+void cal_pec_set_pending_err(int32_t counts);
+int32_t cal_pec_pending_pos();
+int32_t cal_pec_pending_err();
+bool cal_pec_commit_point();
+void cal_pec_clear();
+void cal_pec_set_enabled(bool en);
+
+// Geometry / volumetric mutators. set_pair selects "xy"/"xz"/"yz".
+void cal_geom_set(const char* pair, int32_t urad);
+void cal_geom_set_enabled(bool en);
+void cal_sphere_compute();
+void cal_sphere_set_enabled(bool en);
+void cal_sphere_clear();
 
 struct FileSnapshot {
     struct FileEntry {

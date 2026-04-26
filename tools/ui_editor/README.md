@@ -68,7 +68,22 @@ Grouped exactly as in the inspector:
 - **Probe wizard** probe:wizard:{state,cycle,step,total,message,
   result_x,result_y,result_z,result_valid}. State cycles IDLE / SELECT /
   CONFIRM / RUNNING / INSPECT / FAULT; cycle renders the human-readable
-  cycle name; result_valid renders VALID or `---`.
+  cycle name; result_valid renders VALID or `---`. ACCEPT in Inspecting
+  also commits the captured result into the active WCS axis offsets per
+  cycle (Z surface -> Z, X edge -> X, Y edge -> Y, bore center -> XY,
+  3D pocket -> XYZ; qualify and reference sphere never touch the WCS).
+- **Compensation (PEC)** cal:pec:{axis,enabled,count,pending_pos,
+  pending_err}, cal:pec:0..7:{pos,err}, cal:rotary:offset (axis A index
+  offset in counts). PEC bind tokens reflect the operator-selected axis
+  in the wizard, not all axes at once.
+- **Compensation (geometry)** cal:geom:{xy,xz,yz,enabled} (squareness
+  errors in microradians; XY = +urad means Y is tilted +urad relative
+  to X).
+- **Compensation (sphere)** cal:sphere:{enabled,diameter,probe_um,points,
+  computed,err_pos_x,err_pos_y,err_pos_z,err_sq_xy,err_sq_xz,err_sq_yz}.
+  `computed` renders READY when the last fit succeeded, PENDING
+  otherwise; `points` is the count of measured stars in the volumetric
+  fit (sphere_compute_errors needs >= 7 to succeed).
 - **MDI** mdi:{input,last,status,message,depth}
 - **EtherCAT** ec:{state,fault,slaves,miss,trips,p99,max,period,cycles,tx,rx}
 - **View** view_toolpath, view_toolpods (machine_view page overlay flags)
@@ -112,9 +127,20 @@ Grouped exactly as in the inspector:
   current commanded RPM and re-issues start.
 - `mode:{auto,mdi,jog,setup}` — set the operator's declared mode
   (display-only today; no behaviour gating yet)
+- `cal:pec:axis:<n>` (n=0..3) — pick axis for the PEC table
+- `cal:pec:add` / `cal:pec:clear` / `cal:pec:enable:toggle` — flush the
+  pending pos/err pair into the table, drop all rows, or flip the
+  axis-local enable flag. All gated by master deadline-fault.
+- `cal:geom:enable:toggle` — flip the geometry compensation enable flag.
+  Per-pair urad values are committed via the inputs (see commit targets
+  below).
+- `cal:sphere:{compute,enable:toggle,clear}` — run the volumetric fit
+  on the existing point set, flip the enable flag, or drop all measured
+  points. Compute requires >= 7 points.
 - Input commit targets: `commit:offset:{x,y,z,a}`,
   `commit:tool:{length,radius,wear}`, `commit:restart:line`,
-  `commit:spindle:rpm`
+  `commit:spindle:rpm`, `commit:cal:pec:{pos,err}`,
+  `commit:cal:geom:{xy,xz,yz}`
 - `ec:{estop,clear_fault}` — broadcast QuickStop / clear deadline-fault latch
 - `view:{toolpath,toolpods}:toggle` — flip overlay flags on machine_view
 - `view:{reset,zoom:in,zoom:out}` — camera primitives on machine_view

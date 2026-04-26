@@ -480,6 +480,21 @@ enum class BindKind : uint8_t {
     ProbeWizardState, ProbeWizardCycle, ProbeWizardStep, ProbeWizardTotal,
     ProbeWizardMessage, ProbeWizardResultX, ProbeWizardResultY, ProbeWizardResultZ,
     ProbeWizardResultValid,
+    // Compensation operator surface (cal_*, cal_geometry, sphere_*) backed by
+    // ui::operator_api::calibration_snapshot(). PEC table rows are
+    // axis-major: the snapshot already filters to the operator-selected
+    // axis, so binds 0..7 are positions and errors for that axis.
+    CalPecAxis, CalPecEnabled, CalPecCount,
+    CalPecPendingPos, CalPecPendingErr, CalRotaryOffset,
+    CalPec0Pos, CalPec0Err, CalPec1Pos, CalPec1Err,
+    CalPec2Pos, CalPec2Err, CalPec3Pos, CalPec3Err,
+    CalPec4Pos, CalPec4Err, CalPec5Pos, CalPec5Err,
+    CalPec6Pos, CalPec6Err, CalPec7Pos, CalPec7Err,
+    CalGeomXy, CalGeomXz, CalGeomYz, CalGeomEnabled,
+    CalSphereEnabled, CalSphereDiameter, CalSphereProbeUm,
+    CalSpherePoints, CalSphereComputed,
+    CalSphereErrPosX, CalSphereErrPosY, CalSphereErrPosZ,
+    CalSphereErrSqXy, CalSphereErrSqXz, CalSphereErrSqYz,
 };
 
 BindKind parse_bind(const char* s) {
@@ -670,6 +685,43 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "probe:wizard:result_y")     == 0) return BindKind::ProbeWizardResultY;
     if (strcmp(s, "probe:wizard:result_z")     == 0) return BindKind::ProbeWizardResultZ;
     if (strcmp(s, "probe:wizard:result_valid") == 0) return BindKind::ProbeWizardResultValid;
+    if (strcmp(s, "cal:pec:axis")        == 0) return BindKind::CalPecAxis;
+    if (strcmp(s, "cal:pec:enabled")     == 0) return BindKind::CalPecEnabled;
+    if (strcmp(s, "cal:pec:count")       == 0) return BindKind::CalPecCount;
+    if (strcmp(s, "cal:pec:pending_pos") == 0) return BindKind::CalPecPendingPos;
+    if (strcmp(s, "cal:pec:pending_err") == 0) return BindKind::CalPecPendingErr;
+    if (strcmp(s, "cal:rotary:offset")   == 0) return BindKind::CalRotaryOffset;
+    {
+        // PEC table rows — keep both columns parsed in the same loop so
+        // any typo falls through to BindKind::None and surfaces in the
+        // editor catalogue check.
+        static const struct { const char* s; BindKind b; } kPec[] = {
+            {"cal:pec:0:pos", BindKind::CalPec0Pos}, {"cal:pec:0:err", BindKind::CalPec0Err},
+            {"cal:pec:1:pos", BindKind::CalPec1Pos}, {"cal:pec:1:err", BindKind::CalPec1Err},
+            {"cal:pec:2:pos", BindKind::CalPec2Pos}, {"cal:pec:2:err", BindKind::CalPec2Err},
+            {"cal:pec:3:pos", BindKind::CalPec3Pos}, {"cal:pec:3:err", BindKind::CalPec3Err},
+            {"cal:pec:4:pos", BindKind::CalPec4Pos}, {"cal:pec:4:err", BindKind::CalPec4Err},
+            {"cal:pec:5:pos", BindKind::CalPec5Pos}, {"cal:pec:5:err", BindKind::CalPec5Err},
+            {"cal:pec:6:pos", BindKind::CalPec6Pos}, {"cal:pec:6:err", BindKind::CalPec6Err},
+            {"cal:pec:7:pos", BindKind::CalPec7Pos}, {"cal:pec:7:err", BindKind::CalPec7Err},
+        };
+        for (const auto& e : kPec) if (strcmp(s, e.s) == 0) return e.b;
+    }
+    if (strcmp(s, "cal:geom:xy")        == 0) return BindKind::CalGeomXy;
+    if (strcmp(s, "cal:geom:xz")        == 0) return BindKind::CalGeomXz;
+    if (strcmp(s, "cal:geom:yz")        == 0) return BindKind::CalGeomYz;
+    if (strcmp(s, "cal:geom:enabled")   == 0) return BindKind::CalGeomEnabled;
+    if (strcmp(s, "cal:sphere:enabled")  == 0) return BindKind::CalSphereEnabled;
+    if (strcmp(s, "cal:sphere:diameter") == 0) return BindKind::CalSphereDiameter;
+    if (strcmp(s, "cal:sphere:probe_um") == 0) return BindKind::CalSphereProbeUm;
+    if (strcmp(s, "cal:sphere:points")   == 0) return BindKind::CalSpherePoints;
+    if (strcmp(s, "cal:sphere:computed") == 0) return BindKind::CalSphereComputed;
+    if (strcmp(s, "cal:sphere:err_pos_x") == 0) return BindKind::CalSphereErrPosX;
+    if (strcmp(s, "cal:sphere:err_pos_y") == 0) return BindKind::CalSphereErrPosY;
+    if (strcmp(s, "cal:sphere:err_pos_z") == 0) return BindKind::CalSphereErrPosZ;
+    if (strcmp(s, "cal:sphere:err_sq_xy") == 0) return BindKind::CalSphereErrSqXy;
+    if (strcmp(s, "cal:sphere:err_sq_xz") == 0) return BindKind::CalSphereErrSqXz;
+    if (strcmp(s, "cal:sphere:err_sq_yz") == 0) return BindKind::CalSphereErrSqYz;
     return BindKind::None;
 }
 
@@ -1073,6 +1125,73 @@ int32_t bound_numeric_value(BindKind bind) {
             const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
             return w.result_valid ? 1 : 0;
         }
+        case BindKind::CalPecAxis: {
+            return kernel::ui::operator_api::calibration_snapshot().pec_axis;
+        }
+        case BindKind::CalPecEnabled: {
+            return kernel::ui::operator_api::calibration_snapshot().pec_enabled ? 1 : 0;
+        }
+        case BindKind::CalPecCount: {
+            return static_cast<int32_t>(
+                kernel::ui::operator_api::calibration_snapshot().pec_point_count);
+        }
+        case BindKind::CalPecPendingPos:
+            return kernel::ui::operator_api::cal_pec_pending_pos();
+        case BindKind::CalPecPendingErr:
+            return kernel::ui::operator_api::cal_pec_pending_err();
+        case BindKind::CalRotaryOffset:
+            return kernel::ui::operator_api::calibration_snapshot().rotary_offset_a;
+        case BindKind::CalPec0Pos: case BindKind::CalPec1Pos:
+        case BindKind::CalPec2Pos: case BindKind::CalPec3Pos:
+        case BindKind::CalPec4Pos: case BindKind::CalPec5Pos:
+        case BindKind::CalPec6Pos: case BindKind::CalPec7Pos: {
+            const auto snap = kernel::ui::operator_api::calibration_snapshot();
+            const size_t row = static_cast<size_t>(
+                static_cast<int>(bind) - static_cast<int>(BindKind::CalPec0Pos)) / 2;
+            return row < snap.kMaxPecRows ? snap.pec_pos[row] : 0;
+        }
+        case BindKind::CalPec0Err: case BindKind::CalPec1Err:
+        case BindKind::CalPec2Err: case BindKind::CalPec3Err:
+        case BindKind::CalPec4Err: case BindKind::CalPec5Err:
+        case BindKind::CalPec6Err: case BindKind::CalPec7Err: {
+            const auto snap = kernel::ui::operator_api::calibration_snapshot();
+            const size_t row = static_cast<size_t>(
+                static_cast<int>(bind) - static_cast<int>(BindKind::CalPec0Err)) / 2;
+            return row < snap.kMaxPecRows ? snap.pec_err[row] : 0;
+        }
+        case BindKind::CalGeomXy:
+            return kernel::ui::operator_api::calibration_snapshot().geom_xy_urad;
+        case BindKind::CalGeomXz:
+            return kernel::ui::operator_api::calibration_snapshot().geom_xz_urad;
+        case BindKind::CalGeomYz:
+            return kernel::ui::operator_api::calibration_snapshot().geom_yz_urad;
+        case BindKind::CalGeomEnabled:
+            return kernel::ui::operator_api::calibration_snapshot().geom_enabled ? 1 : 0;
+        case BindKind::CalSphereEnabled:
+            return kernel::ui::operator_api::calibration_snapshot().sphere_enabled ? 1 : 0;
+        case BindKind::CalSphereDiameter:
+            // 1000-scaled mm so format_bind_value's /1000.0f path renders it.
+            return static_cast<int32_t>(
+                kernel::ui::operator_api::calibration_snapshot().sphere_diameter_mm * 1000.0f);
+        case BindKind::CalSphereProbeUm:
+            return kernel::ui::operator_api::calibration_snapshot().sphere_probe_radius_um;
+        case BindKind::CalSpherePoints:
+            return static_cast<int32_t>(
+                kernel::ui::operator_api::calibration_snapshot().sphere_point_count);
+        case BindKind::CalSphereComputed:
+            return kernel::ui::operator_api::calibration_snapshot().sphere_errors_computed ? 1 : 0;
+        case BindKind::CalSphereErrPosX:
+            return kernel::ui::operator_api::calibration_snapshot().sphere_err_pos_x_urad;
+        case BindKind::CalSphereErrPosY:
+            return kernel::ui::operator_api::calibration_snapshot().sphere_err_pos_y_urad;
+        case BindKind::CalSphereErrPosZ:
+            return kernel::ui::operator_api::calibration_snapshot().sphere_err_pos_z_urad;
+        case BindKind::CalSphereErrSqXy:
+            return kernel::ui::operator_api::calibration_snapshot().sphere_err_sq_xy_urad;
+        case BindKind::CalSphereErrSqXz:
+            return kernel::ui::operator_api::calibration_snapshot().sphere_err_sq_xz_urad;
+        case BindKind::CalSphereErrSqYz:
+            return kernel::ui::operator_api::calibration_snapshot().sphere_err_sq_yz_urad;
         default: return 0;
     }
 }
@@ -1458,6 +1577,82 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
                                      static_cast<long>(bound_numeric_value(bind)));
             return;
+        case BindKind::CalPecAxis: {
+            static const char* kNames[4] = {"X", "Y", "Z", "A"};
+            const int32_t v = bound_numeric_value(bind);
+            const char* name = (v >= 0 && v < 4) ? kNames[v] : "?";
+            copy_field(buf, buf_size, name, strlen(name));
+            return;
+        }
+        case BindKind::CalPecEnabled:
+        case BindKind::CalGeomEnabled:
+        case BindKind::CalSphereEnabled: {
+            const char* text = bound_numeric_value(bind) ? "ON" : "OFF";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::CalSphereComputed: {
+            const char* text = bound_numeric_value(bind) ? "READY" : "PENDING";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::CalSphereDiameter: {
+            const float mm = static_cast<float>(bound_numeric_value(bind)) / 1000.0f;
+            kernel::util::k_snprintf(buf, buf_size, "%s%.2f mm", prefix ? prefix : "",
+                                     static_cast<double>(mm));
+            return;
+        }
+        case BindKind::CalSphereProbeUm: {
+            kernel::util::k_snprintf(buf, buf_size, "%s%ld um", prefix ? prefix : "",
+                                     static_cast<long>(bound_numeric_value(bind)));
+            return;
+        }
+        case BindKind::CalGeomXy: case BindKind::CalGeomXz: case BindKind::CalGeomYz:
+        case BindKind::CalSphereErrPosX: case BindKind::CalSphereErrPosY: case BindKind::CalSphereErrPosZ:
+        case BindKind::CalSphereErrSqXy: case BindKind::CalSphereErrSqXz: case BindKind::CalSphereErrSqYz: {
+            kernel::util::k_snprintf(buf, buf_size, "%s%+ld urad", prefix ? prefix : "",
+                                     static_cast<long>(bound_numeric_value(bind)));
+            return;
+        }
+        case BindKind::CalRotaryOffset: {
+            kernel::util::k_snprintf(buf, buf_size, "%s%+ld cnt", prefix ? prefix : "",
+                                     static_cast<long>(bound_numeric_value(bind)));
+            return;
+        }
+        case BindKind::CalPec0Pos: case BindKind::CalPec1Pos:
+        case BindKind::CalPec2Pos: case BindKind::CalPec3Pos:
+        case BindKind::CalPec4Pos: case BindKind::CalPec5Pos:
+        case BindKind::CalPec6Pos: case BindKind::CalPec7Pos:
+        case BindKind::CalPec0Err: case BindKind::CalPec1Err:
+        case BindKind::CalPec2Err: case BindKind::CalPec3Err:
+        case BindKind::CalPec4Err: case BindKind::CalPec5Err:
+        case BindKind::CalPec6Err: case BindKind::CalPec7Err:
+        case BindKind::CalPecPendingPos:
+        case BindKind::CalPecPendingErr:
+        case BindKind::CalPecCount: {
+            // Hide rows that haven't been populated by surfacing "---" so
+            // the table doesn't render eight zero rows on a clear axis.
+            const auto snap = kernel::ui::operator_api::calibration_snapshot();
+            const bool is_row =
+                bind >= BindKind::CalPec0Pos && bind <= BindKind::CalPec7Err;
+            if (is_row) {
+                const size_t row = (bind >= BindKind::CalPec0Err)
+                    ? static_cast<size_t>(static_cast<int>(bind) - static_cast<int>(BindKind::CalPec0Err)) / 2
+                    : static_cast<size_t>(static_cast<int>(bind) - static_cast<int>(BindKind::CalPec0Pos)) / 2;
+                if (row >= snap.pec_point_count) {
+                    copy_field(buf, buf_size, "---", 3);
+                    return;
+                }
+            }
+            kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
+                                     static_cast<long>(bound_numeric_value(bind)));
+            return;
+        }
+        case BindKind::CalSpherePoints: {
+            kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
+                                     static_cast<long>(bound_numeric_value(bind)));
+            return;
+        }
         default:
             kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
                                      static_cast<long>(bound_numeric_value(bind)));
@@ -1922,6 +2117,30 @@ void run_action_target(const char* target) {
         reset_alarm();
         toggle_hold();
     }
+    else if (strncmp(target, "cal:", 4) == 0) {
+        // Compensation page actions. Routes to operator_api wrappers
+        // which apply the master deadline-fault gate before calling
+        // motion::g_motion. PEC ADD POINT reads the buffered pending
+        // pos/err set by the two input fields above the button.
+        const char* command = target + 4;
+        if (strncmp(command, "pec:axis:", 9) == 0) {
+            cal_pec_select_axis(static_cast<uint32_t>(simple_atoi(command + 9)));
+        } else if (strcmp(command, "pec:add") == 0) {
+            cal_pec_commit_point();
+        } else if (strcmp(command, "pec:clear") == 0) {
+            cal_pec_clear();
+        } else if (strcmp(command, "pec:enable:toggle") == 0) {
+            cal_pec_set_enabled(!calibration_snapshot().pec_enabled);
+        } else if (strcmp(command, "geom:enable:toggle") == 0) {
+            cal_geom_set_enabled(!calibration_snapshot().geom_enabled);
+        } else if (strcmp(command, "sphere:enable:toggle") == 0) {
+            cal_sphere_set_enabled(!calibration_snapshot().sphere_enabled);
+        } else if (strcmp(command, "sphere:compute") == 0) {
+            cal_sphere_compute();
+        } else if (strcmp(command, "sphere:clear") == 0) {
+            cal_sphere_clear();
+        }
+    }
     else if (strcmp(target, "mdi:submit") == 0) {
         const auto s = cnc::mdi::g_service.snapshot();
         cnc::mdi::g_service.submit(s.input);
@@ -1953,6 +2172,26 @@ bool commit_input_target(const char* target, const char* value_text, BindKind bi
                 if (value > 999.999f) value = 999.999f;
             }
             return set_work_offset_axis(active, axis, value);
+        }
+        if (strcmp(target, "commit:cal:pec:pos") == 0) {
+            cal_pec_set_pending_pos(simple_atoi(value_text));
+            return true;
+        }
+        if (strcmp(target, "commit:cal:pec:err") == 0) {
+            cal_pec_set_pending_err(simple_atoi(value_text));
+            return true;
+        }
+        if (strcmp(target, "commit:cal:geom:xy") == 0) {
+            cal_geom_set("XY", simple_atoi(value_text));
+            return true;
+        }
+        if (strcmp(target, "commit:cal:geom:xz") == 0) {
+            cal_geom_set("XZ", simple_atoi(value_text));
+            return true;
+        }
+        if (strcmp(target, "commit:cal:geom:yz") == 0) {
+            cal_geom_set("YZ", simple_atoi(value_text));
+            return true;
         }
         if (strcmp(target, "commit:tool:length") == 0 ||
             strcmp(target, "commit:tool:radius") == 0 ||
@@ -2009,6 +2248,11 @@ bool is_numeric_bind(BindKind bind) {
         case BindKind::ToolLength:
         case BindKind::ToolRadius:
         case BindKind::ToolWear:
+        case BindKind::CalPecPendingPos:
+        case BindKind::CalPecPendingErr:
+        case BindKind::CalGeomXy:
+        case BindKind::CalGeomXz:
+        case BindKind::CalGeomYz:
             return true;
         default:
             return false;
@@ -2034,6 +2278,11 @@ const char* helper_text_for_bind(BindKind bind) {
         case BindKind::ToolLength: return "Range: 0.000 to 999.999 mm";
         case BindKind::ToolRadius: return "Range: 0.000 to 250.000 mm";
         case BindKind::ToolWear: return "Range: -25.000 to 25.000 mm";
+        case BindKind::CalPecPendingPos: return "Position in counts; Enter to buffer";
+        case BindKind::CalPecPendingErr: return "Error in counts (actual - cmd)";
+        case BindKind::CalGeomXy:
+        case BindKind::CalGeomXz:
+        case BindKind::CalGeomYz: return "Squareness in microradians";
         default: return "";
     }
 }
@@ -2567,7 +2816,8 @@ public:
                 return true;
             }
             const bool numeric_by_action = spec_.action[0] != '\0' &&
-                strncmp(spec_.action, "commit:restart", 14) == 0;
+                (strncmp(spec_.action, "commit:restart", 14) == 0 ||
+                 strncmp(spec_.action, "commit:cal:", 11) == 0);
             if (is_numeric_bind(bind_) || numeric_by_action) {
                 const char ch = static_cast<char>(key);
                 const bool has_dot = contains_char(buffer_, '.');
