@@ -1449,6 +1449,12 @@ void Kernel::run_loop() {
         //   3. Drive I/O commit is inlined at the tail of cycle_axis
         //      (writes to a.drive->target_position), so by the time
         //      wait_until_us runs every axis has published its setpoint.
+        // MPG sample is taken before channels run so this cycle's command
+        // velocity participates in the same trajectory pass as autonomous
+        // motion. Velocity decays to zero next cycle if no fresh pulses
+        // arrive — that's what makes the handwheel feel rate-tracking.
+        cycle_mpg(t_now);
+
         for (size_t c = 0; c < channel_count_; ++c) {
             cycle_channel(channels_[c], t_now);
         }
@@ -2216,6 +2222,160 @@ void Kernel::dump_positions(kernel::hal::UARTDriverOps* uart) const {
     if (shown == 0) {
         uart->puts("  no axes hooked or moving\n");
     }
+}
+
+// -----------------------------------------------------------------------------
+// MPG — manual pulse generator (handwheel)
+// -----------------------------------------------------------------------------
+
+void Kernel::wire_mpg_source(uint8_t master_id, uint16_t slave_index,
+                             uint8_t byte_offset, uint8_t cpd) noexcept {
+    // Re-binding from a different source must drop the prior baseline so
+    // the first post-bind sample doesn't fire a spurious huge delta from
+    // whatever the new slot happened to contain.
+    mpg_.master_id.store(master_id, std::memory_order_relaxed);
+    mpg_.slave_index.store(slave_index, std::memory_order_relaxed);
+    mpg_.byte_offset.store(byte_offset, std::memory_order_relaxed);
+    mpg_.counts_per_detent.store(cpd > 0 ? cpd : 1, std::memory_order_relaxed);
+    mpg_.have_baseline = false;
+    mpg_.bound.store(true, std::memory_order_release);
+}
+
+void Kernel::set_mpg_active(bool on) noexcept {
+    if (on) mpg_.have_baseline = false;  // resume cleanly from current counter
+    mpg_.active.store(on, std::memory_order_release);
+}
+
+void Kernel::set_mpg_target_axis(uint32_t axis_idx) noexcept {
+    if (axis_idx >= MAX_AXES) return;
+    mpg_.target_axis.store(axis_idx, std::memory_order_release);
+}
+
+void Kernel::set_mpg_scale(int32_t cps_per_detent) noexcept {
+    mpg_.velocity_scale_cps_per_detent.store(cps_per_detent, std::memory_order_release);
+}
+
+void Kernel::simulate_mpg_delta(int32_t delta_counts) noexcept {
+    mpg_.pending_simulated_delta.fetch_add(delta_counts, std::memory_order_acq_rel);
+}
+
+Kernel::MpgStatus Kernel::mpg_status() const noexcept {
+    MpgStatus s{};
+    s.bound        = mpg_.bound.load(std::memory_order_acquire);
+    s.active       = mpg_.active.load(std::memory_order_acquire);
+    s.target_axis  = mpg_.target_axis.load(std::memory_order_acquire);
+    s.master_id    = mpg_.master_id.load(std::memory_order_relaxed);
+    s.slave_index  = mpg_.slave_index.load(std::memory_order_relaxed);
+    s.byte_offset  = mpg_.byte_offset.load(std::memory_order_relaxed);
+    s.counts_per_detent = mpg_.counts_per_detent.load(std::memory_order_relaxed);
+    s.velocity_scale_cps_per_detent =
+        mpg_.velocity_scale_cps_per_detent.load(std::memory_order_relaxed);
+    s.last_counter = mpg_.last_counter_pub.load(std::memory_order_acquire);
+    s.last_delta   = mpg_.last_delta_pub.load(std::memory_order_acquire);
+    return s;
+}
+
+void Kernel::cycle_mpg(uint64_t /*t_now*/) noexcept {
+    // Hot path — runs every 250 µs whether bound or not. Front-load the
+    // cheapest exit so an unconfigured kernel pays only one atomic read.
+    if (!mpg_.bound.load(std::memory_order_acquire)) return;
+
+    // Master deadline faults inhibit handwheel motion the same way they
+    // inhibit autonomous motion — the operator must clear the fault
+    // before the wheel reanimates the axis.
+    if (ethercat::g_master_a.is_deadline_faulted() ||
+        ethercat::g_master_b.is_deadline_faulted()) {
+        mpg_.have_baseline = false;
+        return;
+    }
+
+    // Sample the slave PDO. Decoupled from machine_registry's signal
+    // pipeline so the per-cycle path stays lock-free and allocation-free.
+    int32_t counter = 0;
+    const uint8_t  master_id   = mpg_.master_id.load(std::memory_order_relaxed);
+    const uint16_t slave_index = mpg_.slave_index.load(std::memory_order_relaxed);
+    const uint8_t  byte_off    = mpg_.byte_offset.load(std::memory_order_relaxed);
+    ethercat::Master* master =
+        (master_id == 0) ? &ethercat::g_master_a :
+        (master_id == 1) ? &ethercat::g_master_b : nullptr;
+    if (master && slave_index < ethercat::MAX_SLAVES) {
+        const auto& slot = master->slave(slave_index).tx_process_data;
+        if (static_cast<size_t>(byte_off) + 4u <= slot.size()) {
+            counter = static_cast<int32_t>(
+                static_cast<uint32_t>(slot[byte_off + 0]) |
+                (static_cast<uint32_t>(slot[byte_off + 1]) << 8) |
+                (static_cast<uint32_t>(slot[byte_off + 2]) << 16) |
+                (static_cast<uint32_t>(slot[byte_off + 3]) << 24));
+        }
+    }
+
+    // Drain any benchtop-injected delta and synthesise a counter shift on
+    // top of the real reading. Atomic-exchange so two CLI calls in flight
+    // accumulate rather than overwriting each other.
+    int32_t injected = mpg_.pending_simulated_delta.exchange(0, std::memory_order_acq_rel);
+
+    int32_t delta_counter = 0;
+    if (mpg_.have_baseline) {
+        // 32-bit signed difference; well-defined wrap-around because the
+        // subtraction is performed on the unsigned representations and
+        // the natural-wrap result is what an operator's quadrature
+        // counter produces at rollover.
+        delta_counter = static_cast<int32_t>(
+            static_cast<uint32_t>(counter) - static_cast<uint32_t>(mpg_.baseline_counter));
+    }
+    mpg_.baseline_counter = counter;
+    mpg_.have_baseline    = true;
+
+    delta_counter += injected;
+
+    mpg_.last_counter_pub.store(counter, std::memory_order_release);
+    mpg_.last_delta_pub.store(delta_counter, std::memory_order_release);
+
+    if (delta_counter == 0) return;
+    if (!mpg_.active.load(std::memory_order_acquire)) return;
+
+    const uint8_t cpd = mpg_.counts_per_detent.load(std::memory_order_relaxed);
+    const int32_t scale = mpg_.velocity_scale_cps_per_detent.load(std::memory_order_relaxed);
+    if (cpd == 0 || scale == 0) return;
+
+    // detents_q10 keeps fractional handwheel motion (slower than one
+    // detent per cycle) without losing it to integer truncation.
+    const int64_t detents_q10 = (static_cast<int64_t>(delta_counter) * 1024) / cpd;
+    const int64_t velocity64  = (detents_q10 * scale) / 1024;
+    int32_t velocity_cps = static_cast<int32_t>(velocity64);
+
+    const uint32_t axis_idx = mpg_.target_axis.load(std::memory_order_acquire);
+    if (axis_idx >= MAX_AXES) return;
+    Axis& a = axes_[axis_idx];
+
+    // Refuse to drive a faulted axis — operator must clear the fault
+    // before the handwheel reanimates motion. Same gating as autonomous
+    // moves.
+    if (a.fault_latched) return;
+
+    set_axis_velocity(axis_idx, velocity_cps);
+}
+
+void Kernel::dump_mpg(kernel::hal::UARTDriverOps* uart) const {
+    if (!uart) return;
+    const auto s = mpg_status();
+    char buf[160];
+    if (!s.bound) {
+        uart->puts("mpg: unbound (use motion_wiring or `mpg bind` to attach a slave)\n");
+        return;
+    }
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "mpg: %s axis=%lu master=%u slave=%u off=%u cpd=%u scale=%ld cps/detent\n",
+        s.active ? "ACTIVE" : "idle",
+        (unsigned long)s.target_axis,
+        (unsigned)s.master_id, (unsigned)s.slave_index, (unsigned)s.byte_offset,
+        (unsigned)s.counts_per_detent,
+        (long)s.velocity_scale_cps_per_detent);
+    uart->puts(buf);
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "     last_counter=%ld last_delta=%ld\n",
+        (long)s.last_counter, (long)s.last_delta);
+    uart->puts(buf);
 }
 
 } // namespace motion

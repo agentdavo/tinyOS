@@ -22,6 +22,7 @@
 #include "automation/ladder_runtime.hpp"
 #include "automation/macro_runtime.hpp"
 #include "machine/machine_registry.hpp"
+#include "machine/motion_wiring.hpp"
 #include "machine/toolpods.hpp"
 #include "devices/device_db.hpp"
 #include "diag/jitter.hpp"
@@ -1439,6 +1440,82 @@ static int cmd_jog_stop(const char* args, kernel::hal::UARTDriverOps* uart) {
         "jog_stop ax%ld\n", ax);
     uart->puts(buf);
     return 0;
+}
+static int cmd_mpg(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // Argless invocation: dump status (matches the `gantry`, `barriers`
+    // pattern). Sub-verbs cover the four operator gestures: enable/disable
+    // for setup-mode safety, scale for handwheel feel, axis to override
+    // the operator's selected axis, bind to attach a slave, simulate to
+    // inject a delta on the bench.
+    auto skip_ws = [](const char*& p) { while (*p == ' ' || *p == '\t') ++p; };
+    if (!args || !*args) {
+        motion::g_motion.dump_mpg(uart);
+        return 0;
+    }
+    const char* p = args;
+    skip_ws(p);
+    auto eat = [&](const char* word) -> bool {
+        size_t n = 0; while (word[n]) ++n;
+        if (std::strncmp(p, word, n) != 0) return false;
+        const char c = p[n];
+        if (c != 0 && c != ' ' && c != '\t') return false;
+        p += n; skip_ws(p); return true;
+    };
+    if (eat("on"))  { motion::g_motion.set_mpg_active(true);  uart->puts("mpg: active\n"); return 0; }
+    if (eat("off")) { motion::g_motion.set_mpg_active(false); uart->puts("mpg: idle\n");   return 0; }
+    if (eat("axis")) {
+        long ax = 0;
+        if (!cli_parse_long(p, ax) || ax < 0 || static_cast<size_t>(ax) >= motion::MAX_AXES) {
+            uart->puts("usage: mpg axis <0..MAX_AXES-1>\n"); return 1;
+        }
+        motion::g_motion.set_mpg_target_axis(static_cast<uint32_t>(ax));
+        char buf[48];
+        kernel::util::k_snprintf(buf, sizeof(buf), "mpg: target_axis=%ld\n", ax);
+        uart->puts(buf);
+        return 0;
+    }
+    if (eat("scale")) {
+        long sc = 0;
+        if (!cli_parse_long(p, sc)) {
+            uart->puts("usage: mpg scale <cps_per_detent>\n"); return 1;
+        }
+        motion::g_motion.set_mpg_scale(static_cast<int32_t>(sc));
+        char buf[64];
+        kernel::util::k_snprintf(buf, sizeof(buf), "mpg: scale=%ld cps/detent\n", sc);
+        uart->puts(buf);
+        return 0;
+    }
+    if (eat("bind")) {
+        long master = 0, slave = 0, off = 0, cpd = 4;
+        if (!cli_parse_long(p, master) || !cli_parse_long(p, slave) ||
+            !cli_parse_long(p, off)) {
+            uart->puts("usage: mpg bind <master> <slave> <byte_off> [counts_per_detent]\n");
+            return 1;
+        }
+        (void)cli_parse_long(p, cpd);
+        const bool ok = machine::wiring::wire_mpg(
+            static_cast<uint8_t>(master), static_cast<uint16_t>(slave),
+            static_cast<uint8_t>(off), static_cast<uint8_t>(cpd), uart);
+        return ok ? 0 : 1;
+    }
+    if (eat("signal")) {
+        const char* name = (*p) ? p : nullptr;
+        const bool ok = machine::wiring::wire_mpg_from_signal(name, uart);
+        return ok ? 0 : 1;
+    }
+    if (eat("simulate")) {
+        long delta = 0;
+        if (!cli_parse_long(p, delta)) {
+            uart->puts("usage: mpg simulate <delta_counts>\n"); return 1;
+        }
+        motion::g_motion.simulate_mpg_delta(static_cast<int32_t>(delta));
+        char buf[64];
+        kernel::util::k_snprintf(buf, sizeof(buf), "mpg: injected delta=%ld\n", delta);
+        uart->puts(buf);
+        return 0;
+    }
+    uart->puts("usage: mpg [on|off|axis <n>|scale <cps>|bind <m> <s> <off> [cpd]|signal [name]|simulate <d>]\n");
+    return 1;
 }
 static int cmd_gear_engage(const char* args, kernel::hal::UARTDriverOps* uart) {
     // Usage: gear_engage <leader_ax> <follower_ax> <follower_ch> <k_num> <k_den> [ramp=100]
@@ -4039,6 +4116,8 @@ CLI::CLI() {
     register_command("spindle", cmd_spindle, "spindle | spindle <rpm> | spindle stop — operator spindle control");
     register_command("jog_hold", cmd_jog_hold, "jog_hold <axis_idx> <sign> — start continuous jog at the operator jog feed-rate");
     register_command("jog_stop", cmd_jog_stop, "jog_stop <axis_idx> — release continuous jog (velocity 0)");
+    register_command("mpg", cmd_mpg,
+        "mpg [on|off|axis <n>|scale <cps>|bind <m> <s> <off> [cpd]|signal [name]|simulate <d>] — handwheel control");
     register_command("gear_engage", cmd_gear_engage, "gear_engage <leader> <follower> <ch> <k_num> <k_den> [ramp]");
     register_command("gear_disengage", cmd_gear_disengage, "gear_disengage <follower> [ramp]");
     register_command("gantry", cmd_gantry, "List active gantry links");

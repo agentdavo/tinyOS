@@ -4,9 +4,12 @@
 
 #include "devices/device_db.hpp"
 #include "ethercat/master.hpp"
+#include "machine_registry.hpp"
 #include "machine_topology.hpp"
 #include "motion/motion.hpp"
 #include "util.hpp"
+
+#include <cstring>
 
 namespace machine::wiring {
 
@@ -86,6 +89,55 @@ size_t wire_motion_axes_from_topology(kernel::hal::UARTDriverOps* uart) noexcept
         uart->puts(buf);
     }
     return wired;
+}
+
+bool wire_mpg(uint8_t master_id,
+              uint16_t slave_index,
+              uint8_t byte_offset,
+              uint8_t counts_per_detent,
+              kernel::hal::UARTDriverOps* uart) noexcept {
+    if (master_id > 1 || slave_index >= ethercat::MAX_SLAVES) return false;
+    if (counts_per_detent == 0) counts_per_detent = 4;
+    motion::g_motion.wire_mpg_source(master_id, slave_index, byte_offset,
+                                     counts_per_detent);
+    if (uart) {
+        char buf[112];
+        kernel::util::k_snprintf(
+            buf, sizeof(buf),
+            "[motion] mpg bound: master=%u slave=%u off=%u cpd=%u\n",
+            (unsigned)master_id, (unsigned)slave_index,
+            (unsigned)byte_offset, (unsigned)counts_per_detent);
+        uart->puts(buf);
+    }
+    return true;
+}
+
+bool wire_mpg_from_signal(const char* signal_name,
+                          kernel::hal::UARTDriverOps* uart) noexcept {
+    const char* want = (signal_name && *signal_name) ? signal_name : "mpg_handwheel";
+    for (size_t i = 0; i < machine::g_registry.signal_binding_count(); ++i) {
+        const auto* b = machine::g_registry.signal_binding(i);
+        if (!b || !b->used) continue;
+        if (b->source != machine::Registry::SignalSource::EcTxS32) continue;
+        if (std::strncmp(b->name, want, machine::Registry::MAX_NAME_LEN) != 0) continue;
+        // The TSV `offset` field carries a *bit* offset for tx_s32 (see
+        // machine_registry::read_process_bits); MPG only supports byte-
+        // aligned encoder slots, so reject misalignment loudly here
+        // rather than silently producing rotated counters at runtime.
+        if ((b->offset & 7u) != 0) {
+            if (uart) uart->puts("[motion] mpg signal offset is not byte-aligned\n");
+            return false;
+        }
+        const uint8_t byte_off = static_cast<uint8_t>(b->offset / 8u);
+        return wire_mpg(b->master, b->slave, byte_off, /*counts_per_detent=*/4, uart);
+    }
+    if (uart) {
+        char buf[112];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "[motion] no ec.tx_s32 signal named '%s' found\n", want);
+        uart->puts(buf);
+    }
+    return false;
 }
 
 } // namespace machine::wiring

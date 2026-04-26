@@ -30,3 +30,9 @@ signal	name=x_servo_outputs	source=ec.digital_outputs	master=0	slave=5	value_typ
 signal	name=main_spindle_status	source=ec.statusword	master=1	slave=0	value_type=int
 signal	name=main_spindle_pos	source=ec.position_actual	master=1	slave=0	value_type=int
 signal	name=tool_spindle_mode	source=ec.drive_mode	master=1	slave=1	value_type=int
+
+# Manual pulse generator (handwheel). 32-bit signed cumulative quadrature
+# counter at byte offset 0 of slave 10's TxPDO slot. Slave 10 is a
+# placeholder — operator overrides via `mpg bind` or wire_mpg_from_signal
+# resolves at runtime when a real handwheel is attached.
+signal	name=mpg_handwheel	source=ec.tx_s32	master=0	slave=10	offset=0	width=32	value_type=int

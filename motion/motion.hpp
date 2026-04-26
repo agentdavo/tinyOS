@@ -1121,6 +1121,41 @@ public:
     // gear phase-lock without spinning a physical spindle.
     [[nodiscard]] bool set_spin_velocity(size_t axis_idx, int32_t velocity_cps) noexcept;
 
+    // ---- Manual Pulse Generator (handwheel) -------------------------------
+    //
+    // A single MPG channel: an EtherCAT slave whose TxPDO carries a
+    // 32-bit signed cumulative encoder counter. Once per master cycle the
+    // motion kernel samples the counter, computes the delta vs the prior
+    // sample, and (if active) drives the operator-selected axis at
+    // `delta * velocity_scale_cps_per_detent / counts_per_detent` for
+    // exactly that cycle. With no fresh pulses the velocity command
+    // returns to zero on the next cycle, so the axis tracks handwheel
+    // rate. Bound to a slave by `wire_mpg_source`; the operator picks
+    // the target axis (default 0) and toggles `active` for setup-mode
+    // safety. `simulate_mpg_delta` injects a synthetic delta for
+    // benchtop testing without a real handwheel.
+    struct MpgStatus {
+        bool     bound                       = false;
+        bool     active                      = false;
+        uint32_t target_axis                 = 0;
+        uint8_t  master_id                   = 0;
+        uint16_t slave_index                 = 0;
+        uint8_t  byte_offset                 = 0;
+        uint8_t  counts_per_detent           = 4;
+        int32_t  velocity_scale_cps_per_detent = 1000;
+        int32_t  last_counter                = 0;
+        int32_t  last_delta                  = 0;
+    };
+
+    void wire_mpg_source(uint8_t master_id, uint16_t slave_index,
+                         uint8_t byte_offset, uint8_t counts_per_detent) noexcept;
+    void set_mpg_active(bool on) noexcept;
+    void set_mpg_target_axis(uint32_t axis_idx) noexcept;
+    void set_mpg_scale(int32_t cps_per_detent) noexcept;
+    void simulate_mpg_delta(int32_t delta_counts) noexcept;
+    MpgStatus mpg_status() const noexcept;
+    void dump_mpg(kernel::hal::UARTDriverOps* uart) const;
+
 private:
     std::array<Axis, MAX_AXES>           axes_{};
     std::array<Channel, MAX_CHANNELS>    channels_{};
@@ -1134,6 +1169,28 @@ private:
     SphereCalibration                     sphere_cal_{};
     MotionStats                          stats_;
     DriveStateMachine                    fsa_;
+
+    // MPG runtime state — atomics so the CLI / operator API can mutate
+    // configuration without locking the motion thread out of its read
+    // path. Counter snapshot + baseline live single-threadedly inside
+    // `cycle_mpg`, so they need no synchronisation.
+    struct MpgState {
+        std::atomic<bool>     bound{false};
+        std::atomic<bool>     active{false};
+        std::atomic<uint32_t> target_axis{0};
+        std::atomic<uint8_t>  master_id{0};
+        std::atomic<uint16_t> slave_index{0};
+        std::atomic<uint8_t>  byte_offset{0};
+        std::atomic<uint8_t>  counts_per_detent{4};
+        std::atomic<int32_t>  velocity_scale_cps_per_detent{1000};
+        std::atomic<int32_t>  pending_simulated_delta{0};
+        std::atomic<int32_t>  last_counter_pub{0};
+        std::atomic<int32_t>  last_delta_pub{0};
+        bool                  have_baseline = false;
+        int32_t               baseline_counter = 0;
+    } mpg_;
+
+    void cycle_mpg(uint64_t now_us) noexcept;
 
     void run_loop();
     void cycle_channel(Channel& ch, uint64_t now_us) noexcept;
