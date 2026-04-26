@@ -10,11 +10,12 @@
  *   - Always save full interrupted GPRs (x1..x31 minus x0) + mepc/mstatus
  *     onto a per-hart IRQ stack (mscratch = top-of-irq-stack).  256-byte
  *     frame, 16-byte aligned.
- *   - If g_current_tcb[hartid] is non-null, copy the save into the TCB.
+ *   - If kernel_g_per_cpu_data[hartid].current_thread is non-null, copy the
+ *     save into the TCB.
  *   - Call hal_trap_dispatch_rv64(hartid, mcause).
- *   - On return, reload g_current_tcb[hartid] (may have changed — this is
- *     how preemptive context switch happens) and restore from there.  If
- *     null, restore from the local IRQ-stack frame.
+ *   - On return, reload current_thread (may have changed — this is how
+ *     preemptive context switch happens) and restore from there.  If null,
+ *     restore from the local IRQ-stack frame.
  *   - mret.
  *
  * Context switch (voluntary):
@@ -191,10 +192,10 @@ _start:
 
     /* -----------------------------------------------------------------
      * Trap vector.  Saves full GPR set + mepc/mstatus onto the IRQ stack;
-     * optionally copies the save into g_current_tcb[hartid] if non-null;
-     * dispatches to C; reloads current TCB and restores.  This makes
-     * "scheduler updated g_current_tcb[hartid] to a new TCB" a transparent
-     * preemptive switch.
+     * optionally copies the save into kernel_g_per_cpu_data[hartid].current_thread
+     * if non-null; dispatches to C; reloads current_thread and restores.  This
+     * makes "scheduler updated current_thread to a new TCB" a transparent
+     * preemptive switch — the same idiom arm64 uses in cpu_arm64.S.
      * ----------------------------------------------------------------- */
     .section .text
     .balign 4
@@ -251,12 +252,15 @@ trap_entry:
     csrr    t0, mepc
     sd      t0, FR_MEPC(sp)
 
-    /* ---- If g_current_tcb[hartid] != 0, copy frame into TCB ---- */
+    /* ---- If g_per_cpu_data[hartid].current_thread != 0, copy frame into TCB ---- */
+    /* PerCPUData is two pointers (16 bytes); current_thread is at offset 0.
+     * kernel_g_per_cpu_data is a pointer slot holding the array's base. */
     csrr    a0, mhartid
-    lla     t1, g_current_tcb
-    slli    t2, a0, 3
-    add     t1, t1, t2
-    ld      t1, 0(t1)                       /* t1 = current TCB* (or 0) */
+    lla     t1, kernel_g_per_cpu_data
+    ld      t1, 0(t1)                       /* t1 = &g_per_cpu_data[0] */
+    slli    t2, a0, 4                       /* hartid * 16 */
+    add     t1, t1, t2                      /* &g_per_cpu_data[hartid] */
+    ld      t1, 0(t1)                       /* current_thread (TCB* or 0) */
     beqz    t1, .L_trap_skip_tcb_save
 
     /* memcpy 31*8=248 bytes of regs + sp-slot from frame to TCB.
@@ -291,12 +295,14 @@ trap_entry:
     call    hal_trap_dispatch_rv64
 
     /* ---- Restore ---- */
-    /* Reload current_tcb — may have been swapped by scheduler. */
+    /* Reload current_thread — the C handler may have swapped it via
+     * Scheduler::preemptive_tick (transparent context switch). */
     csrr    a0, mhartid
-    lla     t1, g_current_tcb
-    slli    t2, a0, 3
-    add     t1, t1, t2
-    ld      t1, 0(t1)
+    lla     t1, kernel_g_per_cpu_data
+    ld      t1, 0(t1)                       /* t1 = &g_per_cpu_data[0] */
+    slli    t2, a0, 4                       /* hartid * 16 */
+    add     t1, t1, t2                      /* &g_per_cpu_data[hartid] */
+    ld      t1, 0(t1)                       /* current_thread */
     beqz    t1, .L_trap_restore_frame
 
     /* Copy TCB regs[] into frame, mepc & mstatus into CSRs directly. */

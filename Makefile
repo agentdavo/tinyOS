@@ -114,7 +114,6 @@ ifeq ($(TARGET),riscv64)
     CPU_FLAGS  = -march=rv64imafdc -mabi=lp64d -mcmodel=medany
     CPU_S      = $(HAL_DIR)/cpu_rv64.S
     HAL_CPP    = $(HAL_DIR)/hal_qemu_rv64.cpp $(HAL_DIR)/rv64_stubs.cpp \
-                 $(HAL_DIR)/rv64_sched.cpp \
                  hal/shared/virtio_net.cpp hal/shared/virtio_gpu.cpp \
                  hal/shared/virtio_blk.cpp \
                  hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp \
@@ -155,12 +154,14 @@ ifeq ($(TARGET),riscv64)
                  -device virtio-blk-device,drive=miniosblk
     # xhci removed from rv64 for parity with arm64 — see note under the
     # arm64 args block. If USB comes back, both arches need it.
-    # rv64 now links shared kernel components: kernel/main.cpp + core.cpp 
-    # (the scheduler). TCB_Rv64 from rv64_sched.cpp is used via the
-    # cpu_context_switch_impl shim in rv64_stubs.cpp. The shared scheduler
-    # is invoked via kernel_main() called from kernel_main_rv64() after HAL init.
-    # rv64: excludes hal.cpp (provides get_platform wrapper - rv64 has its own)
-#        also excludes embedded_blob.S (arm64-only TSV blobs)
+    # rv64 links the same shared kernel as arm64 (kernel/main.cpp + core.cpp +
+    # the EDFPolicy scheduler). The arch boundary is just the context-switch
+    # primitive (cpu_context_switch_rv64 in cpu_rv64.S, called via
+    # cpu_context_switch_impl in rv64_stubs.cpp) and the trap dispatcher's
+    # preemptive_tick hand-off in hal_qemu_rv64.cpp.
+    # rv64: excludes hal.cpp (its hal_irq_handler is arm64 IRQ-asm specific
+    #       and is_dedicated_rt_core is re-provided in rv64_stubs.cpp).
+    # rv64: also excludes embedded_blob.S (arm64-only TSV blobs).
 CORE_CPP  = kernel/main.cpp core.cpp util.cpp trace.cpp cli.cpp kernel_globals.cpp kernel/usb/usb.cpp \
                 cpp_runtime_stubs.cpp freestanding_stubs.cpp \
                 ethercat/master.cpp ethercat/frame.cpp ethercat/esm.cpp \

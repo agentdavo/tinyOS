@@ -55,16 +55,25 @@ static inline void minios_irq_enable() noexcept {
 }
 #elif defined(__riscv)
 #  define MINIOS_CPU_RELAX() asm volatile("nop")
+// miniOS rv64 runs in M-mode, so the relevant interrupt-enable bit is
+// mstatus.MIE (bit 3), not sstatus.SIE (bit 1, which only gates supervisor
+// interrupts). Manipulating sstatus would silently leave M-mode interrupts
+// enabled and the scheduler critical sections would race with the timer
+// trap.
 static inline uint64_t minios_irq_save_disable() noexcept {
     uint64_t f;
-    asm volatile("csrrci %0, sstatus, 0x2" : "=r"(f) :: "memory");
+    asm volatile("csrrci %0, mstatus, 0x8" : "=r"(f) :: "memory");
     return f;
 }
 static inline void minios_irq_restore(uint64_t f) noexcept {
-    asm volatile("csrw sstatus, %0" :: "r"(f) : "memory");
+    if (f & 0x8) {
+        asm volatile("csrsi mstatus, 0x8" ::: "memory");
+    } else {
+        asm volatile("csrci mstatus, 0x8" ::: "memory");
+    }
 }
 static inline void minios_irq_enable() noexcept {
-    asm volatile("csrsi sstatus, 0x2");
+    asm volatile("csrsi mstatus, 0x8");
 }
 #else
 #  define MINIOS_CPU_RELAX() asm volatile("")
@@ -464,12 +473,29 @@ TCB* Scheduler::create_thread(void (*fn)(void*), const void* arg, int prio, int 
         kernel::util::kmemset(tcb.stack_base, STACK_PAINT_BYTE, tcb.stack_size);
     }
     tcb.sp = reinterpret_cast<uint64_t>(tcb.stack_base + tcb.stack_size) & ~0xFUL;
-    tcb.pc = reinterpret_cast<uint64_t>(thread_bootstrap); 
+    tcb.pc = reinterpret_cast<uint64_t>(thread_bootstrap);
+#if defined(__aarch64__)
     // SPSR_EL1 for EL1h with IRQs enabled: M[4]=0 (AArch64), M[3:0]=0101 (EL1h), DAIF all unmasked (bits 9-6 are 0)
-    tcb.pstate = 0x00000005; 
+    tcb.pstate = 0x00000005;
+    tcb.regs[0] = reinterpret_cast<uint64_t>(&tcb); // thread_bootstrap argument (x0)
+#elif defined(__riscv)
+    // mstatus seed for rv64 M-mode: MPP=M (bits 11-12=0b11) so mret stays in
+    // M-mode, MPIE=1 (bit 7) so interrupts re-enable on mret, FS=Dirty
+    // (bits 13-14=0b11) so floating-point insns don't trap.
+    tcb.pstate = (0x3ULL << 11) | (0x3ULL << 13) | (1ULL << 7);
+    // rv64 register seeding for cpu_context_switch_rv64's first switch:
+    // regs[i] holds x(i+1), so regs[0]=ra, regs[1]=sp, regs[9]=a0. The
+    // ret at the end of cpu_context_switch_rv64 jumps to ra (=bootstrap),
+    // and the trampoline expects its TCB pointer in a0.
+    tcb.regs[0] = reinterpret_cast<uint64_t>(thread_bootstrap); // ra
+    tcb.regs[1] = tcb.sp;                                       // sp
+    tcb.regs[9] = reinterpret_cast<uint64_t>(&tcb);             // a0
+#else
+    tcb.pstate = 0;
+    tcb.regs[0] = reinterpret_cast<uint64_t>(&tcb);
+#endif
     tcb.deadline_us = deadline_us; tcb.state = TCB::State::READY;
     tcb.cpu_id_running_on = static_cast<uint32_t>(-1); tcb.event_flag.store(false, std::memory_order_relaxed);
-    tcb.regs[0] = reinterpret_cast<uint64_t>(&tcb); // thread_bootstrap argument
     trace::g_trace_manager.record_event(&tcb, trace::EventType::THREAD_CREATE, tcb.name);
     uint32_t target_core = (tcb.core_affinity != -1) ? static_cast<uint32_t>(tcb.core_affinity) : 0;
     if (is_idle) {

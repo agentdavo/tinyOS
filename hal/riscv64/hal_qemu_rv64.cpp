@@ -125,15 +125,11 @@ alignas(16) uint8_t hal_irq_stacks[MAX_HARTS][0x1000];
 
 static std::atomic<uint32_t> g_secondary_ready_mask{0};
 
-// Forward declarations for the rv64-local scheduler (see rv64_sched.cpp).
-// Intentionally kept at file scope so both the trap dispatcher and
-// kernel_main_rv64 can invoke them without pulling in a new header.
-// TCB_Rv64 is aliased in hal_qemu_rv64.hpp — kept here as a reminder.
-TCB_Rv64* sched_create_thread(void (*entry)(void*), void* arg,
-                              uint32_t hart_affinity, const char* name,
-                              bool is_idle);
-[[noreturn]] void sched_enter_first(uint32_t hart);
-extern "C" void rv64_preemptive_tick(uint32_t hart);
+// Voluntary context-switch primitive defined in cpu_rv64.S. Re-declared
+// inside the namespace so both enter_first_thread (here) and the stubs TU
+// can call it without exporting the symbol through the shared HAL surface.
+extern "C" void cpu_context_switch_rv64(kernel::core::TCB* old_tcb,
+                                        kernel::core::TCB* new_tcb);
 
 // ----------------------------------------------------------------------------
 // UART (NS16550)
@@ -559,10 +555,28 @@ void PLICDriver::set_irq_affinity(uint32_t irq_id, uint32_t core_mask) {
 }
 
 // ----------------------------------------------------------------------------
+// PowerOps — wfi-based idle for Scheduler::idle_thread_func.
+// ----------------------------------------------------------------------------
+void PowerOps::enter_idle_state(uint32_t /*core_id*/) {
+    // wfi parks the hart until any interrupt is pending. The shared idle loop
+    // then yields back to the scheduler so a freshly-enqueued worker can run.
+    asm volatile("wfi");
+}
+bool PowerOps::set_cpu_frequency(uint32_t, uint32_t) { return true; }
+
+// ----------------------------------------------------------------------------
 // Platform
 // ----------------------------------------------------------------------------
 uint32_t PlatformQEMUVirtRV64::get_core_id() const {
     uint64_t h; asm volatile("csrr %0, mhartid" : "=r"(h)); return static_cast<uint32_t>(h);
+}
+
+void PlatformQEMUVirtRV64::early_init_core(uint32_t core_id) {
+    // Per-hart bring-up shared by hart_main (secondaries) and the boot
+    // sequence. Mirrors arm64's PlatformQEMUVirtARM64::early_init_core.
+    if (core_id >= MAX_HARTS) return;
+    plic_.init_cpu_interface(core_id);
+    timer_.init_core_timer_interrupt(core_id);
 }
 
 // virtio-net discovery + get_net_ops plumbing. The dumped QEMU virt-rv64 DTB
@@ -669,33 +683,48 @@ void PlatformQEMUVirtRV64::route_net_irq(int if_idx, uint32_t core_mask) {
 
 } // namespace hal::qemu_virt_rv64
 
-// HAL glue for generic kernel::hal::get_platform() — used when the scheduler
-// is eventually ported to rv64.
+// HAL glue for the shared kernel::hal::get_platform(). Both arches expose the
+// same surface; rv64's instance lives in the qemu_virt_rv64 namespace.
 namespace kernel::hal {
 Platform& get_platform_instance() { return ::hal::qemu_virt_rv64::g_platform_instance; }
 Platform* get_platform() { return &::hal::qemu_virt_rv64::g_platform_instance; }
 }
 
+
 // ----------------------------------------------------------------------------
 // Trap dispatcher (called from trap_entry in cpu_rv64.S)
 // ----------------------------------------------------------------------------
+// Storage for the rv64 in-trap flag. Two TUs (this one and rv64_stubs.cpp) read
+// it; only this TU writes (from the trap dispatcher).
+namespace hal::qemu_virt_rv64 {
+extern "C" {
+volatile uint64_t g_irq_in_progress[MAX_HARTS] = {0, 0, 0, 0};
+}
+}
+
 extern "C" void hal_trap_dispatch_rv64(uint64_t hartid, uint64_t mcause) {
+    using ::hal::qemu_virt_rv64::g_irq_in_progress;
     using namespace ::hal::qemu_virt_rv64;
     constexpr uint64_t MCAUSE_INT = 1ULL << 63;
+
+    // Mark this hart as being inside the trap dispatcher so cpu_context_switch_impl
+    // skips its voluntary save/restore — the trap entry path already spilled the
+    // outgoing thread's state, and trap exit will reload from
+    // g_per_cpu_data[hart].current_thread.
+    if (hartid < MAX_HARTS) g_irq_in_progress[hartid] = 1;
+    struct IrqGuard {
+        uint64_t h;
+        ~IrqGuard() { if (h < MAX_HARTS) g_irq_in_progress[h] = 0; }
+    } irq_guard{hartid};
 
     if (mcause & MCAUSE_INT) {
         uint64_t code = mcause & 0x7FFFFFFFFFFFFFFFULL;
         if (code == 7) {
-            // Machine Timer Interrupt. Push mtimecmp far enough out that MTI
-            // deasserts. For the "tick" use-case the scheduler would call
-            // TimerDriver::ack_core_timer_interrupt here to re-arm at +200us;
-            // for wait_until_ns the caller re-arms on each iteration. To
-            // serve both: re-arm 200 us out if we're inside the periodic
-            // tick path, otherwise the caller's next wait_until_ns will
-            // overwrite this anyway.
+            // Machine Timer Interrupt. Re-arm mtimecmp before consulting the
+            // scheduler (so the IRQ deasserts cleanly), then either run the
+            // shared preemptive_tick or — on tickless dedicated RT cores —
+            // just leave the wake to wait_until_ns's caller.
             if (hartid < MAX_HARTS) {
-                // Use whatever the TimerDriver was configured with (DTB
-                // value if parsed, else TIMEBASE_HZ fallback).
                 const uint64_t hz =
                     g_platform_instance.get_timer_ops()
                         ? static_cast<TimerDriver*>(
@@ -707,12 +736,15 @@ extern "C" void hal_trap_dispatch_rv64(uint64_t hartid, uint64_t mcause) {
                 *reinterpret_cast<volatile uint64_t*>(
                     CLINT_MTIMECMP + 8ULL * hartid) = now + delta;
                 g_timer_ticks[hartid]++;
-                // Hand off to the scheduler.  If it decides to swap the
-                // running thread it updates g_current_tcb[hartid]; the
-                // trap-exit assembly in cpu_rv64.S then transparently
-                // restores into the new TCB.  Matches the role of
-                // preemptive_tick() on the arm64 path in hal.cpp.
-                rv64_preemptive_tick(static_cast<uint32_t>(hartid));
+                if (kernel::hal::is_dedicated_rt_core(static_cast<uint32_t>(hartid))) {
+                    // Tickless RT core: wake from WFI is the whole point;
+                    // skip preemptive_tick to keep ticks_total == 0 for this
+                    // core (mirrors arm64's hal_irq_handler behaviour).
+                    return;
+                }
+                if (kernel::g_scheduler_ptr) {
+                    kernel::g_scheduler_ptr->preemptive_tick(static_cast<uint32_t>(hartid));
+                }
             }
             return;
         }
@@ -772,54 +804,6 @@ static void setup_this_hart_trap_stack(uint32_t hartid) {
     // mscratch with sp on entry and swaps back on mret.
     uint64_t top = reinterpret_cast<uint64_t>(&hal_irq_stacks[hartid][0x1000]);
     asm volatile("csrw mscratch, %0" :: "r"(top));
-}
-
-// Per-hart idle thread.  Never on the ready queue; the scheduler falls back
-// to it when no other thread is runnable on this hart.  Just WFIs until
-// preempted.  IRQs are enabled by thread_bootstrap_rv64 before this runs.
-static void idle_thread_rv64(void* arg) {
-    (void)arg;
-    for (;;) asm volatile("wfi");
-}
-
-// Demo work threads — pinned to hart 0, print progress lines through the
-// timer.wait_until_ns primitive so preemption + voluntary sleep are both
-// exercised.  Once the EtherCAT / motion subsystems are ported across they
-// move into these slots.
-static void test_thread_a(void* arg) {
-    (void)arg;
-    auto& plat = ::hal::qemu_virt_rv64::g_platform_instance;
-    auto& uart = *plat.get_uart_ops();
-    auto& timer = *plat.get_timer_ops();
-    uart.puts("[thread A] hello from hart 0\n");
-    for (int i = 0; i < 5; ++i) {
-        uint64_t t = timer.get_system_time_ns() + 500'000ULL;
-        timer.wait_until_ns(t);
-        uart.puts("[thread A] tick\n");
-    }
-    uart.puts("[thread A] exiting\n");
-    for (;;) {
-        uint64_t t = timer.get_system_time_ns() + 2'000'000ULL;
-        timer.wait_until_ns(t);
-    }
-}
-
-static void test_thread_b(void* arg) {
-    (void)arg;
-    auto& plat = ::hal::qemu_virt_rv64::g_platform_instance;
-    auto& uart = *plat.get_uart_ops();
-    auto& timer = *plat.get_timer_ops();
-    uart.puts("[thread B] hello\n");
-    for (int i = 0; i < 4; ++i) {
-        uint64_t t = timer.get_system_time_ns() + 700'000ULL;
-        timer.wait_until_ns(t);
-        uart.puts("[thread B] tick\n");
-    }
-    uart.puts("[thread B] exiting\n");
-    for (;;) {
-        uint64_t t = timer.get_system_time_ns() + 2'000'000ULL;
-        timer.wait_until_ns(t);
-    }
 }
 
 // Secondary hart entry.  Runs on harts 1..N-1 after hart 0 releases them
@@ -939,13 +923,27 @@ static void boot_dma_selftest(hal::qemu_virt_rv64::UARTDriver& uart,
     uart.puts(passed ? " PASS\n" : " FAIL\n");
 }
 
+// Voluntary context switch defined in cpu_rv64.S.
+extern "C" void cpu_context_switch_rv64(kernel::core::TCB* old_tcb,
+                                        kernel::core::TCB* new_tcb);
+
+// Enter the highest-priority ready thread for this hart for the first time.
+// The shared Scheduler::start_core_scheduler installs the chosen worker into
+// g_per_cpu_data[hart].current_thread but does not switch (it expects the
+// caller's asm to do the eret/mret). On rv64 we drive that switch from C.
+[[noreturn]] static void enter_first_thread(uint32_t hartid) {
+    auto* tcb = kernel::core::g_per_cpu_data[hartid].current_thread;
+    if (!tcb) tcb = kernel::core::g_per_cpu_data[hartid].idle_thread;
+    if (!tcb) for (;;) asm volatile("wfi");
+    cpu_context_switch_rv64(nullptr, tcb);
+    __builtin_unreachable();
+}
+
 extern "C" void hart_main(uint32_t hartid) {
     using namespace ::hal::qemu_virt_rv64;
 
     auto& plat  = g_platform_instance;
     auto& uart  = *plat.get_uart_ops();
-    auto& timer = *plat.get_timer_ops();
-    auto& plic  = *plat.get_irq_ops();
 
     // Phase 1: prove we got here from the spin-table.  First output on this
     // hart — if this never prints, the hart never escaped _start's spin.
@@ -954,27 +952,16 @@ extern "C" void hart_main(uint32_t hartid) {
 
     setup_this_hart_trap_stack(hartid);
 
-    plic.init_cpu_interface(hartid);
-
-    // One idle thread per secondary hart.  It's the fallback when nothing
-    // else is runnable.  Name encodes the hart id for `top`-style listings.
-    char idle_name[12] = "idle_hX";
-    idle_name[6] = '0' + static_cast<char>(hartid);
-    sched_create_thread(&idle_thread_rv64, nullptr, hartid, idle_name,
-                        /*is_idle=*/true);
-
-    // Program this hart's periodic tick.  Because the MTI path calls into
-    // rv64_preemptive_tick, the scheduler will run on every tick.
-    timer.init_core_timer_interrupt(hartid);
+    plat.early_init_core(hartid);
 
     // Publish that this secondary completed its minimal per-hart bring-up
-    // and is ready to accept pinned work.
+    // and is ready to accept pinned work. Idle threads were created up-front
+    // by kernel_main_rv64 (one per hart, via the shared scheduler).
     g_secondary_ready_mask.fetch_or(1u << hartid, std::memory_order_release);
 
-    // Does not return.  Enters the idle thread (no work threads pinned to
-    // secondaries yet — add sched_create_thread calls before this line to
-    // park RT work on a non-hart-0 core).
-    sched_enter_first(hartid);
+    if (!kernel::g_scheduler_ptr) for (;;) asm volatile("wfi");
+    kernel::g_scheduler_ptr->start_core_scheduler(hartid);
+    enter_first_thread(hartid);
 }
 
 extern "C" void kernel_main_rv64(uint32_t hartid) {
@@ -984,6 +971,22 @@ extern "C" void kernel_main_rv64(uint32_t hartid) {
 
     auto& plat  = g_platform_instance;
     kernel::g_platform = &plat;
+
+    // Stand the shared scheduler up before any thread creation. Mirrors the
+    // arm64 initialize_platform_and_scheduler() prelude — same EDFPolicy,
+    // same Scheduler instance type, same g_scheduler_ptr global.
+    static kernel::core::Scheduler scheduler_instance;
+    static kernel::core::EDFPolicy edf_policy;
+    scheduler_instance.set_policy(&edf_policy);
+    kernel::g_scheduler_ptr = &scheduler_instance;
+    if (!kernel::core::g_software_timer_obj_pool.init(
+            kernel::core::g_software_timer_obj_pool_mem,
+            kernel::core::MAX_SOFTWARE_TIMERS,
+            sizeof(kernel::hal::timer::SoftwareTimer),
+            alignof(kernel::hal::timer::SoftwareTimer))) {
+        plat.panic("Failed to init software timer pool", __FILE__, __LINE__);
+    }
+
     auto& uart  = *plat.get_uart_ops();
     auto& timer = *plat.get_timer_ops();
     auto& plic  = *plat.get_irq_ops();
@@ -1074,6 +1077,22 @@ extern "C" void kernel_main_rv64(uint32_t hartid) {
     plic.init_cpu_interface(hartid);
     uart.puts("[miniOS rv64] hart 0 plic ctx ready\n");
 
+    // Idle threads are created up-front for every hart so the shared scheduler
+    // has a fallback in g_per_cpu_data[hart].idle_thread before any secondary
+    // hart starts running its scheduler tick. The shared idle_thread_func
+    // wfi-sleeps via PowerOps::enter_idle_state and yields cooperatively after
+    // each wake.
+    for (uint32_t h = 0; h < MAX_HARTS; ++h) {
+        char idle_name[kernel::core::MAX_NAME_LENGTH];
+        kernel::util::k_snprintf(idle_name, sizeof(idle_name), "idle%u", h);
+        if (!kernel::g_scheduler_ptr->create_thread(
+                &kernel::core::Scheduler::idle_thread_func,
+                reinterpret_cast<void*>(static_cast<uintptr_t>(h)),
+                0, static_cast<int>(h), idle_name, true, 0)) {
+            plat.panic("Failed to create idle thread", __FILE__, __LINE__);
+        }
+    }
+
     // Probe the virtio-mmio bus and bind any virtio-net devices. Default target
     // layout is eth0 = HMI, eth1 = EtherCAT-A, eth2 = EtherCAT-B/fake-slave.
     // IRQ lines are enabled first, then narrowed to the placement-selected hart
@@ -1128,22 +1147,17 @@ extern "C" void kernel_main_rv64(uint32_t hartid) {
     cli::io::init(&uart);
     kernel::boot::log_and_route_net_roles();
 
-    sched_create_thread(&idle_thread_rv64, nullptr, 0, "idle_h0",
-                        /*is_idle=*/true);
     // Bring up display + input on the synchronous boot path so the scanout is
     // live before the scheduler starts. The UI thread created below just runs
     // the refresh loop.
     kernel::ui::init_ui_backends();
     kernel::ui::boot_ui_once();
 
-    // rv64 adapter around the unified create-thread signature. The rv64
-    // scheduler is FIFO round-robin without priorities, so prio / deadline /
-    // is_idle map to fixed defaults for now (folded out in task #30).
-    auto rv64_create_thread = [](void (*fn)(void*), void* arg, int /*prio*/,
+    auto rv64_create_thread = [](void (*fn)(void*), void* arg, int prio,
                                  int affinity, const char* name, bool is_idle,
-                                 uint64_t /*deadline_us*/) -> bool {
-        return sched_create_thread(fn, arg, static_cast<uint32_t>(affinity < 0 ? 0 : affinity),
-                                   name, is_idle) != nullptr;
+                                 uint64_t deadline_us) -> bool {
+        return kernel::g_scheduler_ptr->create_thread(fn, arg, prio, affinity,
+                                                      name, is_idle, deadline_us) != nullptr;
     };
 
     kernel::boot::create_boot_services(rv64_create_thread);
@@ -1152,11 +1166,15 @@ extern "C" void kernel_main_rv64(uint32_t hartid) {
 
     uart.puts("[miniOS rv64] scheduler: services armed on harts 0-2\n");
 
-    // Program hart 0's periodic scheduler tick.
-    timer.init_core_timer_interrupt(hartid);
-
     uart.puts("[miniOS rv64] entering scheduler on hart 0\n");
 
-    // Does not return — jumps into the highest-priority runnable thread.
-    sched_enter_first(hartid);
+    // Arm the periodic scheduler tick for the primary hart before handing
+    // off. Secondary harts arm theirs in early_init_core via hart_main.
+    timer.init_core_timer_interrupt(hartid);
+
+    // start_core_scheduler installs the chosen worker into
+    // g_per_cpu_data[hartid].current_thread and enables the timer IRQ;
+    // enter_first_thread does the actual mret-equivalent into that worker.
+    kernel::g_scheduler_ptr->start_core_scheduler(hartid);
+    enter_first_thread(hartid);
 }

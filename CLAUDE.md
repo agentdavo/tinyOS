@@ -70,7 +70,7 @@ Concrete "is this an accidental divergence?" checklist:
 1. If a boot step needs adding to one side, does it also need to run on the other? If yes, add it to `kernel::boot::*` and have both sides call it. Don't duplicate.
 2. If a driver ships under `hal/shared/`, both arches link it. Missing a shared driver from one arch's `HAL_CPP` is a regression.
 3. TCB layout is a single type: `kernel::core::TCB`. Byte offsets for `regs[31]` / `sp` / `pc` / `pstate` are fixed — both `cpu_arm64.S` and `cpu_rv64.S` use the same offsets. rv64 stores `mstatus` in the `pstate` slot.
-4. Residual: rv64 still has its own `rv64_sched.cpp` (FIFO round-robin) alongside arm64's `core.cpp` EDF scheduler. TCB type is unified but the ready queues + scheduler entry points are still split — medium-risk refactor, tracked separately. `cpu_context_switch_impl` is the shared seam (arm64 in `hal.cpp`, rv64 in `rv64_stubs.cpp`).
+4. Both arches now share `kernel::core::Scheduler` + `EDFPolicy` from `core.cpp`. The arch boundary is the context-switch primitive (`cpu_context_switch_impl` — arm64 in `hal.cpp`, rv64 in `rv64_stubs.cpp`) plus the per-arch trap dispatcher's `preemptive_tick` hand-off. rv64's `rv64_sched.cpp` is empty — kept around so existing build-system references don't break.
 
 New MMIO drivers go behind `hal::Platform`; concrete impls in `hal/arm64/hal_qemu_arm64.cpp` and `hal/riscv64/hal_qemu_rv64.cpp`.
 

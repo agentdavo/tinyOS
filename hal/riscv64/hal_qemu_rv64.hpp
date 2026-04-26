@@ -146,6 +146,14 @@ public:
     void invalidate_cache_range(const void* addr, size_t size) override;
 };
 
+// Minimal PowerOps so the shared Scheduler::idle_thread_func has a real
+// idle-state primitive (it would otherwise fall into a busy nop loop).
+class PowerOps : public kernel::hal::PowerOps {
+public:
+    void enter_idle_state(uint32_t core_id) override;
+    bool set_cpu_frequency(uint32_t core_id, uint32_t freq_hz) override;
+};
+
 class InputDriver : public kernel::hal::InputOps {
 public:
     explicit InputDriver(USBHostController* usb) : usb_(usb) {}
@@ -199,7 +207,7 @@ public:
     // once after PLIC init.
     void discover_virtio_nets();
     void route_net_irq(int if_idx, uint32_t core_mask) override;
-    kernel::hal::PowerOps*                get_power_ops() override { return nullptr; }
+    kernel::hal::PowerOps*                get_power_ops() override { return &power_ops_; }
     kernel::hal::gpio::GPIODriverOps*     get_gpio_ops() override { return nullptr; }
     kernel::hal::WatchdogOps*             get_watchdog_ops() override { return nullptr; }
     kernel::hal::InputOps*                get_input_ops() override { return &input_; }
@@ -212,7 +220,7 @@ public:
     bool init_block_device() override;
 
     void early_init_platform() override {}
-    void early_init_core(uint32_t) override {}
+    void early_init_core(uint32_t core_id) override;
     [[noreturn]] void panic(const char* msg, const char* file, int line) override;
     void reboot_system() override {}
 
@@ -232,6 +240,7 @@ private:
     PLICDriver  plic_;
     DMAController dma_;
     MemoryOps memory_ops_;
+    PowerOps power_ops_;
     USBHostController usb_;
     InputDriver input_{&usb_};
     ::hal::shared::virtio_gpu::VirtioGpuDriver gpu_;

@@ -24,10 +24,8 @@ bool has_multicore_support();
 namespace boot {
 
 // Unified create-thread signature used by the shared boot helpers below.
-// arm64 forwards straight to kernel::g_scheduler_ptr->create_thread. rv64
-// wraps sched_create_thread (FIFO, no priority/deadline) and ignores prio /
-// deadline_us for now — those merge away once task #30 folds the two
-// schedulers together.
+// Both arches forward to kernel::g_scheduler_ptr->create_thread — the EDF
+// scheduler in core.cpp drives both ports.
 using CreateThreadFn = bool (*)(void (*fn)(void*), void* arg, int prio,
                                 int affinity, const char* name, bool is_idle,
                                 uint64_t deadline_us);
