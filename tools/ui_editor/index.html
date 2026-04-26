@@ -233,6 +233,7 @@ const BIND_GROUPS = {
            "alarm:1:id","alarm:1:sev","alarm:1:axis","alarm:1:msg","alarm:1:time",
            "alarm:2:id","alarm:2:sev","alarm:2:axis","alarm:2:msg","alarm:2:time",
            "alarm:3:id","alarm:3:sev","alarm:3:axis","alarm:3:msg","alarm:3:time"],
+  View: ["view_toolpath","view_toolpods"],
 };
 const ALL_BINDS = new Set(Object.values(BIND_GROUPS).flat());
 
@@ -257,6 +258,8 @@ const ACTION_GROUPS = {
   EtherCAT: ["ec:estop","ec:clear_fault"],
   Alarms: ["alarm:ack:0","alarm:ack:1","alarm:ack:2","alarm:ack:3",
            "alarm:clear_history"],
+  View: ["view:toolpath:toggle","view:toolpods:toggle","view:reset",
+         "view:zoom:in","view:zoom:out"],
 };
 function actionIsValid(target, doc) {
   if (!target) return true;
@@ -278,7 +281,11 @@ const NAMED_COLORS = {black:"#000000",white:"#ffffff",red:"#ff0000",green:"#00ff
   darkgray:"#404040",lightgray:"#c0c0c0",orange:"#ffa500"};
 const WIDGET_TYPES = ["label","button","panel","container","slider","input",
                       "progress","image","graph"];
-const FIELD_ORDER = ["id","parent","x","y","w","h","text","color","bg","border",
+// Order matches the production embedded_ui.tsv convention (bg before color
+// before border). The kernel parser is order-agnostic, but matching the
+// in-tree style keeps diffs empty for newly-dropped widgets that lack a
+// source __order.
+const FIELD_ORDER = ["id","parent","x","y","w","h","text","bg","color","border",
   "bind","action","active_if","focus","scale","font","layout","align","min","max","value"];
 
 /* =========================================================================

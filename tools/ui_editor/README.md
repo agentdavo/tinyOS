@@ -38,7 +38,7 @@ No build step, no CDN fetches at runtime. Everything ships under
 - Actions table for per-page `action widget= event= target=` records.
 - Undo / redo (`Ctrl+Z` / `Ctrl+Y`), auto-save to `localStorage`.
 
-## Bind catalogue (78 keys)
+## Bind catalogue
 
 Grouped exactly as in the inspector:
 
@@ -56,6 +56,7 @@ Grouped exactly as in the inspector:
   shift_x,shift_y,shift_z,sphere_ready,sphere_points}
 - **MDI** mdi:{input,last,status,message,depth}
 - **EtherCAT** ec:{state,fault,slaves,miss,trips,p99,max,period,cycles,tx,rx}
+- **View** view_toolpath, view_toolpods (machine_view page overlay flags)
 
 ## Action catalogue
 
@@ -71,6 +72,10 @@ Grouped exactly as in the inspector:
 - Input commit targets: `commit:offset:{x,y,z,a}`,
   `commit:tool:{length,radius,wear}`, `commit:restart:line`
 - `ec:{estop,clear_fault}` — broadcast QuickStop / clear deadline-fault latch
+- `view:{toolpath,toolpods}:toggle` — flip overlay flags on machine_view
+- `view:{reset,zoom:in,zoom:out}` — camera primitives on machine_view
+- `alarm:ack:N` (N=0..3) — acknowledge active alarm in row N
+- `alarm:clear_history` — wipe the alarm history queue
 
 ## Attributes
 
@@ -85,6 +90,31 @@ Grouped exactly as in the inspector:
   Example: `active_if=wcs:0` highlights when G54 is active;
   `active_if=selected_axis:2` highlights when Z is the jog axis.
   The inspector exposes this as a bind-picker + integer value pair.
+
+## URL params
+
+The editor accepts a few query-string parameters used by the screenshot
+pipeline (`tools/ui_editor/screenshot.sh`) and useful for deep-links:
+
+- `?tsv=<server-relative-path>` — fetch + load that TSV on boot
+  (e.g. `?tsv=devices/embedded_ui.tsv`). Path is resolved against the
+  HTTP server root, not the editor URL — use `screenshot.sh` which
+  serves from the repo root, or prefix with `/`.
+- `?page=<page_id>` — switch the active tab to that page after load.
+- `?canvas_only=1` — hide the editor chrome (toolbar / palette /
+  inspector / tabs) so the 1080×1920 canvas fills the viewport. Also
+  disables include-dimming so the bottom_nav renders at full opacity,
+  matching what the kernel framebuffer paints.
+- `?ready=1` — appends `<div id="__editor_ready">` once the canvas
+  finishes painting; headless screenshotters poll for it before
+  capturing.
+
+## Active-tab highlight
+
+The editor (and the kernel) auto-flag any button whose `goto:<page_id>`
+target points to the currently active page. They render brightened with
+a 3 px white outline — the operator sees "you are here" at a glance on
+the bottom_nav. No TSV change needed; it's automatic.
 
 ## Known limitations
 
