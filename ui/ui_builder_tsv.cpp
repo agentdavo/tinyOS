@@ -475,6 +475,11 @@ enum class BindKind : uint8_t {
     // Guided-homing wizard — operator-driven plan state surfaced from
     // ui::operator_api::homing_snapshot().
     HomingAxis, HomingMethod, HomingState, HomingMessage, HomingFastCps, HomingSlowCps,
+    // Guided probing wizard — operator-driven cycle plan + live progress
+    // surfaced from ui::operator_api::probe_wizard_snapshot().
+    ProbeWizardState, ProbeWizardCycle, ProbeWizardStep, ProbeWizardTotal,
+    ProbeWizardMessage, ProbeWizardResultX, ProbeWizardResultY, ProbeWizardResultZ,
+    ProbeWizardResultValid,
 };
 
 BindKind parse_bind(const char* s) {
@@ -656,6 +661,15 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "homing:message") == 0) return BindKind::HomingMessage;
     if (strcmp(s, "homing:fast")    == 0) return BindKind::HomingFastCps;
     if (strcmp(s, "homing:slow")    == 0) return BindKind::HomingSlowCps;
+    if (strcmp(s, "probe:wizard:state")        == 0) return BindKind::ProbeWizardState;
+    if (strcmp(s, "probe:wizard:cycle")        == 0) return BindKind::ProbeWizardCycle;
+    if (strcmp(s, "probe:wizard:step")         == 0) return BindKind::ProbeWizardStep;
+    if (strcmp(s, "probe:wizard:total")        == 0) return BindKind::ProbeWizardTotal;
+    if (strcmp(s, "probe:wizard:message")      == 0) return BindKind::ProbeWizardMessage;
+    if (strcmp(s, "probe:wizard:result_x")     == 0) return BindKind::ProbeWizardResultX;
+    if (strcmp(s, "probe:wizard:result_y")     == 0) return BindKind::ProbeWizardResultY;
+    if (strcmp(s, "probe:wizard:result_z")     == 0) return BindKind::ProbeWizardResultZ;
+    if (strcmp(s, "probe:wizard:result_valid") == 0) return BindKind::ProbeWizardResultValid;
     return BindKind::None;
 }
 
@@ -1027,6 +1041,38 @@ int32_t bound_numeric_value(BindKind bind) {
             const auto h = kernel::ui::operator_api::homing_snapshot();
             return h.slow_cps;
         }
+        case BindKind::ProbeWizardState: {
+            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            return static_cast<int32_t>(w.state);
+        }
+        case BindKind::ProbeWizardCycle: {
+            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            return static_cast<int32_t>(w.cycle);
+        }
+        case BindKind::ProbeWizardStep: {
+            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            return w.step;
+        }
+        case BindKind::ProbeWizardTotal: {
+            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            return w.total_steps;
+        }
+        case BindKind::ProbeWizardResultX: {
+            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            return w.result_x;
+        }
+        case BindKind::ProbeWizardResultY: {
+            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            return w.result_y;
+        }
+        case BindKind::ProbeWizardResultZ: {
+            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            return w.result_z;
+        }
+        case BindKind::ProbeWizardResultValid: {
+            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            return w.result_valid ? 1 : 0;
+        }
         default: return 0;
     }
 }
@@ -1379,6 +1425,39 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
                                      static_cast<long>(bound_numeric_value(bind)));
             return;
         }
+        case BindKind::ProbeWizardState: {
+            const int32_t v = bound_numeric_value(bind);
+            const char* names[6] = {"IDLE", "SELECT", "CONFIRM", "RUNNING", "INSPECT", "FAULT"};
+            const char* text = (v >= 0 && v < 6) ? names[v] : "?";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::ProbeWizardCycle: {
+            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            copy_field(buf, buf_size, w.cycle_name ? w.cycle_name : "(none)",
+                       w.cycle_name ? strlen(w.cycle_name) : 6);
+            return;
+        }
+        case BindKind::ProbeWizardMessage: {
+            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            copy_field(buf, buf_size, w.status_message ? w.status_message : "",
+                       w.status_message ? strlen(w.status_message) : 0);
+            return;
+        }
+        case BindKind::ProbeWizardResultValid: {
+            const int32_t v = bound_numeric_value(bind);
+            const char* text = v ? "VALID" : "---";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::ProbeWizardStep:
+        case BindKind::ProbeWizardTotal:
+        case BindKind::ProbeWizardResultX:
+        case BindKind::ProbeWizardResultY:
+        case BindKind::ProbeWizardResultZ:
+            kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
+                                     static_cast<long>(bound_numeric_value(bind)));
+            return;
         default:
             kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
                                      static_cast<long>(bound_numeric_value(bind)));
@@ -1697,6 +1776,29 @@ void run_action_target(const char* target) {
         } else if (strcmp(command, "abort") == 0) {
             abort_homing();
         }
+        return;
+    }
+    if (strncmp(target, "probe:wizard:", 13) == 0) {
+        // Guided probing wizard. Cycle selection tokens map to the
+        // operator-facing ProbeCycleKind enum; transport tokens drive
+        // the state machine in operator_api. probe_wizard_start checks
+        // the EtherCAT deadline-fault latch internally.
+        const char* command = target + 13;
+        if (strncmp(command, "select:", 7) == 0) {
+            const char* k = command + 7;
+            ProbeCycleKind kind = ProbeCycleKind::None;
+            if      (strcmp(k, "qualify") == 0) kind = ProbeCycleKind::Qualify;
+            else if (strcmp(k, "z")       == 0) kind = ProbeCycleKind::ZSurface;
+            else if (strcmp(k, "edgex")   == 0) kind = ProbeCycleKind::EdgeX;
+            else if (strcmp(k, "edgey")   == 0) kind = ProbeCycleKind::EdgeY;
+            else if (strcmp(k, "bore")    == 0) kind = ProbeCycleKind::BoreCenter;
+            else if (strcmp(k, "pocket")  == 0) kind = ProbeCycleKind::Pocket3D;
+            else if (strcmp(k, "sphere")  == 0) kind = ProbeCycleKind::Sphere;
+            probe_wizard_select(kind);
+        } else if (strcmp(command, "start")  == 0) probe_wizard_start();
+        else if (strcmp(command, "abort")  == 0) probe_wizard_abort();
+        else if (strcmp(command, "accept") == 0) probe_wizard_accept();
+        else if (strcmp(command, "reject") == 0) probe_wizard_reject();
         return;
     }
     if (strncmp(target, "macro:", 6) == 0) {

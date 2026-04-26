@@ -65,6 +65,10 @@ Grouped exactly as in the inspector:
   macro_count, macro_message
 - **Probe** probe_{x,y,z,done,stylus,center_x,center_y,size_x,size_y,
   shift_x,shift_y,shift_z,sphere_ready,sphere_points}
+- **Probe wizard** probe:wizard:{state,cycle,step,total,message,
+  result_x,result_y,result_z,result_valid}. State cycles IDLE / SELECT /
+  CONFIRM / RUNNING / INSPECT / FAULT; cycle renders the human-readable
+  cycle name; result_valid renders VALID or `---`.
 - **MDI** mdi:{input,last,status,message,depth}
 - **EtherCAT** ec:{state,fault,slaves,miss,trips,p99,max,period,cycles,tx,rx}
 - **View** view_toolpath, view_toolpods (machine_view page overlay flags)
@@ -85,6 +89,16 @@ Grouped exactly as in the inspector:
 - `homing:start` / `homing:abort` — kick / stop the configured cycle.
   `homing:start` is a no-op while either EtherCAT master holds a
   deadline-fault latch.
+- `probe:wizard:select:<kind>` — pick a probing cycle. `kind` is one of
+  `qualify`, `z`, `edgex`, `edgey`, `bore`, `pocket`, `sphere`. Drops the
+  wizard into Confirming.
+- `probe:wizard:{start,abort,accept,reject}` — wizard transport.
+  `start` requires Confirming/Inspecting; `accept` / `reject` only do
+  something while the wizard is in Inspecting; `start` is a no-op while
+  either EtherCAT master holds a deadline-fault latch. Sphere routes to
+  probe::Runtime; the other six cycles execute through the macro
+  runtime (probe_qualify / probe_z_surface / probe_x_edge / probe_y_edge
+  / probe_bore_xy / probe_calibrate_3d_pocket).
 - `setup:{save,load}`
 - `offset:work:<n>` (0..5), `offset:tool:<n>` (0..7), `offset:nudge:<axis><delta>`
 - `mdi:{submit,clear,abort}`

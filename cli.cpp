@@ -2031,6 +2031,37 @@ static int32_t probe_trigger_sim(int32_t target_x, int32_t target_y, int32_t tar
     return 0;  // Return 0 = use target position as actual (no error for simulation)
 }
 
+// probe_wizard — operator status query for the guided probing wizard.
+// Read-only; mutations happen through the touch UI to keep the operator
+// path aligned with the HMI design.
+static int cmd_probe_wizard(const char*, kernel::hal::UARTDriverOps* uart) {
+    if (!uart) return 1;
+    const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+    static const char* kStateNames[6] = {
+        "IDLE", "SELECT", "CONFIRM", "RUNNING", "INSPECT", "FAULT"
+    };
+    const auto state_idx = static_cast<size_t>(w.state);
+    const char* state_text = state_idx < 6 ? kStateNames[state_idx] : "?";
+    char buf[160];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "probe_wizard: state=%s cycle=%s step=%ld/%ld result=%s msg=%s\n",
+        state_text,
+        w.cycle_name ? w.cycle_name : "(none)",
+        static_cast<long>(w.step), static_cast<long>(w.total_steps),
+        w.result_valid ? "valid" : "---",
+        w.status_message ? w.status_message : "");
+    uart->puts(buf);
+    if (w.result_valid) {
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "  capture: PX=%ld PY=%ld PZ=%ld\n",
+            static_cast<long>(w.result_x),
+            static_cast<long>(w.result_y),
+            static_cast<long>(w.result_z));
+        uart->puts(buf);
+    }
+    return 0;
+}
+
 static int cmd_probe_calibrate(const char* args, kernel::hal::UARTDriverOps* uart) {
     // probe_calibrate <sphere_x> <sphere_y> <sphere_z> [radius_mm]
     // Fully automated sphere calibration: moves to each point, probes, records
@@ -4314,6 +4345,7 @@ CLI::CLI() {
     register_command("sphere", cmd_sphere, "sphere — show sphere calibration status");
     register_command("sphere_auto", cmd_sphere_auto, "sphere_auto <cx> <cy> <cz> <radius> — show 7-point hemisphere");
     register_command("probe_calibrate", cmd_probe_calibrate, "probe_calibrate <sx> <sy> <sz> [r] — fully automated sphere probe");
+    register_command("probe_wizard", cmd_probe_wizard, "probe_wizard — show guided probing wizard state, cycle, progress, and last capture");
     register_command("skiving_config", cmd_skiving_config, "skiving_config <ts1> <teeth> <c1_cpr> [offset]");
     register_command("skiving_engage", cmd_skiving_engage, "skiving_engage <c1> <b> <ts1> <teeth> [ramp]");
     register_command("feed_per_tooth", cmd_feed_per_tooth, "feed_per_tooth <cutter_dia> <teeth> [c1_axis] - compute feed/tooth");

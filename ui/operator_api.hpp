@@ -280,6 +280,52 @@ void set_homing_speeds(int32_t fast_cps, int32_t slow_cps);
 void start_homing();
 void abort_homing();
 
+// Guided probing wizard. Walks the operator through select-cycle ->
+// confirm setup -> start -> live progress -> accept / reject. Only the
+// reference-sphere cycle has a real probe::Runtime backend; the other
+// six cycles execute through the macro runtime (probe_qualify /
+// probe_z_surface / probe_x_edge / probe_y_edge / probe_bore_xy /
+// probe_calibrate_3d_pocket TSV macros). Selecting None or starting a
+// cycle whose backend cannot be reached short-circuits to Faulted with
+// a "cycle not implemented" status.
+enum class ProbeWizardState : uint8_t {
+    Idle = 0,
+    Selecting,
+    Confirming,
+    Running,
+    Inspecting,
+    Faulted,
+};
+enum class ProbeCycleKind : uint8_t {
+    None = 0,
+    Qualify,
+    ZSurface,
+    EdgeX,
+    EdgeY,
+    BoreCenter,
+    Pocket3D,
+    Sphere,
+};
+struct ProbeWizardSnapshot {
+    ProbeWizardState state = ProbeWizardState::Idle;
+    ProbeCycleKind cycle = ProbeCycleKind::None;
+    const char* cycle_name = "(none)";
+    const char* status_message = "Idle";
+    int32_t step = 0;
+    int32_t total_steps = 0;
+    int32_t result_x = 0;
+    int32_t result_y = 0;
+    int32_t result_z = 0;
+    bool result_valid = false;
+};
+
+ProbeWizardSnapshot probe_wizard_snapshot();
+void probe_wizard_select(ProbeCycleKind kind);
+void probe_wizard_start();
+void probe_wizard_abort();
+void probe_wizard_accept();
+void probe_wizard_reject();
+
 struct FileSnapshot {
     struct FileEntry {
         const char* name = "";

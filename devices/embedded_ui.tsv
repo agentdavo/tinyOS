@@ -1019,69 +1019,87 @@ action	widget=macro_abort	event=click	target=macro:abort
 include	page=bottom_nav
 
 # ============================================================
-# probe -- probe cycle library
+# probe -- guided probing wizard
+# Layout (1080 x 1740):
+#   y   20.. 70  page title
+#   y   90.. 470 wizard panel: 6 cycle buttons (active = picked)
+#   y  490.. 760 status panel: state hero + cycle name + step/total + msg
+#                + REFERENCE SPHERE button (only cycle backed by probe::Runtime)
+#   y  780.. 1000 result panel: PX/PY/PZ capture + VALID flag
+#   y 1020..1240 controls: START / ABORT / ACCEPT / REJECT
+# Operator path: pick cycle -> Confirming -> tap START -> Running ->
+# on completion the wizard sits in Inspecting until ACCEPT or REJECT.
+# ABORT stops the active backend at any time. START is a no-op while
+# either EtherCAT master holds a deadline-fault latch. Sphere uses the
+# probe::Runtime backend; the other six cycles execute as macros.
+# Each control button highlights via active_if on the wizard state in
+# which it is enabled (Confirming=2 for START, Running=3 for ABORT,
+# Inspecting=4 for ACCEPT/REJECT).
 # ============================================================
 page	id=probe	title=Probe
 panel	id=probe_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
-label	id=probe_title	parent=probe_root	x=40	y=30	w=1000	h=40	text=PROBE CYCLES	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+label	id=probe_title	parent=probe_root	x=40	y=30	w=1000	h=40	text=GUIDED PROBING WIZARD	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
 
-# --- status panel ---
-panel	id=probe_status_panel	parent=probe_root	x=20	y=110	w=1040	h=180	bg=#111827	border=#334155
-label	id=probe_status_title	parent=probe_root	x=40	y=124	w=400	h=28	text=PROBE STATUS	color=#94A3B8	bg=#111827	scale=2
-label	id=probe_cyc_lbl	parent=probe_root	x=40	y=170	w=160	h=32	text=CYCLE	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_status_label	parent=probe_root	x=210	y=166	w=400	h=40	text=---	color=#86EFAC	bg=#0F172A	border=#22C55E	bind=probe_done	align=center	scale=2
-label	id=probe_styl_lbl	parent=probe_root	x=640	y=170	w=120	h=32	text=STYLUS	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_stylus_label	parent=probe_root	x=770	y=166	w=270	h=40	text=---	color=#86EFAC	bg=#0F172A	border=#22C55E	bind=probe_stylus	align=center	scale=2
-label	id=probe_x_lbl	parent=probe_root	x=40	y=232	w=80	h=32	text=PX	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_x_label	parent=probe_root	x=130	y=230	w=200	h=36	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=probe_x	align=right	scale=1
-label	id=probe_y_lbl	parent=probe_root	x=350	y=232	w=80	h=32	text=PY	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_y_label	parent=probe_root	x=440	y=230	w=200	h=36	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=probe_y	align=right	scale=1
-label	id=probe_z_lbl	parent=probe_root	x=660	y=232	w=80	h=32	text=PZ	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_z_label	parent=probe_root	x=750	y=230	w=290	h=36	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=probe_z	align=right	scale=1
+# --- wizard cycle picker (y=90, h=380) ---
+panel	id=probe_wiz_panel	parent=probe_root	x=20	y=90	w=1040	h=380	bg=#111827	border=#334155
+label	id=probe_wiz_title	parent=probe_root	x=40	y=104	w=600	h=28	text=SELECT CYCLE	color=#94A3B8	bg=#111827	scale=2
+# Row 1 (y=150): Qualify / Z Surface / X Edge
+button	id=probe_w_qualify	parent=probe_root	x=40	y=150	w=320	h=140	text=QUALIFY	bg=#0F766E	color=#FFFFFF	active_if=probe:wizard:cycle:1	scale=2	focus=470
+button	id=probe_w_zsurf	parent=probe_root	x=380	y=150	w=320	h=140	text=Z SURFACE	bg=#0F766E	color=#FFFFFF	active_if=probe:wizard:cycle:2	scale=2	focus=472
+button	id=probe_w_edgex	parent=probe_root	x=720	y=150	w=320	h=140	text=X EDGE	bg=#0F766E	color=#FFFFFF	active_if=probe:wizard:cycle:3	scale=2	focus=474
+# Row 2 (y=300): Y Edge / Bore Center / 3D Pocket
+button	id=probe_w_edgey	parent=probe_root	x=40	y=300	w=320	h=140	text=Y EDGE	bg=#0F766E	color=#FFFFFF	active_if=probe:wizard:cycle:4	scale=2	focus=476
+button	id=probe_w_bore	parent=probe_root	x=380	y=300	w=320	h=140	text=BORE CENTER	bg=#0E7490	color=#FFFFFF	active_if=probe:wizard:cycle:5	scale=2	focus=478
+button	id=probe_w_pocket	parent=probe_root	x=720	y=300	w=320	h=140	text=3D POCKET	bg=#0E7490	color=#FFFFFF	active_if=probe:wizard:cycle:6	scale=2	focus=480
 
-# --- preview panel ---
-panel	id=probe_prev_panel	parent=probe_root	x=20	y=310	w=1040	h=340	bg=#111827	border=#334155
-label	id=probe_prev_title	parent=probe_root	x=40	y=324	w=400	h=28	text=MACHINE PREVIEW	color=#94A3B8	bg=#111827	scale=2
-image	id=probe_preview	parent=probe_root	x=40	y=360	w=1000	h=270	text=gles1:machine	bg=#0F172A	border=#334155	color=#E5E7EB
+# --- status panel (y=490, h=270) ---
+panel	id=probe_st_panel	parent=probe_root	x=20	y=490	w=1040	h=270	bg=#111827	border=#334155
+label	id=probe_st_title	parent=probe_root	x=40	y=504	w=400	h=28	text=STATUS	color=#94A3B8	bg=#111827	scale=2
+# Sphere selector sits in the status header — wider single tap because
+# reference-sphere is the only cycle backed by probe::Runtime directly.
+button	id=probe_w_sphere	parent=probe_root	x=560	y=494	w=480	h=80	text=REFERENCE SPHERE	bg=#115E59	color=#FFFFFF	active_if=probe:wizard:cycle:7	scale=2	focus=482
+# State + cycle hero (y=590)
+label	id=probe_state_lbl	parent=probe_root	x=40	y=596	w=160	h=32	text=STATE	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_state_v	parent=probe_root	x=210	y=590	w=350	h=64	text=IDLE	color=#FEF3C7	bg=#451A03	border=#F59E0B	bind=probe:wizard:state	align=center	scale=3
+label	id=probe_cyc_lbl	parent=probe_root	x=590	y=596	w=140	h=32	text=CYCLE	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_cyc_v	parent=probe_root	x=740	y=590	w=300	h=64	text=(none)	color=#DDD6FE	bg=#1E1B4B	border=#7C3AED	bind=probe:wizard:cycle	align=center	scale=2
+# Step + total (y=672)
+label	id=probe_step_lbl	parent=probe_root	x=40	y=678	w=160	h=32	text=STEP	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_step_v	parent=probe_root	x=210	y=672	w=160	h=44	text=0	color=#7DD3FC	bg=#0F172A	border=#475569	bind=probe:wizard:step	align=center	scale=2
+label	id=probe_total_lbl	parent=probe_root	x=400	y=678	w=160	h=32	text=TOTAL	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_total_v	parent=probe_root	x=570	y=672	w=160	h=44	text=0	color=#7DD3FC	bg=#0F172A	border=#475569	bind=probe:wizard:total	align=center	scale=2
+label	id=probe_msg_lbl	parent=probe_root	x=40	y=730	w=160	h=24	text=MSG	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_msg_v	parent=probe_root	x=210	y=726	w=830	h=28	text=---	color=#CBD5E1	bg=#0F172A	border=#475569	bind=probe:wizard:message	scale=1
 
-# --- results panel ---
-panel	id=probe_results_panel	parent=probe_root	x=20	y=670	w=1040	h=200	bg=#111827	border=#334155
-label	id=probe_results_title	parent=probe_root	x=40	y=684	w=400	h=28	text=LAST RESULTS	color=#94A3B8	bg=#111827	scale=2
-label	id=probe_cx_lbl	parent=probe_root	x=40	y=730	w=80	h=24	text=CX	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_center_x_label	parent=probe_root	x=130	y=728	w=200	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_center_x	align=right	scale=1
-label	id=probe_cy_lbl	parent=probe_root	x=350	y=730	w=80	h=24	text=CY	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_center_y_label	parent=probe_root	x=440	y=728	w=200	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_center_y	align=right	scale=1
-label	id=probe_px_lbl	parent=probe_root	x=660	y=730	w=80	h=24	text=PX	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_size_x_label	parent=probe_root	x=750	y=728	w=290	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_size_x	align=right	scale=1
-label	id=probe_py_lbl	parent=probe_root	x=40	y=770	w=80	h=24	text=PY	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_size_y_label	parent=probe_root	x=130	y=768	w=200	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_size_y	align=right	scale=1
-label	id=probe_sx_lbl	parent=probe_root	x=350	y=770	w=80	h=24	text=SX	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_shift_x_label	parent=probe_root	x=440	y=768	w=200	h=32	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=probe_shift_x	align=right	scale=1
-label	id=probe_sy_lbl	parent=probe_root	x=660	y=770	w=80	h=24	text=SY	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_shift_y_label	parent=probe_root	x=750	y=768	w=290	h=32	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=probe_shift_y	align=right	scale=1
-label	id=probe_sz_lbl	parent=probe_root	x=40	y=810	w=80	h=24	text=SZ	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_shift_z_label	parent=probe_root	x=130	y=808	w=200	h=32	text=---	color=#FBBF24	bg=#0F172A	border=#334155	bind=probe_shift_z	align=right	scale=1
-label	id=probe_sph_lbl	parent=probe_root	x=350	y=810	w=80	h=24	text=SPH	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_sphere_state	parent=probe_root	x=440	y=808	w=200	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_sphere_ready	align=right	scale=1
-label	id=probe_pts_lbl	parent=probe_root	x=660	y=810	w=80	h=24	text=PTS	color=#94A3B8	bg=#111827	scale=1
-label	id=probe_sphere_pts	parent=probe_root	x=750	y=808	w=290	h=32	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=probe_sphere_points	align=right	scale=1
+# --- result panel (y=780, h=220) ---
+panel	id=probe_res_panel	parent=probe_root	x=20	y=780	w=1040	h=220	bg=#111827	border=#334155
+label	id=probe_res_title	parent=probe_root	x=40	y=794	w=400	h=28	text=CAPTURED RESULT	color=#94A3B8	bg=#111827	scale=2
+label	id=probe_res_valid_lbl	parent=probe_root	x=640	y=798	w=140	h=28	text=VALID	color=#64748B	bg=#111827	align=right	scale=1
+label	id=probe_res_valid_v	parent=probe_root	x=790	y=794	w=250	h=36	text=---	color=#86EFAC	bg=#052E16	border=#22C55E	bind=probe:wizard:result_valid	align=center	scale=2
+label	id=probe_rx_lbl	parent=probe_root	x=40	y=850	w=80	h=32	text=PX	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_rx_v	parent=probe_root	x=130	y=846	w=270	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=probe:wizard:result_x	align=right	scale=2
+label	id=probe_ry_lbl	parent=probe_root	x=420	y=850	w=80	h=32	text=PY	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_ry_v	parent=probe_root	x=510	y=846	w=270	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=probe:wizard:result_y	align=right	scale=2
+label	id=probe_rz_lbl	parent=probe_root	x=40	y=910	w=80	h=32	text=PZ	color=#94A3B8	bg=#111827	scale=1
+label	id=probe_rz_v	parent=probe_root	x=130	y=906	w=270	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=probe:wizard:result_z	align=right	scale=2
 
-# --- cycle library panel ---
-panel	id=probe_lib_panel	parent=probe_root	x=20	y=890	w=1040	h=400	bg=#111827	border=#334155
-label	id=probe_lib_title	parent=probe_root	x=40	y=904	w=400	h=28	text=CYCLE LIBRARY	color=#94A3B8	bg=#111827	scale=2
-button	id=probe_qualify	parent=probe_root	x=40	y=950	w=320	h=100	text=QUALIFY	bg=#0F766E	color=#FFFFFF	scale=2	focus=370
-button	id=probe_z_surface	parent=probe_root	x=380	y=950	w=320	h=100	text=Z SURFACE	bg=#0F766E	color=#FFFFFF	scale=2	focus=380
-button	id=probe_x_edge	parent=probe_root	x=720	y=950	w=320	h=100	text=X EDGE	bg=#0F766E	color=#FFFFFF	scale=2	focus=390
-button	id=probe_y_edge	parent=probe_root	x=40	y=1070	w=320	h=100	text=Y EDGE	bg=#0F766E	color=#FFFFFF	scale=2	focus=400
-button	id=probe_bore	parent=probe_root	x=380	y=1070	w=320	h=100	text=BORE XY	bg=#0F766E	color=#FFFFFF	scale=2	focus=410
-button	id=probe_pocket_cal	parent=probe_root	x=720	y=1070	w=320	h=100	text=3D POCKET	bg=#0F766E	color=#FFFFFF	scale=2	focus=415
-button	id=probe_sphere_cal	parent=probe_root	x=40	y=1190	w=1000	h=80	text=REFERENCE SPHERE	bg=#115E59	color=#FFFFFF	scale=2	focus=418
+# --- controls panel (y=1020, h=220) ---
+panel	id=probe_ctl_panel	parent=probe_root	x=20	y=1020	w=1040	h=220	bg=#111827	border=#334155
+label	id=probe_ctl_title	parent=probe_root	x=40	y=1034	w=400	h=28	text=CONTROLS	color=#94A3B8	bg=#111827	scale=2
+button	id=probe_btn_start	parent=probe_root	x=40	y=1080	w=240	h=140	text=START	bg=#15803D	color=#FFFFFF	active_if=probe:wizard:state:2	scale=3	focus=490
+button	id=probe_btn_abort	parent=probe_root	x=300	y=1080	w=240	h=140	text=ABORT	bg=#B91C1C	color=#FFFFFF	active_if=probe:wizard:state:3	scale=3	focus=492
+button	id=probe_btn_accept	parent=probe_root	x=560	y=1080	w=240	h=140	text=ACCEPT	bg=#15803D	color=#FFFFFF	active_if=probe:wizard:state:4	scale=3	focus=494
+button	id=probe_btn_reject	parent=probe_root	x=820	y=1080	w=220	h=140	text=REJECT	bg=#B45309	color=#FFFFFF	active_if=probe:wizard:state:4	scale=3	focus=496
 
-action	widget=probe_qualify	event=click	target=macro:run:probe_qualify
-action	widget=probe_z_surface	event=click	target=macro:run:probe_z_surface
-action	widget=probe_x_edge	event=click	target=macro:run:probe_x_edge
-action	widget=probe_y_edge	event=click	target=macro:run:probe_y_edge
-action	widget=probe_bore	event=click	target=macro:run:probe_bore_xy
-action	widget=probe_pocket_cal	event=click	target=macro:run:probe_calibrate_3d_pocket
-action	widget=probe_sphere_cal	event=click	target=macro:run:probe_calibrate_ref_sphere
+action	widget=probe_w_qualify	event=click	target=probe:wizard:select:qualify
+action	widget=probe_w_zsurf	event=click	target=probe:wizard:select:z
+action	widget=probe_w_edgex	event=click	target=probe:wizard:select:edgex
+action	widget=probe_w_edgey	event=click	target=probe:wizard:select:edgey
+action	widget=probe_w_bore	event=click	target=probe:wizard:select:bore
+action	widget=probe_w_pocket	event=click	target=probe:wizard:select:pocket
+action	widget=probe_w_sphere	event=click	target=probe:wizard:select:sphere
+action	widget=probe_btn_start	event=click	target=probe:wizard:start
+action	widget=probe_btn_abort	event=click	target=probe:wizard:abort
+action	widget=probe_btn_accept	event=click	target=probe:wizard:accept
+action	widget=probe_btn_reject	event=click	target=probe:wizard:reject
 include	page=bottom_nav

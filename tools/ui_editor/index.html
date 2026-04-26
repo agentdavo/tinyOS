@@ -249,7 +249,11 @@ const BIND_GROUPS = {
   Probe: ["probe_x","probe_y","probe_z","probe_done","probe_stylus",
           "probe_center_x","probe_center_y","probe_size_x","probe_size_y",
           "probe_shift_x","probe_shift_y","probe_shift_z",
-          "probe_sphere_ready","probe_sphere_points"],
+          "probe_sphere_ready","probe_sphere_points",
+          "probe:wizard:state","probe:wizard:cycle","probe:wizard:step",
+          "probe:wizard:total","probe:wizard:message",
+          "probe:wizard:result_x","probe:wizard:result_y","probe:wizard:result_z",
+          "probe:wizard:result_valid"],
   MDI: ["mdi:input","mdi:last","mdi:status","mdi:message","mdi:depth"],
   EtherCAT: ["ec:state","ec:fault","ec:slaves","ec:miss","ec:trips",
              "ec:p99","ec:max","ec:period","ec:cycles","ec:tx","ec:rx"],
@@ -272,6 +276,12 @@ const ACTION_GROUPS = {
             "program:select:4","program:select:5","program:select:6","program:select:7"],
   Homing: ["homing:axis:0","homing:axis:1","homing:axis:2","homing:axis:3",
            "homing:start","homing:abort"],
+  Probe: ["probe:wizard:select:qualify","probe:wizard:select:z",
+          "probe:wizard:select:edgex","probe:wizard:select:edgey",
+          "probe:wizard:select:bore","probe:wizard:select:pocket",
+          "probe:wizard:select:sphere",
+          "probe:wizard:start","probe:wizard:abort",
+          "probe:wizard:accept","probe:wizard:reject"],
   Macro: ["macro:prev","macro:next","macro:run","macro:abort"],
   Setup: ["setup:save","setup:load"],
   MDI: ["mdi:submit","mdi:clear","mdi:abort"],
@@ -310,6 +320,7 @@ function actionIsValid(target, doc) {
   if (target.startsWith("program:select:")) return true;
   if (target.startsWith("homing:method:")) return true;
   if (target.startsWith("homing:axis:")) return true;
+  if (target.startsWith("probe:wizard:select:")) return true;
   for (const list of Object.values(ACTION_GROUPS))
     if (list.includes(target)) return true;
   return false;

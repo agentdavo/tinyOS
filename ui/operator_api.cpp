@@ -8,6 +8,7 @@
 #include "../core.hpp"
 #include "../ethercat/master.hpp"
 #include "../automation/macro_runtime.hpp"
+#include "../automation/probe_runtime.hpp"
 #include "../machine/machine_registry.hpp"
 #include "../machine/machine_topology.hpp"
 #include "../motion/motion.hpp"
@@ -33,6 +34,7 @@ struct SpindleState {
 SpindleState g_spindle{};
 
 HomingSnapshot g_homing{};
+ProbeWizardSnapshot g_probe_wiz{};
 
 bool any_master_deadline_faulted() {
     return ethercat::g_master_a.is_deadline_faulted() ||
@@ -942,6 +944,181 @@ void abort_homing() {
     motion::g_motion.set_axis_velocity(axis_idx, 0);
     g_homing.state = HomingSnapshot::State::Idle;
     g_homing.status_message = "Aborted";
+}
+
+namespace {
+
+struct ProbeCycleSpec {
+    ProbeCycleKind kind;
+    const char* name;
+    const char* macro_id;
+    bool uses_probe_runtime;
+    int32_t total_steps;
+};
+
+constexpr ProbeCycleSpec kProbeCycles[] = {
+    {ProbeCycleKind::None,       "(none)",          nullptr,                          false, 0},
+    {ProbeCycleKind::Qualify,    "Qualify Stylus",  "probe_qualify",                  false, 4},
+    {ProbeCycleKind::ZSurface,   "Z Surface",       "probe_z_surface",                false, 3},
+    {ProbeCycleKind::EdgeX,      "X Edge",          "probe_x_edge",                   false, 3},
+    {ProbeCycleKind::EdgeY,      "Y Edge",          "probe_y_edge",                   false, 3},
+    {ProbeCycleKind::BoreCenter, "Bore Center XY",  "probe_bore_xy",                  false, 4},
+    {ProbeCycleKind::Pocket3D,   "3D Pocket",       "probe_calibrate_3d_pocket",      false, 6},
+    // Reference sphere is the only cycle with a dedicated probe::Runtime
+    // backend; the macro_id is also valid (Macro 311 wraps the same call)
+    // but the wizard prefers the direct entry to surface Stage-based
+    // progress and message text.
+    {ProbeCycleKind::Sphere,     "Reference Sphere", "probe_calibrate_ref_sphere",    true,  7},
+};
+
+const ProbeCycleSpec& probe_cycle_spec(ProbeCycleKind kind) {
+    const auto idx = static_cast<size_t>(kind);
+    if (idx >= sizeof(kProbeCycles) / sizeof(kProbeCycles[0])) return kProbeCycles[0];
+    return kProbeCycles[idx];
+}
+
+// Re-derive Running / Inspecting / Faulted from the active backend each
+// time the snapshot is read, so the wizard stays in sync without a tick
+// thread of its own.
+void refresh_probe_wizard_locked() {
+    if (any_master_deadline_faulted()) {
+        g_probe_wiz.state = ProbeWizardState::Faulted;
+        g_probe_wiz.status_message = "EtherCAT deadline-fault latched";
+        return;
+    }
+    if (g_probe_wiz.state != ProbeWizardState::Running) return;
+
+    const auto& spec = probe_cycle_spec(g_probe_wiz.cycle);
+    if (spec.uses_probe_runtime) {
+        if (probe::g_runtime.fault()) {
+            g_probe_wiz.state = ProbeWizardState::Faulted;
+            const char* m = probe::g_runtime.message();
+            g_probe_wiz.status_message = (m && *m) ? m : "Probe fault";
+            return;
+        }
+        if (!probe::g_runtime.active()) {
+            const auto& ax_x = motion::g_motion.axis(0);
+            const auto& ax_y = motion::g_motion.axis(1);
+            const auto& ax_z = motion::g_motion.axis(2);
+            g_probe_wiz.result_x = ax_x.actual_pos.load(std::memory_order_relaxed);
+            g_probe_wiz.result_y = ax_y.actual_pos.load(std::memory_order_relaxed);
+            g_probe_wiz.result_z = ax_z.actual_pos.load(std::memory_order_relaxed);
+            g_probe_wiz.result_valid = true;
+            g_probe_wiz.state = ProbeWizardState::Inspecting;
+            g_probe_wiz.status_message = "Cycle complete";
+            return;
+        }
+        const char* m = probe::g_runtime.message();
+        if (m && *m) g_probe_wiz.status_message = m;
+    } else if (spec.macro_id) {
+        const auto& ch = macros::g_runtime.channel_state(0);
+        if (ch.fault) {
+            g_probe_wiz.state = ProbeWizardState::Faulted;
+            g_probe_wiz.status_message = ch.message[0] ? ch.message : "Macro fault";
+            return;
+        }
+        g_probe_wiz.step = static_cast<int32_t>(ch.step_index);
+        if (!ch.active) {
+            const auto& ax_x = motion::g_motion.axis(0);
+            const auto& ax_y = motion::g_motion.axis(1);
+            const auto& ax_z = motion::g_motion.axis(2);
+            g_probe_wiz.result_x = ax_x.actual_pos.load(std::memory_order_relaxed);
+            g_probe_wiz.result_y = ax_y.actual_pos.load(std::memory_order_relaxed);
+            g_probe_wiz.result_z = ax_z.actual_pos.load(std::memory_order_relaxed);
+            g_probe_wiz.result_valid = true;
+            g_probe_wiz.state = ProbeWizardState::Inspecting;
+            g_probe_wiz.status_message = "Cycle complete";
+            return;
+        }
+        if (ch.message[0]) g_probe_wiz.status_message = ch.message;
+    }
+}
+
+}  // namespace
+
+ProbeWizardSnapshot probe_wizard_snapshot() {
+    core::ScopedLock lock(g_lock);
+    refresh_probe_wizard_locked();
+    return g_probe_wiz;
+}
+
+void probe_wizard_select(ProbeCycleKind kind) {
+    core::ScopedLock lock(g_lock);
+    g_probe_wiz.cycle = kind;
+    const auto& spec = probe_cycle_spec(kind);
+    g_probe_wiz.cycle_name = spec.name;
+    g_probe_wiz.total_steps = spec.total_steps;
+    g_probe_wiz.step = 0;
+    if (kind == ProbeCycleKind::None) {
+        g_probe_wiz.state = ProbeWizardState::Selecting;
+        g_probe_wiz.status_message = "Pick a cycle";
+    } else {
+        g_probe_wiz.state = ProbeWizardState::Confirming;
+        g_probe_wiz.status_message = "Confirm setup, then START";
+    }
+}
+
+void probe_wizard_start() {
+    if (any_master_deadline_faulted()) {
+        core::ScopedLock lock(g_lock);
+        g_probe_wiz.state = ProbeWizardState::Faulted;
+        g_probe_wiz.status_message = "EtherCAT deadline-fault latched";
+        return;
+    }
+    core::ScopedLock lock(g_lock);
+    if (g_probe_wiz.state != ProbeWizardState::Confirming &&
+        g_probe_wiz.state != ProbeWizardState::Inspecting) {
+        g_probe_wiz.status_message = "Pick a cycle first";
+        return;
+    }
+    const auto& spec = probe_cycle_spec(g_probe_wiz.cycle);
+    g_probe_wiz.result_valid = false;
+    g_probe_wiz.step = 0;
+    bool launched = false;
+    if (spec.uses_probe_runtime) {
+        launched = probe::g_runtime.start_reference_sphere();
+    } else if (spec.macro_id) {
+        launched = macros::g_runtime.start_by_id(0, spec.macro_id);
+    }
+    if (!launched) {
+        g_probe_wiz.state = ProbeWizardState::Faulted;
+        g_probe_wiz.status_message = (spec.kind == ProbeCycleKind::None)
+            ? "cycle not implemented"
+            : "Backend refused start (busy or missing)";
+        return;
+    }
+    g_probe_wiz.state = ProbeWizardState::Running;
+    g_probe_wiz.status_message = "Cycle running";
+}
+
+void probe_wizard_abort() {
+    core::ScopedLock lock(g_lock);
+    const auto& spec = probe_cycle_spec(g_probe_wiz.cycle);
+    if (spec.macro_id) (void)macros::g_runtime.stop(0);
+    // probe::Runtime has no explicit abort hook; zero the active axes so
+    // motion stops. The next start_reference_sphere() resets the runtime.
+    motion::g_motion.set_axis_velocity(0, 0);
+    motion::g_motion.set_axis_velocity(1, 0);
+    motion::g_motion.set_axis_velocity(2, 0);
+    g_probe_wiz.state = ProbeWizardState::Idle;
+    g_probe_wiz.status_message = "Aborted";
+    g_probe_wiz.result_valid = false;
+    g_probe_wiz.step = 0;
+}
+
+void probe_wizard_accept() {
+    core::ScopedLock lock(g_lock);
+    if (g_probe_wiz.state != ProbeWizardState::Inspecting) return;
+    g_probe_wiz.state = ProbeWizardState::Idle;
+    g_probe_wiz.status_message = "Accepted";
+}
+
+void probe_wizard_reject() {
+    core::ScopedLock lock(g_lock);
+    if (g_probe_wiz.state != ProbeWizardState::Inspecting) return;
+    g_probe_wiz.result_valid = false;
+    g_probe_wiz.state = ProbeWizardState::Idle;
+    g_probe_wiz.status_message = "Rejected";
 }
 
 EthercatSnapshot ethercat_snapshot() {
