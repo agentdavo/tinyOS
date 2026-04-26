@@ -103,6 +103,16 @@
     cursor: move; user-select: none; font-family: monospace; }
   .w.sel { outline: 2px solid #38bdf8; outline-offset: 0; z-index: 10; }
   .w.included { opacity: 0.35; pointer-events: none; filter: grayscale(0.2); }
+  /* Active-tab "you are here" hint — mirrors the kernel renderer's
+     goto-self brighten + white border treatment so screenshots match what
+     gets painted on the framebuffer. Applied in both editor and
+     canvas_only modes. */
+  .w.current-tab { outline: 3px solid #ffffff; outline-offset: 2px;
+                   filter: brightness(1.4); }
+  /* In canvas_only screenshot mode, included pages render at full
+     opacity and full colour so the bottom_nav (which every page includes)
+     looks identical to the kernel's framebuffer output. */
+  body.canvas-only-mode .w.included { opacity: 1 !important; filter: none !important; pointer-events: auto; }
   .handle { position: absolute; width: 10px; height: 10px; background: #38bdf8;
     border: 1px solid #0b1220; z-index: 20; }
   .handle.nw { left: -5px; top: -5px; cursor: nwse-resize; }
@@ -961,26 +971,44 @@ function renderCanvas() {
   canvas.innerHTML = "";
   canvas.style.transform = `scale(${zoom})`;
   canvas.parentElement.style.setProperty("--zoom", zoom);
-  // include dimmed widgets from included pages first (behind)
-  for (const inc of includesOnPage(activePage())) {
+  // Build widget_id -> goto-target map across the active page + every page
+  // it includes, so a button whose goto: target is the active page id can
+  // be flagged with .current-tab in renderWidget. This is what makes the
+  // bottom_nav's "you are here" highlight visible in the editor preview
+  // (matching the kernel renderer change in commit b708ba7).
+  const cur = activePage();
+  const gotoMap = {};
+  const pickActions = (page) => {
+    for (const r of page.records) {
+      if (r.kind === "action" && r.fields.target && r.fields.target.startsWith("goto:")) {
+        gotoMap[r.fields.widget] = r.fields.target.slice(5);
+      }
+    }
+  };
+  for (const inc of includesOnPage(cur)) {
     const target = pageById(inc.fields.page);
     if (!target) continue;
-    for (const r of widgetsOnPage(target)) renderWidget(r, true, -1);
+    pickActions(target);
+    for (const r of widgetsOnPage(target)) renderWidget(r, true, -1, gotoMap);
   }
-  const widgets = widgetsOnPage(activePage());
+  pickActions(cur);
+  const widgets = widgetsOnPage(cur);
   widgets.forEach((r, i) => {
-    const recIndex = activePage().records.indexOf(r);
-    renderWidget(r, false, recIndex);
+    const recIndex = cur.records.indexOf(r);
+    renderWidget(r, false, recIndex, gotoMap);
   });
 }
 
-function renderWidget(r, included, recIndex) {
+function renderWidget(r, included, recIndex, gotoMap) {
   const f = r.fields;
   const x = +f.x || 0, y = +f.y || 0;
   const w = +f.w || 100, h = +f.h || (r.kind === "label" ? 24 : 40);
   const el = document.createElement("div");
   el.className = "w" + (included ? " included" : "");
   if (!included && recIndex === selectedIdx) el.classList.add("sel");
+  if (gotoMap && f.id && gotoMap[f.id] === activePage().id) {
+    el.classList.add("current-tab");
+  }
   el.style.left = x + "px"; el.style.top = y + "px";
   el.style.width = w + "px"; el.style.height = h + "px";
   const bg = resolveColor(f.bg, r.kind === "button" ? "#374151" : "transparent");
@@ -1603,6 +1631,7 @@ async function bootFromUrl() {
   if (canvasOnly) {
     // Hide editor chrome and unzoom the canvas so a 1080x1920 viewport is
     // exactly one page render. Used by tools/ui_editor/screenshot.sh.
+    document.body.classList.add("canvas-only-mode");
     const css = document.createElement("style");
     css.textContent = `
       body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
