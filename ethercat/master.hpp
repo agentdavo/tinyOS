@@ -39,6 +39,14 @@ struct Stats {
     std::atomic<uint32_t> esm_timeouts{0};
     std::atomic<uint32_t> sdo_tx{0};
     std::atomic<uint32_t> deadline_trips{0}; // times the consecutive-miss threshold tripped
+
+    // Distributed Clocks drift telemetry — populated by the periodic ESC
+    // reg-0x0920 sampler in run_loop. Peak drift is signed-symmetric
+    // (largest |delta| seen between consecutive samples for any slave),
+    // tracked as an unsigned magnitude in nanoseconds.
+    std::atomic<uint32_t> dc_sync_samples{0};
+    std::atomic<uint64_t> dc_drift_max_ns{0};
+    std::atomic<uint32_t> dc_sync_trips{0};
 };
 
 class Master {
@@ -246,6 +254,27 @@ public:
     // but does not double-broadcast.
     void trip_fault(const char* reason) noexcept;
 
+    // DC-sync drift fault latch. Mirrors the deadline-fault contract: the
+    // cyclic loop polls one DC-enabled slave's ESC reg 0x0920 (SYNC0
+    // actual time) every dc_drift_check_period_us_; if the drift between
+    // consecutive samples for the SAME slave exceeds dc_drift_threshold_ns_
+    // for CONSECUTIVE_DRIFT_THRESHOLD samples in a row, trip_fault fires.
+    // 100 ms cadence amortises the blocking ESC read (one per cycle, not
+    // per slave) while still detecting drift within ~300 ms. 5 µs threshold
+    // is tight enough to catch real DC slope error but wide enough to
+    // absorb single-cycle scheduler jitter on the master side.
+    static constexpr uint32_t CONSECUTIVE_DRIFT_THRESHOLD = 3;
+    bool is_dc_sync_faulted() const noexcept {
+        return dc_sync_fault_.load(std::memory_order_acquire);
+    }
+    void clear_dc_sync_fault() noexcept {
+        dc_sync_fault_.store(false, std::memory_order_release);
+        consecutive_drift_misses_ = 0;
+    }
+    int64_t last_dc_drift_ns() const noexcept {
+        return last_dc_drift_ns_.load(std::memory_order_acquire);
+    }
+
     // Cycle-latency telemetry. `cycle` measures whole-iteration duration;
     // the sub-histograms split it into the send-probe / ESM / LRW / wait
     // phases so you can see where budget goes.
@@ -290,6 +319,22 @@ private:
     uint32_t consecutive_misses_ = 0;
     std::atomic<bool> deadline_fault_{false};
     bool deadline_fault_logged_ = false;
+
+    // DC-sync drift sampler state. last_sample_us_ gates how often we pay
+    // the cost of a blocking ESC read; dc_round_robin_idx_ ensures only one
+    // slave per sampling tick gets read, so a 64-slave bus still finishes
+    // each read inside the 250 µs cycle budget. Threshold + cadence are
+    // tunable here without touching the run_loop hook.
+    static constexpr uint32_t DC_DRIFT_CHECK_PERIOD_US = 100000; // 100 ms
+    static constexpr uint64_t DC_DRIFT_THRESHOLD_NS    = 5000;   // 5 µs
+    uint32_t dc_drift_check_period_us_ = DC_DRIFT_CHECK_PERIOD_US;
+    uint64_t dc_drift_threshold_ns_    = DC_DRIFT_THRESHOLD_NS;
+    uint32_t consecutive_drift_misses_ = 0;
+    std::atomic<bool>    dc_sync_fault_{false};
+    bool                 dc_sync_fault_logged_ = false;
+    uint64_t             last_dc_sample_us_    = 0;
+    std::atomic<int64_t> last_dc_drift_ns_{0};
+    size_t               dc_round_robin_idx_   = 0;
 
     // --- SDO upload state (task 1.2 + segmented follow-up) ----------------
     // Linear state machine driving a single mailbox exchange at a time.
@@ -353,6 +398,7 @@ private:
     void discover_slaves();
     void cycle_lrw();
     void on_deadline_fault() noexcept;
+    void service_dc_drift() noexcept;
     void service_sdo_upload() noexcept;  // task 1.2 cycle-loop hook
     void service_esc_read() noexcept;
     bool send_frame(const uint8_t* buf, size_t len) noexcept;

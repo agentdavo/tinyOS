@@ -26,6 +26,17 @@ enum class Mode : uint8_t {
     Alarm,
 };
 
+// Operator-declared intent. Distinct from `Mode`, which is the derived
+// machine state. Today the buttons set this and the dashboard displays
+// it; nothing actually gates behaviour on the value yet — see
+// set_operator_mode in operator_api.cpp for the enforcement TODO.
+enum class OperatorMode : uint8_t {
+    Auto = 0,
+    MDI,
+    Jog,
+    Setup,
+};
+
 struct MachineSnapshot {
     PageId page = PageId::Position;
     Mode mode = Mode::Ready;
@@ -37,6 +48,12 @@ struct MachineSnapshot {
     int32_t cmd_pos[4]{0, 0, 0, 0};            // commanded setpoint
     int32_t dtg[4]{0, 0, 0, 0};                // distance-to-go (target - actual)
     bool axis_homed[4]{false, false, false, false};
+    // True when the axis's actual position is within 10% of either soft
+    // limit. Drives the DRO digit colour (red) on the dashboard. Stays
+    // false until the operator commands software limits via
+    // axis_sw_limits — soft limits are not auto-populated.
+    bool axis_near_limit[4]{false, false, false, false};
+    OperatorMode operator_mode = OperatorMode::Jog;
     uint32_t cycle_progress = 0;
     uint32_t torque = 0;
     int32_t feed = 0;
@@ -84,6 +101,14 @@ struct EthercatSnapshot {
     uint32_t period_us = 0;
     size_t slave_count = 0;
     EthercatSlaveSnapshot slaves[6]{};
+    // DC-sync drift telemetry. last_dc_drift_ns is a signed delta between
+    // consecutive ESC reg 0x0920 samples for one slave; dc_sync_faulted
+    // latches when consecutive samples exceed the master's drift threshold.
+    int64_t  last_dc_drift_ns = 0;
+    uint64_t dc_drift_max_ns  = 0;
+    uint32_t dc_sync_samples  = 0;
+    uint32_t dc_sync_trips    = 0;
+    bool     dc_sync_faulted  = false;
 };
 
 struct OffsetsSnapshot {
@@ -252,6 +277,7 @@ void stop_continuous_jog(uint32_t axis);                  // release: drives axi
 void set_selected_axis(uint32_t idx);    // explicit axis pick (X=0..A=3), no rotation
 void set_jog_increment(int32_t counts);  // clamps to [1, 1_000_000]
 void set_jog_feed_cps(int32_t cps);      // clamps to [1, 10_000_000]
+void set_operator_mode(OperatorMode mode);
 void toggle_view_toolpath();             // machine-view overlay: program path
 void toggle_view_toolpods();             // machine-view overlay: toolpod markers
 void home_selected();

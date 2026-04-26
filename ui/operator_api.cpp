@@ -193,6 +193,21 @@ void refresh_machine_snapshot_locked() {
         g_machine.cmd_pos[i] = tgt;
         g_machine.dtg[i] = tgt - act;
         g_machine.axis_homed[i] = axis_homed_locked(i);
+        // Soft-limit proximity: red DRO when within 10% of either edge.
+        // Skips when the operator hasn't pushed limits (neg == pos == 0).
+        const int32_t neg = ax.sw_limit_neg_counts;
+        const int32_t pos = ax.sw_limit_pos_counts;
+        bool near = false;
+        if (pos > neg) {
+            const int64_t span = static_cast<int64_t>(pos) - neg;
+            const int64_t margin = span / 10;
+            if (margin > 0) {
+                const int64_t lo_dist = static_cast<int64_t>(act) - neg;
+                const int64_t hi_dist = static_cast<int64_t>(pos) - act;
+                near = (lo_dist < margin) || (hi_dist < margin);
+            }
+        }
+        g_machine.axis_near_limit[i] = near;
     }
     g_machine.mode = current_mode_locked();
     g_machine.hold = (g_machine.mode == Mode::Hold);
@@ -265,6 +280,14 @@ void set_jog_feed_cps(int32_t cps) {
     if (cps < 1) cps = 1;
     if (cps > 10000000) cps = 10000000;
     g_machine.jog_feed_cps = cps;
+}
+
+void set_operator_mode(OperatorMode mode) {
+    // TODO: gate cycle-start / MDI submit / jog on the active mode once
+    // the surrounding subsystems agree on a mode-state machine. For now
+    // this is a declared intent for the dashboard mode buttons only.
+    core::ScopedLock lock(g_lock);
+    g_machine.operator_mode = mode;
 }
 
 void start_continuous_jog(uint32_t axis, int32_t sign) {
@@ -817,6 +840,11 @@ EthercatSnapshot ethercat_snapshot() {
     snap.esm_timeouts = master->stats().esm_timeouts.load(std::memory_order_relaxed);
     snap.deadline_trips = master->stats().deadline_trips.load(std::memory_order_relaxed);
     snap.deadline_fault = master->is_deadline_faulted();
+    snap.last_dc_drift_ns = master->last_dc_drift_ns();
+    snap.dc_drift_max_ns  = master->stats().dc_drift_max_ns.load(std::memory_order_relaxed);
+    snap.dc_sync_samples  = master->stats().dc_sync_samples.load(std::memory_order_relaxed);
+    snap.dc_sync_trips    = master->stats().dc_sync_trips.load(std::memory_order_relaxed);
+    snap.dc_sync_faulted  = master->is_dc_sync_faulted();
     snap.cycle_p99_us = master->hist_cycle().percentile(99);
     snap.cycle_max_us = master->hist_cycle().percentile(100);
     snap.period_us = master->period_us();

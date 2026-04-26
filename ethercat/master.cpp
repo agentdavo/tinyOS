@@ -903,6 +903,18 @@ size_t Master::configure_dc_sync0(uint16_t station_addr,
     put_u16_le(buf2, assign_activate);
     if (write_fpwr(REG_DC_SYNC_ACT, buf2, 2)) ++sent;
 
+    // Latch dc_enabled on the matching slave so the cyclic drift sampler
+    // knows to round-robin this slave. Done last so a partial config
+    // (failed FPWR) doesn't enable feedback against a half-armed slave.
+    for (size_t i = 0; i < slave_count_; ++i) {
+        if (slaves_[i].station_addr == station_addr) {
+            slaves_[i].dc_enabled       = true;
+            slaves_[i].dc_have_baseline = false;
+            slaves_[i].dc_last_offset_ns = 0;
+            break;
+        }
+    }
+
     return sent;
 }
 
@@ -1021,6 +1033,110 @@ void Master::advance_state() {
     step_esm();
 }
 
+void Master::service_dc_drift() noexcept {
+    // ESC reg 0x0920: SYNC0 actual time — local DC system time (ns) at
+    // which the slave's last SYNC0 pulse fired. Compared against the
+    // master's wall clock, the offset (master_ns − slave_0x0920) should
+    // stay constant if the two clocks track. Drift between consecutive
+    // samples for the SAME slave is the signal we monitor.
+    constexpr uint16_t REG_DC_SYNC0_TIME = 0x0920;
+
+    // Don't re-sample faster than the configured cadence. A blocking
+    // ESC read costs up to 100 ms wall-clock in the worst case (timeout
+    // arg below), so we want this to be rare relative to the cycle.
+    if (slave_count_ == 0 || dc_sync_fault_.load(std::memory_order_relaxed)) return;
+    const uint64_t now = now_us();
+    if (now - last_dc_sample_us_ < dc_drift_check_period_us_) return;
+    last_dc_sample_us_ = now;
+
+    // Pick the next DC-enabled slave round-robin. Caps the per-cycle cost
+    // at one ESC read regardless of how many slaves are on the bus.
+    const size_t start = dc_round_robin_idx_;
+    size_t picked = MAX_SLAVES;
+    for (size_t step = 0; step < slave_count_; ++step) {
+        const size_t idx = (start + step) % slave_count_;
+        if (slaves_[idx].dc_enabled && slaves_[idx].present) {
+            picked = idx;
+            dc_round_robin_idx_ = (idx + 1) % slave_count_;
+            break;
+        }
+    }
+    if (picked == MAX_SLAVES) return;
+
+    auto& s = slaves_[picked];
+
+    // 10 ms timeout: well under the 100 ms cadence so a stuck slave
+    // can't stall the next sample, and well over the median ESC FPRD
+    // round-trip (single-digit µs on a quiet bus).
+    uint8_t raw[8] = {};
+    if (!read_esc_register(s.station_addr, REG_DC_SYNC0_TIME, raw, sizeof(raw), 10000)) {
+        return;
+    }
+    uint64_t slave_ns = 0;
+    for (uint8_t i = 0; i < sizeof(raw); ++i) {
+        slave_ns |= static_cast<uint64_t>(raw[i]) << (8u * i);
+    }
+
+    const uint64_t master_ns = now_us() * 1000ULL;
+    // Offset between master wall clock and slave's last-SYNC0 timestamp.
+    // The absolute value is meaningless (start of epoch differs), but
+    // its drift across consecutive samples is the DC slope error.
+    const uint64_t offset = master_ns - slave_ns;
+
+    stats_.dc_sync_samples.fetch_add(1, std::memory_order_relaxed);
+
+    if (!s.dc_have_baseline) {
+        // First sample for this slave is the baseline; drift requires two.
+        s.dc_last_offset_ns  = offset;
+        s.dc_have_baseline   = true;
+        return;
+    }
+
+    const int64_t drift_ns = static_cast<int64_t>(offset) - static_cast<int64_t>(s.dc_last_offset_ns);
+    s.dc_last_offset_ns = offset;
+    last_dc_drift_ns_.store(drift_ns, std::memory_order_release);
+
+    const uint64_t mag = drift_ns < 0 ? static_cast<uint64_t>(-drift_ns)
+                                      : static_cast<uint64_t>(drift_ns);
+
+    // Track peak observed drift for diagnostics. Relaxed CAS loop — only
+    // one writer (this thread), readers are cosmetic.
+    uint64_t prev_max = stats_.dc_drift_max_ns.load(std::memory_order_relaxed);
+    while (mag > prev_max
+           && !stats_.dc_drift_max_ns.compare_exchange_weak(prev_max, mag,
+                                                            std::memory_order_relaxed)) {
+    }
+
+    // Single-line periodic log so a CI run can `grep "dc_drift"` and watch
+    // the bus settle. Cheap (one early_uart_puts per 100 ms per master).
+    {
+        char buf[96];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "[ec%d] dc_drift slave=0x%04x ns=%lld\n",
+            id_, (unsigned)s.station_addr, (long long)drift_ns);
+        early_uart_puts(buf);
+    }
+
+    if (mag > dc_drift_threshold_ns_) {
+        if (++consecutive_drift_misses_ >= CONSECUTIVE_DRIFT_THRESHOLD
+            && !dc_sync_fault_.load(std::memory_order_relaxed)) {
+            dc_sync_fault_.store(true, std::memory_order_release);
+            stats_.dc_sync_trips.fetch_add(1, std::memory_order_relaxed);
+            if (!dc_sync_fault_logged_) {
+                dc_sync_fault_logged_ = true;
+                char rbuf[96];
+                kernel::util::k_snprintf(rbuf, sizeof(rbuf),
+                    "DC sync drift x%u (last=%lld ns slave=0x%04x)",
+                    (unsigned)consecutive_drift_misses_,
+                    (long long)drift_ns, (unsigned)s.station_addr);
+                trip_fault(rbuf);
+            }
+        }
+    } else {
+        consecutive_drift_misses_ = 0;
+    }
+}
+
 void Master::run_loop() {
     auto* t = kernel::g_platform->get_timer_ops();
     uint64_t next_us = t->get_system_time_us();
@@ -1072,6 +1188,14 @@ void Master::run_loop() {
         // SafeOp too — that's where 1.3/1.4 need it.
         service_sdo_upload();
         service_esc_read();
+
+        // Periodic DC-sync drift sampler. Self-rate-limits to
+        // dc_drift_check_period_us_ and only reads one slave per tick, so
+        // the cycle budget here is dominated by a single FPRD round-trip
+        // when a sample is due (well under POLL_RX_SAFETY_MARGIN_US slack).
+        if (state_.load(std::memory_order_acquire) == State::Op) {
+            service_dc_drift();
+        }
 
         // Drain whatever the NIC queued, but stop early if we're about to
         // overshoot the cycle deadline — undrained frames stay in the NIC

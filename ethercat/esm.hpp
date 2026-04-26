@@ -67,6 +67,16 @@ struct SlaveInfo {
     // don't currently decode into `drive`. Updated in cycle_lrw()/RX.
     std::array<uint8_t, PDO_SLOT_BYTES> rx_process_data{};
     std::array<uint8_t, PDO_SLOT_BYTES> tx_process_data{};
+
+    // Latched true by Master::configure_dc_sync0 once a SYNC0 cycle has been
+    // programmed for this slave. Owned by Master so the cyclic DC drift
+    // sampler knows which slaves to round-robin.
+    bool     dc_enabled    = false;
+    // Last sample of (master wall-clock ns − ESC reg 0x0920). Holding this
+    // here (vs. a parallel array on Master) keeps per-slave DC bookkeeping
+    // colocated with the rest of the slave's identity.
+    uint64_t dc_last_offset_ns  = 0;
+    bool     dc_have_baseline   = false;
 };
 
 // ESM step phases used by the master cyclic loop.
