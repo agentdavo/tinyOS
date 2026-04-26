@@ -440,6 +440,27 @@ enum class BindKind : uint8_t {
     Alarm3Id, Alarm3Severity, Alarm3Axis, Alarm3Message, Alarm3Time,
     AlarmActiveCount,
     AlarmHistoryCount,
+    // Per-slot WCS readouts (G54..G59 X/Y/Z/A) — 24 entries laid out as
+    // axis-major within each slot to keep the switch arithmetic trivial:
+    // (bind - WorkOffset0X) / 4 = slot, ... % 4 = axis.
+    WorkOffset0X, WorkOffset0Y, WorkOffset0Z, WorkOffset0A,
+    WorkOffset1X, WorkOffset1Y, WorkOffset1Z, WorkOffset1A,
+    WorkOffset2X, WorkOffset2Y, WorkOffset2Z, WorkOffset2A,
+    WorkOffset3X, WorkOffset3Y, WorkOffset3Z, WorkOffset3A,
+    WorkOffset4X, WorkOffset4Y, WorkOffset4Z, WorkOffset4A,
+    WorkOffset5X, WorkOffset5Y, WorkOffset5Z, WorkOffset5A,
+    // Per-slot tool table (T1..T8) — same layout: slot-major, three
+    // fields per slot (length, radius, wear).
+    Tool0Length, Tool0Radius, Tool0Wear,
+    Tool1Length, Tool1Radius, Tool1Wear,
+    Tool2Length, Tool2Radius, Tool2Wear,
+    Tool3Length, Tool3Radius, Tool3Wear,
+    Tool4Length, Tool4Radius, Tool4Wear,
+    Tool5Length, Tool5Radius, Tool5Wear,
+    Tool6Length, Tool6Radius, Tool6Wear,
+    Tool7Length, Tool7Radius, Tool7Wear,
+    AxisXNearLimit, AxisYNearLimit, AxisZNearLimit, AxisANearLimit,
+    OperatorMode,
 };
 
 BindKind parse_bind(const char* s) {
@@ -538,6 +559,42 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "ec:rx")     == 0) return BindKind::EcRxFrames;
     if (strcmp(s, "alarm:active_count")  == 0) return BindKind::AlarmActiveCount;
     if (strcmp(s, "alarm:history_count") == 0) return BindKind::AlarmHistoryCount;
+    // Per-slot WCS / tool tokens. Match exact strings; any typo falls
+    // through to BindKind::None so the editor's catalogue stays the
+    // single source of truth for valid names.
+    {
+        static const struct { const char* s; BindKind b; } kWcs[] = {
+            {"wcs:G54:x", BindKind::WorkOffset0X}, {"wcs:G54:y", BindKind::WorkOffset0Y},
+            {"wcs:G54:z", BindKind::WorkOffset0Z}, {"wcs:G54:a", BindKind::WorkOffset0A},
+            {"wcs:G55:x", BindKind::WorkOffset1X}, {"wcs:G55:y", BindKind::WorkOffset1Y},
+            {"wcs:G55:z", BindKind::WorkOffset1Z}, {"wcs:G55:a", BindKind::WorkOffset1A},
+            {"wcs:G56:x", BindKind::WorkOffset2X}, {"wcs:G56:y", BindKind::WorkOffset2Y},
+            {"wcs:G56:z", BindKind::WorkOffset2Z}, {"wcs:G56:a", BindKind::WorkOffset2A},
+            {"wcs:G57:x", BindKind::WorkOffset3X}, {"wcs:G57:y", BindKind::WorkOffset3Y},
+            {"wcs:G57:z", BindKind::WorkOffset3Z}, {"wcs:G57:a", BindKind::WorkOffset3A},
+            {"wcs:G58:x", BindKind::WorkOffset4X}, {"wcs:G58:y", BindKind::WorkOffset4Y},
+            {"wcs:G58:z", BindKind::WorkOffset4Z}, {"wcs:G58:a", BindKind::WorkOffset4A},
+            {"wcs:G59:x", BindKind::WorkOffset5X}, {"wcs:G59:y", BindKind::WorkOffset5Y},
+            {"wcs:G59:z", BindKind::WorkOffset5Z}, {"wcs:G59:a", BindKind::WorkOffset5A},
+        };
+        for (const auto& e : kWcs) if (strcmp(s, e.s) == 0) return e.b;
+        static const struct { const char* s; BindKind b; } kTools[] = {
+            {"tool:T1:length", BindKind::Tool0Length}, {"tool:T1:radius", BindKind::Tool0Radius}, {"tool:T1:wear", BindKind::Tool0Wear},
+            {"tool:T2:length", BindKind::Tool1Length}, {"tool:T2:radius", BindKind::Tool1Radius}, {"tool:T2:wear", BindKind::Tool1Wear},
+            {"tool:T3:length", BindKind::Tool2Length}, {"tool:T3:radius", BindKind::Tool2Radius}, {"tool:T3:wear", BindKind::Tool2Wear},
+            {"tool:T4:length", BindKind::Tool3Length}, {"tool:T4:radius", BindKind::Tool3Radius}, {"tool:T4:wear", BindKind::Tool3Wear},
+            {"tool:T5:length", BindKind::Tool4Length}, {"tool:T5:radius", BindKind::Tool4Radius}, {"tool:T5:wear", BindKind::Tool4Wear},
+            {"tool:T6:length", BindKind::Tool5Length}, {"tool:T6:radius", BindKind::Tool5Radius}, {"tool:T6:wear", BindKind::Tool5Wear},
+            {"tool:T7:length", BindKind::Tool6Length}, {"tool:T7:radius", BindKind::Tool6Radius}, {"tool:T7:wear", BindKind::Tool6Wear},
+            {"tool:T8:length", BindKind::Tool7Length}, {"tool:T8:radius", BindKind::Tool7Radius}, {"tool:T8:wear", BindKind::Tool7Wear},
+        };
+        for (const auto& e : kTools) if (strcmp(s, e.s) == 0) return e.b;
+    }
+    if (strcmp(s, "axis:x:near_limit") == 0) return BindKind::AxisXNearLimit;
+    if (strcmp(s, "axis:y:near_limit") == 0) return BindKind::AxisYNearLimit;
+    if (strcmp(s, "axis:z:near_limit") == 0) return BindKind::AxisZNearLimit;
+    if (strcmp(s, "axis:a:near_limit") == 0) return BindKind::AxisANearLimit;
+    if (strcmp(s, "operator_mode") == 0) return BindKind::OperatorMode;
     if (strcmp(s, "alarm:0:id")   == 0) return BindKind::Alarm0Id;
     if (strcmp(s, "alarm:0:sev")  == 0) return BindKind::Alarm0Severity;
     if (strcmp(s, "alarm:0:axis") == 0) return BindKind::Alarm0Axis;
@@ -841,6 +898,53 @@ int32_t bound_numeric_value(BindKind bind) {
             if (row < 0 || static_cast<size_t>(row) >= snap.active_count) return 0;
             return static_cast<int32_t>(snap.active[row].timestamp_ns / 1000000000ULL);
         }
+        case BindKind::WorkOffset0X: case BindKind::WorkOffset0Y:
+        case BindKind::WorkOffset0Z: case BindKind::WorkOffset0A:
+        case BindKind::WorkOffset1X: case BindKind::WorkOffset1Y:
+        case BindKind::WorkOffset1Z: case BindKind::WorkOffset1A:
+        case BindKind::WorkOffset2X: case BindKind::WorkOffset2Y:
+        case BindKind::WorkOffset2Z: case BindKind::WorkOffset2A:
+        case BindKind::WorkOffset3X: case BindKind::WorkOffset3Y:
+        case BindKind::WorkOffset3Z: case BindKind::WorkOffset3A:
+        case BindKind::WorkOffset4X: case BindKind::WorkOffset4Y:
+        case BindKind::WorkOffset4Z: case BindKind::WorkOffset4A:
+        case BindKind::WorkOffset5X: case BindKind::WorkOffset5Y:
+        case BindKind::WorkOffset5Z: case BindKind::WorkOffset5A: {
+            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const int delta = static_cast<int>(bind) - static_cast<int>(BindKind::WorkOffset0X);
+            const size_t slot = static_cast<size_t>(delta / 4);
+            const size_t axis = static_cast<size_t>(delta % 4);
+            if (slot >= offsets.work.size()) return 0;
+            return static_cast<int32_t>(offsets.work[slot].axis[axis] * 1000.0f);
+        }
+        case BindKind::Tool0Length: case BindKind::Tool0Radius: case BindKind::Tool0Wear:
+        case BindKind::Tool1Length: case BindKind::Tool1Radius: case BindKind::Tool1Wear:
+        case BindKind::Tool2Length: case BindKind::Tool2Radius: case BindKind::Tool2Wear:
+        case BindKind::Tool3Length: case BindKind::Tool3Radius: case BindKind::Tool3Wear:
+        case BindKind::Tool4Length: case BindKind::Tool4Radius: case BindKind::Tool4Wear:
+        case BindKind::Tool5Length: case BindKind::Tool5Radius: case BindKind::Tool5Wear:
+        case BindKind::Tool6Length: case BindKind::Tool6Radius: case BindKind::Tool6Wear:
+        case BindKind::Tool7Length: case BindKind::Tool7Radius: case BindKind::Tool7Wear: {
+            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const int delta = static_cast<int>(bind) - static_cast<int>(BindKind::Tool0Length);
+            const size_t slot = static_cast<size_t>(delta / 3);
+            const int field = delta % 3;
+            if (slot >= offsets.tools.size()) return 0;
+            const float v = field == 0 ? offsets.tools[slot].length :
+                            field == 1 ? offsets.tools[slot].radius :
+                                         offsets.tools[slot].wear;
+            return static_cast<int32_t>(v * 1000.0f);
+        }
+        case BindKind::AxisXNearLimit: case BindKind::AxisYNearLimit:
+        case BindKind::AxisZNearLimit: case BindKind::AxisANearLimit: {
+            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const int idx = static_cast<int>(bind) - static_cast<int>(BindKind::AxisXNearLimit);
+            return snap.axis_near_limit[idx] ? 1 : 0;
+        }
+        case BindKind::OperatorMode: {
+            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            return static_cast<int32_t>(snap.operator_mode);
+        }
         default: return 0;
     }
 }
@@ -907,9 +1011,35 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         case BindKind::ProbeSizeY:
         case BindKind::ProbeShiftX:
         case BindKind::ProbeShiftY:
-        case BindKind::ProbeShiftZ: {
+        case BindKind::ProbeShiftZ:
+        case BindKind::WorkOffset0X: case BindKind::WorkOffset0Y:
+        case BindKind::WorkOffset0Z: case BindKind::WorkOffset0A:
+        case BindKind::WorkOffset1X: case BindKind::WorkOffset1Y:
+        case BindKind::WorkOffset1Z: case BindKind::WorkOffset1A:
+        case BindKind::WorkOffset2X: case BindKind::WorkOffset2Y:
+        case BindKind::WorkOffset2Z: case BindKind::WorkOffset2A:
+        case BindKind::WorkOffset3X: case BindKind::WorkOffset3Y:
+        case BindKind::WorkOffset3Z: case BindKind::WorkOffset3A:
+        case BindKind::WorkOffset4X: case BindKind::WorkOffset4Y:
+        case BindKind::WorkOffset4Z: case BindKind::WorkOffset4A:
+        case BindKind::WorkOffset5X: case BindKind::WorkOffset5Y:
+        case BindKind::WorkOffset5Z: case BindKind::WorkOffset5A:
+        case BindKind::Tool0Length: case BindKind::Tool0Radius: case BindKind::Tool0Wear:
+        case BindKind::Tool1Length: case BindKind::Tool1Radius: case BindKind::Tool1Wear:
+        case BindKind::Tool2Length: case BindKind::Tool2Radius: case BindKind::Tool2Wear:
+        case BindKind::Tool3Length: case BindKind::Tool3Radius: case BindKind::Tool3Wear:
+        case BindKind::Tool4Length: case BindKind::Tool4Radius: case BindKind::Tool4Wear:
+        case BindKind::Tool5Length: case BindKind::Tool5Radius: case BindKind::Tool5Wear:
+        case BindKind::Tool6Length: case BindKind::Tool6Radius: case BindKind::Tool6Wear:
+        case BindKind::Tool7Length: case BindKind::Tool7Radius: case BindKind::Tool7Wear: {
             const float value = static_cast<float>(bound_numeric_value(bind)) / 1000.0f;
             kernel::util::k_snprintf(buf, buf_size, "%s%.3f", prefix ? prefix : "", static_cast<double>(value));
+            return;
+        }
+        case BindKind::OperatorMode: {
+            const int32_t v = bound_numeric_value(bind);
+            const char* text = v == 0 ? "AUTO" : v == 1 ? "MDI" : v == 2 ? "JOG" : v == 3 ? "SETUP" : "?";
+            copy_field(buf, buf_size, text, strlen(text));
             return;
         }
         case BindKind::AxisX: case BindKind::AxisY: case BindKind::AxisZ: case BindKind::AxisA:
@@ -1441,6 +1571,50 @@ void run_action_target(const char* target) {
     else if (strncmp(target, "jog:inc:", 8) == 0) {
         set_jog_increment(simple_atoi(target + 8));
     }
+    else if (strncmp(target, "jog:hold:", 9) == 0) {
+        // Press-to-toggle continuous jog: button widgets only fire on
+        // TouchUp, so a true hold event is not available. First tap
+        // starts motion in the requested direction; tapping the same
+        // axis (any direction) stops it. Formats:
+        //   jog:hold:<axis>:<sign>   explicit axis (0..3)
+        //   jog:hold:sel:<sign>      use machine_snapshot().selected_axis
+        // A 4-bit bitfield tracks which axes the UI started so a second
+        // tap reliably stops them without depending on motion telemetry.
+        static uint8_t jogging_axes = 0;
+        const char* p = target + 9;
+        uint32_t a = 0;
+        if (strncmp(p, "sel:", 4) == 0) {
+            a = machine_snapshot().selected_axis & 3u;
+            p += 4;
+        } else {
+            a = static_cast<uint32_t>(simple_atoi(p) & 3);
+            while (*p && *p != ':') ++p;
+            if (*p == ':') ++p;
+        }
+        const int32_t sign = simple_atoi(p);
+        const uint8_t mask = static_cast<uint8_t>(1u << a);
+        if (jogging_axes & mask) {
+            stop_continuous_jog(a);
+            jogging_axes = static_cast<uint8_t>(jogging_axes & ~mask);
+        } else {
+            start_continuous_jog(a, sign);
+            jogging_axes = static_cast<uint8_t>(jogging_axes | mask);
+        }
+    }
+    else if (strncmp(target, "jog:stop:", 9) == 0) {
+        stop_continuous_jog(static_cast<uint32_t>(simple_atoi(target + 9) & 3));
+    }
+    else if (strcmp(target, "spindle:start") == 0) spindle_start();
+    else if (strcmp(target, "spindle:stop") == 0) spindle_stop();
+    else if (strcmp(target, "spindle:rev") == 0) {
+        const auto s = spindle_status();
+        spindle_set_rpm(-s.requested_rpm);
+        spindle_start();
+    }
+    else if (strcmp(target, "mode:auto") == 0) set_operator_mode(OperatorMode::Auto);
+    else if (strcmp(target, "mode:mdi") == 0) set_operator_mode(OperatorMode::MDI);
+    else if (strcmp(target, "mode:jog") == 0) set_operator_mode(OperatorMode::Jog);
+    else if (strcmp(target, "mode:setup") == 0) set_operator_mode(OperatorMode::Setup);
     else if (strcmp(target, "view:toolpath:toggle") == 0) toggle_view_toolpath();
     else if (strcmp(target, "view:toolpods:toggle") == 0) toggle_view_toolpods();
     else if (strcmp(target, "view:reset") == 0) view_reset_all_cameras();
@@ -1534,6 +1708,12 @@ bool commit_input_target(const char* target, const char* value_text, BindKind bi
         if (line_no < 0) return false;
         return restart_program_at_line(static_cast<size_t>(line_no));
     }
+    if (target && *target && strcmp(target, "commit:spindle:rpm") == 0) {
+        // Bare-number entry only — sign carries direction. Operator must
+        // tap START explicitly after committing the value to begin motion.
+        spindle_set_rpm(simple_atoi(value_text));
+        return true;
+    }
     return false;
 }
 
@@ -1593,12 +1773,32 @@ public:
           spec_(spec),
           fg_(to_color(spec.color, Color::White())),
           bg_(to_color(spec.bg_color, Color::Black())),
-          bind_(parse_bind(spec.bind)) {}
+          bind_(parse_bind(spec.bind)) {
+        // Labels honour active_if by swapping foreground to the design
+        // system's fault red. Used by DRO digits to flag soft-limit
+        // proximity. Same parser shape as BuilderButton.
+        if (spec.active_if[0] != '\0') {
+            const char* colon = nullptr;
+            for (const char* p = spec.active_if; *p; ++p) if (*p == ':') { colon = p; break; }
+            if (colon) {
+                char bind_buf[MAX_FIELD_LEN] = {};
+                copy_field(bind_buf, sizeof(bind_buf), spec.active_if,
+                           static_cast<size_t>(colon - spec.active_if));
+                active_bind_ = parse_bind(bind_buf);
+                active_value_ = simple_atoi(colon + 1);
+            }
+        }
+    }
 
     void render(Framebuffer& fb) override {
         if (!visible_) return;
         const char* text = spec_.text;
         char buf[MAX_FIELD_LEN] = {};
+        Color fg = fg_;
+        if (active_bind_ != BindKind::None &&
+            bound_numeric_value(active_bind_) == active_value_) {
+            fg = Color(0xEF, 0x44, 0x44);
+        }
         if (bind_ != BindKind::None) {
             const auto snap = kernel::ui::operator_api::machine_snapshot();
             switch (bind_) {
@@ -1636,9 +1836,9 @@ public:
             else draw_x = x_ + static_cast<int32_t>(width_) - text_w - 8;
         }
         if (scale > 1) {
-            fb.draw_text_scaled(draw_x, y_, text, fg_, bg_, scale);
+            fb.draw_text_scaled(draw_x, y_, text, fg, bg_, scale);
         } else {
-            fb.draw_text(draw_x, y_, text, fg_, bg_);
+            fb.draw_text(draw_x, y_, text, fg, bg_);
         }
     }
 
@@ -1647,6 +1847,8 @@ private:
     Color fg_;
     Color bg_;
     BindKind bind_;
+    BindKind active_bind_ = BindKind::None;
+    int32_t  active_value_ = 0;
 };
 
 class BuilderButton final : public kernel::ui::Button {

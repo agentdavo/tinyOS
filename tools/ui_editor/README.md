@@ -44,12 +44,18 @@ Grouped exactly as in the inspector:
 
 - **Machine** mode, alarm, prompt, units, wcs, cycle_progress, torque,
   feed, spindle, spindle_rpm, spindle_load, block_current, block_next,
-  runtime, parts, page, page_name, selected_axis, jog_increment
-- **DRO** axis:{x,y,z,a}, axis:{x,y,z,a}:{cmd,act,dtg,homed}
+  runtime, parts, page, page_name, selected_axis, jog_increment,
+  operator_mode (0=AUTO, 1=MDI, 2=JOG, 3=SETUP)
+- **DRO** axis:{x,y,z,a}, axis:{x,y,z,a}:{cmd,act,dtg,homed,near_limit}
+  (`near_limit` is 1 when the axis sits within 10% of either soft limit;
+  pair with `active_if=axis:x:near_limit:1` on a label to colour the
+  digit fault-red)
 - **Program** program_name, program_count, program_blocks, program_bytes,
   preview_points
-- **Offsets** work_name, work_offset:{x,y,z,a}
-- **Tool** tool_name, tool_length, tool_radius, tool_wear, active_tool
+- **Offsets** work_name, work_offset:{x,y,z,a}, plus per-slot
+  wcs:G54..G59:{x,y,z,a} (3-decimal mm or deg)
+- **Tool** tool_name, tool_length, tool_radius, tool_wear, active_tool,
+  plus per-slot tool:T1..T8:{length,radius,wear}
 - **Macro** macro_name, macro_active, macro_status, macro_step,
   macro_count, macro_message
 - **Probe** probe_{x,y,z,done,stylus,center_x,center_y,size_x,size_y,
@@ -69,8 +75,18 @@ Grouped exactly as in the inspector:
 - `offset:work:<n>` (0..5), `offset:tool:<n>` (0..7), `offset:nudge:<axis><delta>`
 - `mdi:{submit,clear,abort}`
 - `jog:axis:<n>` (0..3 = X/Y/Z/A), `jog:inc:<counts>` (1/10/100/1000 = 0.001..1 mm)
+- `jog:hold:<axis>:<sign>` or `jog:hold:sel:<sign>` — press-to-toggle
+  continuous jog (first tap starts axis motion at jog_feed_cps in the
+  given direction, second tap stops). The `sel` form resolves to
+  selected_axis at click time.
+- `jog:stop:<axis>` — explicit stop (drives axis velocity to 0)
+- `spindle:{start,stop,rev}` — spindle control. `rev` negates the
+  current commanded RPM and re-issues start.
+- `mode:{auto,mdi,jog,setup}` — set the operator's declared mode
+  (display-only today; no behaviour gating yet)
 - Input commit targets: `commit:offset:{x,y,z,a}`,
-  `commit:tool:{length,radius,wear}`, `commit:restart:line`
+  `commit:tool:{length,radius,wear}`, `commit:restart:line`,
+  `commit:spindle:rpm`
 - `ec:{estop,clear_fault}` — broadcast QuickStop / clear deadline-fault latch
 - `view:{toolpath,toolpods}:toggle` — flip overlay flags on machine_view
 - `view:{reset,zoom:in,zoom:out}` — camera primitives on machine_view
