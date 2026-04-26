@@ -55,6 +55,7 @@ Grouped exactly as in the inspector:
 - **Probe** probe_{x,y,z,done,stylus,center_x,center_y,size_x,size_y,
   shift_x,shift_y,shift_z,sphere_ready,sphere_points}
 - **MDI** mdi:{input,last,status,message,depth}
+- **EtherCAT** ec:{state,fault,slaves,miss,trips,p99,max,period,cycles,tx,rx}
 
 ## Action catalogue
 
@@ -69,6 +70,7 @@ Grouped exactly as in the inspector:
 - `jog:axis:<n>` (0..3 = X/Y/Z/A), `jog:inc:<counts>` (1/10/100/1000 = 0.001..1 mm)
 - Input commit targets: `commit:offset:{x,y,z,a}`,
   `commit:tool:{length,radius,wear}`, `commit:restart:line`
+- `ec:{estop,clear_fault}` — broadcast QuickStop / clear deadline-fault latch
 
 ## Attributes
 

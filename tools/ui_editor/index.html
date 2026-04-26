@@ -216,6 +216,8 @@ const BIND_GROUPS = {
           "probe_shift_x","probe_shift_y","probe_shift_z",
           "probe_sphere_ready","probe_sphere_points"],
   MDI: ["mdi:input","mdi:last","mdi:status","mdi:message","mdi:depth"],
+  EtherCAT: ["ec:state","ec:fault","ec:slaves","ec:miss","ec:trips",
+             "ec:p99","ec:max","ec:period","ec:cycles","ec:tx","ec:rx"],
 };
 const ALL_BINDS = new Set(Object.values(BIND_GROUPS).flat());
 
@@ -237,6 +239,7 @@ const ACTION_GROUPS = {
   Commit: ["commit:offset:x","commit:offset:y","commit:offset:z","commit:offset:a",
            "commit:tool:length","commit:tool:radius","commit:tool:wear",
            "commit:restart:line"],
+  EtherCAT: ["ec:estop","ec:clear_fault"],
 };
 function actionIsValid(target, doc) {
   if (!target) return true;

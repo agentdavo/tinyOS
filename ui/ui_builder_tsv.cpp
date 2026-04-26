@@ -423,6 +423,17 @@ enum class BindKind : uint8_t {
     ActiveTool,
     ViewToolpath,
     ViewToolpods,
+    EcState,
+    EcSlaves,
+    EcMiss,
+    EcTrips,
+    EcFault,
+    EcCycleP99,
+    EcCycleMax,
+    EcPeriod,
+    EcCycles,
+    EcTxFrames,
+    EcRxFrames,
 };
 
 BindKind parse_bind(const char* s) {
@@ -508,6 +519,17 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "active_tool") == 0) return BindKind::ActiveTool;
     if (strcmp(s, "view_toolpath") == 0) return BindKind::ViewToolpath;
     if (strcmp(s, "view_toolpods") == 0) return BindKind::ViewToolpods;
+    if (strcmp(s, "ec:state")  == 0) return BindKind::EcState;
+    if (strcmp(s, "ec:slaves") == 0) return BindKind::EcSlaves;
+    if (strcmp(s, "ec:miss")   == 0) return BindKind::EcMiss;
+    if (strcmp(s, "ec:trips")  == 0) return BindKind::EcTrips;
+    if (strcmp(s, "ec:fault")  == 0) return BindKind::EcFault;
+    if (strcmp(s, "ec:p99")    == 0) return BindKind::EcCycleP99;
+    if (strcmp(s, "ec:max")    == 0) return BindKind::EcCycleMax;
+    if (strcmp(s, "ec:period") == 0) return BindKind::EcPeriod;
+    if (strcmp(s, "ec:cycles") == 0) return BindKind::EcCycles;
+    if (strcmp(s, "ec:tx")     == 0) return BindKind::EcTxFrames;
+    if (strcmp(s, "ec:rx")     == 0) return BindKind::EcRxFrames;
     return BindKind::None;
 }
 
@@ -892,6 +914,50 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
                                      static_cast<double>(mm));
             return;
         }
+        case BindKind::EcState: {
+            const auto snap = kernel::ui::operator_api::ethercat_snapshot();
+            const char* text =
+                !snap.available                              ? "OFFLINE" :
+                snap.master_state == 1                       ? "INIT"    :
+                snap.master_state == 2                       ? "PRE-OP"  :
+                snap.master_state == 4                       ? "SAFE-OP" :
+                snap.master_state == 8                       ? "OP"      :
+                snap.master_state == 0x10                    ? "FAULT"   : "?";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::EcFault: {
+            const auto snap = kernel::ui::operator_api::ethercat_snapshot();
+            const char* text = snap.deadline_fault ? "LATCHED" : "ok";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::EcSlaves:
+        case BindKind::EcMiss:
+        case BindKind::EcTrips:
+        case BindKind::EcCycleP99:
+        case BindKind::EcCycleMax:
+        case BindKind::EcPeriod:
+        case BindKind::EcCycles:
+        case BindKind::EcTxFrames:
+        case BindKind::EcRxFrames: {
+            const auto snap = kernel::ui::operator_api::ethercat_snapshot();
+            unsigned long long v = 0;
+            switch (bind) {
+                case BindKind::EcSlaves:    v = (unsigned long long)snap.slave_count;    break;
+                case BindKind::EcMiss:      v = snap.deadline_miss;                       break;
+                case BindKind::EcTrips:     v = snap.deadline_trips;                      break;
+                case BindKind::EcCycleP99:  v = snap.cycle_p99_us;                        break;
+                case BindKind::EcCycleMax:  v = snap.cycle_max_us;                        break;
+                case BindKind::EcPeriod:    v = snap.period_us;                           break;
+                case BindKind::EcCycles:    v = snap.cycles;                              break;
+                case BindKind::EcTxFrames:  v = snap.tx_frames;                           break;
+                case BindKind::EcRxFrames:  v = snap.rx_frames;                           break;
+                default: break;
+            }
+            kernel::util::k_snprintf(buf, buf_size, "%s%llu", prefix ? prefix : "", v);
+            return;
+        }
         default:
             kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
                                      static_cast<long>(bound_numeric_value(bind)));
@@ -1246,6 +1312,8 @@ void run_action_target(const char* target) {
     else if (strcmp(target, "view:reset") == 0) view_reset_all_cameras();
     else if (strcmp(target, "view:zoom:in") == 0) view_zoom_all(0.85f);
     else if (strcmp(target, "view:zoom:out") == 0) view_zoom_all(1.18f);
+    else if (strcmp(target, "ec:estop") == 0) request_ec_estop();
+    else if (strcmp(target, "ec:clear_fault") == 0) clear_ec_fault();
     else if (strcmp(target, "demo:estop") == 0) {
         // Stop all interpreter channels + latch alarm. Full drive-level quickstop
         // belongs in the motion layer; this mirrors the reset path plus an

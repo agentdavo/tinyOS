@@ -286,6 +286,16 @@ void toggle_hold() {
     refresh_machine_snapshot_locked();
 }
 
+void request_ec_estop() {
+    ethercat::g_master_a.trip_fault("operator E-stop (UI)");
+    ethercat::g_master_b.trip_fault("operator E-stop (UI)");
+}
+
+void clear_ec_fault() {
+    ethercat::g_master_a.clear_deadline_fault();
+    ethercat::g_master_b.clear_deadline_fault();
+}
+
 void reset_alarm() {
     core::ScopedLock lock(g_lock);
     for (size_t ch = 0; ch < cnc::programs::MAX_CHANNELS; ++ch) {
@@ -691,6 +701,11 @@ EthercatSnapshot ethercat_snapshot() {
     snap.rx_frames = master->stats().rx_frames.load(std::memory_order_relaxed);
     snap.deadline_miss = master->stats().cycle_deadline_miss.load(std::memory_order_relaxed);
     snap.esm_timeouts = master->stats().esm_timeouts.load(std::memory_order_relaxed);
+    snap.deadline_trips = master->stats().deadline_trips.load(std::memory_order_relaxed);
+    snap.deadline_fault = master->is_deadline_faulted();
+    snap.cycle_p99_us = master->hist_cycle().percentile(99);
+    snap.cycle_max_us = master->hist_cycle().percentile(100);
+    snap.period_us = master->period_us();
     snap.slave_count = master->slave_count();
 
     const size_t limit = snap.slave_count < 6 ? snap.slave_count : 6;

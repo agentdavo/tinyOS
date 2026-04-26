@@ -291,15 +291,15 @@ $(OBJDIR)/frame.o: ethercat/frame.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(OBJDIR)/esm.o: ethercat/esm.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
-$(OBJDIR)/embedded_ui.o: devices/embedded_ui.S | $(OBJDIR)
+$(OBJDIR)/embedded_ui.o: devices/embedded_ui.S devices/embedded_ui.tsv | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
-$(OBJDIR)/embedded_automation.o: devices/embedded_automation.S | $(OBJDIR)
+$(OBJDIR)/embedded_automation.o: devices/embedded_automation.S devices/embedded_macros.tsv devices/embedded_ladder.tsv devices/embedded_toolpods.tsv | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
-$(OBJDIR)/embedded_signals.o: devices/embedded_signals.S | $(OBJDIR)
+$(OBJDIR)/embedded_signals.o: devices/embedded_signals.S devices/embedded_signals.tsv | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
-$(OBJDIR)/embedded_topology.o: devices/embedded_topology.S | $(OBJDIR)
+$(OBJDIR)/embedded_topology.o: devices/embedded_topology.S devices/embedded_topology.tsv | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
-$(OBJDIR)/embedded_placement.o: devices/embedded_placement.S | $(OBJDIR)
+$(OBJDIR)/embedded_placement.o: devices/embedded_placement.S devices/embedded_placement.tsv | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
 $(OBJDIR)/embedded_hmi.o: devices/embedded_hmi.S devices/embedded_hmi.tsv | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<

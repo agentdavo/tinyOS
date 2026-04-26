@@ -76,6 +76,11 @@ struct EthercatSnapshot {
     uint64_t rx_frames = 0;
     uint32_t deadline_miss = 0;
     uint32_t esm_timeouts = 0;
+    uint32_t deadline_trips = 0;
+    bool deadline_fault = false;
+    uint64_t cycle_p99_us = 0;
+    uint64_t cycle_max_us = 0;
+    uint32_t period_us = 0;
     size_t slave_count = 0;
     EthercatSlaveSnapshot slaves[6]{};
 };
@@ -290,6 +295,13 @@ size_t selected_program_preview(size_t channel, const render::gles1::Vec3f*& poi
 
 void acknowledge_alarm(uint32_t alarm_id);
 void clear_alarm_history();
+
+// Operator-initiated EtherCAT actions. Both call into ethercat::Master
+// (g_master_a + g_master_b). request_ec_estop broadcasts CW_CMD_QUICK_STOP
+// to every CiA-402 servo and latches the deadline-fault flag; clear_ec_fault
+// drops the latch.
+void request_ec_estop();
+void clear_ec_fault();
 bool save_setup();
 bool load_setup();
 
