@@ -1041,6 +1041,13 @@ public:
     // Clear linear calibration for an axis.
     void clear_linear_cal(uint8_t axis);
 
+    // Read-only accessors for the operator UI surface — bound by widget
+    // bind tokens "cal:pec:*". The CLI mutators (cal_add / cal_enable /
+    // cal_clear) write the same backing arrays.
+    bool linear_cal_enabled(uint8_t axis) const;
+    uint16_t linear_cal_point_count(uint8_t axis) const;
+    CalPoint linear_cal_point(uint8_t axis, uint16_t index) const;
+
     // Rotary calibration — set index offset.
     bool set_rotary_index_offset(uint8_t axis, int32_t offset_counts);
 
@@ -1058,6 +1065,7 @@ public:
     int32_t get_geometry_error(const char* pair) const;
     bool enable_geometry(bool enable);
     void dump_geometry(kernel::hal::UARTDriverOps* uart) const;
+    bool geometry_enabled() const { return geometry_.enabled; }
 
     // ===== Sphere-based Volumetric Calibration =====
     
@@ -1083,7 +1091,11 @@ public:
     // Returns point index or -1 if full
     int sphere_add_point(int32_t cmd_x, int32_t cmd_y, int32_t cmd_z,
                          int32_t act_x, int32_t act_y, int32_t act_z);
-    
+
+    // Operator-UI surface for the volumetric panel.
+    size_t sphere_point_count() const { return sphere_cal_.point_count; }
+    bool   sphere_errors_computed() const { return sphere_cal_.errors_computed; }
+
     // Clear all measurement points
     void sphere_clear_points() { sphere_cal_.point_count = 0; sphere_cal_.errors_computed = false; }
     
@@ -1156,6 +1168,39 @@ public:
     MpgStatus mpg_status() const noexcept;
     void dump_mpg(kernel::hal::UARTDriverOps* uart) const;
 
+    // ---- Hardware safety poller -------------------------------------------
+    //
+    // Runs once per master cycle from `run_loop` (immediately after
+    // `cycle_mpg`). Reads the named DI signals defined in
+    // devices/embedded_signals.tsv and reacts:
+    //   - estop asserted: trip_fault on both EtherCAT masters (same path as
+    //     the software `estop` CLI verb).
+    //   - limit_<axis>_<dir> asserted AND the axis is being driven INTO the
+    //     limit (commanded velocity sign matches the limit direction): latch
+    //     axis fault and request StopAction::FaultReaction. Motion AWAY
+    //     from a tripped limit is allowed so the operator can jog off.
+    //   - door_interlock asserted: feedhold every Running channel. Does NOT
+    //     auto-resume on door close — operator presses CYCLE START.
+    //
+    // Hot-path discipline: ~10 named-signal lookups per cycle (linear over
+    // the registry today). No allocation, no blocking I/O. Idempotent —
+    // trip_fault and fault_latched=true are safe to repeat. Snapshots door
+    // state across calls so we only push fresh `feedhold(true)` on the
+    // rising edge instead of every cycle while the door is open.
+    void cycle_safety(uint64_t now_us) noexcept;
+
+    // Snapshot of safety-input state for CLI / UI surfaces.
+    struct SafetyStatus {
+        bool estop                  = false;
+        bool door_interlock         = false;
+        bool limit_neg[MAX_AXES]    = {};
+        bool limit_pos[MAX_AXES]    = {};
+        bool master_a_faulted       = false;
+        bool master_b_faulted       = false;
+    };
+    SafetyStatus safety_status() const noexcept;
+    void dump_safety(kernel::hal::UARTDriverOps* uart) const;
+
 private:
     std::array<Axis, MAX_AXES>           axes_{};
     std::array<Channel, MAX_CHANNELS>    channels_{};
@@ -1191,6 +1236,14 @@ private:
     } mpg_;
 
     void cycle_mpg(uint64_t now_us) noexcept;
+
+    // Edge-tracking for the safety poller. `door_was_asserted` lets
+    // cycle_safety push `feedhold(true)` only on the rising edge instead
+    // of every cycle. We deliberately do NOT auto-clear the feedhold on
+    // the falling edge — operator must restart the cycle.
+    struct SafetyState {
+        bool door_was_asserted = false;
+    } safety_;
 
     void run_loop();
     void cycle_channel(Channel& ch, uint64_t now_us) noexcept;

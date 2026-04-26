@@ -56,3 +56,27 @@ signal	name=tool_spindle_mode	source=ec.drive_mode	master=1	slave=1	value_type=i
 # placeholder — operator overrides via `mpg bind` or wire_mpg_from_signal
 # resolves at runtime when a real handwheel is attached.
 signal	name=mpg_handwheel	source=ec.tx_s32	master=0	slave=10	offset=0	width=32	value_type=int
+
+# Hardware safety inputs on a dedicated 16-channel DI slave. Slave 11 is a
+# placeholder — operator overrides via TSV when wiring a real safety relay
+# module (typical: EL1904 TwinSAFE, ESI-described SDI module, or a generic
+# EL1809). Until then the registry silently skips the slave read so the
+# symbols stay at their default of `false` and motion::cycle_safety treats
+# every line as inactive.
+#
+# WIRING CONVENTION: every safety input is treated as ACTIVE-HIGH at the
+# kernel boundary — value=1 means "asserted / unsafe condition". Real CNC
+# practice wires E-stop and door interlocks NORMALLY-CLOSED so a broken
+# wire trips the safety path; the field-side adapter (or the safety relay
+# module's own NC->NO inversion) MUST present an active-high bit on the
+# EtherCAT PDO so the kernel logic stays vendor-neutral.
+signal	name=estop	source=ec.di	master=0	slave=11	bit=0	writable=1
+signal	name=door_interlock	source=ec.di	master=0	slave=11	bit=1	writable=1
+signal	name=limit_x_neg	source=ec.di	master=0	slave=11	bit=2	writable=1
+signal	name=limit_x_pos	source=ec.di	master=0	slave=11	bit=3	writable=1
+signal	name=limit_y_neg	source=ec.di	master=0	slave=11	bit=4	writable=1
+signal	name=limit_y_pos	source=ec.di	master=0	slave=11	bit=5	writable=1
+signal	name=limit_z_neg	source=ec.di	master=0	slave=11	bit=6	writable=1
+signal	name=limit_z_pos	source=ec.di	master=0	slave=11	bit=7	writable=1
+signal	name=limit_a_neg	source=ec.di	master=0	slave=11	bit=8	writable=1
+signal	name=limit_a_pos	source=ec.di	master=0	slave=11	bit=9	writable=1

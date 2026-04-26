@@ -285,6 +285,56 @@ static int cmd_estop(const char*, kernel::hal::UARTDriverOps* uart) {
                "Use ec_clear_fault to acknowledge.\n");
     return 0;
 }
+static int cmd_safety(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // `safety`              dump status
+    // `safety estop`        manually assert the estop signal (bench testing)
+    // `safety clear`        clear master deadline fault + every axis fault_latched
+    //                       that isn't currently sitting on a tripped limit
+    const char* p = args ? args : "";
+    while (*p == ' ' || *p == '\t') ++p;
+    if (!*p) {
+        motion::g_motion.dump_safety(uart);
+        return 0;
+    }
+    if (std::strncmp(p, "estop", 5) == 0) {
+        // Drives the named-signal path so cycle_safety reacts identically
+        // to a real button press. set_named_signal_bool gates on master
+        // deadline-fault; bypass via the registry directly so the operator
+        // can re-arm the test even after a previous trip.
+        machine::g_registry.set_bool("estop", true);
+        uart->puts("safety: estop signal asserted (registry write); "
+                   "cycle_safety will trip masters next cycle\n");
+        return 0;
+    }
+    if (std::strncmp(p, "clear", 5) == 0) {
+        ethercat::g_master_a.clear_deadline_fault();
+        ethercat::g_master_b.clear_deadline_fault();
+        machine::g_registry.set_bool("estop", false);
+        // Clear axis fault_latched, but only on axes whose limit isn't
+        // currently asserted — otherwise the next cycle_safety pass would
+        // immediately re-latch us and the operator would see no progress.
+        const auto s = motion::g_motion.safety_status();
+        unsigned cleared = 0;
+        for (size_t i = 0; i < motion::MAX_AXES; ++i) {
+            const bool blocked = s.limit_neg[i] || s.limit_pos[i];
+            if (blocked) continue;
+            auto& a = motion::g_motion.axis(i);
+            if (a.fault_latched) {
+                a.fault_latched = false;
+                ++cleared;
+            }
+        }
+        char buf[96];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "safety: masters cleared, %u axis fault(s) cleared "
+            "(axes still on a limit were skipped)\n", cleared);
+        uart->puts(buf);
+        return 0;
+    }
+    uart->puts("usage: safety | safety estop | safety clear\n");
+    return 1;
+}
+
 static int cmd_ec_clear_fault(const char*, kernel::hal::UARTDriverOps* uart) {
     const bool a_was = ethercat::g_master_a.is_deadline_faulted();
     const bool b_was = ethercat::g_master_b.is_deadline_faulted();
@@ -4243,6 +4293,7 @@ CLI::CLI() {
     register_command("ec_diag_dump", cmd_ec_diag_dump, "ec_diag_dump [station] — walk 0x10F3 DiagHistory + decode TextId");
     register_command("ec_scan", cmd_ec_scan, "ec_scan [start=0x1001] [count=8] — probe identity over a station range");
     register_command("estop", cmd_estop, "Operator E-stop — broadcast QuickStop to all CiA-402 servos and latch fault");
+    register_command("safety", cmd_safety, "safety [estop|clear] — hardware safety inputs status / manual trigger");
     register_command("ec_abort", cmd_ec_abort, "Broadcast AL=Init — emergency bus bring-down");
     register_command("ec_clear_fault", cmd_ec_clear_fault, "Clear latched deadline fault on both EtherCAT masters");
     register_command("ec_watchdog", cmd_ec_watchdog, "ec_watchdog <timeout_ms> [station] — program SM watchdog");

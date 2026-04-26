@@ -25,6 +25,15 @@ bool set_named_signal_bool(const char* name, bool value) noexcept;
 // is unknown or not a bool symbol. Does not gate on deadline-fault.
 bool get_named_signal_bool(const char* name, bool& out) noexcept;
 
+// Hot-path read for the per-cycle safety poller. Returns the symbol's
+// current value if defined; falls back to `default_value` (typically false
+// = "inactive") when the name is missing. Distinguishes "signal not bound
+// to a slave" (the bit was pumped from EcDi as 0, returns false) from
+// "name not in the registry at all" (returns default_value). The safety
+// path uses `default = false` so an unconfigured machine never trips a
+// phantom limit / E-stop on its own.
+bool get_named_signal_bool_or(const char* name, bool default_value) noexcept;
+
 // Build the canonical aux-DOUT signal name ("aux_dout_<idx>") for the
 // LinuxCNC M62/M63/M64/M65 P-word index. Writes into out_buf; returns false
 // if idx is out of range (0..MAX_AUX_DOUT-1) or buf is too small.

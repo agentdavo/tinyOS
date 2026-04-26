@@ -36,6 +36,17 @@ bool get_named_signal_bool(const char* name, bool& out) noexcept {
     return machine::g_registry.get_bool(name, out);
 }
 
+bool get_named_signal_bool_or(const char* name, bool default_value) noexcept {
+    bool v = false;
+    // get_bool returns false both for "missing name" and "not a bool symbol";
+    // either way the safety path wants to treat the input as the safe default
+    // rather than synthesise a fault. The registry's per-cycle EcDi pump has
+    // already updated `v` for any bound signal.
+    if (!name || !*name) return default_value;
+    if (!machine::g_registry.get_bool(name, v)) return default_value;
+    return v;
+}
+
 bool aux_dout_signal_name(uint32_t idx, char* out_buf, size_t out_buf_len) noexcept {
     if (!out_buf || out_buf_len < 12) return false;
     if (idx >= MAX_AUX_DOUT) return false;

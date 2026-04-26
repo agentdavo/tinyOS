@@ -5,6 +5,7 @@
 #include "motion.hpp"
 #include "miniOS.hpp"
 #include "util.hpp"
+#include "automation/signals.hpp"
 #include "diag/jitter.hpp"
 #include "ethercat/cia402.hpp"
 #include "ethercat/master.hpp"
@@ -1454,6 +1455,11 @@ void Kernel::run_loop() {
         // motion. Velocity decays to zero next cycle if no fresh pulses
         // arrive — that's what makes the handwheel feel rate-tracking.
         cycle_mpg(t_now);
+        // Hardware safety inputs (E-stop, limit switches, door interlock)
+        // are polled here so any reaction (trip_fault / fault_latched /
+        // feedhold) is observed by cycle_channel inside the SAME cycle —
+        // no one-cycle latency window between detection and reaction.
+        cycle_safety(t_now);
 
         for (size_t c = 0; c < channel_count_; ++c) {
             cycle_channel(channels_[c], t_now);
@@ -1910,6 +1916,23 @@ void Kernel::clear_linear_cal(uint8_t axis) {
     linear_cal_[axis].axis = axis;
 }
 
+bool Kernel::linear_cal_enabled(uint8_t axis) const {
+    if (axis >= MAX_AXES) return false;
+    return linear_cal_[axis].enabled;
+}
+
+uint16_t Kernel::linear_cal_point_count(uint8_t axis) const {
+    if (axis >= MAX_AXES) return 0;
+    return linear_cal_[axis].point_count;
+}
+
+CalPoint Kernel::linear_cal_point(uint8_t axis, uint16_t index) const {
+    if (axis >= MAX_AXES) return CalPoint{};
+    const auto& cal = linear_cal_[axis];
+    if (index >= cal.point_count) return CalPoint{};
+    return cal.points[index];
+}
+
 // ===== Rotary Axis Calibration =====
 
 bool Kernel::set_rotary_index_offset(uint8_t axis, int32_t offset_counts) {
@@ -2354,6 +2377,124 @@ void Kernel::cycle_mpg(uint64_t /*t_now*/) noexcept {
     if (a.fault_latched) return;
 
     set_axis_velocity(axis_idx, velocity_cps);
+}
+
+// -----------------------------------------------------------------------------
+// Hardware safety poller — see motion.hpp::cycle_safety for the contract.
+// -----------------------------------------------------------------------------
+namespace {
+
+// Names mirror devices/embedded_signals.tsv. Kept in a static table so the
+// per-cycle poller compiles to a tight unrolled loop and the diagnostic
+// dump shares one source of truth. Index 0..3 = X−/X+/Y−/Y+, 4..5 = Z±,
+// 6..7 = A±. Mapping to axis indices follows the convention X=0, Y=1,
+// Z=2, A=3 (set by motion_wiring TSV in practice; the safety poller
+// only needs the kernel's axis index).
+struct LimitBinding {
+    const char* signal_name;
+    uint8_t     axis_index;
+    int8_t      direction;   // +1 = positive limit, -1 = negative limit
+};
+constexpr LimitBinding kLimitBindings[] = {
+    {"limit_x_neg", 0, -1}, {"limit_x_pos", 0, +1},
+    {"limit_y_neg", 1, -1}, {"limit_y_pos", 1, +1},
+    {"limit_z_neg", 2, -1}, {"limit_z_pos", 2, +1},
+    {"limit_a_neg", 3, -1}, {"limit_a_pos", 3, +1},
+};
+
+} // namespace
+
+void Kernel::cycle_safety(uint64_t now_us) noexcept {
+    using automation::signals::get_named_signal_bool_or;
+
+    // E-stop: highest-priority. Trip both masters unconditionally — the
+    // call is idempotent so re-tripping every cycle while the button is
+    // held costs only one log line on the first edge.
+    const bool estop = get_named_signal_bool_or("estop", false);
+    if (estop) {
+        ethercat::g_master_a.trip_fault("hardware estop");
+        ethercat::g_master_b.trip_fault("hardware estop");
+        // Don't return — limit/door checks still want to update their
+        // own state for diagnostics, even though the master is faulted.
+    }
+
+    // Per-axis limits. Only fault when the operator is driving INTO the
+    // limit; allow motion AWAY so they can jog off the hardstop. Sign
+    // convention: target_velocity > 0 = positive direction.
+    for (const auto& lb : kLimitBindings) {
+        if (!get_named_signal_bool_or(lb.signal_name, false)) continue;
+        if (lb.axis_index >= MAX_AXES) continue;
+        Axis& a = axes_[lb.axis_index];
+        const int32_t v = a.target_velocity;
+        const bool driving_into =
+            (lb.direction > 0 && v > 0) ||
+            (lb.direction < 0 && v < 0);
+        if (driving_into && !a.fault_latched) {
+            a.fault_latched = true;
+            a.request_stop(StopAction::FaultReaction, now_us);
+            stats_.faults.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    // Door interlock: rising edge applies feedhold to every Running
+    // channel. We do NOT auto-resume on falling edge — operator presses
+    // CYCLE START. Tracking the prior state means we don't re-enter
+    // feedhold every 250 µs while the door is propped open (which
+    // would also clobber any other transitions the operator made).
+    const bool door = get_named_signal_bool_or("door_interlock", false);
+    if (door && !safety_.door_was_asserted) {
+        for (size_t c = 0; c < channel_count_; ++c) {
+            // feedhold() rejects non-Running states (Idle/FeedHold/Fault),
+            // which is exactly what we want — a door open during Idle is
+            // safe (no motion), and during Fault is moot.
+            (void)feedhold(c, true);
+        }
+    }
+    safety_.door_was_asserted = door;
+}
+
+Kernel::SafetyStatus Kernel::safety_status() const noexcept {
+    using automation::signals::get_named_signal_bool_or;
+    SafetyStatus s{};
+    s.estop          = get_named_signal_bool_or("estop", false);
+    s.door_interlock = get_named_signal_bool_or("door_interlock", false);
+    s.master_a_faulted = ethercat::g_master_a.is_deadline_faulted();
+    s.master_b_faulted = ethercat::g_master_b.is_deadline_faulted();
+    for (const auto& lb : kLimitBindings) {
+        if (lb.axis_index >= MAX_AXES) continue;
+        const bool v = get_named_signal_bool_or(lb.signal_name, false);
+        if (lb.direction > 0) s.limit_pos[lb.axis_index] = v;
+        else                  s.limit_neg[lb.axis_index] = v;
+    }
+    return s;
+}
+
+void Kernel::dump_safety(kernel::hal::UARTDriverOps* uart) const {
+    if (!uart) return;
+    const auto s = safety_status();
+    char buf[160];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "safety: estop=%s door_interlock=%s ec0=%s ec1=%s\n",
+        s.estop          ? "ASSERTED" : "ok",
+        s.door_interlock ? "ASSERTED" : "ok",
+        s.master_a_faulted ? "FAULT" : "ok",
+        s.master_b_faulted ? "FAULT" : "ok");
+    uart->puts(buf);
+    for (const auto& lb : kLimitBindings) {
+        if (lb.axis_index >= MAX_AXES) continue;
+        const bool v = (lb.direction > 0)
+            ? s.limit_pos[lb.axis_index]
+            : s.limit_neg[lb.axis_index];
+        const Axis& a = axes_[lb.axis_index];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "  %-12s axis=%u dir=%s state=%s axis_fault=%s\n",
+            lb.signal_name,
+            (unsigned)lb.axis_index,
+            (lb.direction > 0) ? "+" : "-",
+            v ? "ASSERTED" : "ok",
+            a.fault_latched ? "LATCHED" : "ok");
+        uart->puts(buf);
+    }
 }
 
 void Kernel::dump_mpg(kernel::hal::UARTDriverOps* uart) const {
