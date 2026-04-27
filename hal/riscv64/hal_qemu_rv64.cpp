@@ -776,17 +776,41 @@ extern "C" void hal_trap_dispatch_rv64(uint64_t hartid, uint64_t mcause) {
         for (;;) asm volatile("wfi");
     }
 
-    // Synchronous exception.
+    // Synchronous exception. Build the whole header line in one buffer
+    // and emit via a single locked puts() so concurrent puts() from
+    // another hart don't fragment it. mtval is useful when chasing a
+    // load/store fault — it holds the faulting address.
     auto& uart = *g_platform_instance.get_uart_ops();
-    uint64_t mepc;
-    asm volatile("csrr %0, mepc" : "=r"(mepc));
-    uart.puts("\n[rv64 TRAP] hart=");
-    uart.uart_put_uint64_hex(hartid);
-    uart.puts(" mcause=");
-    uart.uart_put_uint64_hex(mcause);
-    uart.puts(" mepc=");
-    uart.uart_put_uint64_hex(mepc);
-    uart.puts("\n");
+    uint64_t mepc, mtval;
+    asm volatile("csrr %0, mepc"  : "=r"(mepc));
+    asm volatile("csrr %0, mtval" : "=r"(mtval));
+    uint64_t ra_val = 0, sp_val = 0;
+    const char* tcb_name = "?";
+    if (hartid < kernel::core::MAX_CORES) {
+        if (auto* tcb = kernel::core::g_per_cpu_data[hartid].current_thread) {
+            ra_val = tcb->regs[0];
+            sp_val = tcb->regs[1];
+            tcb_name = tcb->name;
+        }
+    }
+    char buf[256];
+    char* p = buf;
+    auto put_str = [&](const char* s) { while (*s) *p++ = *s++; };
+    auto put_hex = [&](uint64_t v) {
+        static const char d[] = "0123456789abcdef";
+        for (int i = 0; i < 16; ++i) p[i] = d[(v >> ((15 - i) * 4)) & 0xF];
+        p += 16;
+    };
+    put_str("\n[rv64 TRAP] hart="); put_hex(hartid);
+    put_str(" mcause=");            put_hex(mcause);
+    put_str(" mepc=");              put_hex(mepc);
+    put_str(" mtval=");             put_hex(mtval);
+    put_str(" ra=");                put_hex(ra_val);
+    put_str(" sp=");                put_hex(sp_val);
+    put_str(" name=");
+    for (int i = 0; i < 16 && tcb_name[i]; ++i) *p++ = tcb_name[i];
+    *p++ = '\n'; *p = '\0';
+    uart.puts(buf);
     for (;;) asm volatile("wfi");
 }
 

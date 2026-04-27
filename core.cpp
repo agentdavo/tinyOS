@@ -540,7 +540,18 @@ void Scheduler::start_core_scheduler(uint32_t core_id) {
     // worker from the ready queue; under QEMU that can delay or suppress first
     // progress during bring-up. Starting with the highest-priority ready task
     // makes thread bring-up deterministic on both shared and dedicated cores.
-    TCB* worker = pop_highest_priority_ready_task(core_id);
+    //
+    // Take the per-core lock around the pop. Without it the secondary hart
+    // could race against the primary's add_to_ready_queue (the lock-release
+    // pairing is what makes the producing hart's TCB writes — entry_point,
+    // name, sp — visible here), grab a partially-initialised TCB, then trap
+    // in safe_strcpy when thread_bootstrap dereferences the half-written
+    // name pointer.
+    TCB* worker = nullptr;
+    {
+        ScopedISRLock lock(per_core_locks_[core_id]);
+        worker = pop_highest_priority_ready_task(core_id);
+    }
     if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
         char buf[128];
         kernel::util::k_snprintf(buf, sizeof(buf),
@@ -607,6 +618,11 @@ void Scheduler::wait_for_event(TCB* tcb) {
 
 TCB* Scheduler::pop_highest_priority_ready_task(uint32_t current_core_id) {
     if (current_core_id >= MAX_CORES) return nullptr;
+    // Caller is responsible for holding per_core_locks_[current_core_id].
+    // The two callers — start_core_scheduler and EDFPolicy::select_next_task
+    // — both take the lock themselves; making this function take it too
+    // would self-deadlock the select_next_task → pop fallback path because
+    // the spinlock isn't recursive.
     for (int p = MAX_PRIORITY_LEVELS - 1; p >= 0; --p) {
         TCB* task_iter = ready_qs_[current_core_id][p]; TCB* prev_task = nullptr;
         while(task_iter) {
