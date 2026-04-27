@@ -223,6 +223,14 @@ GIT_HASH := $(shell (git -C $(abspath $(dir $(lastword $(MAKEFILE_LIST)))) rev-p
 GIT_DIRTY := $(shell git -C $(abspath $(dir $(lastword $(MAKEFILE_LIST)))) diff --quiet 2>/dev/null || echo +dirty)
 CFLAGS += -DMINIOS_GIT_HASH=\"$(GIT_HASH)$(GIT_DIRTY)\"
 
+# Header dependency tracking. Without -MMD/-MP, editing a header doesn't
+# rebuild dependent .cpp files — adding a virtual to a class header in
+# particular leaves stale .o files with mismatched vtable layouts. The
+# kind of bug that ships clean builds but crashes incremental ones with
+# elr=0 and no other clue. Generated .d files are included at the bottom
+# of the Makefile so changes propagate.
+CFLAGS += -MMD -MP
+
 ASFLAGS = $(CPU_FLAGS) -g3
 
 LDFLAGS = $(OPT_FLAGS) -T $(LINKER) -nostartfiles -nostdlib \
@@ -408,3 +416,10 @@ docs:
 	doxygen Doxyfile
 
 .PHONY: all clean run debug docs
+
+# Pull in compiler-emitted .d files so header edits trigger the correct
+# .cpp rebuilds. The -include (with leading dash) skips silently if the
+# .d files don't exist yet (first build), and -MP in CFLAGS adds the
+# phony "header doesn't exist anymore" rule that prevents make from
+# erroring after a header is deleted.
+-include $(OBJ:.o=.d)
