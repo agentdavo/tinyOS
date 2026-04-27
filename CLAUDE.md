@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The project is **miniOS** — a freestanding, bare-metal C++20 RTOS that runs as a QEMU `virt` kernel. The working directory is named `tinyOS` but all code, branding, and artifacts use `miniOS`. Build artifacts live under `build/<target>/` (for example `build/arm64/miniOS_kernel_arm64.elf`). Source headers and Makefile are v1.7.
 
-**Boot status**: both arm64 and rv64 boot cleanly through SMP bring-up, virtio-gpu scanout configuration, FAT32 mount (when `sdcard.img` is attached), and into the UI + CLI + HMI services on core 0 / hart 0. Historical bugs fixed here (so they don't regress):
+**Boot status**: arm64 boots cleanly through SMP bring-up, virtio-gpu scanout configuration, FAT32 mount (when `sdcard.img` is attached), and into the UI + CLI + HMI services on core 0. rv64 boots through SMP, FAT32 mount, device init, and UI scanout, but currently hangs in `Scheduler::create_thread(cli)` inside `kernel::boot::create_boot_services` — pre-existing since the EDF-adoption commit (`f432904`); a secondary hart also takes a load-fault in `strlen` early in boot. Both issues need a deeper multi-hart debug session. Historical bugs fixed here (so they don't regress):
 1. `-mno-outline-atomics` in the Makefile stops libgcc from emitting its `init_have_lse_atomics` ctor, which read the (nonexistent) ELF aux vector and faulted (arm64).
 2. `cpu_arm64.S:call_constructors` saves/restores `x0` around each `blr` — previously the callee's return value clobbered the init_array cursor (arm64).
 3. `_secondary_start` sets SP before any `bl` to a C function — PSCI leaves SP undefined and the old code crashed on the first function prologue push (arm64).
