@@ -380,10 +380,16 @@ int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) no
             }
             // '-' overrides '0' per POSIX.
             if (left_align) zero_pad = false;
-            // Skip a precision spec — `.N` — without applying it (unused today).
+            // Parse a precision spec — `.N`. Used by %f (digits after the
+            // decimal point); ignored by other conversions today.
+            int precision = -1;
             if (*format == '.') {
                 format++;
-                while (*format >= '0' && *format <= '9') format++;
+                precision = 0;
+                while (*format >= '0' && *format <= '9') {
+                    precision = precision * 10 + (*format - '0');
+                    format++;
+                }
             }
             bool is_long_long = false;
             bool is_size_t = false;
@@ -430,7 +436,57 @@ int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) no
                     current_segment_len = uint64_to_hex_str(hex_val, temp_num_buf, sizeof(temp_num_buf), (*format == 'p'));
                     break;
                 }
-                case '%': { 
+                case 'f': case 'F': {
+                    // Freestanding double formatting — no libm, integer math
+                    // only. Default precision 6 per POSIX. Special-cases NaN
+                    // and ±Inf via the IEEE-754 bit pattern. Anything beyond
+                    // ~10 digits of precision exceeds uint64_t range and is
+                    // capped silently.
+                    double v = va_arg(args, double);
+                    int prec = (precision < 0) ? 6 : precision;
+                    if (prec > 9) prec = 9;
+                    union { double d; uint64_t u; } pun{v};
+                    const uint64_t exp_bits = (pun.u >> 52) & 0x7ff;
+                    const uint64_t mant_bits = pun.u & ((1ULL << 52) - 1);
+                    const bool neg = (pun.u >> 63) != 0;
+                    if (exp_bits == 0x7ff) {
+                        const char* s = mant_bits ? "nan" : (neg ? "-inf" : "inf");
+                        size_t n = kstrlen(s);
+                        for (size_t k = 0; k < n; ++k) temp_num_buf[k] = s[k];
+                        current_segment_len = static_cast<int>(n);
+                        break;
+                    }
+                    if (neg) v = -v;
+                    // Round to `prec` decimals using a power-of-ten scale.
+                    static constexpr uint64_t pow10[10] = {
+                        1ULL, 10ULL, 100ULL, 1000ULL, 10000ULL,
+                        100000ULL, 1000000ULL, 10000000ULL, 100000000ULL, 1000000000ULL
+                    };
+                    const uint64_t scale = pow10[prec];
+                    // Add 0.5/scale before truncation for round-half-up.
+                    double scaled = v * static_cast<double>(scale) + 0.5;
+                    if (scaled > static_cast<double>(UINT64_MAX)) scaled = static_cast<double>(UINT64_MAX);
+                    const uint64_t scaled_u = static_cast<uint64_t>(scaled);
+                    const uint64_t int_part = scaled_u / scale;
+                    const uint64_t frac_part = scaled_u % scale;
+                    char* p = temp_num_buf;
+                    if (neg && (int_part != 0 || frac_part != 0)) *p++ = '-';
+                    char int_buf[24];
+                    int int_len = uint64_to_str(int_part, int_buf, sizeof(int_buf));
+                    for (int k = 0; k < int_len && p < temp_num_buf + sizeof(temp_num_buf) - 1; ++k) *p++ = int_buf[k];
+                    if (prec > 0) {
+                        if (p < temp_num_buf + sizeof(temp_num_buf) - 1) *p++ = '.';
+                        // Zero-pad the fractional part to `prec` digits.
+                        char frac_buf[12];
+                        int frac_len = uint64_to_str(frac_part, frac_buf, sizeof(frac_buf));
+                        for (int k = 0; k < prec - frac_len && p < temp_num_buf + sizeof(temp_num_buf) - 1; ++k) *p++ = '0';
+                        for (int k = 0; k < frac_len && p < temp_num_buf + sizeof(temp_num_buf) - 1; ++k) *p++ = frac_buf[k];
+                    }
+                    *p = '\0';
+                    current_segment_len = static_cast<int>(p - temp_num_buf);
+                    break;
+                }
+                case '%': {
                     temp_num_buf[0] = '%'; temp_num_buf[1] = '\0'; current_segment_len = 1;
                     break;
                 }
