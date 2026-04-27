@@ -6,7 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The project is **miniOS** — a freestanding, bare-metal C++20 RTOS that runs as a QEMU `virt` kernel. The working directory is named `tinyOS` but all code, branding, and artifacts use `miniOS`. Build artifacts live under `build/<target>/` (for example `build/arm64/miniOS_kernel_arm64.elf`). Source headers and Makefile are v1.7.
 
-**Boot status**: arm64 boots cleanly through SMP bring-up, virtio-gpu scanout configuration, FAT32 mount (when `sdcard.img` is attached), and into the UI + CLI + HMI services on core 0. rv64 boots through SMP, FAT32 mount, device init, and UI scanout, but currently hangs in `Scheduler::create_thread(cli)` inside `kernel::boot::create_boot_services` — pre-existing since the EDF-adoption commit (`f432904`); a secondary hart also takes a load-fault in `strlen` early in boot. Both issues need a deeper multi-hart debug session. Historical bugs fixed here (so they don't regress):
+**Boot status**: arm64 boots cleanly through SMP bring-up, virtio-gpu scanout configuration, FAT32 mount (when `sdcard.img` is attached), and into the UI + CLI + HMI services on core 0. rv64 reaches `miniOS CLI ready` intermittently (~1 in 10 cold runs at the time of writing) — substantial progress from "never reaches CLI", but still flaky. See "rv64 boot work in progress" below for the open items.
+
+### rv64 boot work in progress
+
+**Goal:** rv64 reaches the CLI banner and accepts input as reliably as arm64 — both arches must satisfy the arch-parity contract below.
+
+**Fixed since the EDF-adoption regression:**
+1. Secondary harts could read `ready_qs_[N]` without the per-core lock and grab a partially-initialised TCB, faulting in `safe_strcpy` on a name pointer that hadn't propagated. `start_core_scheduler` now holds the lock around `pop_highest_priority_ready_task` (commit `188b223`).
+2. Voluntary `cpu_context_switch_rv64` was using `ret` instead of `mret`, leaving a window where a timer IRQ could fire mid-switch and the trap entry would spill CPU state into the new thread's TCB, corrupting the in-flight switch. Now uses `mret` to atomically restore PC + mstatus from the new TCB — same idiom as arm64's `eret`-based switch (commit `72965c6`).
+3. `PLICDriver::enable_core_irqs` no longer flips `mstatus.MIE` — it only enables per-source `mie` bits. The CPU stays IRQ-masked from boot until `mret` atomically restores MIE from the new thread's pstate. Mirrors arm64's `GICDriver::enable_core_irqs` (commit `72965c6`).
+4. Idle thread's `tcb.pstate` was unconditionally `0x05` (arm64 SPSR for EL1h with IRQs unmasked) — meaningless on rv64 mstatus (means MPP=U, MIE=0, MPIE=0). Now wrapped in `__aarch64__` (commit `72965c6`).
+5. `early_uart_puts` is arch-aware. The arm64 PL011 base `0x09000000` was hardcoded; any shared code that called it (Master::run_loop banner, FakeSlave halt, dc_drift periodic log) faulted on rv64. Now writes to NS16550 at `0x10000000` on rv64 (commit `72965c6`).
+6. `uart_io_entry`'s `flush_line` uses the captured `uart` parameter rather than the static `cli::io::g_uart` — some path on rv64 was leaving `g_uart` apparently NULL'd by the time the flush ran (vtable[3]=NULL → jumped to address 0). Function parameter is on uart_io's stack and stable (commit `8efe5a0`).
+
+**Still blocked / open:**
+- Residual `mcause=1` (instruction access fault) with `mepc=trap_entry's mret address` and `mtval=0` — looks like a TCB.pc somewhere is being clobbered to 0, mret jumps to 0, fetch faults. Hypothesis: another path where a trap fires while a thread is mid-`cpu_context_switch_rv64` and the trap-entry's TCB-spill races with the in-flight load. The `g_irq_in_progress[hart]` flag is supposed to make trap-time switches transparent — there may be a hole.
+- Some rv64 PCI/MMIO paths (occasional traps on ec_a / fake_slave threads) still need arch-aware fixes — not chased yet.
+
+**Useful diagnostic tools added during this work:**
+- The rv64 trap dump prints `mtval`, `ra` (regs[0]), `sp` (regs[1]), and the current_thread's `name` in a single locked puts() so concurrent harts don't fragment it. Decode a trap PC with `riscv64-linux-gnu-addr2line -f -e build/riscv64/miniOS_kernel_riscv64.elf <addr>`. Walk the stack by reading words at `sp+offset` (frame layouts visible in `objdump -d`).
+
+Historical bugs fixed here (so they don't regress):
 1. `-mno-outline-atomics` in the Makefile stops libgcc from emitting its `init_have_lse_atomics` ctor, which read the (nonexistent) ELF aux vector and faulted (arm64).
 2. `cpu_arm64.S:call_constructors` saves/restores `x0` around each `blr` — previously the callee's return value clobbered the init_array cursor (arm64).
 3. `_secondary_start` sets SP before any `bl` to a C function — PSCI leaves SP undefined and the old code crashed on the first function prologue push (arm64).
