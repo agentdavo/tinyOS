@@ -364,6 +364,18 @@ static int cmd_ec_watchdog(const char* args, kernel::hal::UARTDriverOps* uart) {
     uart->puts(buf);
     return n == 3 ? 0 : 1;
 }
+// Setup save/load CLI verbs — same path the UI buttons use, exposed for
+// serial-only operators and for round-trip testing of the FAT32 writer.
+static int cmd_setup_save(const char*, kernel::hal::UARTDriverOps* uart) {
+    const bool ok = kernel::ui::operator_api::save_setup();
+    uart->puts(ok ? "setup_save: ok\n" : "setup_save: FAIL\n");
+    return ok ? 0 : 1;
+}
+static int cmd_setup_load(const char*, kernel::hal::UARTDriverOps* uart) {
+    const bool ok = kernel::ui::operator_api::load_setup();
+    uart->puts(ok ? "setup_load: ok\n" : "setup_load: FAIL (no setup file or parse error)\n");
+    return ok ? 0 : 1;
+}
 static int cmd_motion_enable(const char* args, kernel::hal::UARTDriverOps* uart) {
     if (!args || !*args) { uart->puts("usage: motion_enable <axis>\n"); return 1; }
     const char* p = args; long ax = 0;
@@ -4297,6 +4309,8 @@ CLI::CLI() {
     register_command("ec_abort", cmd_ec_abort, "Broadcast AL=Init — emergency bus bring-down");
     register_command("ec_clear_fault", cmd_ec_clear_fault, "Clear latched deadline fault on both EtherCAT masters");
     register_command("ec_watchdog", cmd_ec_watchdog, "ec_watchdog <timeout_ms> [station] — program SM watchdog");
+    register_command("setup_save", cmd_setup_save, "setup_save — persist offsets/tools/comp/active state to FAT32 setup.cfg");
+    register_command("setup_load", cmd_setup_load, "setup_load — restore state from FAT32 setup.cfg");
     register_command("motion_enable", cmd_motion_enable, "motion_enable <axis> — servo on without a move");
     register_command("motion_disable", cmd_motion_disable, "motion_disable <axis> — explicit servo-off");
     register_command("offsets", cmd_offsets, "Show work/tool offsets and active selections");
