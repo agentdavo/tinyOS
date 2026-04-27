@@ -40,7 +40,7 @@ namespace hal::qemu_virt_arm64 {
 
 // Scheduler tick period. Keep this tight: EtherCAT cycles at 1 ms, so a 200 us
 // tick gives 5 preemption points per EC cycle with room for jitter.
-static constexpr uint64_t TIMER_TICK_US = 200;
+static constexpr uint64_t TIMER_TICK_US = 1000; // Increased to 1ms to reduce overhead
 
 alignas(PlatformQEMUVirtARM64) static unsigned char g_platform_storage[sizeof(PlatformQEMUVirtARM64)];
 static bool g_platform_constructed = false;
