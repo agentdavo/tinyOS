@@ -212,7 +212,7 @@ void TimerDriver::init_core_timer_interrupt(uint32_t core_id) {
     }
     uint64_t ticks_for_period = (timer_freq_hz_ * TIMER_TICK_US) / 1000000ULL;
     write_sysreg_cntp_tval(ticks_for_period);
-    write_sysreg_cntp_ctl(1);
+    write_sysreg_cntp_ctl(7); // EN(1) + not-masked(2) + IEN(4) = 7
     HAL_VDBG("[HAL_DEBUG] TimerDriver::init_core_timer_interrupt() EXIT\n");
 }
 void TimerDriver::ack_core_timer_interrupt(uint32_t core_id) {
