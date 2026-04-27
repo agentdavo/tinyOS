@@ -387,22 +387,32 @@ trap_entry:
      *   a0 = old_tcb (may be null on first-switch)
      *   a1 = new_tcb
      *
-     * Voluntary-yield switch.  Save callee-saved state + ra/sp into old,
-     * load from new, jump to new's saved resume point.
+     * Voluntary-yield switch.  Save callee-saved state + pc + mstatus into
+     * old, restore from new, then mret atomically (mirrors arm64's eret).
      *
-     * Callers treat this as a C function call, so t/a/ra regs are caller-saved
-     * across the call — we don't need to preserve them in `old`.  We *do*
-     * need to store the resume PC (= current ra) and sp so that the restore
-     * path can enter the old thread again later.
+     * Why mret instead of `ret`: between loading sp from new_tcb and the
+     * final ret, IRQs may be on. If a timer fires in that window, the trap
+     * prologue spills CPU state into current_thread.TCB — which is the
+     * NEW thread's TCB — corrupting the in-flight switch. Symptoms: trap
+     * dispatch sees garbage regs, mret jumps into safe_strcpy/strlen with
+     * a tiny `name` pointer (the rv64 boot crash chased in this commit).
      *
-     * Design note: the restore tail is uniform with the trap-exit path (via
-     * the same TCB layout).  For *newly-created* threads the scheduler
-     * seeds regs[x1-1] = thread_bootstrap_rv64 and regs[x10-1] = TCB* so
-     * entering the thread via `jr ra` transfers control to the bootstrap
-     * with a0 = TCB pointer.
+     * Disabling MIE at entry and using mret to atomically restore mepc +
+     * mstatus from the new TCB closes the window — same idiom arm64 uses
+     * for its eret-based voluntary switch.
+     *
+     * Design note: for newly-created threads the scheduler seeds
+     * tcb.pc = thread_bootstrap and tcb.regs[x10-1] = TCB*, so mret to
+     * mepc=tcb.pc enters bootstrap with a0=TCB pointer. tcb.pstate is the
+     * mstatus seed (MPP=M, FS=Dirty, MPIE=1) so mret re-enables MIE.
      * ----------------------------------------------------------------- */
     .global cpu_context_switch_rv64
 cpu_context_switch_rv64:
+    /* Snapshot mstatus before disabling MIE so the saved value reflects
+     * the caller's IRQ state, not our internal disable. */
+    csrr    t1, mstatus
+    csrci   mstatus, 0x8                /* MIE = 0 */
+
     beqz    a0, .L_ctx_restore          /* first switch: skip save */
 
     /* Save callee-saved regs + ra + sp into old_tcb. */
@@ -421,10 +431,12 @@ cpu_context_switch_rv64:
     sd      s9,  (TCB_REGS_OFF + 24*8)(a0)
     sd      s10, (TCB_REGS_OFF + 25*8)(a0)
     sd      s11, (TCB_REGS_OFF + 26*8)(a0)
-    /* Resume pc = ra; mstatus snapshot. */
+    /* Resume pc = ra (the call site of cpu_context_switch_rv64). */
     sd      ra,  (TCB_PC_OFF)(a0)
-    csrr    t0, mstatus
-    sd      t0,  (TCB_MSTATUS_OFF)(a0)
+    /* Save the pre-disable mstatus, but make sure MPIE=1 so when this
+     * thread is restored later via mret, MIE comes back on. */
+    ori     t1, t1, 0x80                /* set MPIE bit */
+    sd      t1,  (TCB_MSTATUS_OFF)(a0)
 
 .L_ctx_restore:
     /* Load from new_tcb. */
@@ -444,6 +456,9 @@ cpu_context_switch_rv64:
     /* First-entry seed: scheduler sets regs[x10-1] = TCB* so thread
      * bootstrap gets its TCB in a0. */
     ld      a0,  (TCB_REGS_OFF + 9*8)(a1)
-    /* Resume pc is in the ra slot. */
-    ld      ra,  (TCB_REGS_OFF + 0*8)(a1)
-    ret
+    /* mret will atomically restore PC and IRQ state from the new TCB. */
+    ld      t0, (TCB_PC_OFF)(a1)
+    csrw    mepc, t0
+    ld      t0, (TCB_MSTATUS_OFF)(a1)
+    csrw    mstatus, t0
+    mret

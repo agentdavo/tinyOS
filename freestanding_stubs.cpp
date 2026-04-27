@@ -119,6 +119,8 @@ int strncmp(const char* lhs, const char* rhs, size_t count) {
            static_cast<int>(static_cast<unsigned char>(rhs[i]));
 }
 
+#if defined(__aarch64__)
+// QEMU virt arm64 PL011.
 constexpr uint64_t EARLY_UART_BASE_ADDR = 0x09000000;
 constexpr uint32_t EARLY_UART_DR_REG  = 0x00;
 constexpr uint32_t EARLY_UART_FR_REG  = 0x18;
@@ -140,6 +142,38 @@ extern "C" void early_uart_init() {
     base[EARLY_UART_CR_REG / 4] = (1 << 9) | (1 << 8) | 1; // Enable UART, TX, RX
 }
 
+static inline void early_uart_putc_unlocked(char c) {
+    while ((*reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_FR_REG)) & EARLY_UART_TXFF_FLAG) {}
+    *reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_DR_REG) = static_cast<uint32_t>(c);
+}
+
+#elif defined(__riscv)
+// QEMU virt rv64 NS16550A. THR at offset 0; LSR at offset 5; bit 5 of LSR =
+// transmitter holding register empty (TX ready). The kernel-side rv64
+// UARTDriver writes THR without polling, but the early-boot path needs to
+// be polite to the FIFO, so we wait on LSR.THRE here.
+constexpr uint64_t EARLY_UART_BASE_ADDR = 0x10000000;
+constexpr uint32_t NS16550_THR = 0x00;
+constexpr uint32_t NS16550_LSR = 0x05;
+constexpr uint8_t  NS16550_LSR_THRE = 1u << 5;
+
+extern "C" void early_uart_init() {
+    // QEMU virt's NS16550 is preconfigured by the bios=none boot; nothing
+    // to program here. Stub kept for symmetry with arm64.
+}
+
+static inline void early_uart_putc_unlocked(char c) {
+    volatile uint8_t* lsr = reinterpret_cast<volatile uint8_t*>(EARLY_UART_BASE_ADDR + NS16550_LSR);
+    volatile uint8_t* thr = reinterpret_cast<volatile uint8_t*>(EARLY_UART_BASE_ADDR + NS16550_THR);
+    while ((*lsr & NS16550_LSR_THRE) == 0) {}
+    *thr = static_cast<uint8_t>(c);
+}
+
+#else
+extern "C" void early_uart_init() {}
+static inline void early_uart_putc_unlocked(char) {}
+#endif
+
 // Simple cross-core serialisation for early_uart_puts so debug output from
 // multiple cores doesn't interleave mid-string. One atomic flag, test-and-set
 // acquire / relaxed-store release. Writers that contend spin with `yield` —
@@ -148,12 +182,8 @@ static std::atomic<bool> g_early_uart_lock{false};
 
 static inline void early_uart_write_unlocked(const char* str) {
     while (*str) {
-        if (*str == '\n') {
-            while ((*reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_FR_REG)) & EARLY_UART_TXFF_FLAG) {}
-            *reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_DR_REG) = static_cast<uint32_t>('\r');
-        }
-        while ((*reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_FR_REG)) & EARLY_UART_TXFF_FLAG) {}
-        *reinterpret_cast<volatile uint32_t*>(EARLY_UART_BASE_ADDR + EARLY_UART_DR_REG) = static_cast<uint32_t>(*str++);
+        if (*str == '\n') early_uart_putc_unlocked('\r');
+        early_uart_putc_unlocked(*str++);
     }
 }
 

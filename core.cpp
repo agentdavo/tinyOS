@@ -516,7 +516,16 @@ TCB* Scheduler::create_thread(void (*fn)(void*), const void* arg, int prio, int 
     uint32_t target_core = (tcb.core_affinity != -1) ? static_cast<uint32_t>(tcb.core_affinity) : 0;
     if (is_idle) {
         g_per_cpu_data[target_core].idle_thread = &tcb;
-        tcb.pstate = 0x00000005; // Ensure idle thread can take interrupts
+#if defined(__aarch64__)
+        // SPSR_EL1 for EL1h with IRQs unmasked. arm64 idle needs this so the
+        // first eret into idle keeps IRQs enabled and the scheduler tick can
+        // actually fire on a core that's running idle.
+        tcb.pstate = 0x00000005;
+#elif defined(__riscv)
+        // The non-idle seed already set MPP=M, FS=Dirty, MPIE=1 — that's
+        // exactly what idle needs too. Don't overwrite it with the arm64
+        // value (which on rv64 means MPP=U and MIE off).
+#endif
     }
     // Idle threads never live in the ready queue — they're the fallback when
     // the queue is empty (see pop_highest_priority_ready_task).

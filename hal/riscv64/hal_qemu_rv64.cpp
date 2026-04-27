@@ -501,9 +501,17 @@ void PLICDriver::init_cpu_interface(uint32_t core_id) {
 }
 
 void PLICDriver::enable_core_irqs(uint32_t, uint32_t) {
+    // Enable MTIE + MEIE in mie so the CLINT/PLIC sources are routed to
+    // this hart, but do NOT flip mstatus.MIE here. arm64's equivalent
+    // only enables the GIC CPU interface — it leaves PSTATE.DAIF masked
+    // until eret atomically loads SPSR from the new TCB. rv64 needs the
+    // same pattern: leaving MIE off here closes the window between
+    // start_core_scheduler returning and cpu_context_switch_rv64's mret,
+    // so a timer IRQ can't fire on the boot stack and corrupt the
+    // in-flight context switch via the trap-entry TCB-spill path.
+    // mret restores MIE atomically from new_tcb.pstate (MPIE=1).
     uint64_t bits = (1ULL << 7) | (1ULL << 11); // MTIE + MEIE
     asm volatile("csrs mie, %0" :: "r"(bits) : "memory");
-    asm volatile("csrsi mstatus, 0x8" ::: "memory"); // MIE
 }
 void PLICDriver::disable_core_irqs(uint32_t) {
     asm volatile("csrci mstatus, 0x8" ::: "memory");
