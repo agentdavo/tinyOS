@@ -285,6 +285,12 @@ bool Service::begin_ping(uint32_t dst_ip, uint32_t timeout_ms) noexcept {
     ping_request_ip_.store(dst_ip, std::memory_order_relaxed);
     ping_timeout_ms_.store(timeout_ms ? timeout_ms : 1000u, std::memory_order_relaxed);
     ping_rtt_ms_.store(0, std::memory_order_relaxed);
+    // Set the deadline once at request time. process_ping used to reset this
+    // every iteration while state was REQUESTED, but state stays REQUESTED
+    // while ARP is unresolved — so the deadline got pushed forward forever
+    // and the ping never timed out.
+    ping_deadline_us_ = now_us() + static_cast<uint64_t>(timeout_ms ? timeout_ms : 1000u) * 1000ULL;
+    ping_ident_ = 0; // Sentinel — process_ping initialises ident/seq on first poll.
     return true;
 }
 
@@ -454,7 +460,7 @@ void Service::send_udp_packet(kernel::hal::net::NetworkDriverOps& nic,
 }
 
 void Service::send_arp_request(kernel::hal::net::NetworkDriverOps& nic,
-                               uint32_t target_ip) noexcept {
+                               uint32_t target_ip, bool log) noexcept {
     uint8_t frame[sizeof(EthernetHeader) + sizeof(ArpPacket)]{};
     auto* eth = reinterpret_cast<EthernetHeader*>(frame);
     auto* arp = reinterpret_cast<ArpPacket*>(frame + sizeof(EthernetHeader));
@@ -472,7 +478,7 @@ void Service::send_arp_request(kernel::hal::net::NetworkDriverOps& nic,
     arp->oper_be = host_to_be16(1);
     arp->spa_be = host_to_be32(local_ip_.load(std::memory_order_relaxed));
     arp->tpa_be = host_to_be32(target_ip);
-    log_ip_line("[hmi] arp who-has ", target_ip);
+    if (log) log_ip_line("[hmi] arp who-has ", target_ip);
     (void)nic.send_packet(nic_idx_, frame, sizeof(frame));
 }
 
@@ -634,8 +640,11 @@ void Service::process_ping(kernel::hal::net::NetworkDriverOps& nic) noexcept {
         ping_state_.store(PING_STATE_SEND_FAILED, std::memory_order_release);
         return;
     }
-    if (state == PING_STATE_REQUESTED) {
-        ping_deadline_us_ = now + static_cast<uint64_t>(ping_timeout_ms_.load(std::memory_order_relaxed)) * 1000ULL;
+    if (state == PING_STATE_REQUESTED && ping_ident_ == 0) {
+        // Initialise sequencing once per ping request (begin_ping clears
+        // ping_ident_ as a sentinel). Deadline is set in begin_ping;
+        // resetting it here would push it forward on every ARP-wait
+        // iteration and the ping would never time out.
         ping_ident_ = static_cast<uint16_t>(0x484dU ^ nic_idx_);
         ++ping_seq_;
     }
@@ -656,16 +665,22 @@ void Service::process_ping(kernel::hal::net::NetworkDriverOps& nic) noexcept {
     const uint32_t next_hop = next_hop_for(dst_ip);
     if (arp_ip_ != next_hop || arp_valid_until_us_ <= now) {
         if (now >= arp_retry_us_) {
-            if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
-                char dst_buf[16];
-                char hop_buf[16];
-                char line[128];
-                kernel::util::uint32_to_ipv4_str(dst_ip, std::span<char>(dst_buf, sizeof(dst_buf)));
-                kernel::util::uint32_to_ipv4_str(next_hop, std::span<char>(hop_buf, sizeof(hop_buf)));
-                kernel::util::k_snprintf(line, sizeof(line), "[hmi] ping route dst=%s via=%s\n", dst_buf, hop_buf);
-                uart->puts(line);
+            // Only log on the first attempt per hop. Retries every 250ms
+            // used to spam the log with identical "ping route" + "arp
+            // who-has" pairs while waiting for a reply.
+            const bool first_attempt = (arp_ip_ != next_hop);
+            if (first_attempt) {
+                if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+                    char dst_buf[16];
+                    char hop_buf[16];
+                    char line[128];
+                    kernel::util::uint32_to_ipv4_str(dst_ip, std::span<char>(dst_buf, sizeof(dst_buf)));
+                    kernel::util::uint32_to_ipv4_str(next_hop, std::span<char>(hop_buf, sizeof(hop_buf)));
+                    kernel::util::k_snprintf(line, sizeof(line), "[hmi] ping route dst=%s via=%s\n", dst_buf, hop_buf);
+                    uart->puts(line);
+                }
             }
-            send_arp_request(nic, next_hop);
+            send_arp_request(nic, next_hop, first_attempt);
             arp_retry_us_ = now + 250000ULL;
             arp_ip_ = next_hop;
         }

@@ -116,7 +116,7 @@ private:
                          const uint8_t* payload, size_t payload_len,
                          uint8_t protocol = 17u) noexcept;
     void send_arp_request(kernel::hal::net::NetworkDriverOps& nic,
-                          uint32_t target_ip) noexcept;
+                          uint32_t target_ip, bool log = true) noexcept;
     void send_arp_reply(kernel::hal::net::NetworkDriverOps& nic,
                         const uint8_t* dst_mac, uint32_t dst_ip) noexcept;
     void process_ping(kernel::hal::net::NetworkDriverOps& nic) noexcept;
