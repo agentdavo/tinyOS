@@ -176,11 +176,30 @@ bool try_get(uint8_t& out) noexcept {
     // this keeps the entry point self-sufficient if reordered).
     init(g_uart);
 
+    // Line buffer that persists across chunks: queued output is line-atomic
+    // against direct puts() callers (HMI, sched, virtio-gpu, ...) which all
+    // hold the UART lock for the duration of their string. Flushing per-char
+    // via putc() bypassed that lock and shredded interleaved output.
+    static char line_buf[256];
+    size_t line_len = 0;
+    auto flush_line = [&]() {
+        if (line_len == 0) return;
+        line_buf[line_len] = '\0';
+        g_uart->puts(line_buf);
+        line_len = 0;
+    };
+
     for (;;) {
         // Drain any pending output chunks before blocking on input. This keeps
         // the UART pipe full when the CLI is producing bursts (e.g. `help`).
         while (Chunk* c = g_out_queue.try_pop()) {
-            for (uint16_t i = 0; i < c->len; ++i) g_uart->putc(c->data[i]);
+            for (uint16_t i = 0; i < c->len; ++i) {
+                char ch = c->data[i];
+                line_buf[line_len++] = ch;
+                if (ch == '\n' || line_len >= sizeof(line_buf) - 1) {
+                    flush_line();
+                }
+            }
             c->len = 0;
             // Return to free list.
             while (!g_free_queue.try_push(c)) {
@@ -189,6 +208,11 @@ bool try_get(uint8_t& out) noexcept {
                 kernel::util::cpu_relax();
             }
         }
+        // Flush any partial line so prompt characters surface even without a
+        // trailing newline (e.g. "miniOS> "). The next direct puts() from
+        // another core may still split a prompt that has no newline, but that
+        // matches existing direct-puts behaviour for line-less output.
+        flush_line();
         // Read one byte (blocking spin on the UART LSR) and push it onto the
         // input queue. We take one byte per iteration so output drains
         // promptly between keystrokes.
