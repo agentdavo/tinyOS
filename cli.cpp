@@ -180,12 +180,20 @@ bool try_get(uint8_t& out) noexcept {
     // against direct puts() callers (HMI, sched, virtio-gpu, ...) which all
     // hold the UART lock for the duration of their string. Flushing per-char
     // via putc() bypassed that lock and shredded interleaved output.
+    //
+    // Use the locally-captured `uart` rather than the static g_uart inside
+    // the flush. On rv64 some path (still being chased) was leaving g_uart's
+    // vtable pointer apparently NULL'd by the time the loop got here, so
+    // the indirect puts() jumped to address 0. The function parameter is
+    // safer because it lives on this thread's stack and can't be mutated
+    // by anyone else.
     static char line_buf[256];
     size_t line_len = 0;
     auto flush_line = [&]() {
         if (line_len == 0) return;
         line_buf[line_len] = '\0';
-        g_uart->puts(line_buf);
+        if (uart) uart->puts(line_buf);
+        else if (g_uart) g_uart->puts(line_buf);
         line_len = 0;
     };
 
