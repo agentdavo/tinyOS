@@ -171,6 +171,10 @@ case "$PLATFORM" in
     arm64)
         ELF="$ROOT/build/arm64/miniOS_kernel_arm64.elf"
         QEMU=qemu-system-aarch64
+        # sdcard.img attached read+write so cnc::setup persistence can
+        # actually land on disk via the FAT32 writer (commit 5f5af4b).
+        # Without this the kernel sees no block device and saves go to
+        # the in-RAM shadow only.
         QEMU_ARGS=(
             -M virt -cpu max -smp 4 -m 128M
             -global virtio-mmio.force-legacy=false
@@ -179,6 +183,8 @@ case "$PLATFORM" in
             -device virtio-gpu-device
             -device virtio-keyboard-device
             -device virtio-tablet-device
+            -drive "if=none,file=$ROOT/sdcard.img,format=raw,id=miniosblk"
+            -device virtio-blk-device,drive=miniosblk
             -kernel "$ELF"
         )
         ;;
@@ -193,6 +199,8 @@ case "$PLATFORM" in
             -device virtio-gpu-device
             -device virtio-keyboard-device
             -device virtio-tablet-device
+            -drive "if=none,file=$ROOT/sdcard.img,format=raw,id=miniosblk"
+            -device virtio-blk-device,drive=miniosblk
             -kernel "$ELF"
         )
         ;;
