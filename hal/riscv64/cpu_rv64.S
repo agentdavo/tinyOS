@@ -42,6 +42,8 @@
     .equ UART_THR,        0x10000000
     .equ MSTATUS_FS,      0x00006000  /* FS[1:0] = 11 (Dirty) */
 
+    .global g_irq_in_progress
+
     /* TCB offsets — must match kernel::core::TCB. The pstate field at
      * byte offset 264 stores mstatus on rv64 (same slot arm64 uses for
      * SPSR_EL1). */
@@ -201,6 +203,21 @@ _start:
     .balign 4
     .global trap_entry
 trap_entry:
+    /* Mark this hart as handling an IRQ. Critical: this must happen BEFORE
+     * we swap stacks or save any state. Without this, a timer arriving during
+     * cpu_context_switch_rv64 (between MIE disable and mret) would have
+     * trap_entry save into current_thread — which is the NEW thread being
+     * loaded — corrupting pc/mstatus and causing the mret instruction-access
+     * fault we chase in the rv64 boot fix. Arm64 sets g_irq_in_progress at
+     * the hardware exception vector; rv64 must do the same at trap_entry. */
+    csrr    t0, mhartid
+    lla     t1, g_irq_in_progress
+    slli    t2, t0, 3
+    add     t1, t1, t2
+    li      t2, 1
+    sd      t2, 0(t1)
+    fence   rw, rw
+
     /* Swap to per-hart IRQ stack. mscratch = irq_sp_top coming in,
      * mscratch = old (interrupted) sp on exit of this instruction. */
     csrrw   sp, mscratch, sp
@@ -252,9 +269,13 @@ trap_entry:
     csrr    t0, mepc
     sd      t0, FR_MEPC(sp)
 
-    /* ---- If g_per_cpu_data[hartid].current_thread != 0, copy frame into TCB ---- */
+    /* ---- If g_per_cpu_data[hartid].current_thread != 0 AND g_irq_in_progress == 0, copy frame into TCB ---- */
     /* PerCPUData is two pointers (16 bytes); current_thread is at offset 0.
-     * kernel_g_per_cpu_data is a pointer slot holding the array's base. */
+     * kernel_g_per_cpu_data is a pointer slot holding the array's base.
+     * g_irq_in_progress is set by cpu_context_switch_rv64 to indicate a context
+     * switch is in-progress — if set, we skip the TCB save to avoid corrupting
+     * the half-written target TCB. Use the frame instead; the interrupted
+     * context will be restored when the nested trap returns. */
     csrr    a0, mhartid
     lla     t1, kernel_g_per_cpu_data
     ld      t1, 0(t1)                       /* t1 = &g_per_cpu_data[0] */
@@ -262,6 +283,13 @@ trap_entry:
     add     t1, t1, t2                      /* &g_per_cpu_data[hartid] */
     ld      t1, 0(t1)                       /* current_thread (TCB* or 0) */
     beqz    t1, .L_trap_skip_tcb_save
+
+    /* Check g_irq_in_progress — skip TCB save if a context switch is in flight. */
+    lla     t2, g_irq_in_progress
+    slli    t3, a0, 3                       /* hartid * 8 (uint64_t array) */
+    add     t2, t2, t3
+    ld      t3, 0(t2)                       /* t3 = g_irq_in_progress[hart] */
+    bnez    t3, .L_trap_skip_tcb_save
 
     /* memcpy 31*8=248 bytes of regs + sp-slot from frame to TCB.
      * Frame regs[] = offsets 0..240 by 8, matches TCB_REGS_OFF..+30*8. */
@@ -380,6 +408,19 @@ trap_entry:
     /* Unwind the frame and swap sp <-> mscratch (which holds thread sp). */
     addi    sp, sp, 256                     /* sp = irq_sp_top */
     csrrw   sp, mscratch, sp                /* sp = thread sp, mscratch = irq_sp_top */
+
+    /* Clear g_irq_in_progress before returning to thread context. Without
+     * this, the flag remains set after every trap and the NEXT timer would
+     * skip saving to the TCB (corrupting the interrupted thread's state).
+     * The clear must be after the sp swap so we have the thread's sp for
+     * any scratch, and after all GPRs are restored so we have hartid via
+     * mhartid CSR. */
+    csrr    t0, mhartid
+    lla     t1, g_irq_in_progress
+    slli    t2, t0, 3
+    add     t1, t1, t2
+    sd      zero, 0(t1)
+
     mret
 
     /* -----------------------------------------------------------------
@@ -413,6 +454,18 @@ cpu_context_switch_rv64:
     csrr    t1, mstatus
     csrci   mstatus, 0x8                /* MIE = 0 */
 
+    /* Mark this hart as being in a context switch so trap_entry knows not
+     * to spill into current_thread (which may be the new_tcb we're about
+     * to load). Without this, a timer IRQ arriving after we load new_tcb
+     * but before mret could have trap_entry save into new_tcb, corrupting
+     * pc/mstatus and causing a fetch-from-zero fault on mret. */
+    csrr    t2, mhartid
+    lla     t3, g_irq_in_progress
+    slli    t4, t2, 3                   /* hartid * 8 (uint64_t array) */
+    add     t3, t3, t4
+    li      t4, 1
+    sd      t4, 0(t3)
+    fence   rw, rw                      /* ensure store is visible before we touch the TCB */
     beqz    a0, .L_ctx_restore          /* first switch: skip save */
 
     /* Save callee-saved regs + ra + sp into old_tcb. */
@@ -457,8 +510,10 @@ cpu_context_switch_rv64:
      * bootstrap gets its TCB in a0. */
     ld      a0,  (TCB_REGS_OFF + 9*8)(a1)
     /* mret will atomically restore PC and IRQ state from the new TCB. */
+    fence   rw, rw                      /* ensure all prior loads complete before mret */
     ld      t0, (TCB_PC_OFF)(a1)
     csrw    mepc, t0
     ld      t0, (TCB_MSTATUS_OFF)(a1)
     csrw    mstatus, t0
+    fence   i, rw                      /* sync instruction fetch with memory state */
     mret
