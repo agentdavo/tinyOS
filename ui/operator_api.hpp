@@ -590,11 +590,19 @@ void axis_detail_disable();
 void axis_detail_fault_reset();
 
 // ===== Tool change wizard operator surface =====
-// First-cut wizard: Idle -> Moving -> Done with manual operator confirmation.
-// The wizard does NOT drive an actual tool changer — it gates the operator
-// confirmation flow so a virtual tool change is only "accepted" once the
-// operator has verified the swap. machine::toolpods::Service backs the pod
-// registry; this wizard adds the state machine on top.
+// MANUAL-SWAP confirmation flow. There is no automatic tool changer in the
+// loop — START transitions Idle→AwaitSwap and prints "Manual tool change —
+// verify pod, then ACCEPT"; the operator physically swaps the tool by hand,
+// then taps ACCEPT which commits the new (pod, station) into
+// machine::toolpods::Service via select_station(). The spindle does NOT
+// move and motion::g_motion is NOT touched. The internal Releasing /
+// Picking / Verifying enum values are dead today (the toolpods service
+// only emits Idle / Moving / Done / Faulted) and are mapped to the same
+// "AWAIT SWAP" label by the UI to reflect that.
+//
+// A real ATC controller (drawer release, spindle index, pull-stud unlock,
+// pick-and-place, kinematic verify) is a follow-up that would replace
+// the simple state machine here without changing the operator surface.
 struct ToolChangeSnapshot {
     enum class State : uint8_t {
         Idle = 0, Releasing, Moving, Picking, Verifying, Done, Faulted,

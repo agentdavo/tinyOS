@@ -1982,12 +1982,18 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
                                      static_cast<long>(bound_numeric_value(bind)));
             return;
         }
-        // Tool change wizard formatters.
+        // Tool change wizard formatters. The state labels are deliberately
+        // *not* "RELEASING / PICKING / VERIFYING" — the wizard does not
+        // drive a physical changer (see operator_api.hpp:ToolChangeSnapshot
+        // and machine::toolpods::Service). It's a confirmation flow over a
+        // manual swap: operator triggers, swaps tool by hand, accepts.
+        // Naming the states after physical motions misleads operators into
+        // thinking the spindle moved when it did not.
         case BindKind::ToolChangeState: {
             using TS = kernel::ui::operator_api::ToolChangeSnapshot::State;
             const int32_t v = bound_numeric_value(bind);
-            const char* names[] = {"IDLE", "RELEASING", "MOVING", "PICKING",
-                                   "VERIFYING", "DONE", "FAULTED"};
+            const char* names[] = {"IDLE", "REQUESTED", "AWAIT SWAP", "AWAIT SWAP",
+                                   "AWAIT SWAP", "DONE", "FAULTED"};
             const char* text = (v >= 0 && v <= static_cast<int32_t>(TS::Faulted)) ? names[v] : "?";
             copy_field(buf, buf_size, text, strlen(text));
             return;

@@ -1550,7 +1550,8 @@ include	page=bottom_nav
 # ============================================================
 page	id=tool_change	title=Tool Change
 panel	id=tc_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
-label	id=tc_title	parent=tc_root	x=40	y=30	w=1000	h=40	text=TOOL CHANGE	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+label	id=tc_title	parent=tc_root	x=40	y=30	w=1000	h=40	text=TOOL CHANGE (MANUAL)	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+label	id=tc_subtitle	parent=tc_root	x=40	y=72	w=1000	h=24	text=This is a confirmation flow. The spindle does not move; you swap the tool by hand.	color=#FCA5A5	bg=#0A0F1A	align=center	scale=1
 
 # --- CURRENT panel (y=90, h=260) ---
 panel	id=tc_cur_panel	parent=tc_root	x=20	y=90	w=1040	h=260	bg=#111827	border=#334155
