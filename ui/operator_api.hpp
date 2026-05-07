@@ -83,6 +83,11 @@ struct EthercatSlaveSnapshot {
     bool identity_mismatch = false;
     uint32_t vendor_id = 0;
     uint32_t product_code = 0;
+    // Per-slave hot-plug telemetry: total times this slave's `present` flag
+    // flipped from true to false since boot. Non-zero means the bus dropped
+    // and reacquired the slave at least once. See master.cpp run_loop for
+    // the threshold (kAbsentCycles).
+    uint32_t presence_loss_events = 0;
 };
 
 struct EthercatSnapshot {

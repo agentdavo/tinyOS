@@ -77,6 +77,18 @@ struct SlaveInfo {
     // colocated with the rest of the slave's identity.
     uint64_t dc_last_offset_ns  = 0;
     bool     dc_have_baseline   = false;
+
+    // --- Hot-plug / presence tracking ---
+    // last_seen_cycle is the master-internal cycle index at which this slave
+    // last contributed an RX response (FPRD AL_STATUS or LRW PDO unpack). The
+    // master's run_loop compares this against the current cycle each
+    // iteration: if too many cycles have passed without contact, `present`
+    // flips to false and `presence_lost_cycle` records when (used by `ec` to
+    // surface "slave 0x1003 lost @ cycle 1234"). Counter wraps at 2^64 which
+    // is ≈146,000 years at 250 µs cycles — not a concern.
+    uint64_t last_seen_cycle      = 0;
+    uint64_t presence_lost_cycle  = 0;
+    uint32_t presence_loss_events = 0;
 };
 
 // ESM step phases used by the master cyclic loop.

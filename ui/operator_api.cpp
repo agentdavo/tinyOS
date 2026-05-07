@@ -1251,6 +1251,7 @@ EthercatSnapshot ethercat_snapshot() {
             snap.slaves[i].identity_mismatch = slave.identity_mismatch;
             snap.slaves[i].vendor_id = slave.vendor_id ? slave.vendor_id : slave.observed_vid;
             snap.slaves[i].product_code = slave.product_code ? slave.product_code : slave.observed_pid;
+            snap.slaves[i].presence_loss_events = slave.presence_loss_events;
         }
 
         const uint32_t e2 = master->snapshot_epoch();

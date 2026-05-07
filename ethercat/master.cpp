@@ -127,6 +127,8 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
         if (dg.cmd == Cmd::BRD && dg.address == REG_DL_STATUS && dg.wkc > 0) {
             stats_.discovered.store(dg.wkc, std::memory_order_relaxed);
             if (dg.wkc > slave_count_ && dg.wkc <= MAX_SLAVES) {
+                const uint64_t epoch_now =
+                    snapshot_epoch_.load(std::memory_order_relaxed);
                 for (size_t i = slave_count_; i < dg.wkc; ++i) {
                     slaves_[i].station_addr   = static_cast<uint16_t>(0x1001 + i);
                     slaves_[i].current_state  = AL_INIT;
@@ -140,6 +142,8 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
                     slaves_[i].pdo_layout         = default_csp_layout();
                     slaves_[i].rx_process_data.fill(0);
                     slaves_[i].tx_process_data.fill(0);
+                    slaves_[i].present            = true;
+                    slaves_[i].last_seen_cycle    = epoch_now;
                 }
                 slave_count_ = dg.wkc;
             }
@@ -156,6 +160,8 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
             for (size_t i = 0; i < slave_count_; ++i) {
                 if (slaves_[i].station_addr == station) {
                     slaves_[i].current_state = static_cast<uint8_t>(dg.data[0] & 0x0F);
+                    slaves_[i].last_seen_cycle =
+                        snapshot_epoch_.load(std::memory_order_relaxed);
                     break;
                 }
             }
@@ -264,6 +270,8 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
         // matches what cycle_lrw packs.
         if (dg.cmd == Cmd::LRW && dg.wkc > 0 && dg.address == 0
             && dg.data != nullptr) {
+            const uint64_t epoch_now =
+                snapshot_epoch_.load(std::memory_order_relaxed);
             size_t byte_offset = 0;
             for (size_t i = 0; i < slave_count_; ++i) {
                 auto& d = slaves_[i].drive;
@@ -274,6 +282,7 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
                 if (byte_offset + per_slave > dg.data_len) break;
                 const uint8_t* p = dg.data + byte_offset;
                 byte_offset += per_slave;
+                slaves_[i].last_seen_cycle = epoch_now;
                 const size_t tx_take = (lay.tx_size_bytes <= PDO_SLOT_BYTES)
                     ? lay.tx_size_bytes : PDO_SLOT_BYTES;
                 if (tx_take > 0) {
@@ -1178,7 +1187,47 @@ void Master::run_loop() {
     for (;;) {
         // Snapshot epoch fence — bumped before any per-cycle write so
         // operator-side readers can detect a racing cycle. See header.
-        snapshot_epoch_.fetch_add(1, std::memory_order_release);
+        const uint64_t epoch_now = snapshot_epoch_.fetch_add(
+            1, std::memory_order_release) + 1;
+
+        // Per-slave presence sweep. A slave that hasn't contributed an RX
+        // response (FPRD AL_STATUS or LRW PDO) for more than kAbsentCycles
+        // is treated as disconnected. At 250 µs cycles the threshold gives
+        // ~25 ms of grace before a "lost" event latches — long enough to
+        // ride out a single dropped frame, short enough that a cable yank
+        // surfaces to the operator before motion drifts further. The first
+        // few cycles after boot are skipped so slaves get a chance to
+        // respond before we'd flag them.
+        constexpr uint64_t kAbsentCycles = 100;
+        constexpr uint64_t kBootGrace    = 50;
+        if (epoch_now > kBootGrace) {
+            for (size_t i = 0; i < slave_count_; ++i) {
+                auto& sl = slaves_[i];
+                const bool seen_recently =
+                    (epoch_now - sl.last_seen_cycle) < kAbsentCycles;
+                if (sl.present && !seen_recently) {
+                    sl.present = false;
+                    sl.presence_lost_cycle = epoch_now;
+                    sl.presence_loss_events++;
+                    char msg[96];
+                    kernel::util::k_snprintf(msg, sizeof(msg),
+                        "[ec%d] slave 0x%04x lost contact (cycle %llu)\n",
+                        id_,
+                        static_cast<unsigned>(sl.station_addr),
+                        static_cast<unsigned long long>(epoch_now));
+                    early_uart_puts(msg);
+                } else if (!sl.present && seen_recently) {
+                    sl.present = true;
+                    char msg[96];
+                    kernel::util::k_snprintf(msg, sizeof(msg),
+                        "[ec%d] slave 0x%04x reconnected (cycle %llu)\n",
+                        id_,
+                        static_cast<unsigned>(sl.station_addr),
+                        static_cast<unsigned long long>(epoch_now));
+                    early_uart_puts(msg);
+                }
+            }
+        }
 
         // Jitter sample at cycle top — tracks inter-cycle interval vs period.
         auto& jt = (id_ == 0) ? diag::rt::ecat_a : diag::rt::ecat_b;
