@@ -1212,37 +1212,53 @@ EthercatSnapshot ethercat_snapshot() {
     const ethercat::Master* master = primary_master();
     if (!master) return snap;
 
-    snap.available = true;
-    snap.master_state = static_cast<uint8_t>(master->state());
-    snap.discovered = master->stats().discovered.load(std::memory_order_relaxed);
-    snap.cycles = master->stats().cycles.load(std::memory_order_relaxed);
-    snap.tx_frames = master->stats().tx_frames.load(std::memory_order_relaxed);
-    snap.rx_frames = master->stats().rx_frames.load(std::memory_order_relaxed);
-    snap.deadline_miss = master->stats().cycle_deadline_miss.load(std::memory_order_relaxed);
-    snap.esm_timeouts = master->stats().esm_timeouts.load(std::memory_order_relaxed);
-    snap.deadline_trips = master->stats().deadline_trips.load(std::memory_order_relaxed);
-    snap.deadline_fault = master->is_deadline_faulted();
-    snap.last_dc_drift_ns = master->last_dc_drift_ns();
-    snap.dc_drift_max_ns  = master->stats().dc_drift_max_ns.load(std::memory_order_relaxed);
-    snap.dc_sync_samples  = master->stats().dc_sync_samples.load(std::memory_order_relaxed);
-    snap.dc_sync_trips    = master->stats().dc_sync_trips.load(std::memory_order_relaxed);
-    snap.dc_sync_faulted  = master->is_dc_sync_faulted();
-    snap.cycle_p99_us = master->hist_cycle().percentile(99);
-    snap.cycle_max_us = master->hist_cycle().percentile(100);
-    snap.period_us = master->period_us();
-    snap.slave_count = master->slave_count();
+    // Seqlock retry. Master bumps snapshot_epoch_ at the top of every cycle
+    // (master.cpp:1178). If the epoch moves between e1 and e2 the multi-field
+    // copy below is potentially torn — try again. At 250 µs cycle and ~20
+    // atomic loads per pass the typical case is single-shot; the cap stops a
+    // pathological loop on a runaway master.
+    constexpr int kMaxRetries = 4;
+    for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+        const uint32_t e1 = master->snapshot_epoch();
 
-    const size_t limit = snap.slave_count < 6 ? snap.slave_count : 6;
-    for (size_t i = 0; i < limit; ++i) {
-        const auto& slave = master->slave(i);
-        snap.slaves[i].present = slave.present;
-        snap.slaves[i].station_addr = slave.station_addr;
-        snap.slaves[i].current_state = slave.current_state;
-        snap.slaves[i].target_state = slave.target_state;
-        snap.slaves[i].identity_mismatch = slave.identity_mismatch;
-        snap.slaves[i].vendor_id = slave.vendor_id ? slave.vendor_id : slave.observed_vid;
-        snap.slaves[i].product_code = slave.product_code ? slave.product_code : slave.observed_pid;
+        snap.available = true;
+        snap.master_state = static_cast<uint8_t>(master->state());
+        snap.discovered = master->stats().discovered.load(std::memory_order_relaxed);
+        snap.cycles = master->stats().cycles.load(std::memory_order_relaxed);
+        snap.tx_frames = master->stats().tx_frames.load(std::memory_order_relaxed);
+        snap.rx_frames = master->stats().rx_frames.load(std::memory_order_relaxed);
+        snap.deadline_miss = master->stats().cycle_deadline_miss.load(std::memory_order_relaxed);
+        snap.esm_timeouts = master->stats().esm_timeouts.load(std::memory_order_relaxed);
+        snap.deadline_trips = master->stats().deadline_trips.load(std::memory_order_relaxed);
+        snap.deadline_fault = master->is_deadline_faulted();
+        snap.last_dc_drift_ns = master->last_dc_drift_ns();
+        snap.dc_drift_max_ns  = master->stats().dc_drift_max_ns.load(std::memory_order_relaxed);
+        snap.dc_sync_samples  = master->stats().dc_sync_samples.load(std::memory_order_relaxed);
+        snap.dc_sync_trips    = master->stats().dc_sync_trips.load(std::memory_order_relaxed);
+        snap.dc_sync_faulted  = master->is_dc_sync_faulted();
+        snap.cycle_p99_us = master->hist_cycle().percentile(99);
+        snap.cycle_max_us = master->hist_cycle().percentile(100);
+        snap.period_us = master->period_us();
+        snap.slave_count = master->slave_count();
+
+        const size_t limit = snap.slave_count < 6 ? snap.slave_count : 6;
+        for (size_t i = 0; i < limit; ++i) {
+            const auto& slave = master->slave(i);
+            snap.slaves[i].present = slave.present;
+            snap.slaves[i].station_addr = slave.station_addr;
+            snap.slaves[i].current_state = slave.current_state;
+            snap.slaves[i].target_state = slave.target_state;
+            snap.slaves[i].identity_mismatch = slave.identity_mismatch;
+            snap.slaves[i].vendor_id = slave.vendor_id ? slave.vendor_id : slave.observed_vid;
+            snap.slaves[i].product_code = slave.product_code ? slave.product_code : slave.observed_pid;
+        }
+
+        const uint32_t e2 = master->snapshot_epoch();
+        if (e1 == e2) return snap;
+        // else: master ticked mid-copy; loop and resample.
     }
+    // Best-effort: return whatever the last attempt produced. The caller
+    // sees a (possibly torn) snapshot but never blocks here.
     return snap;
 }
 

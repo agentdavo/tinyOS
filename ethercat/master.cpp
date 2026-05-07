@@ -1176,6 +1176,10 @@ void Master::run_loop() {
     discover_slaves();
 
     for (;;) {
+        // Snapshot epoch fence — bumped before any per-cycle write so
+        // operator-side readers can detect a racing cycle. See header.
+        snapshot_epoch_.fetch_add(1, std::memory_order_release);
+
         // Jitter sample at cycle top — tracks inter-cycle interval vs period.
         auto& jt = (id_ == 0) ? diag::rt::ecat_a : diag::rt::ecat_b;
         jt.sample(t->get_system_time_ns());

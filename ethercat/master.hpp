@@ -284,11 +284,24 @@ public:
     const diag::LatencyHistogram& hist_lrw()    const noexcept { return hist_lrw_; }
     const diag::LatencyHistogram& hist_wait()   const noexcept { return hist_wait_; }
 
+    // Snapshot epoch — bumped once at the top of every run_loop iteration
+    // (master.cpp:1178) before any per-cycle write. Operator-side readers
+    // (operator_api::ethercat_snapshot) wrap their multi-field copy in a
+    // bounded retry: read epoch, copy fields, re-read epoch. If the epoch
+    // moved, the master ticked a cycle mid-copy and the snapshot is torn —
+    // retry. With a 250 µs cycle and ~20 atomic loads per snapshot the
+    // typical case is a single-shot success; the retry budget is the
+    // safety net for the unlucky overlap.
+    uint32_t snapshot_epoch() const noexcept {
+        return snapshot_epoch_.load(std::memory_order_acquire);
+    }
+
 private:
     int id_;
     int nic_idx_;
     uint32_t period_us_;
     std::atomic<State> state_{State::Init};
+    std::atomic<uint32_t> snapshot_epoch_{0};
     Stats stats_;
     kernel::hal::net::NetworkDriverOps* net_ = nullptr;
 
