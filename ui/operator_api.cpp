@@ -269,6 +269,7 @@ PageId current_page() {
 void jog_selected(int32_t delta) {
     core::ScopedLock lock(g_lock);
     refresh_machine_snapshot_locked();
+    if (!mode_allows_jog_locked()) return;
     if (g_machine.mode == Mode::Alarm) return;
     stop_preview_cycle_locked(false);
     const uint32_t axis_idx = g_machine.selected_axis & 3u;
@@ -281,6 +282,7 @@ void jog_selected(int32_t delta) {
 void jog_axis_step(int32_t sign) {
     core::ScopedLock lock(g_lock);
     refresh_machine_snapshot_locked();
+    if (!mode_allows_jog_locked()) return;
     if (g_machine.mode == Mode::Alarm) return;
     stop_preview_cycle_locked(false);
     const uint32_t axis_idx = g_machine.selected_axis & 3u;
@@ -310,16 +312,43 @@ void set_jog_feed_cps(int32_t cps) {
 }
 
 void set_operator_mode(OperatorMode mode) {
-    // TODO: gate cycle-start / MDI submit / jog on the active mode once
-    // the surrounding subsystems agree on a mode-state machine. For now
-    // this is a declared intent for the dashboard mode buttons only.
     core::ScopedLock lock(g_lock);
     g_machine.operator_mode = mode;
+}
+
+// Mode-gating policy:
+//   Auto  → only the autonomous program may run; cycle_start enabled.
+//   MDI   → only the operator's manually-typed line is dispatched.
+//   Jog   → only continuous / step jog is permitted.
+//   Setup → calibration, offsets, homing wizard, jog (operator can move
+//           the machine while editing offsets, but cycle-start is locked).
+// The intent is to make the prominent mode buttons on the dashboard
+// behave as the safety-class lockouts they look like, instead of being
+// purely cosmetic. Caller must hold g_lock.
+static bool mode_allows_jog_locked() {
+    return g_machine.operator_mode == OperatorMode::Jog ||
+           g_machine.operator_mode == OperatorMode::Setup;
+}
+static bool mode_allows_cycle_locked() {
+    return g_machine.operator_mode == OperatorMode::Auto;
+}
+static bool mode_allows_mdi_locked() {
+    return g_machine.operator_mode == OperatorMode::MDI;
+}
+
+bool mode_allows_mdi() {
+    core::ScopedLock lock(g_lock);
+    return mode_allows_mdi_locked();
 }
 
 void start_continuous_jog(uint32_t axis, int32_t sign) {
     core::ScopedLock lock(g_lock);
     refresh_machine_snapshot_locked();
+    // Mode gate: jog is only permitted in Jog or Setup mode. The operator
+    // explicitly picks one of those modes before the machine will move under
+    // a hold-to-move button — matches the lockout semantics of the
+    // dashboard mode buttons.
+    if (!mode_allows_jog_locked()) return;
     // Reject motion when any axis fault is latched, the channel is in Fault,
     // or either EtherCAT master is sitting on a deadline trip — hold-to-move
     // must never override an active safety latch.
@@ -370,6 +399,10 @@ void home_selected() {
 void toggle_cycle() {
     core::ScopedLock lock(g_lock);
     refresh_machine_snapshot_locked();
+    // Mode gate: cycle-start drives the autonomous program channel; only
+    // permitted in Auto mode. The dashboard mode buttons are now real
+    // safety lockouts rather than indicators.
+    if (!mode_allows_cycle_locked()) return;
     if (g_machine.mode == Mode::Alarm || g_machine.mode == Mode::Homing) return;
     if (!cycle_start_ready_locked()) return;
     bool cycle_allowed = true;

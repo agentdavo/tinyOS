@@ -423,6 +423,12 @@ void set_selected_axis(uint32_t idx);    // explicit axis pick (X=0..A=3), no ro
 void set_jog_increment(int32_t counts);  // clamps to [1, 1_000_000]
 void set_jog_feed_cps(int32_t cps);      // clamps to [1, 10_000_000]
 void set_operator_mode(OperatorMode mode);
+// Mode gate predicate consumed by ui_builder_tsv when the operator
+// taps SUBMIT on the MDI page. MDI dispatch is silently dropped when
+// the operator is not in MDI mode — the dashboard mode buttons are the
+// safety lockout. Other gates (cycle-start, jog) are enforced inside
+// the corresponding mutator and don't need an exported predicate.
+bool mode_allows_mdi();
 void toggle_view_toolpath();             // machine-view overlay: program path
 void toggle_view_toolpods();             // machine-view overlay: toolpod markers
 void home_selected();

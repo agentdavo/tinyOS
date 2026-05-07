@@ -2520,6 +2520,7 @@ void run_action_target(const char* target) {
         }
     }
     else if (strcmp(target, "mdi:submit") == 0) {
+        if (!kernel::ui::operator_api::mode_allows_mdi()) return;
         const auto s = cnc::mdi::g_service.snapshot();
         cnc::mdi::g_service.submit(s.input);
     }
@@ -2618,6 +2619,7 @@ bool commit_input_target(const char* target, const char* value_text, BindKind bi
     if (bind_hint == BindKind::ProgramName) return select_program_by_name(value_text);
     if (bind_hint == BindKind::MdiInput) {
         cnc::mdi::g_service.set_input(value_text);
+        if (!kernel::ui::operator_api::mode_allows_mdi()) return false;
         return cnc::mdi::g_service.submit(value_text);
     }
     if (target && *target && strcmp(target, "commit:restart:line") == 0) {
