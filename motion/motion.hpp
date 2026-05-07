@@ -500,6 +500,16 @@ struct Axis {
         if (accel_override > 0) accel_cps2 = accel_override;
     }
 
+    // Apply runtime drive limit overrides (e.g. from SDO 0x6081 profile
+    // velocity / 0x6083 profile acceleration). 0 means "leave unchanged" so
+    // a partial read of one object can still apply. Caller is responsible
+    // for upper-bound sanity (negative values are rejected).
+    void apply_drive_limits(int32_t vmax_override,
+                            int32_t accel_override) noexcept {
+        if (vmax_override  > 0) vmax_cps   = vmax_override;
+        if (accel_override > 0) accel_cps2 = accel_override;
+    }
+
     // Advance the trapezoidal generator by `dt_us` microseconds and update
     // `commanded_position` + `traj_state`. Emits one new setpoint per call.
     void step_trajectory(uint32_t dt_us) noexcept;

@@ -3516,6 +3516,63 @@ static int cmd_axis_autodetect(const char* args, kernel::hal::UARTDriverOps* uar
     uart->puts(buf);
     return 0;
 }
+static int cmd_axis_drive_limits(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // axis_drive_limits <axis> — read CiA-402 profile velocity (0x6081:0)
+    // and profile acceleration (0x6083:0) from the slave bound to <axis>
+    // and apply them as the motion-side vmax_cps / accel_cps2 overrides.
+    // Mirrors axis_autodetect's plumbing — the trajectory planner picks
+    // up the new limits on the next move. See motion.hpp:254 (was the
+    // long-standing "TODO: read these from device DB" note).
+    if (!args || !*args) {
+        uart->puts("usage: axis_drive_limits <axis>\n");
+        return 1;
+    }
+    const char* p = args;
+    long axis_l = 0;
+    if (!cli_parse_long(p, axis_l) || axis_l < 0
+        || (size_t)axis_l >= motion::MAX_AXES
+        || (size_t)axis_l >= ethercat::MAX_SLAVES) {
+        uart->puts("axis_drive_limits: axis out of range\n");
+        return 1;
+    }
+    const auto& slave = ethercat::g_master_a.slave((size_t)axis_l);
+    if (slave.station_addr == 0) {
+        uart->puts("axis_drive_limits: slave not discovered yet (wait for ec state=OP)\n");
+        return 1;
+    }
+    auto read_u32 = [&](uint16_t idx, uint8_t sub, uint32_t& v_out) -> bool {
+        uint8_t buf[4] = {};
+        uint8_t bytes = 0;
+        uint32_t abort = 0;
+        if (!ethercat::g_master_a.upload_sdo(slave.station_addr, idx, sub,
+                                              buf, &bytes, 100000, &abort)) return false;
+        if (bytes < 4) return false;
+        v_out = static_cast<uint32_t>(buf[0]) |
+                (static_cast<uint32_t>(buf[1]) << 8) |
+                (static_cast<uint32_t>(buf[2]) << 16) |
+                (static_cast<uint32_t>(buf[3]) << 24);
+        return true;
+    };
+    uint32_t vmax = 0, accel = 0;
+    const bool got_v = read_u32(0x6081, 0, vmax);
+    const bool got_a = read_u32(0x6083, 0, accel);
+    if (!got_v && !got_a) {
+        uart->puts("axis_drive_limits: SDO probe failed for both 0x6081 and 0x6083\n");
+        return 1;
+    }
+    motion::g_motion.axis((size_t)axis_l).apply_drive_limits(
+        got_v ? static_cast<int32_t>(vmax)  : 0,
+        got_a ? static_cast<int32_t>(accel) : 0);
+    char buf[160];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "axis_drive_limits: axis %ld @ 0x%04x — vmax=%lu%s accel=%lu%s\n",
+        axis_l, (unsigned)slave.station_addr,
+        (unsigned long)vmax,  got_v ? " (applied)" : " (skipped)",
+        (unsigned long)accel, got_a ? " (applied)" : " (skipped)");
+    uart->puts(buf);
+    return 0;
+}
+
 static int cmd_fault_inject(const char*, kernel::hal::UARTDriverOps* uart) {
 #if MINIOS_FAKE_SLAVE
     ethercat::g_fake_slave.cia_inject_fault();
@@ -4466,6 +4523,7 @@ CLI::CLI() {
     register_command("dro",    cmd_dro,    "Operator DRO: per-axis cmd/actual/dtg/F-err/state plus master health");
     register_command("fault_reset", cmd_fault_reset, "fault_reset <axis> - pulse CW_FAULT_RESET, drop latch");
     register_command("axis_autodetect", cmd_axis_autodetect, "axis_autodetect <axis> - probe 0x608F, store cnts/rev in motion axis");
+    register_command("axis_drive_limits", cmd_axis_drive_limits, "axis_drive_limits <axis> - read 0x6081/0x6083 SDOs, apply to motion vmax/accel");
 #if MINIOS_FAKE_SLAVE
     register_command("fault_inject", cmd_fault_inject, "Inject a Fault into the fake slave for testing propagation");
 #endif
