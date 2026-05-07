@@ -60,6 +60,7 @@ struct MachineSnapshot {
     int32_t spindle = 0;
     int32_t spindle_rpm = 0;                   // signed spindle command (rpm)
     int32_t spindle_load = 0;                  // permille torque on spindle axis
+    uint32_t spindle_override = 100;           // operator-side override percent (0..150)
     uint32_t wcs_index = 0;                    // 0=G54, 1=G55, ...
     bool inch_mode = false;
     uint32_t block_current = 0;
@@ -457,6 +458,10 @@ bool request_program_simulation(size_t channel);
 // with toggle_cycle() to begin motion from the reconstructed state.
 bool restart_program_at_line(size_t line_no);
 void set_feed_override(int32_t feed);
+// Spindle override (0..150 %). Mirrors set_feed_override; gated on
+// EtherCAT deadline-fault so a faulted bus can't be sped up by accident.
+// Stored on motion::Kernel::Channel::overrides.spindle_permille (×10).
+void set_spindle_override(int32_t pct);
 void step_demo_tick();
 bool select_prev_macro();
 bool select_next_macro();

@@ -266,6 +266,13 @@ label	id=jog_feed_lbl	parent=jog_root	x=40	y=812	w=160	h=32	text=FEED %	color=#9
 slider	id=jog_feed	parent=jog_root	x=210	y=810	w=720	h=42	min=0	max=150	value=100	color=#0EA5E9	bg=#1F2937	bind=feed	focus=80
 label	id=jog_feed_val	parent=jog_root	x=950	y=812	w=110	h=32	text=100	color=#7DD3FC	bg=#0B1220	border=#0EA5E9	bind=feed	align=center	scale=1
 
+# --- spindle override slider ---
+# Mirrors the feed slider. Backed by motion::Kernel channel
+# overrides.spindle_permille via operator_api::set_spindle_override.
+label	id=jog_spo_lbl	parent=jog_root	x=40	y=862	w=160	h=32	text=SPINDLE %	color=#94A3B8	bg=#0A0F1A	scale=1
+slider	id=jog_spo	parent=jog_root	x=210	y=860	w=720	h=42	min=0	max=150	value=100	color=#F59E0B	bg=#1F2937	bind=spindle_override	focus=82
+label	id=jog_spo_val	parent=jog_root	x=950	y=862	w=110	h=32	text=100	color=#FCD34D	bg=#0B1220	border=#F59E0B	bind=spindle_override	align=center	scale=1
+
 # --- jog pad ---
 # JOG-/JOG+ are discrete step (one click = jog_increment counts).
 # HOLD-/HOLD+ are press-to-toggle continuous: first tap starts axis

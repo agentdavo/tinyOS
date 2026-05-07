@@ -448,6 +448,7 @@ enum class BindKind : uint16_t {
     EcDcDriftLastNs,   // most recent sample, ns (signed; rendered abs)
     EcDcSamples,       // total DC drift samples taken
     EcDcTrips,         // total DC drift fault latches
+    SpindleOverride,   // operator-side spindle override percent (0..150)
     Alarm0Id, Alarm0Severity, Alarm0Axis, Alarm0Message, Alarm0Time,
     Alarm1Id, Alarm1Severity, Alarm1Axis, Alarm1Message, Alarm1Time,
     Alarm2Id, Alarm2Severity, Alarm2Axis, Alarm2Message, Alarm2Time,
@@ -540,6 +541,7 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "torque") == 0) return BindKind::Torque;
     if (strcmp(s, "feed") == 0) return BindKind::Feed;
     if (strcmp(s, "spindle") == 0) return BindKind::Spindle;
+    if (strcmp(s, "spindle_override") == 0) return BindKind::SpindleOverride;
     if (strcmp(s, "axis:x") == 0) return BindKind::AxisX;
     if (strcmp(s, "axis:y") == 0) return BindKind::AxisY;
     if (strcmp(s, "axis:z") == 0) return BindKind::AxisZ;
@@ -845,6 +847,10 @@ int32_t bound_numeric_value(BindKind bind) {
         case BindKind::Feed: {
             const auto snap = kernel::ui::operator_api::machine_snapshot();
             return snap.feed;
+        }
+        case BindKind::SpindleOverride: {
+            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            return static_cast<int32_t>(snap.spindle_override);
         }
         case BindKind::Spindle: {
             const auto snap = kernel::ui::operator_api::machine_snapshot();
@@ -3195,6 +3201,7 @@ private:
         if (ratio > 1.0f) ratio = 1.0f;
         value_ = static_cast<int32_t>(min_ + (max_ - min_) * ratio);
         if (bind_ == BindKind::Feed) kernel::ui::operator_api::set_feed_override(value_);
+        if (bind_ == BindKind::SpindleOverride) kernel::ui::operator_api::set_spindle_override(value_);
         mark_dirty();
         if (char* target = action_target_for_widget(spec_.id, BuilderEvent::Change, spec_.action)) {
             run_action_target(target);

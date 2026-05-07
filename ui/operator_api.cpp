@@ -204,6 +204,12 @@ uint32_t current_feed_locked() {
     return static_cast<uint32_t>(ch->overrides.feed_permille / 10u);
 }
 
+uint32_t current_spindle_override_locked() {
+    const auto* ch = primary_channel();
+    if (!ch) return 100u;
+    return static_cast<uint32_t>(ch->overrides.spindle_permille / 10u);
+}
+
 void stop_preview_cycle_locked(bool completed = false) {
     g_program_run.active = false;
     g_program_run.point_index = 0;
@@ -239,6 +245,7 @@ void refresh_machine_snapshot_locked() {
     g_machine.mode = current_mode_locked();
     g_machine.hold = (g_machine.mode == Mode::Hold);
     g_machine.feed = static_cast<int32_t>(current_feed_locked());
+    g_machine.spindle_override = current_spindle_override_locked();
     g_machine.torque = static_cast<uint32_t>(
         motion::g_motion.axis(selected_axis).actual_torque_permille.load(std::memory_order_relaxed));
     const size_t sp_idx = static_cast<size_t>(spindle_axis_index());
@@ -610,6 +617,25 @@ void set_feed_override(int32_t feed) {
         (void)motion::g_motion.set_override(
             0, motion::Kernel::OverrideKind::Feed,
             static_cast<uint16_t>(feed * 10));
+    }
+    refresh_machine_snapshot_locked();
+}
+
+// Spindle override mirrors the feed override surface — the motion kernel
+// already carries spindle_permille on every channel; this just exposes the
+// operator-side knob the way the operator's mental model expects (a slider
+// or +/-10% buttons on the dashboard, same shape as feed). Range matches
+// the feed-override convention (0..150 %) and gates on no fault.
+void set_spindle_override(int32_t pct) {
+    core::ScopedLock lock(g_lock);
+    if (pct < 0) pct = 0;
+    if (pct > 150) pct = 150;
+    if (ethercat::g_master_a.is_deadline_faulted() ||
+        ethercat::g_master_b.is_deadline_faulted()) return;
+    if (has_primary_channel()) {
+        (void)motion::g_motion.set_override(
+            0, motion::Kernel::OverrideKind::Spindle,
+            static_cast<uint16_t>(pct * 10));
     }
     refresh_machine_snapshot_locked();
 }
