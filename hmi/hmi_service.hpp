@@ -50,6 +50,13 @@ public:
     PingResult last_ping_result() const noexcept { return static_cast<PingResult>(last_ping_result_.load(std::memory_order_relaxed)); }
     PingResult ping_ipv4(uint32_t dst_ip, uint32_t timeout_ms, uint32_t& rtt_ms) noexcept;
     PingResult ping_ipv4_str(const char* dst_ip, uint32_t timeout_ms, uint32_t& rtt_ms) noexcept;
+    // Fire-and-forget variant. Stages a ping request and returns
+    // immediately. The worker thread drives the exchange via process_ping;
+    // result is available via last_ping_result() / last_ping_rtt_ms() once
+    // the state machine settles. Returns false only if a ping is already
+    // in flight. Used by the operator UI so a 2 s ICMP timeout doesn't
+    // freeze the dashboard for 2 s.
+    bool ping_ipv4_async(uint32_t dst_ip, uint32_t timeout_ms) noexcept;
 
     // NetworkSnapshot accessor — used by the operator UI's network setup
     // page. Returns const-read state; no internals are exposed. The mac()

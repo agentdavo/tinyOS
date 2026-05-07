@@ -1838,8 +1838,12 @@ void net_request_ping() {
         target = g_net_ui.pending_ping_target;
     }
     if (target == 0) return;
-    uint32_t rtt = 0;
-    (void)hmi::g_service.ping_ipv4(target, 2000u, rtt);
+    // Fire-and-forget: hmi::Service runs the exchange on its own worker
+    // thread; the result lands in last_ping_result() / last_ping_rtt_ms()
+    // and is picked up by the network snapshot. Previously this blocked
+    // the UI thread for the full 2 s ICMP timeout — every operator ping
+    // froze the dashboard.
+    (void)hmi::g_service.ping_ipv4_async(target, 2000u);
 }
 
 // ===== Per-axis status sub-page =====

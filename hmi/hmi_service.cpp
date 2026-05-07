@@ -294,6 +294,11 @@ bool Service::begin_ping(uint32_t dst_ip, uint32_t timeout_ms) noexcept {
     return true;
 }
 
+bool Service::ping_ipv4_async(uint32_t dst_ip, uint32_t timeout_ms) noexcept {
+    if (dst_ip == 0) return false;
+    return begin_ping(dst_ip, timeout_ms);
+}
+
 Service::PingResult Service::ping_ipv4(uint32_t dst_ip, uint32_t timeout_ms, uint32_t& rtt_ms) noexcept {
     if (dst_ip == 0) return PingResult::BadAddress;
     if (!begin_ping(dst_ip, timeout_ms)) return PingResult::Busy;
