@@ -1045,8 +1045,31 @@ static void refresh_alarm_journal_locked() {
     int32_t macro_fault_code = 0;
     if (machine::g_registry.get_bool("macro_fault", macro_fault) && macro_fault &&
         machine::g_registry.get_int("macro_fault_code", macro_fault_code)) {
+        // Pull the failed channel's snapshot so the alarm message carries
+        // step-level context (macro id, step index, reason). The macro
+        // runtime sets .fault=true and leaves .step_index pointing at the
+        // failing step + the reason in .message before clearing .active.
+        // Without this enrichment the operator only saw "MACRO FAULT" with
+        // no way to find the offending step short of reading serial logs.
         const uint32_t id = 500u + static_cast<uint32_t>(macro_fault_code);
-        raise_alarm_locked(id, "MACRO FAULT", "MAC",
+        char msg[64] = {};
+        const auto& ch = macros::g_runtime.channel_state(0);
+        const auto* mac = macros::g_runtime.macro(ch.macro_index);
+        if (mac && ch.message[0]) {
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                                     "MACRO %s step %u: %s",
+                                     mac->id,
+                                     static_cast<unsigned>(ch.step_index),
+                                     ch.message);
+        } else if (mac) {
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                                     "MACRO %s step %u: fault",
+                                     mac->id,
+                                     static_cast<unsigned>(ch.step_index));
+        } else {
+            kernel::util::k_snprintf(msg, sizeof(msg), "MACRO FAULT");
+        }
+        raise_alarm_locked(id, msg, "MAC",
                            AlarmsSnapshot::Severity::Error, now_ns);
     } else {
         // No fault flag → clear any active macro alarm regardless of code.
