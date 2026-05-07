@@ -95,6 +95,13 @@ static PageSpec g_pages[MAX_PAGES];
 static uint32_t g_page_count = 0;
 static ActionSpec g_actions[MAX_ACTIONS];
 static uint32_t g_action_count = 0;
+// Sorted index over g_actions, populated by build_action_index() after a
+// successful validate_actions(). Lets action_target_for_widget binary-search
+// instead of doing an O(action_count) strcmp scan on every button render.
+// Empty (g_action_index_count = 0) until parse completes; lookups fall back
+// to the linear scan in that window.
+static uint16_t g_action_index[MAX_ACTIONS];
+static uint32_t g_action_index_count = 0;
 static ChildSpec g_child_links[MAX_CHILD_LINKS];
 static uint32_t g_child_link_count = 0;
 static Widget* g_root_widget = nullptr;
@@ -2678,12 +2685,63 @@ const char* helper_text_for_bind(BindKind bind) {
     }
 }
 
+// Sort the action index by widget_id (then by event). Insertion sort is fine
+// at the scale we run (MAX_ACTIONS is small, parse-time-only).
+static void build_action_index() {
+    g_action_index_count = g_action_count;
+    for (uint32_t i = 0; i < g_action_count; ++i) {
+        g_action_index[i] = static_cast<uint16_t>(i);
+    }
+    for (uint32_t i = 1; i < g_action_index_count; ++i) {
+        const uint16_t key = g_action_index[i];
+        const ActionSpec& key_act = g_actions[key];
+        uint32_t j = i;
+        while (j > 0) {
+            const ActionSpec& prev = g_actions[g_action_index[j - 1]];
+            const int c = strcmp(prev.widget_id, key_act.widget_id);
+            if (c < 0) break;
+            if (c == 0 && static_cast<uint8_t>(prev.event)
+                          <= static_cast<uint8_t>(key_act.event)) break;
+            g_action_index[j] = g_action_index[j - 1];
+            --j;
+        }
+        g_action_index[j] = key;
+    }
+}
+
 char* action_target_for_widget(const char* id, BuilderEvent event, const char* inline_action) {
     if (inline_action && *inline_action) return const_cast<char*>(inline_action);
-    for (uint32_t i = 0; i < g_action_count; ++i) {
-        if (g_actions[i].event == event && strcmp(g_actions[i].widget_id, id) == 0) {
-            return g_actions[i].target;
+    // Pre-parse window: index isn't built yet. Fall back to linear scan so
+    // anything that resolves actions during build_ui() (before
+    // build_action_index() runs) still works.
+    if (g_action_index_count == 0) {
+        for (uint32_t i = 0; i < g_action_count; ++i) {
+            if (g_actions[i].event == event && strcmp(g_actions[i].widget_id, id) == 0) {
+                return g_actions[i].target;
+            }
         }
+        return nullptr;
+    }
+    // Binary search by widget_id, then linear walk over the (small) run of
+    // actions sharing that widget_id to match the event.
+    int32_t lo = 0;
+    int32_t hi = static_cast<int32_t>(g_action_index_count) - 1;
+    while (lo <= hi) {
+        const int32_t mid = lo + (hi - lo) / 2;
+        const ActionSpec& a = g_actions[g_action_index[mid]];
+        const int c = strcmp(a.widget_id, id);
+        if (c == 0) {
+            // Walk left to the first match, then forward over the run.
+            int32_t k = mid;
+            while (k > 0 && strcmp(g_actions[g_action_index[k - 1]].widget_id, id) == 0) --k;
+            for (; k < static_cast<int32_t>(g_action_index_count); ++k) {
+                const ActionSpec& cand = g_actions[g_action_index[k]];
+                if (strcmp(cand.widget_id, id) != 0) break;
+                if (cand.event == event) return cand.target;
+            }
+            return nullptr;
+        }
+        if (c < 0) lo = mid + 1; else hi = mid - 1;
     }
     return nullptr;
 }
@@ -3874,6 +3932,7 @@ void reset_state() {
     g_widget_count = 0;
     g_page_count = 0;
     g_action_count = 0;
+    g_action_index_count = 0;
     g_child_link_count = 0;
     g_root_widget = nullptr;
     g_active_page = 0;
@@ -3956,6 +4015,7 @@ bool build_ui(const WidgetSpec* specs, uint32_t count) {
     }
     if (!resolve_relationships(0)) return false;
     if (!validate_actions(0)) return false;
+    build_action_index();
     for (uint32_t i = 0; i < g_widget_count; ++i) apply_layout(static_cast<int>(i));
     for (uint32_t i = 0; i < g_widget_count; ++i) g_widgets[i].widget = create_widget(g_widgets[i].spec);
     static BuilderRoot root;
@@ -4085,6 +4145,7 @@ bool load_tsv(const char* buf, size_t len) {
     }
     if (!resolve_relationships(line_no)) return false;
     if (!validate_actions(line_no)) return false;
+    build_action_index();
 
     for (uint32_t i = 0; i < g_widget_count; ++i) apply_layout(static_cast<int>(i));
 
