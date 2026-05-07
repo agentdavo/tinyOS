@@ -411,6 +411,7 @@ void toggle_cycle() {
     // safety lockouts rather than indicators.
     if (!mode_allows_cycle_locked()) return;
     if (g_machine.mode == Mode::Alarm || g_machine.mode == Mode::Homing) return;
+    if (g_restart_review.pending) return;  // Wizard must be confirmed first.
     if (!cycle_start_ready_locked()) return;
     bool cycle_allowed = true;
     if (!machine::g_registry.get_bool("cycle_allowed", cycle_allowed) || !cycle_allowed) return;
@@ -576,12 +577,106 @@ bool request_program_simulation(size_t channel) {
     return cnc::programs::g_store.rebuild_preview(current);
 }
 
-bool restart_program_at_line(size_t line_no) {
+// ===== Restart confirm wizard =====
+// The interpreter's restart_at_line() does a motion-free dry scan of all
+// G-code lines from the top to target_line, applying modal side effects
+// only (G90/91, G20/21, plane, motion mode, F, S, WCS, active_tool,
+// tool-length, coolant flags). The machine itself is NOT moved and the
+// physical tool/coolant peripherals are NOT toggled — restart_at_line
+// reconstructs *intent*, not state.
+//
+// That's a sharp foot-gun: the operator can punch a line number, hit
+// resume, and crash a T1 spindle into a workpiece programmed for T3
+// because the interpreter says "active_tool=T3" while the operator
+// physically still has T1 mounted.
+//
+// This wizard adds an explicit confirm step. Flow:
+//   1. Operator types target line N, taps Enter on the input.
+//   2. request_restart_review(N) runs the dry scan, captures the
+//      reconstructed state into g_restart_review, sets pending=true.
+//   3. UI shows the captured state (tool, WCS, F, S, coolant) on the
+//      restart_confirm page; cycle_start is gated on pending=false.
+//   4. Operator either:
+//      - taps CONFIRM → confirm_restart() clears pending. Cycle Start
+//        re-enables on the dashboard.
+//      - taps CANCEL → cancel_restart() stops the channel.
+struct RestartReviewState {
+    bool     pending             = false;
+    size_t   target_line         = 0;
+    size_t   active_work         = 0;     // 0 = G54
+    size_t   active_tool         = 0;
+    bool     tool_length_active  = false;
+    uint32_t feed                = 0;
+    int32_t  spindle             = 0;
+    bool     coolant_mist        = false;
+    bool     coolant_flood       = false;
+    bool     ok                  = false; // dry scan succeeded
+};
+static RestartReviewState g_restart_review{};
+
+bool restart_review_pending() {
+    core::ScopedLock lock(g_lock);
+    return g_restart_review.pending;
+}
+
+RestartReviewSnapshot restart_review_snapshot() {
+    core::ScopedLock lock(g_lock);
+    RestartReviewSnapshot snap{};
+    snap.pending = g_restart_review.pending;
+    snap.ok = g_restart_review.ok;
+    snap.target_line = g_restart_review.target_line;
+    snap.active_work = g_restart_review.active_work;
+    snap.active_tool = g_restart_review.active_tool;
+    snap.tool_length_active = g_restart_review.tool_length_active;
+    snap.feed = g_restart_review.feed;
+    snap.spindle = g_restart_review.spindle;
+    snap.coolant_mist = g_restart_review.coolant_mist;
+    snap.coolant_flood = g_restart_review.coolant_flood;
+    return snap;
+}
+
+bool request_restart_review(size_t line_no) {
     core::ScopedLock lock(g_lock);
     stop_preview_cycle_locked(false);
     const bool ok = cnc::interp::g_runtime.restart_at_line(0, line_no);
+    g_restart_review.pending = true;
+    g_restart_review.target_line = line_no;
+    g_restart_review.ok = ok;
+    if (ok) {
+        const auto chsnap = cnc::interp::g_runtime.snapshot(0);
+        g_restart_review.active_work = chsnap.active_work;
+        g_restart_review.active_tool = chsnap.active_tool;
+        g_restart_review.tool_length_active = chsnap.tool_length_active;
+        g_restart_review.feed = chsnap.feed;
+        g_restart_review.spindle = chsnap.spindle;
+        g_restart_review.coolant_mist = chsnap.coolant_mist;
+        g_restart_review.coolant_flood = chsnap.coolant_flood;
+    }
     refresh_machine_snapshot_locked();
     return ok;
+}
+
+void confirm_restart() {
+    core::ScopedLock lock(g_lock);
+    g_restart_review.pending = false;
+    refresh_machine_snapshot_locked();
+}
+
+void cancel_restart() {
+    core::ScopedLock lock(g_lock);
+    if (g_restart_review.pending) {
+        (void)cnc::interp::g_runtime.stop(0);
+    }
+    g_restart_review = RestartReviewState{};
+    refresh_machine_snapshot_locked();
+}
+
+// Legacy single-shot entry point used by the existing program-page input
+// (commit:restart:line) and any external callers. Stages the wizard rather
+// than going straight to Ready — keeping the semantics of the old API would
+// re-introduce the foot-gun this wizard exists to plug.
+bool restart_program_at_line(size_t line_no) {
+    return request_restart_review(line_no);
 }
 
 bool select_prev_macro() {

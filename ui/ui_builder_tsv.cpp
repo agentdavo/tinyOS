@@ -449,6 +449,13 @@ enum class BindKind : uint16_t {
     EcDcSamples,       // total DC drift samples taken
     EcDcTrips,         // total DC drift fault latches
     SpindleOverride,   // operator-side spindle override percent (0..150)
+    RestartPending,    // bool: restart-confirm wizard staged
+    RestartLine,       // target line number
+    RestartTool,       // reconstructed active tool (1-based)
+    RestartWcs,        // reconstructed WCS (G54..G59)
+    RestartFeed,       // reconstructed F word
+    RestartSpindle,    // reconstructed S word
+    RestartCoolant,    // reconstructed coolant flags rendered as text
     Alarm0Id, Alarm0Severity, Alarm0Axis, Alarm0Message, Alarm0Time,
     Alarm1Id, Alarm1Severity, Alarm1Axis, Alarm1Message, Alarm1Time,
     Alarm2Id, Alarm2Severity, Alarm2Axis, Alarm2Message, Alarm2Time,
@@ -542,6 +549,13 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "feed") == 0) return BindKind::Feed;
     if (strcmp(s, "spindle") == 0) return BindKind::Spindle;
     if (strcmp(s, "spindle_override") == 0) return BindKind::SpindleOverride;
+    if (strcmp(s, "restart:pending") == 0) return BindKind::RestartPending;
+    if (strcmp(s, "restart:line")    == 0) return BindKind::RestartLine;
+    if (strcmp(s, "restart:tool")    == 0) return BindKind::RestartTool;
+    if (strcmp(s, "restart:wcs")     == 0) return BindKind::RestartWcs;
+    if (strcmp(s, "restart:feed")    == 0) return BindKind::RestartFeed;
+    if (strcmp(s, "restart:spindle") == 0) return BindKind::RestartSpindle;
+    if (strcmp(s, "restart:coolant") == 0) return BindKind::RestartCoolant;
     if (strcmp(s, "axis:x") == 0) return BindKind::AxisX;
     if (strcmp(s, "axis:y") == 0) return BindKind::AxisY;
     if (strcmp(s, "axis:z") == 0) return BindKind::AxisZ;
@@ -1552,6 +1566,51 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             copy_field(buf, buf_size, text, strlen(text));
             return;
         }
+        case BindKind::RestartPending: {
+            const bool p = kernel::ui::operator_api::restart_review_pending();
+            const char* text = p ? "STAGED" : "ok";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::RestartLine: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            kernel::util::k_snprintf(buf, buf_size, "%s%lu", prefix ? prefix : "",
+                                     static_cast<unsigned long>(r.target_line));
+            return;
+        }
+        case BindKind::RestartTool: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            kernel::util::k_snprintf(buf, buf_size, "%sT%lu%s", prefix ? prefix : "",
+                                     static_cast<unsigned long>(r.active_tool + 1),
+                                     r.tool_length_active ? " (H)" : "");
+            return;
+        }
+        case BindKind::RestartWcs: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            const char* names[] = {"G54", "G55", "G56", "G57", "G58", "G59"};
+            const char* text = r.active_work < 6 ? names[r.active_work] : "G54";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::RestartFeed: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            kernel::util::k_snprintf(buf, buf_size, "%sF%lu", prefix ? prefix : "",
+                                     static_cast<unsigned long>(r.feed));
+            return;
+        }
+        case BindKind::RestartSpindle: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            kernel::util::k_snprintf(buf, buf_size, "%sS%ld", prefix ? prefix : "",
+                                     static_cast<long>(r.spindle));
+            return;
+        }
+        case BindKind::RestartCoolant: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            const char* text = r.coolant_flood ? (r.coolant_mist ? "FLOOD+MIST" : "FLOOD")
+                              : (r.coolant_mist ? "MIST" : "OFF");
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
         case BindKind::Alarm0Severity: case BindKind::Alarm1Severity:
         case BindKind::Alarm2Severity: case BindKind::Alarm3Severity: {
             const auto snap = kernel::ui::operator_api::alarms_snapshot();
@@ -2490,6 +2549,8 @@ void run_action_target(const char* target) {
     else if (strcmp(target, "view:zoom:out") == 0) view_zoom_all(1.18f);
     else if (strcmp(target, "ec:estop") == 0) request_ec_estop();
     else if (strcmp(target, "ec:clear_fault") == 0) clear_ec_fault();
+    else if (strcmp(target, "restart:confirm") == 0) confirm_restart();
+    else if (strcmp(target, "restart:cancel") == 0) cancel_restart();
     else if (strcmp(target, "alarm:clear_history") == 0) clear_alarm_history();
     else if (strncmp(target, "alarm:ack:", 10) == 0) {
         const int row = simple_atoi(target + 10);
@@ -2637,7 +2698,12 @@ bool commit_input_target(const char* target, const char* value_text, BindKind bi
     if (target && *target && strcmp(target, "commit:restart:line") == 0) {
         const int32_t line_no = simple_atoi(value_text);
         if (line_no < 0) return false;
-        return restart_program_at_line(static_cast<size_t>(line_no));
+        const bool ok = restart_program_at_line(static_cast<size_t>(line_no));
+        // Hop the operator straight to the confirm wizard so they see the
+        // reconstructed state without manually navigating. Cycle Start on
+        // the dashboard is gated until they tap CONFIRM.
+        if (ok) (void)set_page("restart_confirm");
+        return ok;
     }
     if (target && *target && strcmp(target, "commit:spindle:rpm") == 0) {
         // Bare-number entry only — sign carries direction. Operator must

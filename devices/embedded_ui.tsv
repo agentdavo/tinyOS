@@ -544,7 +544,7 @@ panel	id=program_restart_panel	parent=program_root	x=20	y=1110	w=1040	h=200	bg=#
 label	id=program_restart_title	parent=program_root	x=40	y=1124	w=400	h=28	text=RESTART AT LINE	color=#94A3B8	bg=#111827	scale=2
 label	id=restart_lbl	parent=program_root	x=40	y=1180	w=200	h=44	text=GOTO LINE	color=#F8FAFC	bg=#111827	scale=2
 input	id=restart_line	parent=program_root	x=260	y=1175	w=300	h=64	text=0	bg=#F8FAFC	border=#7C3AED	color=#0F172A	action=commit:restart:line	focus=180
-label	id=restart_hint	parent=program_root	x=580	y=1186	w=460	h=32	text=type N, press Enter to restart	color=#64748B	bg=#111827	scale=1
+label	id=restart_hint	parent=program_root	x=580	y=1186	w=460	h=32	text=type N, press Enter; confirm before Cycle Start	color=#64748B	bg=#111827	scale=1
 label	id=restart_cur_lbl	parent=program_root	x=40	y=1255	w=200	h=32	text=AT BLOCK	color=#94A3B8	bg=#111827	scale=1
 label	id=restart_cur	parent=program_root	x=260	y=1252	w=300	h=40	text=0	color=#FBBF24	bg=#0F172A	border=#475569	bind=block_current	align=center	scale=2
 label	id=restart_blkn_lbl	parent=program_root	x=580	y=1255	w=160	h=32	text=BLOCKS	color=#94A3B8	bg=#111827	scale=1
@@ -1609,4 +1609,47 @@ action	widget=tc_btn_start	event=click	target=tc:start
 action	widget=tc_btn_abort	event=click	target=tc:abort
 action	widget=tc_btn_accept	event=click	target=tc:accept
 action	widget=tc_btn_back	event=click	target=goto:offsets
+include	page=bottom_nav
+
+# ============================================================
+# restart_confirm -- mid-program restart safety wizard.
+# Shown after the operator types a target line on the Program page and
+# the dry scan reconstructs modal state. Cycle Start is gated on
+# confirm_restart() — operator must inspect tool / WCS / spindle /
+# coolant against what is physically mounted before resuming.
+# ============================================================
+page	id=restart_confirm	title=Restart Confirm
+panel	id=rc_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=rc_title	parent=rc_root	x=40	y=30	w=1000	h=40	text=RESTART AT LINE -- CONFIRM	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+label	id=rc_subtitle	parent=rc_root	x=40	y=72	w=1000	h=24	text=Verify the reconstructed state matches the physical machine before tapping CONFIRM.	color=#FCA5A5	bg=#0A0F1A	align=center	scale=1
+
+panel	id=rc_state_panel	parent=rc_root	x=20	y=110	w=1040	h=240	bg=#111827	border=#334155
+label	id=rc_pending_lbl	parent=rc_root	x=40	y=124	w=240	h=28	text=WIZARD	color=#94A3B8	bg=#111827	scale=2
+label	id=rc_pending_v	parent=rc_root	x=290	y=120	w=300	h=80	text=---	color=#FEF3C7	bg=#451A03	border=#F59E0B	bind=restart:pending	align=center	scale=3
+label	id=rc_line_lbl	parent=rc_root	x=620	y=140	w=200	h=32	text=AT LINE	color=#94A3B8	bg=#111827	scale=1
+label	id=rc_line_v	parent=rc_root	x=830	y=124	w=210	h=72	text=0	color=#7DD3FC	bg=#0F172A	border=#475569	bind=restart:line	align=center	scale=3
+label	id=rc_summary_lbl	parent=rc_root	x=40	y=240	w=200	h=32	text=Reconstructed	color=#94A3B8	bg=#111827	scale=1
+label	id=rc_summary_v	parent=rc_root	x=40	y=276	w=1000	h=44	text=Tool / WCS / F / S / coolant below were inferred by dry-scan. The machine has NOT moved.	color=#CBD5E1	bg=#0F172A	border=#475569	align=center	scale=1
+
+panel	id=rc_state_grid	parent=rc_root	x=20	y=370	w=1040	h=480	bg=#111827	border=#334155
+label	id=rc_grid_title	parent=rc_root	x=40	y=384	w=400	h=28	text=PROGRAM STATE	color=#94A3B8	bg=#111827	scale=2
+label	id=rc_tool_lbl	parent=rc_root	x=40	y=440	w=240	h=32	text=TOOL	color=#64748B	bg=#111827	align=center	scale=1
+label	id=rc_tool_v	parent=rc_root	x=40	y=480	w=240	h=120	text=---	color=#FBBF24	bg=#0F172A	border=#475569	scale=3	bind=restart:tool	align=center
+label	id=rc_wcs_lbl	parent=rc_root	x=290	y=440	w=240	h=32	text=WCS	color=#64748B	bg=#111827	align=center	scale=1
+label	id=rc_wcs_v	parent=rc_root	x=290	y=480	w=240	h=120	text=G54	color=#DDD6FE	bg=#0F172A	border=#7C3AED	scale=3	bind=restart:wcs	align=center
+label	id=rc_feed_lbl	parent=rc_root	x=540	y=440	w=240	h=32	text=FEED	color=#64748B	bg=#111827	align=center	scale=1
+label	id=rc_feed_v	parent=rc_root	x=540	y=480	w=240	h=120	text=F0	color=#7DD3FC	bg=#0F172A	border=#475569	scale=3	bind=restart:feed	align=center
+label	id=rc_spindle_lbl	parent=rc_root	x=790	y=440	w=250	h=32	text=SPINDLE	color=#64748B	bg=#111827	align=center	scale=1
+label	id=rc_spindle_v	parent=rc_root	x=790	y=480	w=250	h=120	text=S0	color=#FCD34D	bg=#0F172A	border=#F59E0B	scale=3	bind=restart:spindle	align=center
+label	id=rc_coolant_lbl	parent=rc_root	x=40	y=620	w=400	h=32	text=COOLANT	color=#64748B	bg=#111827	align=center	scale=1
+label	id=rc_coolant_v	parent=rc_root	x=40	y=660	w=1000	h=70	text=OFF	color=#7DD3FC	bg=#0F172A	border=#475569	scale=2	bind=restart:coolant	align=center
+label	id=rc_caution_v	parent=rc_root	x=40	y=750	w=1000	h=80	text=Verify the spindle has the right tool mounted. Verify coolant valves match. The interpreter cannot.	color=#FCA5A5	bg=#0F172A	border=#7F1D1D	scale=1	align=center
+
+panel	id=rc_ctl_panel	parent=rc_root	x=20	y=880	w=1040	h=400	bg=#111827	border=#334155
+label	id=rc_ctl_title	parent=rc_root	x=40	y=894	w=400	h=28	text=DECISION	color=#94A3B8	bg=#111827	scale=2
+button	id=rc_confirm	parent=rc_root	x=40	y=940	w=480	h=300	text=CONFIRM RESTART	bg=#15803D	color=#FFFFFF	scale=3	focus=940
+button	id=rc_cancel	parent=rc_root	x=540	y=940	w=480	h=300	text=CANCEL	bg=#B91C1C	color=#FFFFFF	scale=3	focus=942
+
+action	widget=rc_confirm	event=click	target=restart:confirm
+action	widget=rc_cancel	event=click	target=restart:cancel
 include	page=bottom_nav

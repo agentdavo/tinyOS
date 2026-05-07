@@ -453,10 +453,37 @@ bool select_next_program();
 bool select_next_program(size_t channel);
 bool request_program_simulation();
 bool request_program_simulation(size_t channel);
-// Mid-program restart on channel 0: dry-scans modal state to `line_no`,
-// leaving the interpreter in Ready at that line. Caller must follow up
-// with toggle_cycle() to begin motion from the reconstructed state.
+// Mid-program restart on channel 0: stages the restart-confirm wizard.
+// Calls cnc::interp::Runtime::restart_at_line under the hood (dry-scans
+// modal state to line_no, leaving the interpreter in Ready) AND captures
+// the reconstructed state into a per-process review struct, with
+// pending=true.
+//
+// While pending, toggle_cycle() returns early without driving Cycle
+// Start. The operator must explicitly confirm via confirm_restart() —
+// matching the safety expectation that "punching a line number then
+// hitting Cycle Start" never moves the machine without the operator
+// first seeing what the reconstruction implies.
 bool restart_program_at_line(size_t line_no);
+
+// Wizard surface used by the new restart_confirm TSV page.
+struct RestartReviewSnapshot {
+    bool     pending = false;
+    bool     ok      = false;            // dry scan reached target_line
+    size_t   target_line = 0;
+    size_t   active_work = 0;            // 0 = G54
+    size_t   active_tool = 0;            // 0 = T1
+    bool     tool_length_active = false;
+    uint32_t feed    = 0;
+    int32_t  spindle = 0;
+    bool     coolant_mist = false;
+    bool     coolant_flood = false;
+};
+RestartReviewSnapshot restart_review_snapshot();
+bool restart_review_pending();
+bool request_restart_review(size_t line_no);
+void confirm_restart();
+void cancel_restart();
 void set_feed_override(int32_t feed);
 // Spindle override (0..150 %). Mirrors set_feed_override; gated on
 // EtherCAT deadline-fault so a faulted bus can't be sped up by accident.
