@@ -803,12 +803,27 @@ label	id=ec_cycles_v	parent=ec_root	x=290	y=772	w=240	h=110	text=0	color=#86EFAC
 label	id=ec_tx_v	parent=ec_root	x=540	y=772	w=240	h=110	text=0	color=#86EFAC	bg=#0F172A	border=#475569	scale=3	bind=ec:tx	align=center
 label	id=ec_rx_v	parent=ec_root	x=790	y=772	w=250	h=110	text=0	color=#86EFAC	bg=#0F172A	border=#475569	scale=3	bind=ec:rx	align=center
 
-# --- actions (panel y=930, h=180) ---
-panel	id=ec_actions_panel	parent=ec_root	x=20	y=930	w=1040	h=180	bg=#111827	border=#334155
-label	id=ec_actions_title	parent=ec_root	x=40	y=944	w=400	h=28	text=ACTIONS	color=#94A3B8	bg=#111827	scale=2
-button	id=ec_clear_fault_btn	parent=ec_root	x=40	y=988	w=320	h=110	text=CLEAR FAULT	bg=#15803D	color=#FFFFFF	scale=2	focus=340
-button	id=ec_estop_btn	parent=ec_root	x=380	y=988	w=320	h=110	text=E-STOP	bg=#B91C1C	color=#FFFFFF	scale=2	focus=350
-button	id=ec_back_btn	parent=ec_root	x=720	y=988	w=320	h=110	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=360
+# --- DC sync health (panel y=930, h=180) ---
+# Surfaces the DC drift sampler state (master.cpp service_dc_drift). DC FAULT
+# turns red when consecutive drift samples exceed the threshold; CLEAR FAULT
+# in the actions panel resets both deadline + DC latches in one press.
+panel	id=ec_dc_panel	parent=ec_root	x=20	y=930	w=1040	h=180	bg=#111827	border=#334155
+label	id=ec_dc_title	parent=ec_root	x=40	y=944	w=400	h=28	text=DC SYNC HEALTH	color=#94A3B8	bg=#111827	scale=2
+label	id=ec_dc_state_h	parent=ec_root	x=40	y=988	w=240	h=28	text=STATE	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_dc_drift_h	parent=ec_root	x=290	y=988	w=240	h=28	text=PEAK DRIFT ns	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_dc_trips_h	parent=ec_root	x=540	y=988	w=240	h=28	text=DC TRIPS	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_dc_samples_h	parent=ec_root	x=790	y=988	w=250	h=28	text=DC SAMPLES	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_dc_state_v	parent=ec_root	x=40	y=1024	w=240	h=70	text=ok	color=#86EFAC	bg=#0F172A	border=#475569	scale=2	bind=ec:dc_fault	align=center
+label	id=ec_dc_drift_v	parent=ec_root	x=290	y=1024	w=240	h=70	text=0	color=#FBBF24	bg=#0F172A	border=#475569	scale=2	bind=ec:dc_drift_max	align=center
+label	id=ec_dc_trips_v	parent=ec_root	x=540	y=1024	w=240	h=70	text=0	color=#FCA5A5	bg=#0F172A	border=#475569	scale=2	bind=ec:dc_trips	align=center
+label	id=ec_dc_samples_v	parent=ec_root	x=790	y=1024	w=250	h=70	text=0	color=#86EFAC	bg=#0F172A	border=#475569	scale=2	bind=ec:dc_samples	align=center
+
+# --- actions (panel y=1130, h=180) ---
+panel	id=ec_actions_panel	parent=ec_root	x=20	y=1130	w=1040	h=180	bg=#111827	border=#334155
+label	id=ec_actions_title	parent=ec_root	x=40	y=1144	w=400	h=28	text=ACTIONS	color=#94A3B8	bg=#111827	scale=2
+button	id=ec_clear_fault_btn	parent=ec_root	x=40	y=1188	w=320	h=110	text=CLEAR FAULT	bg=#15803D	color=#FFFFFF	scale=2	focus=340
+button	id=ec_estop_btn	parent=ec_root	x=380	y=1188	w=320	h=110	text=E-STOP	bg=#B91C1C	color=#FFFFFF	scale=2	focus=350
+button	id=ec_back_btn	parent=ec_root	x=720	y=1188	w=320	h=110	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=360
 
 action	widget=ec_clear_fault_btn	event=click	target=ec:clear_fault
 action	widget=ec_estop_btn	event=click	target=ec:estop

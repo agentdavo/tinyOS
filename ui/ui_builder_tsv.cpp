@@ -443,6 +443,11 @@ enum class BindKind : uint16_t {
     EcCycles,
     EcTxFrames,
     EcRxFrames,
+    EcDcFault,         // bool: DC sync drift latch tripped
+    EcDcDriftMaxNs,    // peak |drift| since boot, ns
+    EcDcDriftLastNs,   // most recent sample, ns (signed; rendered abs)
+    EcDcSamples,       // total DC drift samples taken
+    EcDcTrips,         // total DC drift fault latches
     Alarm0Id, Alarm0Severity, Alarm0Axis, Alarm0Message, Alarm0Time,
     Alarm1Id, Alarm1Severity, Alarm1Axis, Alarm1Message, Alarm1Time,
     Alarm2Id, Alarm2Severity, Alarm2Axis, Alarm2Message, Alarm2Time,
@@ -620,6 +625,11 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "ec:cycles") == 0) return BindKind::EcCycles;
     if (strcmp(s, "ec:tx")     == 0) return BindKind::EcTxFrames;
     if (strcmp(s, "ec:rx")     == 0) return BindKind::EcRxFrames;
+    if (strcmp(s, "ec:dc_fault")     == 0) return BindKind::EcDcFault;
+    if (strcmp(s, "ec:dc_drift_max") == 0) return BindKind::EcDcDriftMaxNs;
+    if (strcmp(s, "ec:dc_drift_last")== 0) return BindKind::EcDcDriftLastNs;
+    if (strcmp(s, "ec:dc_samples")   == 0) return BindKind::EcDcSamples;
+    if (strcmp(s, "ec:dc_trips")     == 0) return BindKind::EcDcTrips;
     if (strcmp(s, "alarm:active_count")  == 0) return BindKind::AlarmActiveCount;
     if (strcmp(s, "alarm:history_count") == 0) return BindKind::AlarmHistoryCount;
     // Per-slot WCS / tool tokens. Match exact strings; any typo falls
@@ -1530,6 +1540,12 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             copy_field(buf, buf_size, text, strlen(text));
             return;
         }
+        case BindKind::EcDcFault: {
+            const auto snap = kernel::ui::operator_api::ethercat_snapshot();
+            const char* text = snap.dc_sync_faulted ? "DC FAULT" : "ok";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
         case BindKind::Alarm0Severity: case BindKind::Alarm1Severity:
         case BindKind::Alarm2Severity: case BindKind::Alarm3Severity: {
             const auto snap = kernel::ui::operator_api::alarms_snapshot();
@@ -1597,7 +1613,11 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         case BindKind::EcPeriod:
         case BindKind::EcCycles:
         case BindKind::EcTxFrames:
-        case BindKind::EcRxFrames: {
+        case BindKind::EcRxFrames:
+        case BindKind::EcDcDriftMaxNs:
+        case BindKind::EcDcDriftLastNs:
+        case BindKind::EcDcSamples:
+        case BindKind::EcDcTrips: {
             const auto snap = kernel::ui::operator_api::ethercat_snapshot();
             unsigned long long v = 0;
             switch (bind) {
@@ -1610,6 +1630,14 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
                 case BindKind::EcCycles:    v = snap.cycles;                              break;
                 case BindKind::EcTxFrames:  v = snap.tx_frames;                           break;
                 case BindKind::EcRxFrames:  v = snap.rx_frames;                           break;
+                case BindKind::EcDcDriftMaxNs: v = snap.dc_drift_max_ns;                  break;
+                case BindKind::EcDcDriftLastNs: {
+                    const int64_t s = snap.last_dc_drift_ns;
+                    v = (unsigned long long)(s < 0 ? -s : s);
+                    break;
+                }
+                case BindKind::EcDcSamples: v = snap.dc_sync_samples;                     break;
+                case BindKind::EcDcTrips:   v = snap.dc_sync_trips;                       break;
                 default: break;
             }
             kernel::util::k_snprintf(buf, buf_size, "%s%llu", prefix ? prefix : "", v);
