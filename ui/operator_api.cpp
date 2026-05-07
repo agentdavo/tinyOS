@@ -816,46 +816,201 @@ size_t selected_program_preview(size_t channel, const render::gles1::Vec3f*& poi
     return p->preview.point_count;
 }
 
-AlarmsSnapshot alarms_snapshot() {
-    static constexpr const char* kStatusOnline = "operator alarm board online";
-    static constexpr const char* kAxes[4] = {"X", "Y", "Z", "A"};
-    static char messages[4][48];
+// ===== Alarm journal =====
+// A small ring of persistent records. Replaces the previous derive-on-read
+// model where alarms_snapshot rebuilt active+history from the live axis
+// fault flags every call — that lost transient faults that auto-recovered,
+// dropped 9th-and-later concurrent faults silently, ignored alarm_id on
+// ack, and made clear_alarm_history a no-op.
+//
+// Each record is keyed by alarm id; raising an alarm with the same id
+// updates raised_count + last_seen instead of allocating a fresh slot.
+// Acknowledge sets the per-record ack flag, but the record stays in the
+// journal so the operator can still see the history. clear_alarm_history
+// drops every record that is both inactive and acknowledged.
+//
+// Thread safety: every mutation runs under g_lock (held by the surrounding
+// callers — alarms_snapshot, acknowledge_alarm, clear_alarm_history). The
+// raise path is invoked from inside alarms_snapshot so it inherits the lock.
+struct AlarmRecord {
+    uint32_t id            = 0;
+    char     message[64]   = {};
+    char     axis[6]       = {};
+    AlarmsSnapshot::Severity severity = AlarmsSnapshot::Severity::Info;
+    uint64_t first_seen_ns = 0;
+    uint64_t last_seen_ns  = 0;
+    uint32_t raised_count  = 0;
+    bool     active        = false;
+    bool     acknowledged  = false;
+    bool     in_use        = false;
+};
 
-    AlarmsSnapshot snap{};
-    snap.service_online = true;
-    snap.status = kStatusOnline;
-    for (size_t i = 0; i < 4 && i < snap.active.size(); ++i) {
-        const auto& axis = motion::g_motion.axis(i);
-        if (!axis.fault_latched) continue;
-        kernel::util::k_snprintf(messages[snap.active_count], sizeof(messages[0]),
-                                 "DRIVE FAULT 0x%04x", axis.last_error_code);
-        auto& entry = snap.active[snap.active_count];
-        entry.id = 100u + static_cast<uint32_t>(i);
-        entry.message = messages[snap.active_count];
-        entry.axis = kAxes[i];
-        entry.severity = AlarmsSnapshot::Severity::Error;
-        entry.timestamp_ns = static_cast<uint64_t>(g_machine.tick) * 100000000ULL;
-        entry.acknowledged = false;
-        ++snap.active_count;
+static constexpr size_t kAlarmRingSize = 32;
+static AlarmRecord g_alarms[kAlarmRingSize];
+
+static AlarmRecord* find_alarm_locked(uint32_t id) {
+    for (auto& r : g_alarms) {
+        if (r.in_use && r.id == id) return &r;
     }
-    snap.history_count = snap.active_count;
-    for (size_t i = 0; i < snap.active_count && i < snap.history.size(); ++i) {
-        snap.history[i] = snap.active[i];
+    return nullptr;
+}
+
+static AlarmRecord* allocate_alarm_locked() {
+    // Prefer an unused slot.
+    for (auto& r : g_alarms) {
+        if (!r.in_use) return &r;
+    }
+    // Else evict the oldest record that is both inactive and acknowledged.
+    AlarmRecord* victim = nullptr;
+    for (auto& r : g_alarms) {
+        if (r.active || !r.acknowledged) continue;
+        if (!victim || r.last_seen_ns < victim->last_seen_ns) victim = &r;
+    }
+    if (victim) return victim;
+    // Else evict the oldest inactive (un-acknowledged) record.
+    for (auto& r : g_alarms) {
+        if (r.active) continue;
+        if (!victim || r.last_seen_ns < victim->last_seen_ns) victim = &r;
+    }
+    if (victim) return victim;
+    // Last resort: evict the oldest active. Should only happen if 32+
+    // distinct alarms are simultaneously raised — pathological.
+    for (auto& r : g_alarms) {
+        if (!victim || r.last_seen_ns < victim->last_seen_ns) victim = &r;
+    }
+    return victim;
+}
+
+static void copy_text(char* dst, size_t cap, const char* src) {
+    if (!dst || cap == 0) return;
+    size_t i = 0;
+    if (src) {
+        for (; src[i] && i + 1 < cap; ++i) dst[i] = src[i];
+    }
+    dst[i] = '\0';
+}
+
+static void raise_alarm_locked(uint32_t id,
+                               const char* msg, const char* axis,
+                               AlarmsSnapshot::Severity sev,
+                               uint64_t now_ns) {
+    if (AlarmRecord* existing = find_alarm_locked(id)) {
+        existing->last_seen_ns = now_ns;
+        existing->raised_count++;
+        existing->active = true;
+        // Re-asserting clears acknowledgement so it shows as active again.
+        if (existing->acknowledged) existing->acknowledged = false;
+        copy_text(existing->message, sizeof(existing->message), msg);
+        copy_text(existing->axis, sizeof(existing->axis), axis);
+        existing->severity = sev;
+        return;
+    }
+    AlarmRecord* slot = allocate_alarm_locked();
+    if (!slot) return;
+    slot->id = id;
+    slot->first_seen_ns = now_ns;
+    slot->last_seen_ns = now_ns;
+    slot->raised_count = 1;
+    slot->active = true;
+    slot->acknowledged = false;
+    slot->in_use = true;
+    copy_text(slot->message, sizeof(slot->message), msg);
+    copy_text(slot->axis, sizeof(slot->axis), axis);
+    slot->severity = sev;
+}
+
+static void deassert_alarm_locked(uint32_t id) {
+    if (AlarmRecord* existing = find_alarm_locked(id))
+        existing->active = false;
+}
+
+// Walk current state (axis faults, macro_fault registry flag) and either
+// raise/refresh or clear the corresponding journal entries. Driven from
+// alarms_snapshot so the journal stays in step with live state without
+// the master / motion threads needing to know about alarms.
+static void refresh_alarm_journal_locked() {
+    static constexpr const char* kAxes[4] = {"X", "Y", "Z", "A"};
+    const uint64_t now_ns =
+        static_cast<uint64_t>(g_machine.tick) * 100000000ULL;
+    for (size_t i = 0; i < 4; ++i) {
+        const auto& axis = motion::g_motion.axis(i);
+        const uint32_t id = 100u + static_cast<uint32_t>(i);
+        if (axis.fault_latched) {
+            char msg[64];
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                                     "DRIVE FAULT 0x%04x",
+                                     axis.last_error_code);
+            raise_alarm_locked(id, msg, kAxes[i],
+                               AlarmsSnapshot::Severity::Error, now_ns);
+        } else {
+            deassert_alarm_locked(id);
+        }
     }
     bool macro_fault = false;
     int32_t macro_fault_code = 0;
     if (machine::g_registry.get_bool("macro_fault", macro_fault) && macro_fault &&
-        machine::g_registry.get_int("macro_fault_code", macro_fault_code) &&
-        snap.active_count < snap.active.size()) {
+        machine::g_registry.get_int("macro_fault_code", macro_fault_code)) {
+        const uint32_t id = 500u + static_cast<uint32_t>(macro_fault_code);
+        raise_alarm_locked(id, "MACRO FAULT", "MAC",
+                           AlarmsSnapshot::Severity::Error, now_ns);
+    } else {
+        // No fault flag → clear any active macro alarm regardless of code.
+        for (auto& r : g_alarms) {
+            if (r.in_use && r.active && r.id >= 500u && r.id < 1000u) {
+                r.active = false;
+            }
+        }
+    }
+}
+
+AlarmsSnapshot alarms_snapshot() {
+    static constexpr const char* kStatusOnline = "operator alarm board online";
+    core::ScopedLock lock(g_lock);
+    refresh_alarm_journal_locked();
+
+    AlarmsSnapshot snap{};
+    snap.service_online = true;
+    snap.status = kStatusOnline;
+
+    // Active = currently asserted, un-acknowledged. Order: severity desc,
+    // then last_seen desc — keeps the most recent critical entries on top.
+    for (auto& r : g_alarms) {
+        if (!r.in_use || !r.active || r.acknowledged) continue;
+        if (snap.active_count >= snap.active.size()) break;
         auto& entry = snap.active[snap.active_count++];
-        entry.id = 500u + static_cast<uint32_t>(macro_fault_code);
-        entry.message = "MACRO FAULT";
-        entry.axis = "MAC";
-        entry.severity = AlarmsSnapshot::Severity::Error;
-        entry.timestamp_ns = static_cast<uint64_t>(g_machine.tick) * 100000000ULL;
-        entry.acknowledged = false;
+        entry.id = r.id;
+        entry.message = r.message;
+        entry.axis = r.axis;
+        entry.severity = r.severity;
+        entry.timestamp_ns = r.last_seen_ns;
+        entry.acknowledged = r.acknowledged;
     }
     if (snap.active_count != 0) snap.status = "ACTIVE MACHINE ALARM";
+
+    // History = latest N records overall (active or not, ack'd or not),
+    // sorted by last_seen_ns descending. Inserted via insertion sort
+    // bounded by the array size — fine at 12 slots × 32 ring entries.
+    for (auto& r : g_alarms) {
+        if (!r.in_use) continue;
+        size_t pos = snap.history_count;
+        while (pos > 0 &&
+               snap.history[pos - 1].timestamp_ns < r.last_seen_ns) {
+            if (pos < snap.history.size()) {
+                snap.history[pos] = snap.history[pos - 1];
+            }
+            --pos;
+        }
+        if (pos < snap.history.size()) {
+            auto& entry = snap.history[pos];
+            entry.id = r.id;
+            entry.message = r.message;
+            entry.axis = r.axis;
+            entry.severity = r.severity;
+            entry.timestamp_ns = r.last_seen_ns;
+            entry.acknowledged = r.acknowledged;
+            if (snap.history_count < snap.history.size()) ++snap.history_count;
+        }
+    }
     return snap;
 }
 
@@ -903,11 +1058,22 @@ SetupSnapshot setup_snapshot() {
 }
 
 void acknowledge_alarm(uint32_t alarm_id) {
-    (void)alarm_id;
-    reset_alarm();
+    core::ScopedLock lock(g_lock);
+    if (AlarmRecord* r = find_alarm_locked(alarm_id)) {
+        r->acknowledged = true;
+    }
 }
 
 void clear_alarm_history() {
+    core::ScopedLock lock(g_lock);
+    // Drop every record that is both inactive and acknowledged. Active or
+    // un-acknowledged records stay — the operator can't sweep an alarm
+    // they haven't seen yet.
+    for (auto& r : g_alarms) {
+        if (r.in_use && !r.active && r.acknowledged) {
+            r = AlarmRecord{};
+        }
+    }
 }
 
 bool save_setup() {
