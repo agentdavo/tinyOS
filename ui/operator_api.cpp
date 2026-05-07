@@ -15,6 +15,7 @@
 #include "../motion/motion.hpp"
 #include "../machine/toolpods.hpp"
 #include "../hmi/hmi_service.hpp"
+#include "../fs/vfs.hpp"
 #include "../util.hpp"
 
 namespace kernel::ui::operator_api {
@@ -1194,6 +1195,70 @@ void clear_alarm_history() {
             r = AlarmRecord{};
         }
     }
+}
+
+// ===== File browser surface =====
+// Backed by kernel::vfs (see fs/vfs.hpp). The header has carried these
+// declarations since the service page was sketched, but no .cpp definitions
+// existed — the Service page was effectively dead code on every binding.
+// All four operations now go through the VFS, which handles the "embedded
+// blob vs SD-mounted file vs in-RAM shadow" layering for us.
+namespace {
+struct FileWalkContext {
+    FileSnapshot* snap;
+};
+
+bool file_walk_collect(const char* path, const char* /*data*/, size_t size, void* user) {
+    auto* ctx = static_cast<FileWalkContext*>(user);
+    if (!ctx || !ctx->snap) return false;
+    if (ctx->snap->file_count >= ctx->snap->files.size()) return false;
+    auto& slot = ctx->snap->files[ctx->snap->file_count++];
+    slot.name = path;       // VFS owns the storage; lifetime matches g_vfs.
+    slot.path = path;
+    slot.size = size;
+    slot.is_dir = false;    // VFS is flat — no real dirs.
+    ctx->snap->total_size += size;
+    return true;
+}
+}  // namespace
+
+FileSnapshot file_snapshot() {
+    FileSnapshot snap{};
+    snap.available = kernel::vfs::entry_count() > 0;
+    snap.mount_point = "vfs:/";
+    snap.free_size = 0;     // VFS doesn't expose a free-space figure today.
+    FileWalkContext ctx{&snap};
+    kernel::vfs::walk("", &file_walk_collect, &ctx);
+    return snap;
+}
+
+bool create_file(const char* path) {
+    if (!path || !*path) return false;
+    static const char empty = 0;
+    return kernel::vfs::write_blob(path, &empty, 0, nullptr);
+}
+
+bool delete_file(const char* /*path*/) {
+    // VFS has no delete primitive today (write_blob can shadow with empty
+    // bytes but the entry stays). Returning false until that lands rather
+    // than pretending success.
+    return false;
+}
+
+bool read_file(const char* path, char* buffer, size_t bufsize) {
+    if (!path || !buffer || bufsize == 0) return false;
+    const char* data = nullptr;
+    size_t size = 0;
+    if (!kernel::vfs::lookup(path, data, size)) return false;
+    const size_t take = (size + 1 <= bufsize) ? size : bufsize - 1;
+    for (size_t i = 0; i < take; ++i) buffer[i] = data[i];
+    buffer[take] = '\0';
+    return true;
+}
+
+bool write_file(const char* path, const char* data, size_t len) {
+    if (!path || (!data && len > 0)) return false;
+    return kernel::vfs::write_blob(path, data, len, nullptr);
 }
 
 bool save_setup() {
