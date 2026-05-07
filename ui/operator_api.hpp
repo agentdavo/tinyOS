@@ -489,6 +489,20 @@ bool restart_review_pending();
 bool request_restart_review(size_t line_no);
 void confirm_restart();
 void cancel_restart();
+
+// ===== Operator audit log surface =====
+// 64-entry ring of high-impact operator actions (E-stop, fault clear,
+// alarm ack, restart confirm/cancel). Read newest-first via index 0..N-1
+// where N = audit_log_count(). Strings point into the ring's storage and
+// are valid until the slot is overwritten by a newer event. Today the
+// log is in-RAM only.
+struct AuditLogEntry {
+    uint64_t tick = 0;          // g_machine.tick at the time of the event
+    const char* verb = "";
+    const char* target = "";
+};
+size_t audit_log_count();
+bool audit_log_entry(size_t idx, AuditLogEntry& out);
 void set_feed_override(int32_t feed);
 // Spindle override (0..150 %). Mirrors set_feed_override; gated on
 // EtherCAT deadline-fault so a faulted bus can't be sped up by accident.

@@ -439,12 +439,65 @@ void toggle_hold() {
     refresh_machine_snapshot_locked();
 }
 
+// Forward decl — defined alongside the alarm helpers further down.
+static void copy_text(char* dst, size_t cap, const char* src);
+
+// ===== Operator audit log =====
+// 64-entry ring of high-impact operator actions. Captures the safety-relevant
+// surface (E-stop, fault clear, alarm ack, restart confirm/cancel, mode
+// changes) so post-hoc review can answer "who pressed what, when". Pure
+// in-RAM today; persistence to FAT32 belongs alongside save_setup once
+// the writer lands.
+struct AuditEntry {
+    uint64_t tick     = 0;       // g_machine.tick at the time of the event
+    char     verb[24] = {};      // "ESTOP", "CLEAR_FAULT", "ACK_ALARM", ...
+    char     target[24]= {};     // "ec0", "alarm:101", "tool_change", ...
+};
+
+static constexpr size_t kAuditRingSize = 64;
+static AuditEntry g_audit[kAuditRingSize];
+static size_t g_audit_head = 0;       // next slot to write
+static size_t g_audit_count = 0;      // total entries up to ring size
+
+static void audit_locked(const char* verb, const char* target) {
+    auto& slot = g_audit[g_audit_head];
+    slot.tick = g_machine.tick;
+    copy_text(slot.verb, sizeof(slot.verb), verb);
+    copy_text(slot.target, sizeof(slot.target), target ? target : "");
+    g_audit_head = (g_audit_head + 1) % kAuditRingSize;
+    if (g_audit_count < kAuditRingSize) ++g_audit_count;
+}
+
+static void audit(const char* verb, const char* target) {
+    core::ScopedLock lock(g_lock);
+    audit_locked(verb, target);
+}
+
+size_t audit_log_count() {
+    core::ScopedLock lock(g_lock);
+    return g_audit_count;
+}
+
+bool audit_log_entry(size_t idx, AuditLogEntry& out) {
+    core::ScopedLock lock(g_lock);
+    if (idx >= g_audit_count) return false;
+    // Walk newest-first: idx 0 is the most recent.
+    const size_t slot = (g_audit_head + kAuditRingSize - 1 - idx) % kAuditRingSize;
+    const auto& src = g_audit[slot];
+    out.tick = src.tick;
+    out.verb = src.verb;
+    out.target = src.target;
+    return true;
+}
+
 void request_ec_estop() {
+    audit("ESTOP", "ec");
     ethercat::g_master_a.trip_fault("operator E-stop (UI)");
     ethercat::g_master_b.trip_fault("operator E-stop (UI)");
 }
 
 void clear_ec_fault() {
+    audit("CLEAR_FAULT", "ec");
     ethercat::g_master_a.clear_deadline_fault();
     ethercat::g_master_b.clear_deadline_fault();
     ethercat::g_master_a.clear_dc_sync_fault();
@@ -659,6 +712,12 @@ bool request_restart_review(size_t line_no) {
 
 void confirm_restart() {
     core::ScopedLock lock(g_lock);
+    if (g_restart_review.pending) {
+        char tgt[24];
+        kernel::util::k_snprintf(tgt, sizeof(tgt), "line=%lu",
+                                 static_cast<unsigned long>(g_restart_review.target_line));
+        audit_locked("RESTART_CONFIRM", tgt);
+    }
     g_restart_review.pending = false;
     refresh_machine_snapshot_locked();
 }
@@ -666,6 +725,7 @@ void confirm_restart() {
 void cancel_restart() {
     core::ScopedLock lock(g_lock);
     if (g_restart_review.pending) {
+        audit_locked("RESTART_CANCEL", "");
         (void)cnc::interp::g_runtime.stop(0);
     }
     g_restart_review = RestartReviewState{};
@@ -1182,6 +1242,10 @@ void acknowledge_alarm(uint32_t alarm_id) {
     core::ScopedLock lock(g_lock);
     if (AlarmRecord* r = find_alarm_locked(alarm_id)) {
         r->acknowledged = true;
+        char tgt[24];
+        kernel::util::k_snprintf(tgt, sizeof(tgt), "alarm:%lu",
+                                 static_cast<unsigned long>(alarm_id));
+        audit_locked("ACK_ALARM", tgt);
     }
 }
 
