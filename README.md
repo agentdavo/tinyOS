@@ -565,6 +565,13 @@ presses Enter, then Cycle Start.
 
 ### TSV UI editor
 
+Hosted copy: **<https://agentdavo.github.io/tinyos/>** (built from `main` by
+[`.github/workflows/pages.yml`](./.github/workflows/pages.yml); first push to
+`main` triggers the initial deploy). The Pages build also serves the latest
+committed `devices/embedded_ui.tsv` so deep links like
+`https://agentdavo.github.io/tinyos/editor/?tsv=devices/embedded_ui.tsv`
+auto-load the canonical TSV.
+
 `tools/ui_editor/index.html` is a single-file browser app (vanilla JS,
 no build step, works offline) for editing `devices/embedded_ui.tsv`:
 

@@ -1,0 +1,146 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Publish the browser-based UI editor (tools/ui_editor/) to GitHub Pages so
+# anyone can open it directly from a URL — no clone, no python http.server.
+#
+# Layout published to Pages (artifact root):
+#   /                     -> redirects to ./editor/
+#   /editor/              -> tools/ui_editor/index.html (the editor itself)
+#   /editor/screenshot.sh, /editor/serve.sh, /editor/sync_defaults.sh,
+#   /editor/README.md
+#   /devices/embedded_ui.tsv
+#                         -> snapshot of the canonical TSV the editor edits;
+#                            the in-tree editor's `?tsv=devices/...` deep-link
+#                            forces a leading slash, so we mirror the repo
+#                            layout under /editor/devices/ as well to keep
+#                            both Project Pages and User Pages happy.
+#   /editor/devices/embedded_ui.tsv
+#                         -> sibling copy so a relative `./devices/...` deep
+#                            link works too.
+#
+# HTTPS from Pages also unlocks the File System Access API in Chrome / Edge,
+# which silently fails on raw file:// URLs.
+
+name: Pages
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'tools/ui_editor/**'
+      - 'devices/embedded_ui.tsv'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Only one Pages deployment may run at a time. Cancel an in-flight build if
+# a newer commit arrives — but never cancel a deploy that has already started
+# uploading, since GitHub serialises Pages deploys per environment.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble Pages artifact
+        run: |
+          set -euo pipefail
+          mkdir -p _site/editor _site/devices _site/editor/devices
+
+          # Editor ships under /editor/ to keep room next to it for any
+          # future browser tools (e.g. machine-builder) without rewriting URLs.
+          cp -a tools/ui_editor/. _site/editor/
+
+          # Two TSV mount points so the editor's `?tsv=` deep link works
+          # whether the path is server-absolute (/devices/...) or sibling
+          # (./devices/...).
+          cp devices/embedded_ui.tsv _site/devices/embedded_ui.tsv
+          cp devices/embedded_ui.tsv _site/editor/devices/embedded_ui.tsv
+
+          # Top-level landing page that links into the editor.
+          cat > _site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <title>miniOS browser tools</title>
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>
+              :root { color-scheme: light dark; }
+              body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+                     max-width: 44rem; margin: 4rem auto; padding: 0 1rem;
+                     line-height: 1.5; }
+              code { background: rgba(127,127,127,.15); padding: .1em .3em;
+                     border-radius: 3px; }
+              .card { border: 1px solid rgba(127,127,127,.4); border-radius: 8px;
+                      padding: 1rem 1.25rem; margin: 1.25rem 0; }
+              .card h2 { margin-top: 0; }
+              a.button { display: inline-block; padding: .55rem 1rem;
+                         border-radius: 6px; background: #2563EB; color: white;
+                         text-decoration: none; font-weight: 600; }
+              a.button:hover { background: #1D4ED8; }
+              footer { color: rgba(127,127,127,.9); font-size: .9rem;
+                       margin-top: 3rem; }
+            </style>
+          </head>
+          <body>
+            <h1>miniOS browser tools</h1>
+            <p>Static-hosted helpers from
+              <a href="https://github.com/agentdavo/tinyos">agentdavo/tinyos</a>.
+              Everything below runs entirely in your browser — no data leaves
+              your machine.</p>
+
+            <div class="card">
+              <h2>UI editor</h2>
+              <p>Drag-and-drop visual editor for
+                <code>devices/embedded_ui.tsv</code>, the TSV format consumed by
+                <code>ui/ui_builder_tsv.cpp</code> at kernel boot. Round-trips
+                the on-disk format byte-for-byte.</p>
+              <p>
+                <a class="button" href="./editor/">Open the editor</a>
+                &nbsp;
+                <a href="./editor/?tsv=devices/embedded_ui.tsv">Open with the latest committed TSV</a>
+              </p>
+              <p style="margin-top:1rem">
+                Latest committed TSV (raw):
+                <a href="./devices/embedded_ui.tsv"><code>devices/embedded_ui.tsv</code></a>.
+              </p>
+            </div>
+
+            <footer>
+              Built from the <code>main</code> branch by
+              <code>.github/workflows/pages.yml</code>. Source:
+              <a href="https://github.com/agentdavo/tinyos/tree/main/tools/ui_editor">tools/ui_editor/</a>.
+            </footer>
+          </body>
+          </html>
+          HTML
+
+          # GitHub Pages sometimes runs the artifact through Jekyll, which
+          # eats files starting with `_` and rewrites paths. Disable it so
+          # what we upload is exactly what gets served.
+          touch _site/.nojekyll
+
+          ls -la _site _site/editor _site/devices
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
