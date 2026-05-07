@@ -1682,6 +1682,22 @@ void Kernel::dump_channels(kernel::hal::UARTDriverOps* uart) const {
     }
 }
 
+uint32_t Kernel::barrier_cycles_remaining(size_t channel_idx) const noexcept {
+    if (channel_idx >= MAX_CHANNELS) return 0;
+    const auto& ch = channels_[channel_idx];
+    if (ch.state != ChannelState::WaitingBarrier) return 0;
+    if (ch.barrier_token == 0) return 0;
+    const uint64_t now_cycle = stats_.cycles.load(std::memory_order_relaxed);
+    for (const auto& b : barriers_) {
+        if (!b.in_use || b.token != ch.barrier_token) continue;
+        if ((b.participants_mask & (1u << channel_idx)) == 0) continue;
+        const uint64_t elapsed = now_cycle - b.created_cycle;
+        if (elapsed >= b.max_wait_cycles) return 0;
+        return static_cast<uint32_t>(b.max_wait_cycles - elapsed);
+    }
+    return 0;
+}
+
 void Kernel::dump_barriers(kernel::hal::UARTDriverOps* uart) const {
     if (!uart) return;
     char buf[160];

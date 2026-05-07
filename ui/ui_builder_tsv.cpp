@@ -456,6 +456,8 @@ enum class BindKind : uint16_t {
     RestartFeed,       // reconstructed F word
     RestartSpindle,    // reconstructed S word
     RestartCoolant,    // reconstructed coolant flags rendered as text
+    Channel0BarrierMs, // Channel 0 barrier-timeout countdown in ms
+    Channel1BarrierMs, // Channel 1 barrier-timeout countdown in ms
     Alarm0Id, Alarm0Severity, Alarm0Axis, Alarm0Message, Alarm0Time,
     Alarm1Id, Alarm1Severity, Alarm1Axis, Alarm1Message, Alarm1Time,
     Alarm2Id, Alarm2Severity, Alarm2Axis, Alarm2Message, Alarm2Time,
@@ -556,6 +558,8 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "restart:feed")    == 0) return BindKind::RestartFeed;
     if (strcmp(s, "restart:spindle") == 0) return BindKind::RestartSpindle;
     if (strcmp(s, "restart:coolant") == 0) return BindKind::RestartCoolant;
+    if (strcmp(s, "channel:0:barrier_ms") == 0) return BindKind::Channel0BarrierMs;
+    if (strcmp(s, "channel:1:barrier_ms") == 0) return BindKind::Channel1BarrierMs;
     if (strcmp(s, "axis:x") == 0) return BindKind::AxisX;
     if (strcmp(s, "axis:y") == 0) return BindKind::AxisY;
     if (strcmp(s, "axis:z") == 0) return BindKind::AxisZ;
@@ -1609,6 +1613,24 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             const char* text = r.coolant_flood ? (r.coolant_mist ? "FLOOD+MIST" : "FLOOD")
                               : (r.coolant_mist ? "MIST" : "OFF");
             copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::Channel0BarrierMs:
+        case BindKind::Channel1BarrierMs: {
+            const auto& prog = kernel::ui::operator_api::program_snapshot();
+            const auto ec = kernel::ui::operator_api::ethercat_snapshot();
+            const size_t ch = (bind == BindKind::Channel0BarrierMs) ? 0u : 1u;
+            const uint32_t cycles = (ch < prog.channels.size())
+                ? prog.channels[ch].barrier_cycles_remaining : 0u;
+            const uint32_t period_us = ec.period_us ? ec.period_us : 250u;
+            const uint64_t ms = (static_cast<uint64_t>(cycles) * period_us) / 1000u;
+            if (cycles == 0) {
+                copy_field(buf, buf_size, "-", 1);
+                return;
+            }
+            kernel::util::k_snprintf(buf, buf_size, "%s%llu ms",
+                                     prefix ? prefix : "",
+                                     static_cast<unsigned long long>(ms));
             return;
         }
         case BindKind::Alarm0Severity: case BindKind::Alarm1Severity:

@@ -856,6 +856,8 @@ const ProgramSnapshot& program_snapshot() {
         snap.channels[ch].line = runtime.line;
         snap.channels[ch].barrier_token = runtime.barrier_token;
         snap.channels[ch].barrier_mask = runtime.barrier_mask;
+        snap.channels[ch].barrier_cycles_remaining =
+            motion::g_motion.barrier_cycles_remaining(ch);
     }
 
     const auto* selected = cnc::programs::g_store.selected_program();

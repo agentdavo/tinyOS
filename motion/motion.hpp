@@ -929,6 +929,14 @@ public:
     // per-channel stable-cycle counters).
     void dump_barriers(kernel::hal::UARTDriverOps* uart) const;
 
+    // Operator-side helper: cycles remaining before the barrier the given
+    // channel is currently waiting on times out. Returns 0 when the
+    // channel is not in WaitingBarrier or the barrier slot can't be
+    // matched. Conversion to wall time is the caller's job — the kernel
+    // intentionally exposes raw cycle counts so the UI side can decide
+    // how to render (250 µs default → multiply by period_us / 1000).
+    [[nodiscard]] uint32_t barrier_cycles_remaining(size_t channel_idx) const noexcept;
+
     // Task 9.6 — synchronous coordinated move across one or more channels.
     // `axis_mask` picks which axes participate (bit i = axis i). `targets[i]`
     // is the destination for axis i (only read for axes with a mask bit

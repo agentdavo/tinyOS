@@ -169,6 +169,11 @@ struct ProgramSnapshot {
         size_t line = 0;
         uint16_t barrier_token = 0;
         uint8_t barrier_mask = 0;
+        // Cycles remaining before the barrier this channel is waiting on
+        // times out (motion::Kernel::barrier_cycles_remaining). 0 when the
+        // channel isn't blocked. Multiply by the master period_us to render
+        // a wall-time countdown to the operator.
+        uint32_t barrier_cycles_remaining = 0;
     };
     bool browser_available = false;
     bool parser_available = false;
