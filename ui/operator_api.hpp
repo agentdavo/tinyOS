@@ -469,7 +469,8 @@ void clear_alarm_history();
 // Operator-initiated EtherCAT actions. Both call into ethercat::Master
 // (g_master_a + g_master_b). request_ec_estop broadcasts CW_CMD_QUICK_STOP
 // to every CiA-402 servo and latches the deadline-fault flag; clear_ec_fault
-// drops the latch.
+// drops both the deadline-fault latch and the DC-sync-drift latch (the
+// latter has no other operator-accessible clear path; see master.cpp).
 void request_ec_estop();
 void clear_ec_fault();
 bool save_setup();

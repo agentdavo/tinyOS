@@ -405,6 +405,8 @@ void request_ec_estop() {
 void clear_ec_fault() {
     ethercat::g_master_a.clear_deadline_fault();
     ethercat::g_master_b.clear_deadline_fault();
+    ethercat::g_master_a.clear_dc_sync_fault();
+    ethercat::g_master_b.clear_dc_sync_fault();
 }
 
 int spindle_axis_index() noexcept {

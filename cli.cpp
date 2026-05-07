@@ -368,15 +368,25 @@ static int cmd_safety(const char* args, kernel::hal::UARTDriverOps* uart) {
 }
 
 static int cmd_ec_clear_fault(const char*, kernel::hal::UARTDriverOps* uart) {
-    const bool a_was = ethercat::g_master_a.is_deadline_faulted();
-    const bool b_was = ethercat::g_master_b.is_deadline_faulted();
+    const bool a_dl = ethercat::g_master_a.is_deadline_faulted();
+    const bool b_dl = ethercat::g_master_b.is_deadline_faulted();
+    const bool a_dc = ethercat::g_master_a.is_dc_sync_faulted();
+    const bool b_dc = ethercat::g_master_b.is_dc_sync_faulted();
     ethercat::g_master_a.clear_deadline_fault();
     ethercat::g_master_b.clear_deadline_fault();
-    char buf[96];
+    ethercat::g_master_a.clear_dc_sync_fault();
+    ethercat::g_master_b.clear_dc_sync_fault();
+    auto status = [](bool dl, bool dc) -> const char* {
+        if (dl && dc) return "cleared(deadline+dc)";
+        if (dl) return "cleared(deadline)";
+        if (dc) return "cleared(dc)";
+        return "ok";
+    };
+    char buf[128];
     kernel::util::k_snprintf(buf, sizeof(buf),
         "ec_clear_fault: ec0=%s ec1=%s\n",
-        a_was ? "cleared" : "ok",
-        b_was ? "cleared" : "ok");
+        status(a_dl, a_dc),
+        status(b_dl, b_dc));
     uart->puts(buf);
     return 0;
 }
@@ -4339,7 +4349,7 @@ CLI::CLI() {
     register_command("estop", cmd_estop, "Operator E-stop — broadcast QuickStop to all CiA-402 servos and latch fault");
     register_command("safety", cmd_safety, "safety [estop|clear] — hardware safety inputs status / manual trigger");
     register_command("ec_abort", cmd_ec_abort, "Broadcast AL=Init — emergency bus bring-down");
-    register_command("ec_clear_fault", cmd_ec_clear_fault, "Clear latched deadline fault on both EtherCAT masters");
+    register_command("ec_clear_fault", cmd_ec_clear_fault, "Clear latched deadline + DC-sync faults on both EtherCAT masters");
     register_command("ec_watchdog", cmd_ec_watchdog, "ec_watchdog <timeout_ms> [station] — program SM watchdog");
     register_command("setup_save", cmd_setup_save, "setup_save — persist offsets/tools/comp/active state to FAT32 setup.cfg");
     register_command("setup_load", cmd_setup_load, "setup_load — restore state from FAT32 setup.cfg");
