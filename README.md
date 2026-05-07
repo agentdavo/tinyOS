@@ -10,6 +10,8 @@ miniOS is a bare-metal CNC controller kernel in C++20. The current tree contains
 - a standalone browser-based TSV UI editor under `tools/ui_editor/` with drag-drop, live validation against the kernel's bind/action enums, and byte-for-byte round-trip of `devices/embedded_ui.tsv`
 - a software GLES1 renderer for machine / toolpath preview, touch / keyboard / mouse plumbing, and serial CLI control
 
+For a rendered gallery of every operator page see **[UI.md](./UI.md)** — refreshed automatically by the [UI screenshots](./.github/workflows/ui-screenshots.yml) workflow.
+
 The repo directory is `tinyOS`, but the project and generated ELFs are `miniOS`.
 
 ## Build status
@@ -174,10 +176,9 @@ echo -e "status\n" | qemu-system-aarch64 -M virt -cpu max -smp 4 -m 128M -nograp
 
 ### UI page capture
 
-The TSV UI can be switched and dumped from the guest CLI. The current page
-catalogue is `dashboard`, `jog`, `mdi`, `program`, `offsets`, `service`,
-`macros`, `probe`, plus the shared `bottom_nav` template included on every
-real page.
+The TSV UI can be switched and dumped from the guest CLI. The full page
+catalogue lives in [`devices/embedded_ui.tsv`](./devices/embedded_ui.tsv); a
+rendered gallery of every page is at **[UI.md](./UI.md)**.
 
 ```bash
 ui_page dashboard
@@ -188,7 +189,9 @@ ui_dump 6
 
 - `ui_page <id>` switches the active TSV page and forces a one-shot render.
 - `ui_dump [scale]` emits a binary `P6` PPM stream framed by `UI_DUMP_BEGIN ...` / `UI_DUMP_END`.
-- `scripts/qemu_dump_ui_pages.sh <out-dir>` boots QEMU with `-nographic`, drives those CLI commands over serial, and writes one `.ppm` and one `.png` per page. The `PAGES` tuple at the top of that script was updated to match the current operator surface.
+- `scripts/qemu_dump_ui_pages.sh <out-dir>` boots QEMU with `-nographic`, drives those CLI commands over serial, and writes one `.ppm` and one `.png` per page. The page list is read from `devices/embedded_ui.tsv` so it stays in lockstep with the operator surface.
+- `scripts/generate_ui_md.py <screenshots_dir> UI.md` rewrites `UI.md` from the captured PNGs.
+- The **UI screenshots** GitHub Actions workflow (`.github/workflows/ui-screenshots.yml`) wraps both: on push to `main` (or `workflow_dispatch`) it builds the arm64 kernel, captures every page, regenerates `UI.md`, and commits the refreshed `screenshots/` and `UI.md` back to the branch. On pull requests it uploads the same set as a workflow artifact.
 
 This is the preferred screenshot path for design review. It avoids poking the renderer through gdb and captures exactly what the guest framebuffer contains.
 

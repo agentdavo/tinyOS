@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ELF="$ROOT/build/arm64/miniOS_kernel_arm64.elf"
 OUT_DIR="${1:-$ROOT/ui_captures}"
+UI_TSV="$ROOT/devices/embedded_ui.tsv"
 
 mkdir -p "$OUT_DIR"
 
@@ -14,7 +15,7 @@ if [[ ! -f "$ELF" ]]; then
     make -C "$ROOT" TARGET=arm64 >/dev/null
 fi
 
-python3 - "$ELF" "$OUT_DIR" <<'PY'
+python3 - "$ELF" "$OUT_DIR" "$UI_TSV" <<'PY'
 import os
 import re
 import select
@@ -25,7 +26,55 @@ import time
 
 ELF = sys.argv[1]
 OUT_DIR = sys.argv[2]
-PAGES = ("dashboard", "jog", "mdi", "program", "offsets", "service", "macros", "probe")
+UI_TSV = sys.argv[3]
+
+# Pages to skip even if defined in the TSV. bottom_nav is the shared navbar
+# template included on every real page; selecting it standalone shows the
+# navbar against an empty canvas, which is not informative.
+SKIP_PAGES = frozenset({"bottom_nav"})
+
+# Render order. Pages not listed here fall through to TSV order. This keeps
+# the operator-flow surfaces (dashboard, jog, mdi...) at the top of UI.md
+# regardless of how the TSV is rearranged.
+PAGE_ORDER = (
+    "dashboard", "jog", "mdi", "machine_view", "program", "offsets",
+    "service", "ethercat", "homing", "alarms", "macros", "probe",
+    "pec", "geometry", "sphere", "network", "axis_status", "tool_change",
+)
+
+PAGE_RE = re.compile(r"^page\s+id=(\S+)\s+title=(.+?)\s*$")
+
+def load_pages(tsv_path):
+    found = {}
+    order = []
+    try:
+        with open(tsv_path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.rstrip("\n").rstrip("\r")
+                if not line or line.startswith("#"):
+                    continue
+                m = PAGE_RE.match(line)
+                if not m:
+                    continue
+                pid = m.group(1)
+                if pid in SKIP_PAGES or pid in found:
+                    continue
+                found[pid] = m.group(2).strip()
+                order.append(pid)
+    except OSError as e:
+        print(f"warning: could not read {tsv_path}: {e}", file=sys.stderr)
+    ordered = [p for p in PAGE_ORDER if p in found]
+    ordered.extend(p for p in order if p not in PAGE_ORDER)
+    return [(p, found[p]) for p in ordered]
+
+PAGES = load_pages(UI_TSV)
+if not PAGES:
+    PAGES = [("dashboard", "Dashboard")]
+
+with open(os.path.join(OUT_DIR, "pages.tsv"), "w", encoding="utf-8") as f:
+    for pid, title in PAGES:
+        f.write(f"{pid}\t{title}\n")
+
 SCALE = 6
 PROMPT = b"miniOS> "
 BEGIN_RE = re.compile(rb"UI_DUMP_BEGIN\s+(\d+)\s+(\d+)\s+(\d+)\n")
@@ -122,7 +171,8 @@ try:
 
     read_until(fd, PROMPT, 90.0, poke=poke_prompt)
 
-    for page in PAGES:
+    for page, title in PAGES:
+        print(f"capturing {page} ({title})", file=sys.stderr)
         proc.stdin.write(f"ui_page {page}\r".encode("ascii"))
         proc.stdin.flush()
         read_until(fd, PROMPT, 10.0)
