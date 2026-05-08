@@ -146,6 +146,43 @@ void log_timestamped(const char* msg) {
     uart->puts("\n");
 }
 
+// RAII boot-phase scope. Logs "phase=<name> begin" on construction and
+// "phase=<name> ok +<us>us" on destruction. The destructor is the
+// crucial part: if a phase hangs or panics inside its body, the
+// "ok" line never fires, so the last visible "[boot] +Xus phase=<name>
+// begin" line tells you exactly where the kernel got stuck. This is
+// the diagnostic that's been missing on rv64's flaky boot — CLAUDE.md
+// notes ~1 in 10 cold runs reaches the CLI; with phase scopes the
+// flake's failing phase is named on the wire.
+//
+// Each phase string lives for the program's lifetime (literal or
+// static), so the pointer is safe to hold across the body's runtime.
+struct BootPhase {
+    const char* name;
+    uint64_t    begin_us;
+
+    explicit BootPhase(const char* n) noexcept : name(n) {
+        auto* tm = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
+        begin_us = tm ? (tm->get_system_time_ns() / 1000ULL) : 0;
+        char buf[96];
+        kernel::util::k_snprintf(buf, sizeof(buf), "phase=%s begin", name);
+        log_timestamped(buf);
+    }
+    ~BootPhase() noexcept {
+        auto* tm = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
+        const uint64_t end_us = tm ? (tm->get_system_time_ns() / 1000ULL) : 0;
+        const uint64_t took = (end_us > begin_us) ? (end_us - begin_us) : 0;
+        char buf[96];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+                                 "phase=%s ok +%luus",
+                                 name, static_cast<unsigned long>(took));
+        log_timestamped(buf);
+    }
+
+    BootPhase(const BootPhase&)            = delete;
+    BootPhase& operator=(const BootPhase&) = delete;
+};
+
 void log_net_role(const char* role, uint8_t nic, uint8_t core, uint32_t num_nets) {
     char buf[128];
     if (nic < num_nets) {
@@ -300,21 +337,22 @@ bool create_idle_threads() {
 }
 
 void initialize_core0_boot_services() {
-    kernel::g_platform->early_init_core(0);
-    run_dma_boot_selftest();
-    run_usb_boot_probe();
-
-    kernel::boot::init_vfs();
-
-    log_timestamped("loading devices...");
-    devices::load_all_embedded();
-    log_timestamped("devices ok");
-
-    kernel::boot::load_runtime_tsvs();
-    kernel::boot::log_and_route_net_roles();
-
-    kernel::ui::init_ui_backends();
-    kernel::ui::boot_ui_once();
+    // Each named phase below is wrapped in BootPhase so its begin / ok
+    // pair surfaces on the wire in real time. If rv64 (or any cold boot)
+    // hangs partway through, the last "phase=<name> begin" without a
+    // matching "ok" tells us exactly where to look.
+    { BootPhase p("early_init_core0"); kernel::g_platform->early_init_core(0); }
+    { BootPhase p("dma_selftest");     run_dma_boot_selftest(); }
+    { BootPhase p("usb_probe");        run_usb_boot_probe(); }
+    { BootPhase p("vfs_init");         kernel::boot::init_vfs(); }
+    {
+        BootPhase p("devices_load");
+        devices::load_all_embedded();
+    }
+    { BootPhase p("tsv_load");         kernel::boot::load_runtime_tsvs(); }
+    { BootPhase p("net_roles");        kernel::boot::log_and_route_net_roles(); }
+    { BootPhase p("ui_backends");      kernel::ui::init_ui_backends(); }
+    { BootPhase p("ui_first_render");  kernel::ui::boot_ui_once(); }
 
     auto arm64_create_thread = [](void (*fn)(void*), void* arg, int prio,
                                   int affinity, const char* name, bool is_idle,
@@ -325,10 +363,11 @@ void initialize_core0_boot_services() {
     if (auto* uart = kernel::g_platform->get_uart_ops()) {
         cli::io::init(uart);
     }
-    kernel::boot::create_boot_services(arm64_create_thread);
+    { BootPhase p("boot_services");    kernel::boot::create_boot_services(arm64_create_thread); }
 }
 
 void wire_motion_axes_from_device_db() {
+    BootPhase p("motion_wire");
     (void)machine::wiring::wire_motion_axes_from_topology(
         kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr);
 }
@@ -340,6 +379,7 @@ void create_runtime_threads() {
         return kernel::g_scheduler_ptr->create_thread(fn, arg, prio, affinity,
                                                       name, is_idle, deadline_us) != nullptr;
     };
+    BootPhase p("runtime_services");
     kernel::boot::create_runtime_services(arm64_create_thread);
 }
 
