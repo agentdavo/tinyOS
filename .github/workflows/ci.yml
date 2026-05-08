@@ -30,9 +30,33 @@ jobs:
 
       - name: Verify ELF load addresses
         run: |
-          aarch64-linux-gnu-readelf -l build/arm64/miniOS_kernel_arm64.elf > elf_headers.txt
-          grep -q "VirtAddr.*0x40000000" elf_headers.txt
-          grep -q "VirtAddr.*0x40100000" elf_headers.txt
+          # Sanity-check that the linker script (hal/arm64/linker.ld) was
+          # honoured: the kernel must land at the QEMU virt RAM base
+          # 0x40000000, where PSCI's secondary entry and the boot PC both
+          # expect it. A misconfigured linker script silently produces a
+          # kernel that QEMU loads at the wrong address and diverges into
+          # garbage on the first instruction fetch.
+          #
+          # The previous greps `VirtAddr.*0x40000000` / `VirtAddr.*0x40100000`
+          # never actually matched: readelf -l splits each LOAD entry across
+          # multiple physical lines, with the column header "VirtAddr" on
+          # its own line and the addresses on the LOAD lines themselves —
+          # so "VirtAddr" and any address never co-occur on a single line.
+          # The check was a permanent no-op until commit 6e0ed0a unblocked
+          # the build past the demo_box.obj prereq and the assertion's
+          # exit-1 became visible.
+          #
+          # Replacement: assert the entry point via readelf -h (single-line
+          # "Entry point address: 0x40000000") and pull the first LOAD
+          # VirtAddr via awk so the comparison is precise and stable across
+          # any kernel-size growth that shifts the .rodata segment.
+          aarch64-linux-gnu-readelf -h build/arm64/miniOS_kernel_arm64.elf > elf_headers.txt
+          aarch64-linux-gnu-readelf -lW build/arm64/miniOS_kernel_arm64.elf >> elf_headers.txt
+          cat elf_headers.txt
+          grep -E "Entry point address:[[:space:]]+0x40000000" elf_headers.txt
+          first_load=$(awk '/^[[:space:]]+LOAD[[:space:]]/ {print $3; exit}' elf_headers.txt)
+          echo "first LOAD VirtAddr: $first_load"
+          [[ "$first_load" =~ ^0x0*40000000$ ]]
 
       - name: Boot under QEMU and drive the CLI
         run: |
