@@ -81,6 +81,30 @@ BEGIN_RE = re.compile(rb"UI_DUMP_BEGIN\s+(\d+)\s+(\d+)\s+(\d+)\n")
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
+# Transcript of every byte the guest emitted, decoded (CRLF -> LF) so it
+# reads as plain text. Written incrementally inside the read helpers so
+# that even a hard timeout leaves a usable artifact behind. The CI
+# workflow uploads OUT_DIR on failure (if: always() on the artifact
+# step), which means we can post-mortem which page hung and what the
+# kernel was logging right before.
+KERNEL_LOG = open(os.path.join(OUT_DIR, "kernel.log"), "wb", buffering=0)
+ACTIVE_PAGE = "boot"  # updated by the per-page loop; surfaces in errors
+
+def _record(chunk: bytes) -> None:
+    if not chunk:
+        return
+    KERNEL_LOG.write(chunk.replace(b"\r\n", b"\n"))
+
+def _tail(decoded: bytes, limit: int = 2048) -> str:
+    if len(decoded) <= limit:
+        snippet = decoded
+    else:
+        snippet = decoded[-limit:]
+    try:
+        return snippet.decode("utf-8", errors="replace")
+    except Exception:
+        return repr(snippet)
+
 def read_until(fd, needle: bytes, timeout: float, poke=None) -> bytes:
     buf = bytearray()
     deadline = time.monotonic() + timeout
@@ -97,10 +121,17 @@ def read_until(fd, needle: bytes, timeout: float, poke=None) -> bytes:
         chunk = os.read(fd, 65536)
         if not chunk:
             break
+        _record(chunk)
         buf.extend(chunk)
         if needle in buf:
             return bytes(buf)
-    raise RuntimeError(f"timeout waiting for {needle!r}")
+    decoded_buf = bytes(buf).replace(b"\r\n", b"\n")
+    raise RuntimeError(
+        f"timeout waiting for {needle!r} (page={ACTIVE_PAGE!r})\n"
+        f"--- last {min(len(decoded_buf), 2048)} bytes of wire ---\n"
+        f"{_tail(decoded_buf)}\n"
+        f"--- end ---"
+    )
 
 def read_dump(fd, timeout: float):
     # The arm64 PL011 driver's UARTDriver::puts (hal_qemu_arm64.cpp) cooks
@@ -130,6 +161,7 @@ def read_dump(fd, timeout: float):
         chunk = os.read(fd, 65536)
         if not chunk:
             break
+        _record(chunk)
         wire.extend(chunk)
         decoded = wire.replace(b"\r\n", b"\n")
         match = BEGIN_RE.search(decoded)
@@ -146,14 +178,24 @@ def read_dump(fd, timeout: float):
             more = os.read(fd, 65536)
             if not more:
                 break
+            _record(more)
             wire.extend(more)
             decoded = wire.replace(b"\r\n", b"\n")
         if len(decoded) < needed:
-            raise RuntimeError("short UI dump payload")
+            raise RuntimeError(
+                f"short UI dump payload (page={ACTIVE_PAGE!r}, "
+                f"got {len(decoded) - payload_start}/{payload_size} payload bytes)"
+            )
         payload = bytes(decoded[payload_start:needed])
         tail = bytes(decoded[needed:])
         return payload, tail
-    raise RuntimeError("timeout waiting for UI_DUMP_BEGIN")
+    decoded = bytes(wire).replace(b"\r\n", b"\n")
+    raise RuntimeError(
+        f"timeout waiting for UI_DUMP_BEGIN (page={ACTIVE_PAGE!r})\n"
+        f"--- last {min(len(decoded), 2048)} bytes of wire ---\n"
+        f"{_tail(decoded)}\n"
+        f"--- end ---"
+    )
 
 proc = subprocess.Popen(
     [
@@ -191,7 +233,8 @@ try:
     read_until(fd, PROMPT, 90.0, poke=poke_prompt)
 
     for page, title in PAGES:
-        print(f"capturing {page} ({title})", file=sys.stderr)
+        ACTIVE_PAGE = page
+        print(f"capturing {page} ({title})", file=sys.stderr, flush=True)
         proc.stdin.write(f"ui_page {page}\r".encode("ascii"))
         proc.stdin.flush()
         read_until(fd, PROMPT, 10.0)

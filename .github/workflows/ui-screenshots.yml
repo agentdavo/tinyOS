@@ -70,14 +70,20 @@ jobs:
           head -40 UI.md
 
       - name: Upload artifacts
+        # Run even when capture / regenerate failed so partial PNGs and the
+        # decoded kernel transcript (screenshots/kernel.log) are available
+        # for diagnosis. Without this, a hung page leaves nothing to look
+        # at and the next iteration is back to guessing.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ui-screenshots
           path: |
             screenshots/*.png
             screenshots/pages.tsv
+            screenshots/kernel.log
             UI.md
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Commit refreshed screenshots and UI.md
         # Only push back on direct pushes to main and on manual dispatch.
