@@ -73,6 +73,7 @@ public:
     void puts(const char* str) override;
     void uart_put_uint64_hex(uint64_t value) override;
     char getc_blocking() override;
+    bool try_getc(char& out) override;
 private:
     void write_uart_reg(uint32_t offset, uint32_t value);
     uint32_t read_uart_reg(uint32_t offset);

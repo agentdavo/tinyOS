@@ -224,30 +224,53 @@ proc = subprocess.Popen(
     start_new_session=True,
 )
 
+def drain_quiet(fd, settle: float = 0.5, max_wait: float = 10.0) -> None:
+    """Read everything pending on fd until it goes silent for `settle`
+    seconds (or `max_wait` total elapses). All consumed bytes are
+    recorded into kernel.log so the post-mortem still sees them; we
+    don't return them because the caller doesn't care — the goal is
+    just to flush the pipe before the next read_until so it can't
+    accidentally match a stale token."""
+    deadline = time.monotonic() + max_wait
+    last_recv = time.monotonic()
+    while time.monotonic() < deadline:
+        timeout = min(settle, deadline - time.monotonic())
+        r, _, _ = select.select([fd], [], [], max(0.0, timeout))
+        if r:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return
+            _record(chunk)
+            last_recv = time.monotonic()
+        else:
+            if time.monotonic() - last_recv >= settle:
+                return
+
 try:
     fd = proc.stdout.fileno()
-    def poke_prompt():
-        proc.stdin.write(b"\r")
-        proc.stdin.flush()
 
-    # Boot order on arm64 spawns the cli thread early: CLI::run() writes the
-    # "miniOS CLI ready." banner and the first "miniOS> " prompt as soon as
-    # the cli thread is scheduled. That happens BEFORE the EtherCAT master,
-    # virtio-gpu, and hmi services finish bring-up. If we start firing
-    # commands the moment we see the first prompt, ec0 is still mid-init and
-    # tripping deadlines (observed: 374 ms from QEMU launch to first prompt
-    # match, with [ec0] FAULT TRIPPED arriving moments later). A render
-    # called under that load can take longer than the per-page 10 s budget.
-    #
-    # Wait for the explicit ready banner first — same boot phase as the
-    # prompt today, but a more specific token if the banner format changes.
-    # Then wait for the prompt itself. Finally, sleep ~3 s to let the
-    # secondary services log their initial DHCP / cycle / fault-clear lines
-    # so the first ui_page command isn't competing with them.
+    # Boot order: arm64's kernel_main() spawns the cli thread early enough
+    # that CLI::run() emits "miniOS CLI ready." + the first "miniOS> "
+    # naturally — no \r pokes from the host needed. The previous script
+    # *did* poke every 500 ms, which caused a real-world bug here:
+    # accumulated \r bytes in the QEMU chardev buffer were processed by
+    # the cli AFTER the banner, each one triggering a spurious empty
+    # submit_line() that emitted a fresh prompt. The per-page read_until
+    # then matched one of those STALE prompts after sending the first
+    # ui_page command — before the command had actually been dispatched —
+    # and the next ui_dump fired into a still-busy cli, never producing
+    # UI_DUMP_BEGIN. Removing the poke removes that whole class of race.
     READY_BANNER = b"miniOS CLI ready."
-    read_until(fd, READY_BANNER, 90.0, poke=poke_prompt)
+    read_until(fd, READY_BANNER, 90.0)
     read_until(fd, PROMPT, 30.0)
+    # Settle: let EC master / hmi / virtio-gpu emit their initial init
+    # banners (DHCP discover, cycle banner, fault-clear, frame flushes)
+    # so the first ui_page command isn't racing with first-time logging.
     time.sleep(3.0)
+    # And drain whatever those secondary services emitted during the
+    # settle so the per-page read_until below can't match a stale
+    # prompt or boot log that arrived after our last read.
+    drain_quiet(fd, settle=0.5, max_wait=10.0)
 
     for page, title in PAGES:
         ACTIVE_PAGE = page

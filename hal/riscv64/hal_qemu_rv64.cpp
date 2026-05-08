@@ -205,6 +205,14 @@ char UARTDriver::getc_blocking() {
     }
     return static_cast<char>(*uart_reg(NS16550_RBR));
 }
+// Non-blocking poll. NS16550 LSR bit 0 (Data Ready) is set when RBR has
+// a byte waiting. Mirrors arm64 PL011 try_getc; lets cli's uart_io
+// interleave output drains with input polling.
+bool UARTDriver::try_getc(char& out) {
+    if ((*uart_reg(NS16550_LSR) & LSR_DR) == 0) return false;
+    out = static_cast<char>(*uart_reg(NS16550_RBR));
+    return true;
+}
 
 // ----------------------------------------------------------------------------
 // DMA (software fallback for now; future hardware DMA can replace this behind

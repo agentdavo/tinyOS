@@ -116,6 +116,15 @@ char UARTDriver::getc_blocking() {
     }
     return static_cast<char>(read_uart_reg(0x00) & 0xFF);
 }
+// Non-blocking poll. PL011 FR register bit 4 (RXFE) is set when the RX
+// FIFO is empty; if clear, DR has at least one byte. The cli's uart_io
+// thread uses this to interleave output drains with input polling so a
+// quiescent input pipe doesn't wedge queued output.
+bool UARTDriver::try_getc(char& out) {
+    if (read_uart_reg(0x18) & (1 << 4)) return false;
+    out = static_cast<char>(read_uart_reg(0x00) & 0xFF);
+    return true;
+}
 
 // --- IRQController ---
 void IRQController::write_gicd_reg(uint32_t o, uint32_t v) { mmio_write32(GIC_DISTRIBUTOR_BASE + o, v); }

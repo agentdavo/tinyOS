@@ -197,9 +197,7 @@ bool try_get(uint8_t& out) noexcept {
         line_len = 0;
     };
 
-    for (;;) {
-        // Drain any pending output chunks before blocking on input. This keeps
-        // the UART pipe full when the CLI is producing bursts (e.g. `help`).
+    auto drain_output = [&]() {
         while (Chunk* c = g_out_queue.try_pop()) {
             for (uint16_t i = 0; i < c->len; ++i) {
                 char ch = c->data[i];
@@ -209,26 +207,47 @@ bool try_get(uint8_t& out) noexcept {
                 }
             }
             c->len = 0;
-            // Return to free list.
             while (!g_free_queue.try_push(c)) {
-                // Free queue full shouldn't happen (capacity matches pool),
-                // but yield if it does.
                 kernel::util::cpu_relax();
             }
         }
-        // Flush any partial line so prompt characters surface even without a
-        // trailing newline (e.g. "miniOS> "). The next direct puts() from
-        // another core may still split a prompt that has no newline, but that
-        // matches existing direct-puts behaviour for line-less output.
+        // Flush any partial line so prompt characters surface even without
+        // a trailing newline (e.g. "miniOS> ").
         flush_line();
-        // Read one byte (blocking spin on the UART LSR) and push it onto the
-        // input queue. We take one byte per iteration so output drains
-        // promptly between keystrokes.
-        char ch = g_uart->getc_blocking();
-        while (!g_in_queue.try_push(static_cast<uint8_t>(ch))) {
-            // Input queue full means the CLI thread isn't keeping up. Yield
-            // briefly to let it run.
-            kernel::util::cpu_relax();
+    };
+
+    for (;;) {
+        // Drain pending output, then poll input non-blocking. Previously
+        // this loop called getc_blocking() *after* the drain — which on a
+        // quiescent input pipe (script waiting for output before sending
+        // its next byte) wedged the thread inside getc_blocking's yield
+        // loop, leaving any output queued *after* the wedge stuck in
+        // g_out_queue with nobody to drain it. Symptom: cmd_ui_dump's
+        // UI_DUMP_BEGIN never reached the wire because cli queued it
+        // after uart_io had already entered the blocking phase, and the
+        // host script was waiting on that very marker before sending
+        // more input that would have unblocked us.
+        //
+        // The fix: poll RX with try_getc(), drain output every iteration
+        // regardless, and yield only when there's nothing to do. Output
+        // and input are now both checked every loop, so a queued chunk
+        // is never more than one yield-quantum away from the wire.
+        drain_output();
+        char ch;
+        if (g_uart->try_getc(ch)) {
+            while (!g_in_queue.try_push(static_cast<uint8_t>(ch))) {
+                // Input queue full means the cli thread isn't keeping up.
+                // Drain output (it might be waiting on us to free chunks)
+                // and yield.
+                drain_output();
+                yield_now();
+            }
+        } else {
+            // Idle: nothing to read, output already drained. Yield so
+            // other threads on this core get cycles. cli's blocking
+            // get_blocking() will yield in turn when its in-queue is
+            // empty, so this loop never spins hot.
+            yield_now();
         }
     }
 }
