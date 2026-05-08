@@ -481,6 +481,22 @@ void show_main_page(Framebuffer& fb) {
     show_main_page(fb);
     ui_log_once("[ui] TSV main page active\n");
 
+    // Skip present_display_backend() when nothing has changed, falling
+    // back to a 1 Hz heartbeat for backends that drop the scanout if
+    // they don't see periodic flushes. Each present moves ~8 MB from
+    // RAM through virtio-gpu MMIO; gating on fb.is_dirty() makes a
+    // truly idle page (tool-change wizard waiting for the operator,
+    // alarms-acked dashboard, restart-confirm sitting on review) cost
+    // ~80 MB/s less of host emulation work.
+    //
+    // Most pages have live binds (motion position, EC stats, cycle
+    // counts) that mark the framebuffer dirty every tick anyway, so
+    // the optimisation only kicks in on static surfaces. On those,
+    // [virtio-gpu] flushes=N stops climbing every 100 ms — a useful
+    // signal that the page actually has nothing to redraw.
+    constexpr uint32_t HEARTBEAT_TICKS = 10;  // 10 × 100 ms = 1 s
+    uint32_t ticks_since_present = HEARTBEAT_TICKS;  // force first present
+
     for (;;) {
         if (timer) next_ns += UI_PERIOD_NS;
 
@@ -489,11 +505,13 @@ void show_main_page(Framebuffer& fb) {
         ui_builder::tick();
         pump_ui_input(screen);
         screen.render();
-        // Always present so the scanout stays live even on idle frames —
-        // some hosts/backends drop the display if they don't see periodic
-        // flushes, and the extra transfer is ~8 MB every 100 ms.
-        (void)present_display_backend();
-        fb.clear_dirty();
+
+        ++ticks_since_present;
+        if (fb.is_dirty() || ticks_since_present >= HEARTBEAT_TICKS) {
+            (void)present_display_backend();
+            fb.clear_dirty();
+            ticks_since_present = 0;
+        }
 
         if (timer) {
             const uint64_t now = timer->get_system_time_ns();
