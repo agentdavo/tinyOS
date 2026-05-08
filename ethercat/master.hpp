@@ -240,6 +240,12 @@ public:
     // axes through their fault-reaction stop. Operator must explicitly
     // acknowledge via clear_deadline_fault() (e.g. CLI `ec_clear_fault`).
     static constexpr uint32_t CONSECUTIVE_MISS_THRESHOLD = 2;
+    // Number of cycles after master start during which deadline misses
+    // do NOT count toward the trip threshold. ~50 ms at 250 µs per
+    // cycle covers the cold-start surge (virtio-gpu init, hmi DHCP,
+    // framebuffer clear, etc) without leaving operators with a
+    // pre-faulted machine on every boot.
+    static constexpr uint32_t BOOT_GRACE_CYCLES = 200;
     bool is_deadline_faulted() const noexcept {
         return deadline_fault_.load(std::memory_order_acquire);
     }

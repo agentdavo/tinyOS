@@ -1296,8 +1296,22 @@ void Master::run_loop() {
         if (wait_t0 > next_us) {
             stats_.cycle_deadline_miss.fetch_add(1, std::memory_order_relaxed);
             next_us = wait_t0;
-            if (++consecutive_misses_ >= CONSECUTIVE_MISS_THRESHOLD &&
-                !deadline_fault_.load(std::memory_order_relaxed)) {
+            // Boot grace: the first BOOT_GRACE_CYCLES iterations after
+            // the master starts coexist with virtio-gpu scanout setup,
+            // hmi DHCP discover, framebuffer clear, ESI blob ingestion,
+            // and the rest of the cold-start surge — all of which
+            // routinely blow the 250 µs deadline on QEMU TCG. Counting
+            // those toward the trip threshold gave every cold boot a
+            // "[ec0] FAULT TRIPPED" within seconds, before any operator
+            // action. The miss is still recorded in stats so it shows
+            // up in `ec` / histograms, but it doesn't accumulate the
+            // consecutive-miss counter that latches the fault. After
+            // grace, normal CONSECUTIVE_MISS_THRESHOLD applies.
+            const uint64_t cycles = stats_.cycles.load(std::memory_order_relaxed);
+            if (cycles < BOOT_GRACE_CYCLES) {
+                consecutive_misses_ = 0;
+            } else if (++consecutive_misses_ >= CONSECUTIVE_MISS_THRESHOLD &&
+                       !deadline_fault_.load(std::memory_order_relaxed)) {
                 on_deadline_fault();
             }
         } else {
