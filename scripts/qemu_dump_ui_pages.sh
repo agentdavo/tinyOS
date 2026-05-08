@@ -287,6 +287,66 @@ try:
         with open(ppm_path, "wb") as f:
             f.write(payload)
 
+        # Cheap "is this image trivially broken" check before we
+        # spend ffmpeg cycles on it. The previous CI gate only
+        # verified that *some* PNG existed for each page — a real
+        # regression like "all dashboards render solid black" would
+        # have committed cleanly because the file was the right size
+        # and the right format.
+        #
+        # Parse the PPM header to find the binary RGB region, then
+        # count the dominant color's frequency. If >97% of pixels
+        # are the same color the image is almost certainly blank /
+        # error / uninitialised framebuffer; flag and fail. The
+        # threshold is loose because a few pages legitimately have
+        # large solid backgrounds (boot-notice splash, alarms with
+        # nothing to ack), but those still have the title bar /
+        # navbar / status line breaking up the uniformity.
+        try:
+            hdr_end = 0
+            line_count = 0
+            i = 0
+            while i < len(payload):
+                if payload[i:i+1] == b"\n":
+                    line_count += 1
+                    if line_count == 3:
+                        hdr_end = i + 1
+                        break
+                i += 1
+            if hdr_end == 0:
+                raise ValueError("PPM header parse failed")
+            rgb = payload[hdr_end:]
+            if len(rgb) % 3 != 0:
+                raise ValueError(f"RGB length {len(rgb)} not divisible by 3")
+            # Histogram of 16-bit-quantised colors so we don't allocate
+            # one slot per 24-bit color (memory-blow on huge dumps).
+            quant = {}
+            for off in range(0, len(rgb), 3):
+                key = (rgb[off] >> 4, rgb[off+1] >> 4, rgb[off+2] >> 4)
+                quant[key] = quant.get(key, 0) + 1
+            total = len(rgb) // 3
+            top = max(quant.values()) if quant else 0
+            top_frac = top / total if total else 1.0
+            distinct = len(quant)
+            print(
+                f"  {page}: {total} px, {distinct} colors, "
+                f"dominant={top_frac:.1%}",
+                file=sys.stderr, flush=True,
+            )
+            if top_frac > 0.97:
+                raise RuntimeError(
+                    f"{page}.ppm looks blank: {top_frac:.1%} of pixels "
+                    f"share the dominant color (only {distinct} distinct "
+                    f"4-bit-quantised colors across {total} pixels). "
+                    f"Likely render regression — uninitialised fb, all-"
+                    f"black backdrop, or page failed to draw any widgets."
+                )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            print(f"  {page}: image-quality check skipped ({e})",
+                  file=sys.stderr, flush=True)
+
         subprocess.run(
             [
                 "ffmpeg", "-y", "-loglevel", "error",
