@@ -274,6 +274,51 @@ PageId current_page() {
     return g_machine.page;
 }
 
+// ---------------------------------------------------------------------------
+// Forward-declared internal state used by the mutators below.
+//
+// Order matters: jog_selected / jog_axis_step / start_continuous_jog /
+// toggle_cycle all reference mode_allows_*_locked() and (for toggle_cycle)
+// g_restart_review.pending. Their definitions originally lived further down
+// the file alongside set_operator_mode and the restart wizard, which left
+// the references unresolved at compile time. Hoisting them here is the
+// fix — the *_locked predicates only read g_machine.operator_mode and
+// g_restart_review is a plain in-RAM struct, so neither has any
+// initialisation-order dependency on the larger surface below.
+// ---------------------------------------------------------------------------
+
+struct RestartReviewState {
+    bool     pending             = false;
+    size_t   target_line         = 0;
+    size_t   active_work         = 0;     // 0 = G54
+    size_t   active_tool         = 0;
+    bool     tool_length_active  = false;
+    uint32_t feed                = 0;
+    int32_t  spindle             = 0;
+    bool     coolant_mist        = false;
+    bool     coolant_flood       = false;
+    bool     ok                  = false; // dry scan succeeded
+};
+static RestartReviewState g_restart_review{};
+
+// Mode-gating policy:
+//   Auto  → only the autonomous program may run; cycle_start enabled.
+//   MDI   → only the operator's manually-typed line is dispatched.
+//   Jog   → only continuous / step jog is permitted.
+//   Setup → calibration, offsets, homing wizard, jog (operator can move
+//           the machine while editing offsets, but cycle-start is locked).
+// Caller must hold g_lock.
+static bool mode_allows_jog_locked() {
+    return g_machine.operator_mode == OperatorMode::Jog ||
+           g_machine.operator_mode == OperatorMode::Setup;
+}
+static bool mode_allows_cycle_locked() {
+    return g_machine.operator_mode == OperatorMode::Auto;
+}
+static bool mode_allows_mdi_locked() {
+    return g_machine.operator_mode == OperatorMode::MDI;
+}
+
 void jog_selected(int32_t delta) {
     core::ScopedLock lock(g_lock);
     refresh_machine_snapshot_locked();
@@ -322,26 +367,6 @@ void set_jog_feed_cps(int32_t cps) {
 void set_operator_mode(OperatorMode mode) {
     core::ScopedLock lock(g_lock);
     g_machine.operator_mode = mode;
-}
-
-// Mode-gating policy:
-//   Auto  → only the autonomous program may run; cycle_start enabled.
-//   MDI   → only the operator's manually-typed line is dispatched.
-//   Jog   → only continuous / step jog is permitted.
-//   Setup → calibration, offsets, homing wizard, jog (operator can move
-//           the machine while editing offsets, but cycle-start is locked).
-// The intent is to make the prominent mode buttons on the dashboard
-// behave as the safety-class lockouts they look like, instead of being
-// purely cosmetic. Caller must hold g_lock.
-static bool mode_allows_jog_locked() {
-    return g_machine.operator_mode == OperatorMode::Jog ||
-           g_machine.operator_mode == OperatorMode::Setup;
-}
-static bool mode_allows_cycle_locked() {
-    return g_machine.operator_mode == OperatorMode::Auto;
-}
-static bool mode_allows_mdi_locked() {
-    return g_machine.operator_mode == OperatorMode::MDI;
 }
 
 bool mode_allows_mdi() {
@@ -654,19 +679,9 @@ bool request_program_simulation(size_t channel) {
 //      - taps CONFIRM → confirm_restart() clears pending. Cycle Start
 //        re-enables on the dashboard.
 //      - taps CANCEL → cancel_restart() stops the channel.
-struct RestartReviewState {
-    bool     pending             = false;
-    size_t   target_line         = 0;
-    size_t   active_work         = 0;     // 0 = G54
-    size_t   active_tool         = 0;
-    bool     tool_length_active  = false;
-    uint32_t feed                = 0;
-    int32_t  spindle             = 0;
-    bool     coolant_mist        = false;
-    bool     coolant_flood       = false;
-    bool     ok                  = false; // dry scan succeeded
-};
-static RestartReviewState g_restart_review{};
+//
+// (RestartReviewState + g_restart_review live earlier in the file —
+// hoisted above jog_selected so toggle_cycle's pending check resolves.)
 
 bool restart_review_pending() {
     core::ScopedLock lock(g_lock);
