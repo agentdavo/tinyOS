@@ -97,7 +97,7 @@ New MMIO drivers go behind `hal::Platform`; concrete impls in `hal/arm64/hal_qem
 
 ### Tests
 
-There is no host-runnable test binary. Tests live in `test_framework.cpp` and are invoked by typing `test` at the running kernel's CLI. CI greps the serial log for `Tests completed:.*0 failed`. To run a single test, modify `test_framework.cpp` (there is no test-name filter).
+There is no host-runnable test binary. The CLI's `test` command runs a small built-in suite (status / motion / ec / devices subtests) defined directly in `cli.cpp::cmd_test`. CI greps the serial log for `Tests completed:.*0 failed`. To add a subtest, edit the dispatch in `cmd_test`.
 
 ### Static analysis (matches CI)
 
@@ -126,7 +126,9 @@ Single implementation: `cli.cpp` (tab completion, history, full command table). 
 
 ### Subsystems not currently linked
 
-`audio.cpp`, `dsp.cpp`, `fs.cpp`, `gpio.cpp`, `net.cpp` (and `demo_cli_dsp.cpp`, `test_framework.cpp`) exist but are **not** in `CORE_CPP`. The active kernel links core, hal, util, trace, cli, kernel_globals, the freestanding/runtime stubs, the EtherCAT stack, motion, config/tsv, devices, diag, rt/base_thread, ui (fb + splash + display + operator_api + ui_builder_tsv), automation (macro/ladder/probe runtimes), machine (toolpods/topology/placement/motion_wiring), hmi service, cnc interpreter + MDI, fs/vfs + fat32 + fs_fat32, and the per-arch HAL (`cpu_<arch>.S`, `hal_qemu_<arch>.cpp`, plus shared drivers: `virtio_net`, `virtio_gpu`, `virtio_blk`, `virtio_input`, `e1000`, `pci`, `xhci`, `sdcard`). arm64 additionally links `fake_slave.cpp` when `FAKE_SLAVE=1`. Adding a subsystem means appending its `.cpp` to `CORE_CPP` in the Makefile and calling its init from `kernel::boot::*` (so both arches pick it up).
+The active kernel links core, hal, util, trace, klog, cli, kernel_globals, the freestanding/runtime stubs, the EtherCAT stack, motion, config/tsv, devices, diag, rt/base_thread, ui (fb + splash + display + operator_api + ui_builder_tsv), automation (macro/ladder/probe runtimes), machine (toolpods/topology/placement/motion_wiring), hmi service, cnc interpreter + MDI, fs/vfs + fat32 + fs_fat32, and the per-arch HAL (`cpu_<arch>.S`, `hal_qemu_<arch>.cpp`, plus shared drivers: `virtio_net`, `virtio_gpu`, `virtio_blk`, `virtio_input`, `e1000`, `pci`, `xhci`, `sdcard`). arm64 additionally links `fake_slave.cpp` when `FAKE_SLAVE=1`. Adding a subsystem means appending its `.cpp` to `CORE_CPP` in the Makefile and calling its init from `kernel::boot::*` (so both arches pick it up).
+
+Historical orphans (`audio.cpp`, `dsp.cpp`, `fs.cpp`, `gpio.cpp`, `net.cpp`, `demo_cli_dsp.cpp`, `test_framework.cpp` and their headers except `audio.hpp`) were removed when audit confirmed they had no callers in the active build. `audio.hpp` stays because `hal/arm64/hal_qemu_arm64.cpp`'s I2SDriver uses the `kernel::audio::AudioBuffer` POD type. Git history preserves the deleted code if any of it needs to be revived.
 
 ### Memory layout
 
