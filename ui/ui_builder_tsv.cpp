@@ -2839,8 +2839,8 @@ static void build_action_index() {
     }
 }
 
-char* action_target_for_widget(const char* id, BuilderEvent event, const char* inline_action) {
-    if (inline_action && *inline_action) return const_cast<char*>(inline_action);
+const char* action_target_for_widget(const char* id, BuilderEvent event, const char* inline_action) {
+    if (inline_action && *inline_action) return inline_action;
     // Pre-parse window: index isn't built yet. Fall back to linear scan so
     // anything that resolves actions during build_ui() (before
     // build_action_index() runs) still works.
@@ -3085,12 +3085,12 @@ public:
                                  spec_.id, nullptr,
                                  static_cast<long>(event.touch.x),
                                  static_cast<long>(event.touch.y));
-            if (char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
+            if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
                 run_action_target(target);
             }
         } else if (event.type == kernel::ui::EventType::KeyDown && is_focused(this) &&
                    (event.key.keycode == '\r' || event.key.keycode == ' ')) {
-            if (char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
+            if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
                 run_action_target(target);
             }
             return true;
@@ -3297,7 +3297,7 @@ private:
         if (bind_ == BindKind::Feed) kernel::ui::operator_api::set_feed_override(value_);
         if (bind_ == BindKind::SpindleOverride) kernel::ui::operator_api::set_spindle_override(value_);
         mark_dirty();
-        if (char* target = action_target_for_widget(spec_.id, BuilderEvent::Change, spec_.action)) {
+        if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Change, spec_.action)) {
             run_action_target(target);
         }
     }
@@ -3381,7 +3381,7 @@ public:
             }
             if (key == '\r') {
                 bool ok = false;
-                if (char* target = action_target_for_widget(spec_.id, BuilderEvent::Change, spec_.action)) {
+                if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Change, spec_.action)) {
                     ok = commit_input_target(target, buffer_, bind_);
                 } else {
                     ok = commit_input_target(nullptr, buffer_, bind_);
