@@ -230,18 +230,37 @@ try:
         proc.stdin.write(b"\r")
         proc.stdin.flush()
 
-    read_until(fd, PROMPT, 90.0, poke=poke_prompt)
+    # Boot order on arm64 spawns the cli thread early: CLI::run() writes the
+    # "miniOS CLI ready." banner and the first "miniOS> " prompt as soon as
+    # the cli thread is scheduled. That happens BEFORE the EtherCAT master,
+    # virtio-gpu, and hmi services finish bring-up. If we start firing
+    # commands the moment we see the first prompt, ec0 is still mid-init and
+    # tripping deadlines (observed: 374 ms from QEMU launch to first prompt
+    # match, with [ec0] FAULT TRIPPED arriving moments later). A render
+    # called under that load can take longer than the per-page 10 s budget.
+    #
+    # Wait for the explicit ready banner first — same boot phase as the
+    # prompt today, but a more specific token if the banner format changes.
+    # Then wait for the prompt itself. Finally, sleep ~3 s to let the
+    # secondary services log their initial DHCP / cycle / fault-clear lines
+    # so the first ui_page command isn't competing with them.
+    READY_BANNER = b"miniOS CLI ready."
+    read_until(fd, READY_BANNER, 90.0, poke=poke_prompt)
+    read_until(fd, PROMPT, 30.0)
+    time.sleep(3.0)
 
     for page, title in PAGES:
         ACTIVE_PAGE = page
         print(f"capturing {page} ({title})", file=sys.stderr, flush=True)
         proc.stdin.write(f"ui_page {page}\r".encode("ascii"))
         proc.stdin.flush()
-        read_until(fd, PROMPT, 10.0)
+        # 30 s — render under concurrent EC-fault / virtio-gpu flush traffic
+        # is slower than steady-state, and we'd rather wait than flake.
+        read_until(fd, PROMPT, 30.0)
 
         proc.stdin.write(f"ui_dump {SCALE}\r".encode("ascii"))
         proc.stdin.flush()
-        payload, tail = read_dump(fd, 20.0)
+        payload, tail = read_dump(fd, 30.0)
 
         ppm_path = os.path.join(OUT_DIR, f"{page}.ppm")
         png_path = os.path.join(OUT_DIR, f"{page}.png")
