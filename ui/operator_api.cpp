@@ -152,7 +152,7 @@ bool motion_busy_locked() {
     return false;
 }
 
-bool motion_settled_locked() {
+[[maybe_unused]] bool motion_settled_locked() {
     return !motion_busy_locked();
 }
 

@@ -352,7 +352,7 @@ const char* field_value(const KeyValueField* fields, uint32_t count, const char*
     return nullptr;
 }
 
-int32_t text_x_for_align(int32_t x, uint32_t width, const char* text, Align align) {
+[[maybe_unused]] int32_t text_x_for_align(int32_t x, uint32_t width, const char* text, Align align) {
     if (!text || align == Align::Left || width == 0) return x;
     const int32_t text_w = static_cast<int32_t>(strlen(text) * 8U);
     if (align == Align::Center) return x + static_cast<int32_t>(width / 2) - text_w / 2;

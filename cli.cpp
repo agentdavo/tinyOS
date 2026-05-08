@@ -734,7 +734,11 @@ static int cmd_offsets(const char*, kernel::hal::UARTDriverOps* uart) {
         kernel::util::k_snprintf(buf, sizeof(buf),
             "  %s%s X%.3f Y%.3f Z%.3f A%.3f\n",
             i == svc.active_work() ? "* " : "  ",
-            w.name, w.value.axis[0], w.value.axis[1], w.value.axis[2], w.value.axis[3]);
+            w.name,
+            static_cast<double>(w.value.axis[0]),
+            static_cast<double>(w.value.axis[1]),
+            static_cast<double>(w.value.axis[2]),
+            static_cast<double>(w.value.axis[3]));
         uart->puts(buf);
     }
     uart->puts("tool offsets:\n");
@@ -743,7 +747,10 @@ static int cmd_offsets(const char*, kernel::hal::UARTDriverOps* uart) {
         kernel::util::k_snprintf(buf, sizeof(buf),
             "  %c T%02lu len=%.3f rad=%.3f wear=%.3f\n",
             i == svc.active_tool() ? '*' : ' ',
-            static_cast<unsigned long>(t.tool), t.length, t.radius, t.wear);
+            static_cast<unsigned long>(t.tool),
+            static_cast<double>(t.length),
+            static_cast<double>(t.radius),
+            static_cast<double>(t.wear));
         uart->puts(buf);
     }
     return 0;
@@ -857,8 +864,12 @@ static int cmd_program_sim(const char* args, kernel::hal::UARTDriverOps* uart) {
     kernel::util::k_snprintf(buf, sizeof(buf),
                              "program_sim: %s preview points=%zu bbox=[%.2f,%.2f,%.2f]-[%.2f,%.2f,%.2f]\n",
                              p.name, p.preview.point_count,
-                             p.preview.min.x, p.preview.min.y, p.preview.min.z,
-                             p.preview.max.x, p.preview.max.y, p.preview.max.z);
+                             static_cast<double>(p.preview.min.x),
+                             static_cast<double>(p.preview.min.y),
+                             static_cast<double>(p.preview.min.z),
+                             static_cast<double>(p.preview.max.x),
+                             static_cast<double>(p.preview.max.y),
+                             static_cast<double>(p.preview.max.z));
     uart->puts(buf);
     return 0;
 }
@@ -1776,7 +1787,7 @@ static int cmd_gear_disengage(const char* args, kernel::hal::UARTDriverOps* uart
     return ok ? 0 : 1;
 }
 
-static int cmd_gantry(const char* args, kernel::hal::UARTDriverOps* uart) {
+static int cmd_gantry(const char* /*args*/, kernel::hal::UARTDriverOps* uart) {
     // gantry - list active gantry links
     motion::g_motion.dump_gantrys(uart);
     return 0;
@@ -2173,7 +2184,10 @@ static int cmd_sphere_auto(const char* args, kernel::hal::UARTDriverOps* uart) {
     // 7-point hemisphere pattern (counts = mm * 10000 for 0.1µm resolution)
     // At 45° elevation: offset = radius * sin(45°) ≈ radius * 0.707
     // Horizontal offset = radius * cos(45°) ≈ radius * 0.707
-    int32_t r = static_cast<int32_t>(radius) * 10000;  // convert mm to counts
+    // r (full radius, counts) is not currently used by this preview
+    // helper but is documented here for parity with the comment block
+    // above. If the helper grows to plot the apex point at +r,
+    // re-introduce as `const int32_t r = ...` and reference it.
     int32_t h = static_cast<int32_t>(radius * 707 / 1000) * 10000;  // horizontal
     int32_t v = static_cast<int32_t>(radius * 707 / 1000) * 10000;  // vertical
 
@@ -2233,7 +2247,7 @@ typedef int32_t (*ProbeTriggerFunc)(int32_t target_x, int32_t target_y, int32_t 
 
 // Simple stub that returns target position (simulated probe)
 // In real system, this would wait for probe trigger and return actual position
-static int32_t probe_trigger_sim(int32_t target_x, int32_t target_y, int32_t target_z) {
+[[maybe_unused]] static int32_t probe_trigger_sim(int32_t target_x, int32_t target_y, int32_t target_z) {
     // Simulated: probe triggers exactly at target
     // Real implementation would wait for probe DI and return trigger position
     (void)target_x; (void)target_y; (void)target_z;
@@ -2571,9 +2585,9 @@ static int cmd_multipass(const char* args, kernel::hal::UARTDriverOps* uart) {
         "multipass: %ld total, %ld passes, DOC=%ld\n"
         "  Rough:   %ld x %ld counts\n"
         "  Finish:  %ld counts\n",
-        total, passes, doc,
-        passes - 1, rough_depth,
-        finish_depth);
+        static_cast<long>(total), static_cast<long>(passes), static_cast<long>(doc),
+        static_cast<long>(passes - 1), static_cast<long>(rough_depth),
+        static_cast<long>(finish_depth));
     uart->puts(buf);
     return 0;
 }
@@ -2636,7 +2650,8 @@ static int cmd_din6(const char* args, kernel::hal::UARTDriverOps* uart) {
             int32_t cpt = cpr / a.spindle_indexer.teeth_per_revolution;
             int32_t tooth_pos = (int32_t)n * cpt + a.spindle_indexer.index_offset_counts;
             motion::g_motion.move_to((size_t)axis, tooth_pos);
-            kernel::util::k_snprintf(buf, sizeof(buf), "din6 tooth: ax%ld tooth=%ld pos=%ld\n", axis, n, tooth_pos);
+            kernel::util::k_snprintf(buf, sizeof(buf), "din6 tooth: ax%ld tooth=%ld pos=%ld\n",
+                                     static_cast<long>(axis), static_cast<long>(n), static_cast<long>(tooth_pos));
         } else {
             uart->puts("din6 tooth: axis not configured, run 'din6 sync' first\n");
             return 1;
@@ -4374,7 +4389,7 @@ void mcode_print_signal_state(kernel::hal::UARTDriverOps* uart, const char* name
 }
 } // namespace
 
-static int cmd_mcode(const char* args, kernel::hal::UARTDriverOps* uart) {
+[[maybe_unused]] static int cmd_mcode(const char* args, kernel::hal::UARTDriverOps* uart) {
     if (!args || !*args) {
         const bool a_fault = ethercat::g_master_a.is_deadline_faulted();
         const bool b_fault = ethercat::g_master_b.is_deadline_faulted();

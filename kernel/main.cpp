@@ -65,7 +65,7 @@ extern const char _binary_embedded_hmi_tsv_end[];
 
 namespace {
 
-bool create_named_thread(void (*fn)(void*), const void* arg, int prio, int affinity,
+[[maybe_unused]] bool create_named_thread(void (*fn)(void*), const void* arg, int prio, int affinity,
                          const char* name, bool is_idle, uint64_t deadline_us,
                          const char* log_label) {
     if (kernel::g_scheduler_ptr->create_thread(fn, arg, prio, affinity, name, is_idle, deadline_us)) {

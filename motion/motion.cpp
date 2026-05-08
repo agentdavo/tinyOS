@@ -2091,7 +2091,10 @@ bool Kernel::sphere_compute_errors() {
     for (size_t i = 0; i < sphere_cal_.point_count; ++i) {
         const auto& pt = sphere_cal_.points[i];
         if (!pt.valid) continue;
-        int32_t dx = pt.act_x - pt.cmd_x - mean_dx;
+        // dx component intentionally not extracted — the regression below
+        // only uses dy / dz (the orthogonal-axis residuals against cmd_x /
+        // cmd_y). Reintroduce as `int32_t dx = pt.act_x - pt.cmd_x - mean_dx`
+        // if the fit gains a self-axis term.
         int32_t dy = pt.act_y - pt.cmd_y - mean_dy;
         int32_t dz = pt.act_z - pt.cmd_z - mean_dz;
         dx_dy += static_cast<int64_t>(pt.cmd_x) * dy;

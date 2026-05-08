@@ -47,10 +47,24 @@ struct Writer {
     size_t cap;
     size_t used = 0;
 
-    template <typename... Args>
-    bool printf(const char* fmt, Args... args) noexcept {
+    // No-args overload — bypasses k_snprintf so gcc doesn't flag the
+    // template instantiation with -Wformat-security (the printf path
+    // takes a non-literal `fmt` parameter, which the compiler can't
+    // prove is a constant when the variadic pack is empty).
+    bool puts(const char* s) noexcept {
+        if (used >= cap || !s) return false;
+        size_t n = 0;
+        while (s[n]) ++n;
+        if (used + n > cap) n = cap - used;
+        for (size_t i = 0; i < n; ++i) buf[used + i] = s[i];
+        used += n;
+        return n > 0;
+    }
+
+    template <typename A0, typename... Args>
+    bool printf(const char* fmt, A0 a0, Args... args) noexcept {
         if (used >= cap) return false;
-        const int n = kernel::util::k_snprintf(buf + used, cap - used, fmt, args...);
+        const int n = kernel::util::k_snprintf(buf + used, cap - used, fmt, a0, args...);
         if (n <= 0) return false;
         used += static_cast<size_t>(n);
         if (used > cap) used = cap;
@@ -67,38 +81,38 @@ void write_active(Writer& w) noexcept {
         feed_pm = ch.overrides.feed_permille;
         rapid_pm = ch.overrides.rapid_permille;
     }
-    w.printf("[active]\n");
+    w.puts("[active]\n");
     w.printf("wcs=%u\n", static_cast<unsigned>(cnc::offsets::g_service.active_work()));
     w.printf("tool=%u\n", static_cast<unsigned>(cnc::offsets::g_service.active_tool()));
     w.printf("units=%s\n", interp.inch_mode ? "inch" : "mm");
     w.printf("feed_permille=%u\n", static_cast<unsigned>(feed_pm));
     w.printf("rapid_permille=%u\n", static_cast<unsigned>(rapid_pm));
-    w.printf("\n");
+    w.puts("\n");
 }
 
 void write_wcs(Writer& w) noexcept {
     static const char kAxis[cnc::offsets::AXIS_COUNT] = {'X', 'Y', 'Z', 'A'};
     const auto& work = cnc::offsets::g_service.work_offsets();
-    w.printf("[wcs]\n");
+    w.puts("[wcs]\n");
     for (size_t i = 0; i < work.size(); ++i) {
         for (size_t a = 0; a < cnc::offsets::AXIS_COUNT; ++a) {
             w.printf("%s.%c=%ld\n", work[i].name, kAxis[a],
                      static_cast<long>(to_micro(work[i].value.axis[a])));
         }
     }
-    w.printf("\n");
+    w.puts("\n");
 }
 
 void write_tools(Writer& w) noexcept {
     const auto& tool = cnc::offsets::g_service.tool_offsets();
-    w.printf("[tool]\n");
+    w.puts("[tool]\n");
     for (size_t i = 0; i < tool.size(); ++i) {
         const unsigned id = static_cast<unsigned>(tool[i].tool);
         w.printf("T%u.length=%ld\n", id, static_cast<long>(to_micro(tool[i].length)));
         w.printf("T%u.radius=%ld\n", id, static_cast<long>(to_micro(tool[i].radius)));
         w.printf("T%u.wear=%ld\n",   id, static_cast<long>(to_micro(tool[i].wear)));
     }
-    w.printf("\n");
+    w.puts("\n");
 }
 
 void write_pec(Writer& w) noexcept {
@@ -114,21 +128,21 @@ void write_pec(Writer& w) noexcept {
                      static_cast<long>(p.position_counts),
                      static_cast<long>(p.error_counts));
         }
-        w.printf("\n");
+        w.puts("\n");
     }
 }
 
 void write_geometry(Writer& w) noexcept {
-    w.printf("[geometry]\n");
+    w.puts("[geometry]\n");
     w.printf("xy_urad=%ld\n", static_cast<long>(motion::g_motion.get_geometry_error("XY")));
     w.printf("xz_urad=%ld\n", static_cast<long>(motion::g_motion.get_geometry_error("XZ")));
     w.printf("yz_urad=%ld\n", static_cast<long>(motion::g_motion.get_geometry_error("YZ")));
     w.printf("enabled=%u\n", motion::g_motion.geometry_enabled() ? 1u : 0u);
-    w.printf("\n");
+    w.puts("\n");
 }
 
 void write_sphere(Writer& w) noexcept {
-    w.printf("[sphere]\n");
+    w.puts("[sphere]\n");
     w.printf("enabled=%u\n", motion::g_motion.sphere_enabled() ? 1u : 0u);
     w.printf("diameter_um=%ld\n",
              static_cast<long>(to_micro(motion::g_motion.sphere_diameter())));
@@ -136,7 +150,7 @@ void write_sphere(Writer& w) noexcept {
     w.printf("probe_hits=%ld\n", static_cast<long>(motion::g_motion.sphere_probe_hits()));
     w.printf("rapid_speed_mm_min=%ld\n", static_cast<long>(motion::g_motion.sphere_rapid_speed()));
     w.printf("probe_speed_mm_min=%ld\n", static_cast<long>(motion::g_motion.sphere_probe_speed()));
-    w.printf("\n");
+    w.puts("\n");
 }
 
 // ===== Parsing =====
@@ -413,8 +427,8 @@ void load_dispatch(const char* section, const char* key, const char* value, void
 bool save_to(const char* path) noexcept {
     if (!path || !*path) return false;
     Writer w{g_save_buf, sizeof(g_save_buf)};
-    w.printf("[version]\n");
-    w.printf("format=1\n\n");
+    w.puts("[version]\n");
+    w.puts("format=1\n\n");
     write_active(w);
     write_wcs(w);
     write_tools(w);
