@@ -115,6 +115,46 @@ bool try_get(uint8_t& out) noexcept;
 // Thread entry points. Both pinned to core 0.
 [[noreturn]] void uart_io_entry(void* arg);
 
+// Bulk / binary output. The cli's queued path (put / put_n / putc_one)
+// CRLF-cooks every '\n' on the wire and walks every byte through the
+// chunk pool, the SPSC out queue, the per-`\n` flush_line cycle, and
+// the early_uart_lock acquire/release on each puts() — fine for human
+// terminal text, fatal for any bulk binary command (UI screenshot
+// dumps, log dumps, file dumps, trace dumps). Use this RAII writer
+// instead: it grabs the platform UART's write lock once, lets the
+// caller write arbitrary bytes via direct putc (no CRLF cooking),
+// and releases the lock on destruction. While held, any other thread
+// that calls UART puts() blocks — that's intentional, the lock is
+// what keeps concurrent boot UI / hmi / EC log lines from
+// interleaving into the binary stream.
+//
+// Caveats:
+//   - The cli's g_out_queue is NOT drained before acquire. Any text
+//     queued by other threads that hasn't reached uart_io's flush
+//     yet will be flushed AFTER this writer's bytes. For commands
+//     where that matters (e.g. dumps that the host parses with a
+//     trailing marker), put a unique end-of-payload sentinel inside
+//     the locked region.
+//   - The lock is held across yield_now() if the caller's writes
+//     spin on TXFF. Other threads on the same core can still run
+//     (yields don't release the lock, but they don't deadlock either)
+//     but their puts() block. Keep the locked region bounded —
+//     hundreds of ms is fine, full seconds isn't.
+class RawWriter {
+public:
+    RawWriter() noexcept;
+    ~RawWriter() noexcept;
+    RawWriter(const RawWriter&) = delete;
+    RawWriter& operator=(const RawWriter&) = delete;
+
+    bool valid() const noexcept { return uart_ != nullptr; }
+    void write(const void* data, size_t n) noexcept;
+    void puts(const char* s) noexcept;       // strlen, no CR cooking
+    void putc(char c) noexcept;
+private:
+    kernel::hal::UARTDriverOps* uart_;
+};
+
 } // namespace io
 
 using CommandHandler = int (*)(const char* args, kernel::hal::UARTDriverOps* uart_ops);

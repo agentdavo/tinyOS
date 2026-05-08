@@ -272,6 +272,26 @@ public:
 
 static SinkUART g_sink;
 
+RawWriter::RawWriter() noexcept
+    : uart_(kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+    if (uart_) uart_->lock_write();
+}
+RawWriter::~RawWriter() noexcept {
+    if (uart_) uart_->unlock_write();
+}
+void RawWriter::write(const void* data, size_t n) noexcept {
+    if (!uart_ || !data) return;
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < n; ++i) uart_->putc(static_cast<char>(p[i]));
+}
+void RawWriter::puts(const char* s) noexcept {
+    if (!uart_ || !s) return;
+    while (*s) uart_->putc(*s++);
+}
+void RawWriter::putc(char c) noexcept {
+    if (uart_) uart_->putc(c);
+}
+
 } // namespace io
 
 kernel::hal::UARTDriverOps* CLI::sink_uart() noexcept { return &io::g_sink; }
@@ -1305,26 +1325,23 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
     // Lock-held duration is ~PL011-TXFF-bound across 170 KB, which on
     // QEMU virt is a few hundred ms. That delays unrelated puts callers
     // by the same amount, which is fine for an interactive dump command.
-    auto* real_uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr;
-    if (!real_uart) {
+    io::RawWriter raw;
+    if (!raw.valid()) {
         io::put("UI_DUMP_ERROR no-uart\n");
         return 1;
     }
-    real_uart->lock_write();
-    for (int i = 0; i < meta_len; ++i) real_uart->putc(meta[i]);
-    for (int i = 0; i < header_len; ++i) real_uart->putc(header[i]);
+    raw.write(meta, static_cast<size_t>(meta_len));
+    raw.write(header, static_cast<size_t>(header_len));
     for (uint32_t y = 0; y < out_h; ++y) {
         for (uint32_t x = 0; x < out_w; ++x) {
             const auto c = fb.get_pixel(static_cast<int32_t>(x * scale),
                                         static_cast<int32_t>(y * scale));
-            real_uart->putc(static_cast<char>(c.r));
-            real_uart->putc(static_cast<char>(c.g));
-            real_uart->putc(static_cast<char>(c.b));
+            raw.putc(static_cast<char>(c.r));
+            raw.putc(static_cast<char>(c.g));
+            raw.putc(static_cast<char>(c.b));
         }
     }
-    static const char trailer[] = "\nUI_DUMP_END\n";
-    for (size_t i = 0; i < sizeof(trailer) - 1; ++i) real_uart->putc(trailer[i]);
-    real_uart->unlock_write();
+    raw.puts("\nUI_DUMP_END\n");
     return 0;
 }
 static int cmd_help(const char*, kernel::hal::UARTDriverOps* uart) {
