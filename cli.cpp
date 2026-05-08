@@ -1340,15 +1340,37 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
     }
     raw.write(meta, static_cast<size_t>(meta_len));
     raw.write(header, static_cast<size_t>(header_len));
+
+    // Read pixels straight out of the framebuffer's uint32_t buffer
+    // (RGBA packed 0xAARRGGBB) instead of going through fb.get_pixel
+    // for every output pixel. The previous loop did out_w*out_h
+    // virtual-dispatch get_pixel() calls — for a 1080×1920 / 6 dump
+    // that's 57600 calls each doing a bounds check + index compute.
+    // Inline the read + RGB extract; bounds are guaranteed because
+    // out_w = FB_WIDTH / scale and out_h = FB_HEIGHT / scale, so
+    // x*scale < FB_WIDTH and y*scale < FB_HEIGHT for all valid x,y.
+    //
+    // Batch writes into a 768-byte (256 pixels × 3 bytes) stack
+    // buffer to amortise the per-byte putc dispatch in raw.write
+    // across rows. 768 bytes is comfortably under the cli thread's
+    // 4 KB stack budget (DEFAULT_STACK_SIZE in core.hpp).
+    const uint32_t* fb_data = fb.data();
+    char row_buf[256 * 3];
+    size_t pos = 0;
     for (uint32_t y = 0; y < out_h; ++y) {
+        const uint32_t* src_row = fb_data + (y * scale) * kernel::ui::FB_WIDTH;
         for (uint32_t x = 0; x < out_w; ++x) {
-            const auto c = fb.get_pixel(static_cast<int32_t>(x * scale),
-                                        static_cast<int32_t>(y * scale));
-            raw.putc(static_cast<char>(c.r));
-            raw.putc(static_cast<char>(c.g));
-            raw.putc(static_cast<char>(c.b));
+            const uint32_t p = src_row[x * scale];
+            row_buf[pos++] = static_cast<char>((p >> 16) & 0xFF);
+            row_buf[pos++] = static_cast<char>((p >>  8) & 0xFF);
+            row_buf[pos++] = static_cast<char>( p        & 0xFF);
+            if (pos + 3 > sizeof(row_buf)) {
+                raw.write(row_buf, pos);
+                pos = 0;
+            }
         }
     }
+    if (pos > 0) raw.write(row_buf, pos);
     raw.puts("\nUI_DUMP_END\n");
     return 0;
 }
