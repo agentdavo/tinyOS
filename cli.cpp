@@ -1268,30 +1268,63 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
     const size_t payload_size = static_cast<size_t>(header_len) +
                                 static_cast<size_t>(out_w) * static_cast<size_t>(out_h) * 3U;
     char meta[128];
-    kernel::util::k_snprintf(meta, sizeof(meta),
+    const int meta_len = kernel::util::k_snprintf(meta, sizeof(meta),
                              "UI_DUMP_BEGIN %lu %lu %lu\n",
                              static_cast<unsigned long>(out_w),
                              static_cast<unsigned long>(out_h),
                              static_cast<unsigned long>(payload_size));
-    io::put(meta);
-    io::put_n(header, static_cast<size_t>(header_len));
-
-    char row[3 * 256];
-    for (uint32_t y = 0; y < out_h; ++y) {
-        size_t row_len = 0;
-        for (uint32_t x = 0; x < out_w; ++x) {
-            const auto c = fb.get_pixel(static_cast<int32_t>(x * scale), static_cast<int32_t>(y * scale));
-            row[row_len++] = static_cast<char>(c.r);
-            row[row_len++] = static_cast<char>(c.g);
-            row[row_len++] = static_cast<char>(c.b);
-            if (row_len == sizeof(row)) {
-                io::put_n(row, row_len);
-                row_len = 0;
-            }
-        }
-        if (row_len > 0) io::put_n(row, row_len);
+    if (meta_len <= 0) {
+        io::put("UI_DUMP_ERROR meta\n");
+        return 1;
     }
-    io::put("\nUI_DUMP_END\n");
+
+    // The cli's queued UART path (io::put / io::put_n -> g_out_queue ->
+    // uart_io drain -> uart->puts) was originally how this command emitted
+    // the dump, but it's wrong twice over for a binary payload of this
+    // size:
+    //   1. uart->puts CRLF-cooks every '\n' on the wire. The binary RGB
+    //      payload contains ~payload_size/256 natural 0x0A bytes, each
+    //      gaining a leading 0x0D — corrupting the byte count and forcing
+    //      the host to decode-everything to recover the original stream.
+    //   2. The 64x128 chunk pool, per-byte flush_line check, per-`\n`
+    //      lock-acquire + uart->puts cycle, and the scheduler yields
+    //      between cli's producer + uart_io's drainer all add per-byte
+    //      overhead that compounds across 170 KB. The previous run got
+    //      ~17 bytes/sec to the wire; the per-pixel rate was being
+    //      throttled by lock turnover, not by PL011 TXFF.
+    //
+    // Bypass both. Acquire the early-uart lock once for the entire
+    // dump (marker + header + RGB + trailer), then write every byte via
+    // direct uart->putc — no CRLF cooking, no queue, no SPSC turnover.
+    // The lock keeps other puts() callers (boot UI thread's [virtio-gpu]
+    // log, hmi DHCP / EC fault logs) from interleaving into the binary
+    // stream. The host script side flips to read the payload as raw
+    // wire bytes, so the natural 0x0A / 0x0D 0x0A bytes in pixel data
+    // round-trip losslessly.
+    //
+    // Lock-held duration is ~PL011-TXFF-bound across 170 KB, which on
+    // QEMU virt is a few hundred ms. That delays unrelated puts callers
+    // by the same amount, which is fine for an interactive dump command.
+    auto* real_uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr;
+    if (!real_uart) {
+        io::put("UI_DUMP_ERROR no-uart\n");
+        return 1;
+    }
+    real_uart->lock_write();
+    for (int i = 0; i < meta_len; ++i) real_uart->putc(meta[i]);
+    for (int i = 0; i < header_len; ++i) real_uart->putc(header[i]);
+    for (uint32_t y = 0; y < out_h; ++y) {
+        for (uint32_t x = 0; x < out_w; ++x) {
+            const auto c = fb.get_pixel(static_cast<int32_t>(x * scale),
+                                        static_cast<int32_t>(y * scale));
+            real_uart->putc(static_cast<char>(c.r));
+            real_uart->putc(static_cast<char>(c.g));
+            real_uart->putc(static_cast<char>(c.b));
+        }
+    }
+    static const char trailer[] = "\nUI_DUMP_END\n";
+    for (size_t i = 0; i < sizeof(trailer) - 1; ++i) real_uart->putc(trailer[i]);
+    real_uart->unlock_write();
     return 0;
 }
 static int cmd_help(const char*, kernel::hal::UARTDriverOps* uart) {

@@ -71,6 +71,15 @@ struct UARTDriverOps {
     // wedging inside getc_blocking while queued output (UI_DUMP_BEGIN,
     // command responses) sits in g_out_queue with nobody to drain it.
     virtual bool try_getc(char& /*out*/) { return false; }
+    // Acquire / release the same lock that guards puts() so a caller can
+    // write a multi-byte transaction (the UI dump's marker + binary
+    // payload + trailer) without other threads' puts callers (boot UI
+    // [virtio-gpu] flushes, hmi DHCP/ping logs, EC fault banners)
+    // interleaving into the stream. Default is a no-op for adapter
+    // classes that don't have a hardware lock to hold; platform UART
+    // drivers override with the same lock primitive their puts() uses.
+    virtual void lock_write()   {}
+    virtual void unlock_write() {}
 };
 
 struct IRQControllerOps {

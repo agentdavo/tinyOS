@@ -125,6 +125,13 @@ bool UARTDriver::try_getc(char& out) {
     out = static_cast<char>(read_uart_reg(0x00) & 0xFF);
     return true;
 }
+// Manual lock acquire/release that share the puts() lock. cli's
+// cmd_ui_dump uses these to write the entire dump (marker + binary
+// payload + trailer) atomically against other puts() callers, going
+// through this driver's putc() which doesn't CRLF-cook (so the binary
+// payload reaches the wire unmodified).
+void UARTDriver::lock_write()   { early_uart_lock_acquire(); }
+void UARTDriver::unlock_write() { early_uart_lock_release(); }
 
 // --- IRQController ---
 void IRQController::write_gicd_reg(uint32_t o, uint32_t v) { mmio_write32(GIC_DISTRIBUTOR_BASE + o, v); }

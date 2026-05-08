@@ -134,23 +134,22 @@ def read_until(fd, needle: bytes, timeout: float, poke=None) -> bytes:
     )
 
 def read_dump(fd, timeout: float):
-    # The arm64 PL011 driver's UARTDriver::puts (hal_qemu_arm64.cpp) cooks
-    # every '\n' (0x0A) on the wire to '\r\n' (0x0D 0x0A) so that human
-    # terminals get proper line breaks. The cli's chunk-queue drain
-    # (cli.cpp uart_io_entry::flush_line) routes every byte through that
-    # same puts, so the cooking applies to ui_dump's binary payload too.
+    # cli.cpp:cmd_ui_dump emits the marker + PPM header + binary RGB +
+    # trailer all via direct uart->putc with the platform UART's
+    # write-lock held for the duration. That bypasses the cli's queued
+    # output path (which would CRLF-cook every '\n' in the binary RGB
+    # and slow the per-byte rate to ~17 B/s under chunk-pool turnover).
     #
-    # The transform is deterministic (every 0x0A gains exactly one
-    # leading 0x0D — see the unconditional `if (*str == '\n') putc('\r')`
-    # branch) and therefore losslessly reversible: stripping one 0x0D
-    # immediately before every 0x0A on the wire restores the original
-    # byte stream. A pre-existing 0x0D 0x0A in the source became wire
-    # 0x0D 0x0D 0x0A and decodes correctly because we only strip one CR
-    # per LF.
+    # So everything from UI_DUMP_BEGIN onward is RAW — no '\n' cooking.
+    # The bytes that came BEFORE the marker (boot logs, prompts, the
+    # echo of "ui_dump 6", the '\n' submit_line emits) DID go through
+    # the cooked path, but we don't need to decode that prefix: the
+    # marker token is unique and matches in raw wire just as well.
     #
-    # Decode the wire buffer in place each iteration so both the
-    # UI_DUMP_BEGIN marker line and the binary RGB payload are framed
-    # in their original form before BEGIN_RE / payload_size are applied.
+    # Search the raw wire for `UI_DUMP_BEGIN \d+ \d+ \d+\n` directly,
+    # then read exactly payload_size raw bytes after the '\n'. No
+    # CRLF transform is applied to the payload, so 0x0D / 0x0A pixel
+    # bytes round-trip losslessly.
     wire = bytearray()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -163,14 +162,13 @@ def read_dump(fd, timeout: float):
             break
         _record(chunk)
         wire.extend(chunk)
-        decoded = wire.replace(b"\r\n", b"\n")
-        match = BEGIN_RE.search(decoded)
+        match = BEGIN_RE.search(wire)
         if not match:
             continue
         payload_size = int(match.group(3))
         payload_start = match.end()
         needed = payload_start + payload_size
-        while len(decoded) < needed and time.monotonic() < deadline:
+        while len(wire) < needed and time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             r, _, _ = select.select([fd], [], [], max(0.0, remaining))
             if not r:
@@ -180,14 +178,13 @@ def read_dump(fd, timeout: float):
                 break
             _record(more)
             wire.extend(more)
-            decoded = wire.replace(b"\r\n", b"\n")
-        if len(decoded) < needed:
+        if len(wire) < needed:
             raise RuntimeError(
                 f"short UI dump payload (page={ACTIVE_PAGE!r}, "
-                f"got {len(decoded) - payload_start}/{payload_size} payload bytes)"
+                f"got {len(wire) - payload_start}/{payload_size} payload bytes)"
             )
-        payload = bytes(decoded[payload_start:needed])
-        tail = bytes(decoded[needed:])
+        payload = bytes(wire[payload_start:needed])
+        tail = bytes(wire[needed:])
         return payload, tail
     decoded = bytes(wire).replace(b"\r\n", b"\n")
     raise RuntimeError(

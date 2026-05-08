@@ -213,6 +213,18 @@ bool UARTDriver::try_getc(char& out) {
     out = static_cast<char>(*uart_reg(NS16550_RBR));
     return true;
 }
+// Manual lock acquire/release sharing the same g_uart_lock that
+// UartLockGuard uses inside puts/hex. cli's cmd_ui_dump uses these to
+// write the binary UI dump atomically against other puts callers,
+// going through this driver's putc which doesn't CRLF-cook.
+void UARTDriver::lock_write()   {
+    while (g_uart_lock.test_and_set(std::memory_order_acquire)) {
+        asm volatile("" ::: "memory");
+    }
+}
+void UARTDriver::unlock_write() {
+    g_uart_lock.clear(std::memory_order_release);
+}
 
 // ----------------------------------------------------------------------------
 // DMA (software fallback for now; future hardware DMA can replace this behind
