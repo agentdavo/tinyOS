@@ -6,6 +6,9 @@
 *.lo
 *.o
 *.obj
+# Wavefront .obj 3D models live under devices/ and are intentionally
+# committed — the *.obj rule above is for MSVC build artifacts.
+!devices/*.obj
 
 # Precompiled Headers
 *.gch
