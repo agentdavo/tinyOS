@@ -8,6 +8,7 @@
 #include "cli.hpp"
 #include "miniOS.hpp"
 #include "util.hpp"
+#include "klog.hpp"
 #include "ethercat/master.hpp"
 #include "ethercat/cia402.hpp"
 #include "ethercat/frame.hpp"  // put_u16_le / put_u32_le / get_u32_le
@@ -1372,6 +1373,11 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
     }
     if (pos > 0) raw.write(row_buf, pos);
     raw.puts("\nUI_DUMP_END\n");
+    return 0;
+}
+static int cmd_klog(const char*, kernel::hal::UARTDriverOps* uart) {
+    if (!uart) return 1;
+    kernel::klog::dump(uart);
     return 0;
 }
 static int cmd_help(const char*, kernel::hal::UARTDriverOps* uart) {
@@ -4535,6 +4541,7 @@ CLI::CLI() {
     register_command("toolpod_assign", cmd_toolpod_assign, "toolpod_assign <pod> <station> <virtual_tool> — remap virtual tool onto a physical station");
     register_command("ui_page", cmd_ui_page, "ui_page <id> — switch the active TSV UI page");
     register_command("ui_dump", cmd_ui_dump, "ui_dump [scale] — dump the current framebuffer as a downscaled PPM stream");
+    register_command("klog", cmd_klog, "Dump the in-RAM kernel log ring (recent ~8 KB of UART output)");
     register_command("save_cfg", cmd_save_cfg, "Dump current operator-set state as replayable CLI commands");
     register_command("meminfo", cmd_meminfo, "Memory pool usage + per-thread stack watermarks");
     register_command("trace", cmd_trace, "Dump the kernel trace buffer");

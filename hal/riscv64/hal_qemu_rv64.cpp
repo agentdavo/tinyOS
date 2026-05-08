@@ -27,6 +27,7 @@
 #include "hal_qemu_rv64.hpp"
 #include "../../miniOS.hpp"
 #include "../../kernel/main.hpp"
+#include "../../klog.hpp"
 #include "rt_wait.hpp"
 #include "fdt.hpp"
 #include "hal/shared/fdt_scan.hpp"
@@ -184,10 +185,12 @@ void UARTDriver::puts(const char* str) {
     // lock-free for callers that have already taken the lock (or genuinely
     // want raw single-character output).
     UartLockGuard g;
+    const char* const start = str;
     while (*str) {
         if (*str == '\n') this->putc('\r');
         this->putc(*str++);
     }
+    kernel::klog::record(start, static_cast<size_t>(str - start));
 }
 void UARTDriver::uart_put_uint64_hex(uint64_t value) {
     static constexpr char hex[] = "0123456789ABCDEF";

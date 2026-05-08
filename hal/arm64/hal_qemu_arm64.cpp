@@ -7,6 +7,7 @@
 #include "hal_qemu_arm64.hpp"
 #include "miniOS.hpp"
 #include "util.hpp"
+#include "klog.hpp"
 #include "rt_wait.hpp"
 #include "hal/shared/fdt_scan.hpp"
 #include <cstring>
@@ -87,10 +88,15 @@ void UARTDriver::puts(const char* str) {
     // mixing them unlocked shreds any multi-caller log line (boot + [ui] +
     // [sched] + [virtio-gpu] + [hmi] all hit this path from different cores).
     early_uart_lock_acquire();
+    const char* const start = str;
     while (*str) {
         if (*str == '\n') this->putc('\r');
         this->putc(*str++);
     }
+    // Mirror what we just wrote to the klog ring while still holding the
+    // lock so the ring's content order matches the wire order. record()
+    // is ~n byte-copies into a power-of-2 ring; cheap, in-RAM, no MMIO.
+    kernel::klog::record(start, static_cast<size_t>(str - start));
     early_uart_lock_release();
 }
 void UARTDriver::uart_put_uint64_hex(uint64_t value) {
