@@ -1272,7 +1272,15 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
         return 1;
     }
 
-    kernel::ui::render_ui_once();
+    // No render_ui_once() here. The boot UI thread (splash.cpp's
+    // run_ui_main_loop) refreshes the framebuffer at 10 Hz, and the
+    // host's typical sequence of `ui_page <id>; ui_dump 6` already
+    // forces a render in cmd_ui_page right before this command runs.
+    // A second render here was wasted work that, under EC-fault
+    // concurrent load, became slow enough to nearly time out the
+    // screenshot capture (172 KB at ~17 B/s before the cli queue
+    // bypass landed). Dump the framebuffer as-is; it's at most
+    // ~100 ms stale, well under any operator-perceptible threshold.
 
     char header[128];
     const int header_len = kernel::util::k_snprintf(
