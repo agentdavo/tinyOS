@@ -103,7 +103,24 @@ def read_until(fd, needle: bytes, timeout: float, poke=None) -> bytes:
     raise RuntimeError(f"timeout waiting for {needle!r}")
 
 def read_dump(fd, timeout: float):
-    buf = bytearray()
+    # The arm64 PL011 driver's UARTDriver::puts (hal_qemu_arm64.cpp) cooks
+    # every '\n' (0x0A) on the wire to '\r\n' (0x0D 0x0A) so that human
+    # terminals get proper line breaks. The cli's chunk-queue drain
+    # (cli.cpp uart_io_entry::flush_line) routes every byte through that
+    # same puts, so the cooking applies to ui_dump's binary payload too.
+    #
+    # The transform is deterministic (every 0x0A gains exactly one
+    # leading 0x0D — see the unconditional `if (*str == '\n') putc('\r')`
+    # branch) and therefore losslessly reversible: stripping one 0x0D
+    # immediately before every 0x0A on the wire restores the original
+    # byte stream. A pre-existing 0x0D 0x0A in the source became wire
+    # 0x0D 0x0D 0x0A and decodes correctly because we only strip one CR
+    # per LF.
+    #
+    # Decode the wire buffer in place each iteration so both the
+    # UI_DUMP_BEGIN marker line and the binary RGB payload are framed
+    # in their original form before BEGIN_RE / payload_size are applied.
+    wire = bytearray()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         remaining = deadline - time.monotonic()
@@ -113,14 +130,15 @@ def read_dump(fd, timeout: float):
         chunk = os.read(fd, 65536)
         if not chunk:
             break
-        buf.extend(chunk)
-        match = BEGIN_RE.search(buf)
+        wire.extend(chunk)
+        decoded = wire.replace(b"\r\n", b"\n")
+        match = BEGIN_RE.search(decoded)
         if not match:
             continue
         payload_size = int(match.group(3))
         payload_start = match.end()
         needed = payload_start + payload_size
-        while len(buf) < needed and time.monotonic() < deadline:
+        while len(decoded) < needed and time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             r, _, _ = select.select([fd], [], [], max(0.0, remaining))
             if not r:
@@ -128,11 +146,12 @@ def read_dump(fd, timeout: float):
             more = os.read(fd, 65536)
             if not more:
                 break
-            buf.extend(more)
-        if len(buf) < needed:
+            wire.extend(more)
+            decoded = wire.replace(b"\r\n", b"\n")
+        if len(decoded) < needed:
             raise RuntimeError("short UI dump payload")
-        payload = bytes(buf[payload_start:needed])
-        tail = bytes(buf[needed:])
+        payload = bytes(decoded[payload_start:needed])
+        tail = bytes(decoded[needed:])
         return payload, tail
     raise RuntimeError("timeout waiting for UI_DUMP_BEGIN")
 
