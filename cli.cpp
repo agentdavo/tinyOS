@@ -1288,11 +1288,14 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
     // run_ui_main_loop) refreshes the framebuffer at 10 Hz, and the
     // host's typical sequence of `ui_page <id>; ui_dump 6` already
     // forces a render in cmd_ui_page right before this command runs.
-    // A second render here was wasted work that, under EC-fault
-    // concurrent load, became slow enough to nearly time out the
-    // screenshot capture (172 KB at ~17 B/s before the cli queue
-    // bypass landed). Dump the framebuffer as-is; it's at most
-    // ~100 ms stale, well under any operator-perceptible threshold.
+    // BUT — leaving this out exposed a real race: in CI, the dashboard
+    // sometimes captured before the boot UI thread had drawn the
+    // active page on top of the boot notice / fallback. Restore the
+    // explicit render here so the dump always reflects a freshly-
+    // rendered active page. The cost is one extra render call per
+    // dump (10s of ms with the new direct-pixel pipeline); the host
+    // capture is still well under any realistic budget.
+    kernel::ui::render_ui_once();
 
     char header[128];
     const int header_len = kernel::util::k_snprintf(

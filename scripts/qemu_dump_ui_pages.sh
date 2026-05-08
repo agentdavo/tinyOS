@@ -290,18 +290,31 @@ try:
         # Cheap "is this image trivially broken" check before we
         # spend ffmpeg cycles on it. The previous CI gate only
         # verified that *some* PNG existed for each page — a real
-        # regression like "all dashboards render solid black" would
-        # have committed cleanly because the file was the right size
-        # and the right format.
+        # regression like "all dashboards render solid black" or
+        # "TSV NOT_LOADED fallback rendered for every page" would
+        # have committed cleanly because the file is still the
+        # right size and format.
         #
         # Parse the PPM header to find the binary RGB region, then
-        # count the dominant color's frequency. If >97% of pixels
-        # are the same color the image is almost certainly blank /
-        # error / uninitialised framebuffer; flag and fail. The
-        # threshold is loose because a few pages legitimately have
-        # large solid backgrounds (boot-notice splash, alarms with
-        # nothing to ack), but those still have the title bar /
-        # navbar / status line breaking up the uniformity.
+        # build a histogram of colors quantised to 4 bits per channel
+        # (so dumps don't allocate a slot per 24-bit color).
+        #
+        # Failure requires BOTH conditions:
+        #   - >99% of pixels share the dominant color (almost
+        #     entirely one color), AND
+        #   - <5 distinct quantised colors (essentially monochrome).
+        #
+        # Either alone has too many false positives. The CNC
+        # operator surfaces routinely have a single solid background
+        # color covering >97% of the panel at scale=6 (the dashboard,
+        # the ec page in steady state, etc — they have widgets but
+        # the widgets are sparse small numerical readouts). However,
+        # a real surface always has at least 5–10 distinct colors
+        # (background, panel borders, title text, value text, anti-
+        # aliased edges) — so the AND of "almost all one color" and
+        # "almost monochrome" reliably identifies the failure modes
+        # we care about (uninitialised fb, TSV NOT_LOADED fallback)
+        # without flagging legitimate sparse pages.
         try:
             hdr_end = 0
             line_count = 0
@@ -318,8 +331,6 @@ try:
             rgb = payload[hdr_end:]
             if len(rgb) % 3 != 0:
                 raise ValueError(f"RGB length {len(rgb)} not divisible by 3")
-            # Histogram of 16-bit-quantised colors so we don't allocate
-            # one slot per 24-bit color (memory-blow on huge dumps).
             quant = {}
             for off in range(0, len(rgb), 3):
                 key = (rgb[off] >> 4, rgb[off+1] >> 4, rgb[off+2] >> 4)
@@ -333,13 +344,13 @@ try:
                 f"dominant={top_frac:.1%}",
                 file=sys.stderr, flush=True,
             )
-            if top_frac > 0.97:
+            if top_frac > 0.99 and distinct < 5:
                 raise RuntimeError(
-                    f"{page}.ppm looks blank: {top_frac:.1%} of pixels "
-                    f"share the dominant color (only {distinct} distinct "
-                    f"4-bit-quantised colors across {total} pixels). "
-                    f"Likely render regression — uninitialised fb, all-"
-                    f"black backdrop, or page failed to draw any widgets."
+                    f"{page}.ppm looks blank: {top_frac:.1%} dominant "
+                    f"AND only {distinct} distinct 4-bit-quantised "
+                    f"colors across {total} pixels. Likely render "
+                    f"regression — uninitialised fb, TSV NOT_LOADED "
+                    f"fallback, or page failed to draw any widgets."
                 )
         except RuntimeError:
             raise
