@@ -546,10 +546,35 @@ void init_vfs() {
 void load_runtime_tsvs() {
     // UI template lives in VFS so either the embedded default or an SD-card
     // override can provide it.
+    auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr;
     {
         const char* ui_data = nullptr; size_t ui_len = 0;
-        if (kernel::vfs::lookup("system/ui/embedded_ui.tsv", ui_data, ui_len) && ui_len > 0) {
-            ui_builder::load_tsv(ui_data, ui_len);
+        const bool found = kernel::vfs::lookup("system/ui/embedded_ui.tsv", ui_data, ui_len);
+        if (uart) {
+            char buf[160];
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "[ui] tsv lookup: %s len=%lu\n",
+                found ? "found" : "MISSING",
+                static_cast<unsigned long>(ui_len));
+            uart->puts(buf);
+        }
+        if (found && ui_len > 0) {
+            const bool ok = ui_builder::load_tsv(ui_data, ui_len);
+            if (uart) {
+                char buf[160];
+                if (ok) {
+                    kernel::util::k_snprintf(buf, sizeof(buf),
+                        "[ui] tsv loaded: root=%p\n",
+                        static_cast<const void*>(ui_builder::root_widget()));
+                } else {
+                    const char* err = ui_builder::last_error();
+                    kernel::util::k_snprintf(buf, sizeof(buf),
+                        "[ui] tsv load FAILED at line %u: %s\n",
+                        static_cast<unsigned>(ui_builder::last_error_line()),
+                        err ? err : "(no error string)");
+                }
+                uart->puts(buf);
+            }
         }
     }
     const uintptr_t macros_start = reinterpret_cast<uintptr_t>(&_binary_embedded_macros_tsv_start);
