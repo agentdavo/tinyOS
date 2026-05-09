@@ -39,6 +39,12 @@ struct ParsedLine {
     bool home = false;
     bool tool_length_enable = false;
     bool tool_length_cancel = false;
+    // G43.4 / G43.5 TCP enable; G49.1 TCP cancel. Routed through the
+    // Runtime::set_tcp_active path so the executor mirrors the operator
+    // CLI verb's effect — keeps the snapshot and the interpreter modal
+    // state coherent regardless of which path flipped it.
+    bool tcp_enable = false;
+    bool tcp_cancel = false;
     long tool_word = -1;
     long h_word = -1;
     long m_code = -1;
@@ -315,6 +321,11 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
             state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
             state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
         }
+        // G43.4 / G49.1 — TCP modal flag mirrors the operator-side toggle so
+        // a dry-scan restart leaves the channel in the same TCP state the
+        // program reached, regardless of which line we resumed from.
+        if (parsed.tcp_cancel) state.tcp_active = false;
+        if (parsed.tcp_enable) state.tcp_active = true;
         // M6 in the source program would physically change the tool, but on
         // a dry scan we only promote the pending index to active so the
         // reconstructed state reflects "this is the tool the program expects".
@@ -478,7 +489,11 @@ static motion::HomingPlan default_homing_plan() {
     return plan;
 }
 
-static void parse_g_word(int code, ParsedLine& parsed) {
+// `frac` is the first decimal digit of the G-code (43.4 → frac=4, 49.1 →
+// frac=1). Most G-codes are integer (frac == 0) and the existing dispatch
+// runs unchanged. Decimal cases (G43.4 / G49.1) route into separate
+// ParsedLine flags so executor logic stays a flat set of if-statements.
+static void parse_g_word(int code, int frac, ParsedLine& parsed) {
     if (code == 0) {
         parsed.set_motion_mode = true;
         parsed.motion_mode = MotionMode::Rapid;
@@ -511,9 +526,16 @@ static void parse_g_word(int code, ParsedLine& parsed) {
     } else if (code == 28) {
         parsed.home = true;
     } else if (code == 43) {
-        parsed.tool_length_enable = true;
+        // G43          — classic tool-length compensation enable.
+        // G43.4 / G43.5 — TCP enable. The active orientation lives on
+        //                 cnc::interp::Runtime::set_tcp_active(channel, true);
+        //                 the rotary axes are read by apply_tcp_correction.
+        if (frac == 4 || frac == 5) parsed.tcp_enable = true;
+        else                        parsed.tool_length_enable = true;
     } else if (code == 49) {
-        parsed.tool_length_cancel = true;
+        // G49   — tool-length comp cancel. G49.1 also cancels TCP.
+        if (frac == 1) parsed.tcp_cancel = true;
+        else           parsed.tool_length_cancel = true;
     } else if (code == 53) {
         parsed.machine_coordinates = true;
     } else if (code >= 54 && code <= 59) {
@@ -539,7 +561,17 @@ static bool parse_line(const char* s, ParsedLine& parsed) {
         if (word == 'N') {
             (void)parse_float_token(s, i);
         } else if (word == 'G') {
-            parse_g_word(static_cast<int>(parse_float_token(s, i)), parsed);
+            // Decimal G-code dispatch (G43.4 / G49.1 / G33.1 / ...). The
+            // integer part picks the major case in parse_g_word; the first
+            // decimal digit selects sub-case. Round-half-up so 0.45 reads as
+            // 4 — anything finer than .X is below the spec we ship.
+            const float gv = parse_float_token(s, i);
+            const int   gi = static_cast<int>(gv);
+            const float gf = gv - static_cast<float>(gi);
+            int frac = static_cast<int>(gf * 10.0f + 0.5f);
+            if (frac >= 10) frac = 9;
+            if (frac < 0)   frac = 0;
+            parse_g_word(gi, frac, parsed);
         } else if (word == 'M') {
             parsed.m_code = static_cast<long>(parse_float_token(s, i));
         } else if (word == 'F') {
@@ -1127,6 +1159,12 @@ bool Runtime::tick_channel(size_t channel) noexcept {
         state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
         state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
     }
+    // G43.4 / G43.5 enable TCP; G49.1 cancels. set_tcp_active here ensures
+    // operator API + interpreter modal flag stay coherent — the operator
+    // could have flipped TCP via the `tcp` CLI verb mid-program; G43.4 in
+    // the part program then re-asserts the same flag with no surprise.
+    if (parsed.tcp_cancel) (void)set_tcp_active(channel, false);
+    if (parsed.tcp_enable) (void)set_tcp_active(channel, true);
 
     if (parsed.home) {
         if (!execute_home(state, *this, channel, parsed)) {
