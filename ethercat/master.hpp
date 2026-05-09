@@ -85,6 +85,24 @@ public:
                                   uint32_t timeout_us,
                                   uint32_t* abort_code = nullptr) noexcept;
 
+    // Non-blocking upload pair. `upload_sdo_start` returns immediately:
+    // true if the request was accepted (one upload in flight per master,
+    // same single-slot constraint as `upload_sdo`), false if another
+    // transfer is already pending. The caller then polls
+    // `upload_sdo_poll` from any thread:
+    //   1  = transfer complete (out / out_bytes filled)
+    //  -1  = transfer failed (timeout, SDO abort, malformed reply)
+    //   0  = still pending — caller is free to do other work
+    // Used by callers that want to fire a probe and not block the calling
+    // core's scheduler — e.g. boot-time bus_config can issue an SDO read
+    // and continue advancing the ESM walker on subsequent cycles instead
+    // of stalling the whole bring-up on a single cycle's worth of
+    // mailbox round-trip.
+    [[nodiscard]] bool upload_sdo_start(uint16_t station_addr, uint16_t index, uint8_t sub,
+                                        uint32_t timeout_us) noexcept;
+    [[nodiscard]] int  upload_sdo_poll(uint8_t out[4], uint8_t* out_bytes,
+                                        uint32_t* abort_code = nullptr) noexcept;
+
     // Task 1.2 follow-up — segmented SDO upload. Covers responses
     // larger than the 4-byte expedited window: 0x1008 device name,
     // 0x100A firmware version, 0x10F3:6..55 diag-history entries, etc.

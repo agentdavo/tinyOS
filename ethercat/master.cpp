@@ -555,9 +555,14 @@ bool Master::upload_sdo(uint16_t station_addr, uint16_t index, uint8_t sub,
     upload_state_.store(UploadState::Pending, std::memory_order_release);
 
     // Spin-wait for the cycle loop to flip the state. Yield between polls
-    // so the scheduler can actually run the ec_a thread (caller is typically
-    // the CLI thread on a different core, but matching-core callers would
-    // starve without a yield).
+    // so the scheduler can actually run the ec_a thread; yield to the
+    // CALLING core, not core 0 — `yield(0)` always woke core 0's
+    // scheduler regardless of who called us, starving same-core callers
+    // when this code ran from a non-zero CLI thread or the bus_config
+    // helper migrated cores. Also bail when the deadline elapses so a
+    // wedged response can't leave the caller looping forever.
+    const uint32_t caller_core = kernel::g_platform
+        ? kernel::g_platform->get_core_id() : 0;
     for (;;) {
         const auto s = upload_state_.load(std::memory_order_acquire);
         if (s == UploadState::Done) {
@@ -577,10 +582,80 @@ bool Master::upload_sdo(uint16_t station_addr, uint16_t index, uint8_t sub,
             upload_busy_.store(false, std::memory_order_release);
             return false;
         }
-        // Yield between polls; the master's cycle loop runs on another core
-        // (core 2 / 3). kernel::Scheduler::yield is the cooperative hook.
-        if (kernel::g_scheduler_ptr) kernel::g_scheduler_ptr->yield(0);
+        if (now_us() > upload_deadline_us_) {
+            *out_bytes = 0;
+            if (abort_code) *abort_code = 0;
+            upload_segment_request_inflight_ = false;
+            upload_state_.store(UploadState::Idle, std::memory_order_release);
+            upload_busy_.store(false, std::memory_order_release);
+            return false;
+        }
+        if (kernel::g_scheduler_ptr) kernel::g_scheduler_ptr->yield(caller_core);
     }
+}
+
+bool Master::upload_sdo_start(uint16_t station_addr, uint16_t index, uint8_t sub,
+                              uint32_t timeout_us) noexcept {
+    bool expected = false;
+    if (!upload_busy_.compare_exchange_strong(expected, true,
+                                              std::memory_order_acq_rel)) {
+        return false; // another upload in flight
+    }
+    extern size_t build_sdo_upload_request(uint8_t*, size_t,
+                                           const uint8_t[6], const uint8_t[6],
+                                           uint16_t, uint16_t, uint8_t,
+                                           uint8_t&);
+    uint8_t frame[128];
+    const size_t n = build_sdo_upload_request(frame, sizeof(frame),
+                                              BROADCAST_MAC, SRC_MAC,
+                                              station_addr, index, sub,
+                                              sdo_counter_);
+    if (!n || !send_frame(frame, n)) {
+        upload_busy_.store(false, std::memory_order_release);
+        return false;
+    }
+    stats_.sdo_tx.fetch_add(1, std::memory_order_relaxed);
+    upload_station_ = station_addr;
+    upload_index_   = index;
+    upload_sub_     = sub;
+    upload_result_bytes_ = 0;
+    upload_abort_code_   = 0;
+    upload_segment_request_inflight_ = false;
+    upload_deadline_us_  = now_us() + timeout_us;
+    upload_state_.store(UploadState::Pending, std::memory_order_release);
+    return true;
+}
+
+int Master::upload_sdo_poll(uint8_t out[4], uint8_t* out_bytes,
+                            uint32_t* abort_code) noexcept {
+    if (!out || !out_bytes) return -1;
+    const auto s = upload_state_.load(std::memory_order_acquire);
+    if (s == UploadState::Done) {
+        *out_bytes = upload_result_bytes_;
+        std::memcpy(out, upload_result_, 4);
+        if (abort_code) *abort_code = 0;
+        upload_segment_request_inflight_ = false;
+        upload_state_.store(UploadState::Idle, std::memory_order_release);
+        upload_busy_.store(false, std::memory_order_release);
+        return 1;
+    }
+    if (s == UploadState::Error) {
+        *out_bytes = 0;
+        if (abort_code) *abort_code = upload_abort_code_;
+        upload_segment_request_inflight_ = false;
+        upload_state_.store(UploadState::Idle, std::memory_order_release);
+        upload_busy_.store(false, std::memory_order_release);
+        return -1;
+    }
+    if (now_us() > upload_deadline_us_) {
+        *out_bytes = 0;
+        if (abort_code) *abort_code = 0;
+        upload_segment_request_inflight_ = false;
+        upload_state_.store(UploadState::Idle, std::memory_order_release);
+        upload_busy_.store(false, std::memory_order_release);
+        return -1;
+    }
+    return 0; // still pending
 }
 
 size_t Master::upload_sdo_segmented(uint16_t station_addr,
