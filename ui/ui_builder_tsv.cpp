@@ -3580,8 +3580,7 @@ private:
         alignas(machine::MachineModel) static unsigned char storage[sizeof(machine::MachineModel)];
         static bool constructed = false;
         if (!constructed) {
-            auto* model = new (storage) machine::MachineModel{};
-            machine::create_machine_model(*model);
+            new (storage) machine::MachineModel{};
             constructed = true;
         }
         return *reinterpret_cast<machine::MachineModel*>(storage);
@@ -3704,9 +3703,14 @@ private:
             sim.loaded = sim.chain.axis_count != 0;
         }
         sim.type = desired;
-        // Apply OBJ-file meshes from the TSV's obj_file column. No-op unless
-        // the machine editor has shipped OBJs embedded via the registry.
-        (void)machine::apply_axis_obj_meshes(machine_model(), sim.chain);
+        // Refresh per-axis meshes for the freshly-loaded chain. Each axis
+        // gets either an OBJ/STL blob from the registry (if `obj_file`
+        // resolves) or a name-keyed primitive fallback so every axis
+        // renders even when the kernel ships without authored meshes.
+        // Free anything from the previous chain first to avoid leaks on
+        // template switches.
+        machine::destroy_machine_model(machine_model());
+        (void)machine::populate_axis_meshes(machine_model(), sim.chain);
     }
 
     static float motion_to_scene_units(const kinematic::AxisConfig& axis_cfg, int32_t raw_pos) {
@@ -3740,21 +3744,12 @@ private:
     static const machine::MeshPart* mesh_for_axis(const machine::MachineModel& model,
                                                   const kinematic::AxisConfig& axis,
                                                   size_t axis_idx) {
-        // Imported OBJ (machine-editor-authored) takes precedence over the
-        // legacy programmatic slot whenever apply_axis_obj_meshes populated a
-        // mesh for this axis index.
+        (void)axis;
         if (axis_idx < kinematic::MAX_AXES &&
             model.per_axis[axis_idx].vertex_count > 0 &&
             model.per_axis[axis_idx].vertices != nullptr) {
             return &model.per_axis[axis_idx];
         }
-        if (strcmp(axis.name, "base") == 0) return &model.base;
-        if (strcmp(axis.name, "X") == 0) return &model.x_axis;
-        if (strcmp(axis.name, "Y") == 0) return &model.y_axis;
-        if (strcmp(axis.name, "Z") == 0) return &model.z_axis;
-        if (strcmp(axis.name, "A") == 0 || strcmp(axis.name, "B") == 0) return &model.pivot;
-        if (strcmp(axis.name, "C") == 0) return &model.table;
-        if (strcmp(axis.name, "spindle") == 0) return &model.spindle;
         return nullptr;
     }
 
@@ -3778,8 +3773,7 @@ private:
     }
 
     void render_toolpods(Framebuffer& fb, gles1::Renderer& renderer) {
-        auto& model = machine_model();
-        const auto* marker = &model.pivot;
+        const auto* marker = &machine::marker_mesh();
         for (size_t pod_idx = 0; pod_idx < ::machine::toolpods::g_service.pod_count(); ++pod_idx) {
             const auto* pod = ::machine::toolpods::g_service.pod(pod_idx);
             if (!pod) continue;

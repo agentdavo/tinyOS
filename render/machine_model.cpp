@@ -7,6 +7,7 @@
 #include "render/stl_importer.hpp"
 
 #include <cstring>
+#include <new>
 
 namespace render::machine {
 
@@ -126,45 +127,74 @@ void create_cylinder(MeshPart& part, float radius, float height, int segments, g
     }
 }
 
-void create_machine_model(MachineModel& model) {
-    create_cube(model.base, 2.0f, 0.3f, 1.5f, {60, 60, 70, 255});
+namespace {
 
-    create_cube(model.x_axis, 1.2f, 0.15f, 0.3f, {180, 80, 60, 255});
-    model.x_axis.offset_x = 0.0f;
-    model.x_axis.offset_y = 0.3f;
-    model.x_axis.offset_z = 0.0f;
+// Name-keyed primitive defaults so a chain whose `obj_file` references
+// don't resolve still renders something recognisable. Dimensions and
+// colours mirror the historical programmatic slots (X/Y/Z servo blocks,
+// spindle cylinder, A/B/C rotary pivots / tables) so visual parity is
+// preserved when the kernel ships without OBJ assets.
+struct AxisPrimitiveSpec {
+    const char* axis_name;       // Match against AxisConfig::name.
+    bool is_cylinder;
+    float a, b, c;               // Cube: w/h/d. Cylinder: radius/height/(unused).
+    int segments;                // Cylinder only.
+    gles1::Color4u8 color;
+    float offset_x, offset_y, offset_z;
+};
 
-    create_cube(model.y_axis, 0.3f, 0.15f, 1.0f, {80, 160, 80, 255});
-    model.y_axis.offset_x = 0.0f;
-    model.y_axis.offset_y = 0.3f;
-    model.y_axis.offset_z = 0.0f;
+constexpr AxisPrimitiveSpec kAxisPrimitives[] = {
+    {"base",    false, 2.0f,  0.3f,  1.5f,  0,  {60, 60, 70, 255},     0.0f, 0.0f,  0.0f},
+    {"X",       false, 1.2f,  0.15f, 0.3f,  0,  {180, 80, 60, 255},    0.0f, 0.3f,  0.0f},
+    {"Y",       false, 0.3f,  0.15f, 1.0f,  0,  {80, 160, 80, 255},    0.0f, 0.3f,  0.0f},
+    {"Z",       false, 0.25f, 0.6f,  0.25f, 0,  {160, 80, 160, 255},   0.0f, 0.5f,  0.0f},
+    {"spindle", true,  0.12f, 0.3f,  0.0f,  16, {100, 100, 110, 255},  0.0f, 0.8f,  0.0f},
+    {"C",       false, 0.8f,  0.05f, 0.6f,  0,  {90, 90, 100, 255},    0.0f, 0.4f,  0.0f},
+    {"A",       false, 0.28f, 0.28f, 0.28f, 0,  {196, 148, 64, 255},   0.0f, 0.52f, 0.0f},
+    {"B",       false, 0.28f, 0.28f, 0.28f, 0,  {196, 148, 64, 255},   0.0f, 0.52f, 0.0f},
+};
 
-    create_cube(model.z_axis, 0.25f, 0.6f, 0.25f, {160, 80, 160, 255});
-    model.z_axis.offset_x = 0.0f;
-    model.z_axis.offset_y = 0.5f;
-    model.z_axis.offset_z = 0.0f;
+// Generic fallback for any axis whose name isn't in the spec table.
+constexpr gles1::Color4u8 kGenericFallbackColor = {148, 163, 184, 255};
 
-    create_cylinder(model.spindle, 0.12f, 0.3f, 16, {100, 100, 110, 255});
-    model.spindle.offset_x = 0.0f;
-    model.spindle.offset_y = 0.8f;
-    model.spindle.offset_z = 0.0f;
-
-    create_cube(model.table, 0.8f, 0.05f, 0.6f, {90, 90, 100, 255});
-    model.table.offset_x = 0.0f;
-    model.table.offset_y = 0.4f;
-    model.table.offset_z = 0.0f;
-
-    create_cube(model.pivot, 0.28f, 0.28f, 0.28f, {196, 148, 64, 255});
-    model.pivot.offset_x = 0.0f;
-    model.pivot.offset_y = 0.52f;
-    model.pivot.offset_z = 0.0f;
+bool axis_name_eq(const char* a, const char* b) {
+    if (!a || !b) return false;
+    while (*a && *b) {
+        if (*a != *b) return false;
+        ++a; ++b;
+    }
+    return *a == *b;
 }
+
+bool generate_primitive_for_axis(MeshPart& part, const kinematic::AxisConfig& axis) {
+    // "none" mesh hint (used by base / dress slots) intentionally renders
+    // nothing — caller leaves the slot empty.
+    if (axis_name_eq(axis.mesh, "none")) return false;
+    for (const auto& spec : kAxisPrimitives) {
+        if (!axis_name_eq(axis.name, spec.axis_name)) continue;
+        if (spec.is_cylinder) {
+            create_cylinder(part, spec.a, spec.b, spec.segments, spec.color);
+        } else {
+            create_cube(part, spec.a, spec.b, spec.c, spec.color);
+        }
+        part.offset_x = spec.offset_x;
+        part.offset_y = spec.offset_y;
+        part.offset_z = spec.offset_z;
+        return true;
+    }
+    // Generic small cube for unknown axis names. Keeps the chain renderable
+    // while making it obvious that the spec table needs an entry.
+    create_cube(part, 0.3f, 0.15f, 0.3f, kGenericFallbackColor);
+    return true;
+}
+
+} // namespace
 
 namespace {
 
-// Default colour for imported meshes when the TSV doesn't pick one via the
-// programmatic `mesh=` slot. Used by `apply_axis_obj_meshes` so the wireframe
-// still has a sensible tint for the GLES1 renderer's flat-colour path.
+// Default colour for imported meshes; populate_axis_meshes paints every
+// vertex with this so the flat-colour render path has a sensible tint
+// regardless of what the OBJ/STL file declares.
 constexpr gles1::Color4u8 kImportedMeshColor = {148, 163, 184, 255};
 
 // Extension sniff on the source filename so the same buffer pool can feed
@@ -289,30 +319,52 @@ bool import_mesh_into_meshpart(MeshPart& part, const char* text, size_t text_len
 
 } // namespace
 
-size_t apply_axis_obj_meshes(MachineModel& model, const kinematic::KinematicChain& chain) {
-    size_t imported = 0;
+size_t populate_axis_meshes(MachineModel& model, const kinematic::KinematicChain& chain) {
+    size_t populated = 0;
     for (size_t i = 0; i < chain.axis_count && i < kinematic::MAX_AXES; ++i) {
         const auto& axis = chain.axes[i];
-        if (axis.obj_file[0] == '\0') continue;
-        const char* data = nullptr;
-        size_t size = 0;
-        if (!obj::lookup(axis.obj_file, data, size)) continue;
-        const MeshFormat fmt = format_for_name(axis.obj_file);
-        if (import_mesh_into_meshpart(model.per_axis[i], data, size, fmt,
-                                      kImportedMeshColor)) {
-            ++imported;
+        // OBJ / STL takes precedence — the machine editor or VFS authored
+        // mesh wins over the built-in primitive. apply once per chain
+        // reload; the destroy step happens in destroy_machine_model.
+        bool ok = false;
+        if (axis.obj_file[0] != '\0') {
+            const char* data = nullptr;
+            size_t size = 0;
+            if (obj::lookup(axis.obj_file, data, size)) {
+                const MeshFormat fmt = format_for_name(axis.obj_file);
+                ok = import_mesh_into_meshpart(model.per_axis[i], data, size, fmt,
+                                               kImportedMeshColor);
+            }
         }
+        if (!ok) {
+            ok = generate_primitive_for_axis(model.per_axis[i], axis);
+        }
+        if (ok) ++populated;
     }
-    return imported;
+    return populated;
+}
+
+const MeshPart& marker_mesh() {
+    alignas(MeshPart) static unsigned char storage[sizeof(MeshPart)];
+    static bool constructed = false;
+    if (!constructed) {
+        auto* m = new (storage) MeshPart{};
+        // 0.28-cube — same dimensions as the historical pivot slot, so
+        // overlay code (toolpod / probe markers) reads the same on screen.
+        create_cube(*m, 0.28f, 0.28f, 0.28f, {196, 148, 64, 255});
+        constructed = true;
+    }
+    return *reinterpret_cast<const MeshPart*>(storage);
 }
 
 void destroy_machine_model(MachineModel& model) {
-    // Legacy programmatic slots still allocate vertices and indices as two
-    // separate blocks (create_cube / create_cylinder do that explicitly).
-    // OBJ-imported per_axis slots use the new arena layout where indices
-    // live in the same allocation as vertices — freeing only `vertices`
-    // reclaims both. We can tell them apart by whether `indices` lies
-    // inside the vertices block: if so, only delete vertices.
+    // Two MeshPart memory layouts coexist:
+    //  - create_cube / create_cylinder allocate vertices and indices as two
+    //    separate ::operator new blocks (the primitive path).
+    //  - import_mesh_into_meshpart bundles them into one block, vertices
+    //    first followed by indices contiguously (the OBJ/STL arena path).
+    // Detect by checking whether `indices` lies inside the vertices block;
+    // if so, freeing vertices reclaims both. If not, free each separately.
     auto free_part = [](MeshPart& p) {
         if (!p.vertices) return;
         const auto* verts_end = reinterpret_cast<const uint8_t*>(
@@ -326,13 +378,6 @@ void destroy_machine_model(MachineModel& model) {
         p = MeshPart{};
     };
 
-    free_part(model.base);
-    free_part(model.x_axis);
-    free_part(model.y_axis);
-    free_part(model.z_axis);
-    free_part(model.spindle);
-    free_part(model.table);
-    free_part(model.pivot);
     for (size_t i = 0; i < kinematic::MAX_AXES; ++i) free_part(model.per_axis[i]);
 
     model = {};

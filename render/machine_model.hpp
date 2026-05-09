@@ -22,36 +22,33 @@ struct MeshPart {
     float offset_z = 0.0f;
 };
 
-// MachineModel holds both the legacy programmatic slots (base/x_axis/…) AND
-// a per-axis slot indexed by the axis's position in the KinematicChain. When
-// a TSV axis specifies `obj_file=<name>`, that name is looked up in the
-// render::obj registry, parsed by ObjImporter, and stored in per_axis[i].
-// The GLES1 render path (draw_mesh_wireframe / solid) consumes both kinds
-// identically — MeshPart carries a plain {vertices,indices} pair.
+// MachineModel holds one MeshPart per kinematic axis. populate_axis_meshes
+// walks the chain and fills each slot, preferring an OBJ/STL blob from the
+// render::obj registry when the axis's `obj_file` resolves and falling back
+// to a name-keyed primitive (cube / cylinder) otherwise. The GLES1 render
+// path (draw_mesh_wireframe / solid) consumes MeshPart's plain
+// {vertices, indices} pair regardless of source.
 struct MachineModel {
-    MeshPart base;
-    MeshPart x_axis;
-    MeshPart y_axis;
-    MeshPart z_axis;
-    MeshPart spindle;
-    MeshPart table;
-    MeshPart pivot;
     MeshPart per_axis[kinematic::MAX_AXES]{};
 };
 
 void create_cube(MeshPart& part, float width, float height, float depth, gles1::Color4u8 color);
 void create_cylinder(MeshPart& part, float radius, float height, int segments, gles1::Color4u8 color);
-void create_machine_model(MachineModel& model);
 
-// After `create_machine_model` has populated the programmatic slots, walk
-// the given kinematic chain and for every axis that has a non-empty
-// `obj_file` field, look up the embedded OBJ blob via render::obj::lookup,
-// parse it with render::obj::ObjImporter, and populate model.per_axis[i]
-// with the resulting mesh. Returns the number of OBJ meshes successfully
-// imported (0 if none requested). Failures are silent in release builds
-// and fall back to the legacy programmatic slot; boot should never crash
-// because an OBJ is malformed or missing.
-size_t apply_axis_obj_meshes(MachineModel& model, const kinematic::KinematicChain& chain);
+// Populate per_axis[] for every axis in `chain`. For each axis:
+//  1. If `axis.obj_file` is non-empty and the registry lookup succeeds,
+//     parse it (OBJ or STL by extension) and store into per_axis[i].
+//  2. Otherwise generate a name-keyed primitive (cube / cylinder) so the
+//     axis still renders. "none" mesh hints produce an empty slot.
+// Returns the number of axes that ended up with a renderable mesh.
+size_t populate_axis_meshes(MachineModel& model, const kinematic::KinematicChain& chain);
+
+// Convenience marker mesh (a small unit cube) shared by overlay paths
+// that need a generic indicator — toolpod stations, probe markers, etc.
+// Lazy-allocated on first call and reused; not destroyed until the kernel
+// exits (which never happens). Not part of MachineModel — independent
+// scratch geometry.
+const MeshPart& marker_mesh();
 
 void destroy_machine_model(MachineModel& model);
 
