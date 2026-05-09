@@ -9,6 +9,7 @@
 #include "diag/jitter.hpp"
 #include "ethercat/cia402.hpp"
 #include "ethercat/master.hpp"
+#include "machine/machine_topology.hpp"
 
 #include <cstdlib>
 
@@ -591,6 +592,25 @@ bool Kernel::engage_spindle_gear(size_t leader, size_t follower, int32_t k_num, 
     // Engage regular gear link but override in cycle_axis for spindle indexing
     return engage_gear(static_cast<uint8_t>(leader), static_cast<uint8_t>(follower),
                         0, k_num, k_den, ramp);
+}
+
+bool Kernel::set_torque_limit(size_t i, uint16_t permille) noexcept {
+    if (i >= MAX_AXES) return false;
+    if (permille > 5000) return false;       // CiA-402 spec ceiling = 5x rated
+    auto& a = axes_[i];
+    if (!a.drive || a.station_addr == 0) return false;
+    // Resolve which master owns this axis. Falls back to master A when no
+    // topology binding exists — same fallback as the in-place 0x607D push,
+    // and consistent with single-master legacy setups.
+    ethercat::Master* m = &ethercat::g_master_a;
+    const auto* binding = machine::topology::g_service.servo_binding_for_axis(i);
+    if (binding && binding->master_id == 1) m = &ethercat::g_master_b;
+    // 0x6072 "Max torque" is u16, permille of motor rated torque.
+    uint8_t data[2] = {
+        static_cast<uint8_t>(permille & 0xFFu),
+        static_cast<uint8_t>((permille >> 8) & 0xFFu),
+    };
+    return m->send_sdo_download(a.station_addr, 0x6072, 0x00, data, 2);
 }
 
 bool Kernel::fault_reset(size_t i) noexcept {

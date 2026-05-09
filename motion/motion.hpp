@@ -815,6 +815,17 @@ public:
     // handles that once statusword is refreshed).
     [[nodiscard]] bool fault_reset(size_t axis_idx) noexcept;
 
+    // Set the per-axis torque limit (CiA-402 0x6072 "Max torque"). Units are
+    // permille of motor rated torque (1000 = 100 %). Issues an SDO-download
+    // immediately on the master that owns this axis's slave, so the limit
+    // takes effect within a few cycles. Useful for finishing-cut limits
+    // (drop to ~600 permille on probe approach so a crash doesn't snap the
+    // probe stylus) and for safe-mode jog (cap to ~300 permille while the
+    // door is open). Returns false if the axis has no drive hooked, or if
+    // permille is out of [0, 5000] (5x rated as the spec ceiling). 0
+    // restores the drive's stored default — does NOT disable torque entirely.
+    [[nodiscard]] bool set_torque_limit(size_t axis_idx, uint16_t permille) noexcept;
+
     // Store an encoder resolution read from the drive (OD 0x608F via the
     // master's probe_encoder_resolution helper). Also initialises
     // counts_per_unit to `counts_per_rev` so motion math has a consistent
