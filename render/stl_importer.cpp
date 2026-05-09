@@ -198,4 +198,94 @@ ImportReport parse_ascii(const char* text, size_t len, const ImportLimits& limit
     return make_report(ImportStatus::Ok, "ok");
 }
 
+namespace {
+
+// Binary STL is little-endian by spec. Build floats / uint32s out of bytes
+// instead of memcpy-ing into a struct so the importer doesn't depend on
+// host endianness or struct packing — both arches we care about happen to
+// be LE today, but this stays portable.
+inline uint32_t read_u32_le(const uint8_t* p) {
+    return static_cast<uint32_t>(p[0]) |
+           (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) |
+           (static_cast<uint32_t>(p[3]) << 24);
+}
+
+inline float read_f32_le(const uint8_t* p) {
+    union { uint32_t u; float f; } v;
+    v.u = read_u32_le(p);
+    return v.f;
+}
+
+constexpr size_t kBinaryHeader = 80;
+constexpr size_t kBinaryTriRecord = 50;
+
+}  // namespace
+
+ImportReport parse_binary(const void* data, size_t len, const ImportLimits& limits,
+                          ImportedMesh& mesh) {
+    if (!data || len < kBinaryHeader + 4) {
+        return make_report(ImportStatus::InvalidArgument, "buffer too small for binary STL");
+    }
+    if (!mesh.vertices || !mesh.indices) {
+        return make_report(ImportStatus::InvalidArgument, "output buffers not provided");
+    }
+    mesh.vertex_count = 0;
+    mesh.index_count = 0;
+    mesh.position_count = 0;
+    mesh.normal_count = 0;
+    mesh.uv_count = 0;
+
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+    const uint32_t tri_count = read_u32_le(bytes + kBinaryHeader);
+    const size_t expected = kBinaryHeader + 4 + static_cast<size_t>(tri_count) * kBinaryTriRecord;
+    if (len != expected) {
+        return make_report(ImportStatus::ParseError, "binary STL size mismatch");
+    }
+    if (tri_count == 0) {
+        return make_report(ImportStatus::ParseError, "no triangles in binary STL");
+    }
+
+    const uint8_t* p = bytes + kBinaryHeader + 4;
+    for (uint32_t t = 0; t < tri_count; ++t) {
+        if (mesh.vertex_count + 3 > limits.max_vertices ||
+            mesh.index_count + 3 > limits.max_indices) {
+            return make_report(ImportStatus::CapacityExceeded, "mesh too large");
+        }
+        render::gles1::Vec3f normal{
+            read_f32_le(p + 0), read_f32_le(p + 4), read_f32_le(p + 8)};
+        for (int i = 0; i < 3; ++i) {
+            const uint8_t* vp = p + 12 + i * 12;
+            render::gles1::Vertex& v = mesh.vertices[mesh.vertex_count];
+            v.position = {read_f32_le(vp + 0), read_f32_le(vp + 4), read_f32_le(vp + 8)};
+            v.normal = normal;
+            v.uv = {0.0f, 0.0f};
+            v.color = {0xff, 0xff, 0xff, 0xff};
+            mesh.indices[mesh.index_count++] = static_cast<uint16_t>(mesh.vertex_count);
+            ++mesh.vertex_count;
+        }
+        p += kBinaryTriRecord;
+    }
+    return make_report(ImportStatus::Ok, "ok");
+}
+
+ImportReport parse(const void* data, size_t len, const ImportLimits& limits,
+                   ImportedMesh& mesh) {
+    if (!data || len == 0) return make_report(ImportStatus::InvalidArgument, "empty input");
+    // Binary detection: file size must equal header + count + count*record.
+    // Some tools write the ASCII "solid " prefix into the binary header,
+    // so a textual sniff is unreliable; the size formula is the only thing
+    // that's authoritative.
+    if (len > kBinaryHeader + 4) {
+        const uint8_t* bytes = static_cast<const uint8_t*>(data);
+        const uint32_t tri_count = read_u32_le(bytes + kBinaryHeader);
+        const size_t expected = kBinaryHeader + 4 +
+                                static_cast<size_t>(tri_count) * kBinaryTriRecord;
+        if (len == expected && tri_count > 0) {
+            return parse_binary(data, len, limits, mesh);
+        }
+    }
+    return parse_ascii(static_cast<const char*>(data), len, limits, mesh);
+}
+
 }  // namespace render::stl

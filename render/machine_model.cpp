@@ -221,7 +221,11 @@ bool import_mesh_into_meshpart(MeshPart& part, const char* text, size_t text_len
 
     obj::ImportReport report;
     if (format == MeshFormat::StlAscii) {
-        report = stl::parse_ascii(text, text_len, limits, mesh);
+        // stl::parse auto-dispatches ASCII vs binary by checking whether the
+        // buffer's size matches the binary record formula. Binary STL is the
+        // dominant CAD-export flavour, so the .stl extension shouldn't pin
+        // the parser to ASCII only.
+        report = stl::parse(text, text_len, limits, mesh);
     } else {
         report = obj::ObjImporter::parse(text, text_len, limits, mesh);
     }
