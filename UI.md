@@ -1,60 +1,171 @@
 # miniOS Operator UI
 
-This file is regenerated automatically by the **UI screenshots** GitHub Actions
-workflow (`.github/workflows/ui-screenshots.yml`).
+Auto-generated catalogue of every TSV-defined operator page in `devices/embedded_ui.tsv`.
+Refresh by running the **UI screenshots** GitHub Actions workflow (or
+`bash scripts/qemu_dump_ui_pages.sh screenshots && python3 scripts/generate_ui_md.py screenshots UI.md`
+locally).
 
-When the workflow runs it:
+Each shot below is the guest framebuffer rendered by the `arm64` kernel,
+captured via the CLI `ui_page <id>` + `ui_dump <scale>` commands and
+downscaled by the factor noted at capture time.
 
-1. Cross-builds `build/arm64/miniOS_kernel_arm64.elf`.
-2. Boots the kernel under `qemu-system-aarch64 -nographic`.
-3. Drives the CLI through every page registered in
-   [`devices/embedded_ui.tsv`](./devices/embedded_ui.tsv) using `ui_page <id>` +
-   `ui_dump 6`.
-4. Converts each downscaled PPM to PNG with `ffmpeg`.
-5. Regenerates this file from the captures via
-   [`scripts/generate_ui_md.py`](./scripts/generate_ui_md.py).
-6. On `push` to `main` or a manual dispatch, commits the refreshed
-   `screenshots/` directory and `UI.md` back to the branch. On pull requests
-   the artifacts are uploaded to the workflow run instead of being committed.
-
-## Refreshing locally
-
-```bash
-make TARGET=arm64
-bash scripts/qemu_dump_ui_pages.sh "$PWD/screenshots"
-python3 scripts/generate_ui_md.py screenshots UI.md
-```
-
-The script needs `qemu-system-aarch64`, `ffmpeg`, and Python 3.
 
 ## Pages
 
-The TSV registers these operator surfaces (in flow order):
+- [Dashboard](#dashboard) — `dashboard`
+- [Jog](#jog) — `jog`
+- [MDI](#mdi) — `mdi`
+- [Machine View](#machine-view) — `machine_view`
+- [Program](#program) — `program`
+- [Offsets](#offsets) — `offsets`
+- [Service](#service) — `service`
+- [EtherCAT](#ethercat) — `ethercat`
+- [Homing](#homing) — `homing`
+- [Alarms](#alarms) — `alarms`
+- [Macros](#macros) — `macros`
+- [Probe](#probe) — `probe`
+- [Pitch Error](#pec) — `pec`
+- [Geometry Comp](#geometry) — `geometry`
+- [Volumetric Comp](#sphere) — `sphere`
+- [Network](#network) — `network`
+- [Axis Detail](#axis-status) — `axis_status`
+- [Tool Change](#tool-change) — `tool_change`
+- [Restart Confirm](#restart-confirm) — `restart_confirm`
 
-| Page id | Title |
-| --- | --- |
-| `dashboard` | Dashboard |
-| `jog` | Jog |
-| `mdi` | MDI |
-| `machine_view` | Machine View |
-| `program` | Program |
-| `offsets` | Offsets |
-| `service` | Service |
-| `ethercat` | EtherCAT |
-| `homing` | Homing |
-| `alarms` | Alarms |
-| `macros` | Macros |
-| `probe` | Probe |
-| `pec` | Pitch Error |
-| `geometry` | Geometry Comp |
-| `sphere` | Volumetric Comp |
-| `network` | Network |
-| `axis_status` | Axis Detail |
-| `tool_change` | Tool Change |
+<a id="dashboard"></a>
+### Dashboard
 
-The shared `bottom_nav` template included on every real page is intentionally
-excluded — it is layout, not a navigable page.
+`ui_page dashboard` — defined in `devices/embedded_ui.tsv`.
 
-> **No screenshots committed yet.** Run the workflow once
-> (`Actions → UI screenshots → Run workflow`) to populate `screenshots/` and
-> overwrite this stub with embedded images for every page above.
+![Dashboard](screenshots/dashboard.png)
+
+<a id="jog"></a>
+### Jog
+
+`ui_page jog` — defined in `devices/embedded_ui.tsv`.
+
+![Jog](screenshots/jog.png)
+
+<a id="mdi"></a>
+### MDI
+
+`ui_page mdi` — defined in `devices/embedded_ui.tsv`.
+
+![MDI](screenshots/mdi.png)
+
+<a id="machine-view"></a>
+### Machine View
+
+`ui_page machine_view` — defined in `devices/embedded_ui.tsv`.
+
+![Machine View](screenshots/machine_view.png)
+
+<a id="program"></a>
+### Program
+
+`ui_page program` — defined in `devices/embedded_ui.tsv`.
+
+![Program](screenshots/program.png)
+
+<a id="offsets"></a>
+### Offsets
+
+`ui_page offsets` — defined in `devices/embedded_ui.tsv`.
+
+![Offsets](screenshots/offsets.png)
+
+<a id="service"></a>
+### Service
+
+`ui_page service` — defined in `devices/embedded_ui.tsv`.
+
+![Service](screenshots/service.png)
+
+<a id="ethercat"></a>
+### EtherCAT
+
+`ui_page ethercat` — defined in `devices/embedded_ui.tsv`.
+
+![EtherCAT](screenshots/ethercat.png)
+
+<a id="homing"></a>
+### Homing
+
+`ui_page homing` — defined in `devices/embedded_ui.tsv`.
+
+![Homing](screenshots/homing.png)
+
+<a id="alarms"></a>
+### Alarms
+
+`ui_page alarms` — defined in `devices/embedded_ui.tsv`.
+
+![Alarms](screenshots/alarms.png)
+
+<a id="macros"></a>
+### Macros
+
+`ui_page macros` — defined in `devices/embedded_ui.tsv`.
+
+![Macros](screenshots/macros.png)
+
+<a id="probe"></a>
+### Probe
+
+`ui_page probe` — defined in `devices/embedded_ui.tsv`.
+
+![Probe](screenshots/probe.png)
+
+<a id="pec"></a>
+### Pitch Error
+
+`ui_page pec` — defined in `devices/embedded_ui.tsv`.
+
+![Pitch Error](screenshots/pec.png)
+
+<a id="geometry"></a>
+### Geometry Comp
+
+`ui_page geometry` — defined in `devices/embedded_ui.tsv`.
+
+![Geometry Comp](screenshots/geometry.png)
+
+<a id="sphere"></a>
+### Volumetric Comp
+
+`ui_page sphere` — defined in `devices/embedded_ui.tsv`.
+
+![Volumetric Comp](screenshots/sphere.png)
+
+<a id="network"></a>
+### Network
+
+`ui_page network` — defined in `devices/embedded_ui.tsv`.
+
+![Network](screenshots/network.png)
+
+<a id="axis-status"></a>
+### Axis Detail
+
+`ui_page axis_status` — defined in `devices/embedded_ui.tsv`.
+
+![Axis Detail](screenshots/axis_status.png)
+
+<a id="tool-change"></a>
+### Tool Change
+
+`ui_page tool_change` — defined in `devices/embedded_ui.tsv`.
+
+![Tool Change](screenshots/tool_change.png)
+
+<a id="restart-confirm"></a>
+### Restart Confirm
+
+`ui_page restart_confirm` — defined in `devices/embedded_ui.tsv`.
+
+![Restart Confirm](screenshots/restart_confirm.png)
+
+
+---
+
+*Generated 2026-05-09 18:48:01 UTC from `devices/embedded_ui.tsv` (19 pages).*

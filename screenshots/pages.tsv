@@ -1,0 +1,19 @@
+dashboard	Dashboard
+jog	Jog
+mdi	MDI
+machine_view	Machine View
+program	Program
+offsets	Offsets
+service	Service
+ethercat	EtherCAT
+homing	Homing
+alarms	Alarms
+macros	Macros
+probe	Probe
+pec	Pitch Error
+geometry	Geometry Comp
+sphere	Volumetric Comp
+network	Network
+axis_status	Axis Detail
+tool_change	Tool Change
+restart_confirm	Restart Confirm
