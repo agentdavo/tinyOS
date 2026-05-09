@@ -795,6 +795,19 @@ bool Runtime::tick_channel(size_t channel) noexcept {
     }
     if (state.state == State::Ready) return true;
     if (!channel_settled(channel)) return true;
+    // Channel just reached settled — every motion block prior to this point
+    // has hit Holding. Drain any sync-to-motion-end output ops queued by
+    // earlier M62/M63 lines so their flips happen at the predecessor
+    // block's completion edge instead of immediately at parse time.
+    if (state.pending_outputs_count > 0) {
+        for (uint8_t k = 0; k < state.pending_outputs_count; ++k) {
+            auto& slot = state.pending_outputs[k];
+            if (!slot.used) continue;
+            (void)automation::signals::set_named_signal_bool(slot.name, slot.on);
+            slot.used = false;
+        }
+        state.pending_outputs_count = 0;
+    }
     if (state.arc.active) {
         if (!advance_arc(state)) {
             state.state = State::Fault;
@@ -913,9 +926,11 @@ bool Runtime::tick_channel(size_t channel) noexcept {
     }
     if (parsed.m_code == 62 || parsed.m_code == 63 ||
         parsed.m_code == 64 || parsed.m_code == 65) {
-        // LinuxCNC convention: M62/M63 sync to motion-queue end, M64/M65 set
-        // immediately. First-cut implementation treats both pairs as
-        // immediate (set/clear). Motion-sync deferred.
+        // LinuxCNC convention: M62/M63 sync to motion-queue end (defer the
+        // output flip until the preceding motion block completes), M64/M65
+        // are immediate. M64/M65 stay on the immediate path; M62/M63
+        // enqueue into state.pending_outputs[] and tick_channel drains the
+        // queue at its next channel-settled edge.
         if (parsed.p_word < 0) return true;
         const uint32_t idx = static_cast<uint32_t>(parsed.p_word);
         char name[16];
@@ -923,7 +938,25 @@ bool Runtime::tick_channel(size_t channel) noexcept {
             return true;  // out-of-range P-word: log-and-continue per spec
         }
         const bool on = (parsed.m_code == 62 || parsed.m_code == 64);
-        (void)automation::signals::set_named_signal_bool(name, on);
+        const bool sync_to_motion_end = (parsed.m_code == 62 || parsed.m_code == 63);
+        if (sync_to_motion_end) {
+            if (state.pending_outputs_count <
+                ChannelState::MAX_PENDING_OUTPUTS) {
+                auto& slot = state.pending_outputs[state.pending_outputs_count];
+                size_t k = 0;
+                while (name[k] && k + 1 < sizeof(slot.name)) {
+                    slot.name[k] = name[k];
+                    ++k;
+                }
+                slot.name[k] = '\0';
+                slot.on = on;
+                slot.used = true;
+                ++state.pending_outputs_count;
+            }
+            // Overflow silently drops; deeper M62 chains are unusual.
+        } else {
+            (void)automation::signals::set_named_signal_bool(name, on);
+        }
         return true;
     }
     if (parsed.m_code == 3 || parsed.m_code == 4 || parsed.m_code == 5) {

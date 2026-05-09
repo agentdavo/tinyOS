@@ -103,6 +103,23 @@ public:
         int32_t targets[motion::MAX_AXES]{};
         ArcState arc{};
         bool loaded = false;
+
+        // M62/M63 sync-to-motion-queue-end: each line records into this
+        // queue; tick_channel drains it on the next channel-settled edge
+        // (which today = "the most recently committed motion completed",
+        // and once block look-ahead lands = "the predecessor block in the
+        // pipeline finished"). Cap is small — typical use is one or two
+        // M62/M63 between motion blocks. Overflow drops the new entry
+        // and logs nothing visible; that's worse than wrong-timing but
+        // arguably more obvious as a programming error.
+        struct PendingOutput {
+            char name[16] = {};
+            bool on = false;
+            bool used = false;
+        };
+        static constexpr size_t MAX_PENDING_OUTPUTS = 4;
+        PendingOutput pending_outputs[MAX_PENDING_OUTPUTS]{};
+        uint8_t pending_outputs_count = 0;
     };
 
     Runtime() noexcept;
