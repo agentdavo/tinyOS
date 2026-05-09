@@ -672,9 +672,15 @@ static bool resolve_targets(Runtime::ChannelState& state,
                             size_t channel,
                             const ParsedLine& parsed,
                             int32_t targets[motion::MAX_AXES],
-                            uint64_t& axis_mask) {
+                            uint64_t& axis_mask,
+                            int32_t out_tip_targets[3] = nullptr) {
     axis_mask = 0;
     for (size_t ax = 0; ax < motion::MAX_AXES; ++ax) targets[ax] = state.targets[ax];
+    if (out_tip_targets) {
+        out_tip_targets[0] = state.tool_tip_pos[0];
+        out_tip_targets[1] = state.tool_tip_pos[1];
+        out_tip_targets[2] = state.tool_tip_pos[2];
+    }
     static constexpr char kAxisLetters[6] = {'X', 'Y', 'Z', 'A', 'B', 'C'};
     bool saw_axis = false;
     for (size_t i = 0; i < 6; ++i) {
@@ -695,6 +701,22 @@ static bool resolve_targets(Runtime::ChannelState& state,
         axis_mask |= (1ull << axis_idx);
         saw_axis = true;
     }
+    // Capture the pre-correction X/Y/Z target as the new tool-tip target
+    // before apply_tcp_correction rewrites the axis values into spindle-
+    // ref coords. For 3-axis (TCP off) tool-tip and spindle-ref coincide;
+    // the values are identical to targets[X/Y/Z]. Caller (execute_axes)
+    // uses out_tip_targets vs state.tool_tip_pos to compute tool-tip path
+    // length for the feedrate cap and updates state.tool_tip_pos AFTER
+    // the move commits.
+    if (saw_axis && out_tip_targets) {
+        uint8_t x_idx=0, y_idx=0, z_idx=0;
+        if (runtime.resolve_axis_word(channel, 'X', x_idx))
+            out_tip_targets[0] = targets[x_idx];
+        if (runtime.resolve_axis_word(channel, 'Y', y_idx))
+            out_tip_targets[1] = targets[y_idx];
+        if (runtime.resolve_axis_word(channel, 'Z', z_idx))
+            out_tip_targets[2] = targets[z_idx];
+    }
     if (saw_axis) apply_tcp_correction(state, runtime, channel, targets);
     return saw_axis;
 }
@@ -705,16 +727,34 @@ static bool execute_axes(Runtime::ChannelState& state,
                          const ParsedLine& parsed) {
     uint64_t axis_mask = 0;
     int32_t targets[motion::MAX_AXES]{};
-    if (!resolve_targets(state, runtime, channel, parsed, targets, axis_mask)) return false;
-    // Path-velocity cap from the F-word: enforce that combined motion equals
-    // the requested feedrate. Skipped on Rapid (G0 runs at axis vmax) — F
-    // doesn't apply there per spec.
+    int32_t tip_targets[3]{};
+    if (!resolve_targets(state, runtime, channel, parsed, targets, axis_mask,
+                         tip_targets)) return false;
+    // Path-velocity cap from the F-word: enforce that combined motion
+    // equals the requested feedrate. With TCP active, "combined motion"
+    // is measured in tool-tip frame so a reorientation move (B/C words
+    // changing tip orientation while X/Y/Z chase the rotated tool
+    // vector) doesn't run faster than the requested surface feedrate.
+    // Skipped on Rapid (G0 runs at axis vmax) — F doesn't apply there
+    // per spec.
     uint64_t min_t_final_us = 0;
     if (state.motion_mode != MotionMode::Rapid) {
         const uint32_t feed_cps = feed_cps_for_state(state);
         if (feed_cps > 0) {
-            const uint32_t path_counts =
-                combined_path_counts(state.targets, targets, axis_mask);
+            uint32_t path_counts;
+            if (state.tcp_active) {
+                // Tool-tip frame distance: sqrt of XYZ tip deltas.
+                const int64_t dx = static_cast<int64_t>(tip_targets[0]) - state.tool_tip_pos[0];
+                const int64_t dy = static_cast<int64_t>(tip_targets[1]) - state.tool_tip_pos[1];
+                const int64_t dz = static_cast<int64_t>(tip_targets[2]) - state.tool_tip_pos[2];
+                const uint64_t sum_sq =
+                    static_cast<uint64_t>(dx * dx) +
+                    static_cast<uint64_t>(dy * dy) +
+                    static_cast<uint64_t>(dz * dz);
+                path_counts = static_cast<uint32_t>(sqrt_approx(static_cast<float>(sum_sq)));
+            } else {
+                path_counts = combined_path_counts(state.targets, targets, axis_mask);
+            }
             min_t_final_us = (static_cast<uint64_t>(path_counts) * 1'000'000ULL) / feed_cps;
         }
     }
@@ -725,6 +765,9 @@ static bool execute_axes(Runtime::ChannelState& state,
     for (size_t ax = 0; ax < motion::MAX_AXES; ++ax) {
         if ((axis_mask & (1ull << ax)) != 0) state.targets[ax] = targets[ax];
     }
+    state.tool_tip_pos[0] = tip_targets[0];
+    state.tool_tip_pos[1] = tip_targets[1];
+    state.tool_tip_pos[2] = tip_targets[2];
     if (block_id != 0) state.last_dispatched_block_id = block_id;
     // Block counter is now incremented unconditionally in tick_channel for
     // every parsed line, not per-helper. See the comment there.

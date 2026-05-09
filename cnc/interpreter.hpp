@@ -108,6 +108,13 @@ public:
         // needs decimal G-code dispatch first); CLI 'tcp on/off' until
         // then.
         bool tcp_active = false;
+        // Tool-tip position in part-frame counts, kept separately from
+        // the axis-frame state.targets so the F-word feedrate cap can
+        // measure path length in the tool-tip frame when TCP is on.
+        // For 3-axis (TCP off) this stays in sync with state.targets[X/Y/Z]
+        // and the axis-frame path length is identical to the tool-tip
+        // path length, so the existing min_t_final logic doesn't change.
+        int32_t tool_tip_pos[3]{0, 0, 0};
         // Tool-length vector in axis counts. tool_length_counts is the Z
         // component for 3-axis backwards compatibility; tool_length_x_counts
         // / tool_length_y_counts default to 0 and are honoured by
