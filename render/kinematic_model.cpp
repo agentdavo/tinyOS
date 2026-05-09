@@ -2,6 +2,10 @@
 
 #include "render/kinematic_model.hpp"
 
+#include "miniOS.hpp"
+#include "hal.hpp"
+#include "util.hpp"
+
 namespace render::kinematic {
 
 namespace {
@@ -118,6 +122,30 @@ void initialize_transforms(KinematicChain& chain) {
     }
 }
 
+void warn_kinematic_tsv(const char* msg) {
+    auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr;
+    if (uart) uart->puts(msg);
+}
+
+// Recognised header versions. Returns the expected column count, or 0 if the
+// line isn't a recognised header. Each version is a strict superset of the
+// previous, but the column count is the contract — any data row shorter than
+// `expected_cols` would silently default-fill the missing fields, which has
+// historically been the parse footgun. Catch it instead of letting it slide.
+size_t recognize_header(const char* line) {
+    struct HeaderSpec { const char* text; size_t cols; };
+    static constexpr HeaderSpec kHeaders[] = {
+        {"name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis", 14},
+        {"name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file", 15},
+        {"name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z", 21},
+        {"name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z,mesh_scale", 22},
+    };
+    for (const auto& h : kHeaders) {
+        if (kstrcmp(line, h.text) == 0) return h.cols;
+    }
+    return 0;
+}
+
 } // namespace
 
 void create_standard_machine(KinematicChain& chain, MachineType type) {
@@ -180,6 +208,12 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
     static constexpr size_t kLineBuf = 256;
     char line[kLineBuf];
     size_t pos = 0;
+    // expected_cols is the column count promised by the most recently seen
+    // header. Data rows must satisfy that promise, otherwise missing fields
+    // silently default-fill (the historical footgun). 0 = no header seen
+    // yet, in which case rows fall back to the legacy "13+ fields" rule.
+    size_t expected_cols = 0;
+    size_t line_no = 0;
     while (pos < len) {
         size_t line_len = 0;
         while (pos < len && buf[pos] != '\n' && buf[pos] != '\r' && line_len + 1 < kLineBuf) {
@@ -187,15 +221,13 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
         }
         while (pos < len && (buf[pos] == '\n' || buf[pos] == '\r')) ++pos;
         line[line_len] = '\0';
+        ++line_no;
         if (line_len == 0 || line[0] == '#') continue;
-        // Accept the 14-col legacy header, the 15-col header (with obj_file),
-        // the 21-col URDF-style header (15 + mesh_off_x/y/z + mesh_rot_x/y/z),
-        // or the 22-col header (21 + mesh_scale) used after a unit-mismatch
-        // import normalises a CAD body authored in inches / metres / microns.
-        if (kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis") == 0 ||
-            kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file") == 0 ||
-            kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z") == 0 ||
-            kstrcmp(line, "name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z,mesh_scale") == 0) {
+        // Recognise the 14/15/21/22-column headers and remember their column
+        // count for the row-shape contract below.
+        const size_t header_cols = recognize_header(line);
+        if (header_cols != 0) {
+            expected_cols = header_cols;
             continue;
         }
         if (chain.axis_count >= MAX_AXES) return false;
@@ -203,6 +235,16 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
         char* fields[24]{};
         const size_t field_count = split_csv_fields(line, fields, 24);
         if (field_count < 13) return false;
+        if (expected_cols != 0 && field_count < expected_cols) {
+            char msg[160];
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                "[kinematic] tsv line %u: %u cols, header promises %u — refusing to load (column drift)\n",
+                static_cast<unsigned>(line_no),
+                static_cast<unsigned>(field_count),
+                static_cast<unsigned>(expected_cols));
+            warn_kinematic_tsv(msg);
+            return false;
+        }
         // mesh_scale defaults to 1.0 (not 0.0) when the column is absent —
         // that's the difference between "no scaling applied" and "render
         // collapses to a point".
