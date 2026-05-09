@@ -6,6 +6,126 @@
 
 namespace render::obj {
 
+const MaterialEntry* MaterialMap::lookup(const char* name) const noexcept {
+    if (!name) return nullptr;
+    for (size_t i = 0; i < count && i < MAX_MATERIALS; ++i) {
+        if (!entries[i].used) continue;
+        if (std::strcmp(entries[i].name, name) == 0) return &entries[i];
+    }
+    return nullptr;
+}
+
+namespace {
+
+bool mtl_is_space(char c) { return c == ' ' || c == '\t' || c == '\r'; }
+
+void mtl_skip_spaces(const char*& p, const char* end) {
+    while (p < end && mtl_is_space(*p)) ++p;
+}
+void mtl_skip_line(const char*& p, const char* end) {
+    while (p < end && *p != '\n') ++p;
+    if (p < end && *p == '\n') ++p;
+}
+
+// Hand-rolled float parser; matches the rest of the importer's style.
+bool mtl_parse_float(const char*& p, const char* end, float& out) {
+    mtl_skip_spaces(p, end);
+    if (p >= end) return false;
+    int sign = 1;
+    if (*p == '-') { sign = -1; ++p; }
+    else if (*p == '+') { ++p; }
+    if (p >= end) return false;
+    float v = 0.0f;
+    bool digit = false;
+    while (p < end && *p >= '0' && *p <= '9') { v = v * 10.0f + (*p - '0'); ++p; digit = true; }
+    if (p < end && *p == '.') {
+        ++p;
+        float place = 0.1f;
+        while (p < end && *p >= '0' && *p <= '9') {
+            v += (*p - '0') * place;
+            place *= 0.1f;
+            ++p;
+            digit = true;
+        }
+    }
+    if (!digit) return false;
+    out = v * sign;
+    return true;
+}
+
+bool mtl_keyword(const char*& p, const char* end, const char* word) {
+    const size_t n = std::strlen(word);
+    if (static_cast<size_t>(end - p) < n) return false;
+    for (size_t i = 0; i < n; ++i) if (p[i] != word[i]) return false;
+    if (static_cast<size_t>(end - p) > n) {
+        const char c = p[n];
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') return false;
+    }
+    p += n;
+    return true;
+}
+
+void mtl_copy_name(char* dst, size_t dst_size, const char* src, size_t src_len) {
+    if (!dst || dst_size == 0) return;
+    const size_t n = src_len + 1 < dst_size ? src_len : dst_size - 1;
+    for (size_t i = 0; i < n; ++i) dst[i] = src[i];
+    dst[n] = '\0';
+}
+
+uint8_t mtl_clamp_to_u8(float v) {
+    if (v <= 0.0f) return 0;
+    if (v >= 1.0f) return 0xFF;
+    return static_cast<uint8_t>(v * 255.0f);
+}
+
+} // namespace
+
+size_t parse_mtl(const char* text, size_t len, MaterialMap& out) noexcept {
+    out.count = 0;
+    for (auto& e : out.entries) { e = MaterialEntry{}; }
+    if (!text || len == 0) return 0;
+    const char* p = text;
+    const char* end = text + len;
+    MaterialEntry* current = nullptr;
+    while (p < end) {
+        mtl_skip_spaces(p, end);
+        if (p >= end) break;
+        if (*p == '\n') { ++p; continue; }
+        if (*p == '#') { mtl_skip_line(p, end); continue; }
+        if (mtl_keyword(p, end, "newmtl")) {
+            mtl_skip_spaces(p, end);
+            const char* name_start = p;
+            while (p < end && *p != '\n' && *p != '\r' && !mtl_is_space(*p)) ++p;
+            const size_t nlen = static_cast<size_t>(p - name_start);
+            if (out.count < MaterialMap::MAX_MATERIALS) {
+                current = &out.entries[out.count++];
+                mtl_copy_name(current->name, sizeof(current->name), name_start, nlen);
+                current->diffuse = {0xff, 0xff, 0xff, 0xff};
+                current->used = true;
+            } else {
+                current = nullptr;
+            }
+            mtl_skip_line(p, end);
+            continue;
+        }
+        if (mtl_keyword(p, end, "Kd")) {
+            float r = 1.0f, g = 1.0f, b = 1.0f;
+            mtl_parse_float(p, end, r);
+            mtl_parse_float(p, end, g);
+            mtl_parse_float(p, end, b);
+            if (current) {
+                current->diffuse = {mtl_clamp_to_u8(r), mtl_clamp_to_u8(g),
+                                    mtl_clamp_to_u8(b), 0xFF};
+            }
+            mtl_skip_line(p, end);
+            continue;
+        }
+        // Anything else (Ka, Ks, Ns, illum, map_*, ...) — skip the line.
+        mtl_skip_line(p, end);
+    }
+    return out.count;
+}
+
 namespace {
 
 struct Cursor {
@@ -172,7 +292,8 @@ bool starts_with_word(const Cursor& cur, const char* word) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-ImportReport parse_face(Cursor& cur, const ImportLimits& limits, ImportedMesh& mesh) {
+ImportReport parse_face(Cursor& cur, const ImportLimits& limits, ImportedMesh& mesh,
+                        const gles1::Color4u8& active_material_color) {
     uint16_t face_indices[4]{};
     size_t face_count = 0;
 
@@ -220,7 +341,7 @@ ImportReport parse_face(Cursor& cur, const ImportLimits& limits, ImportedMesh& m
 
         gles1::Vertex vertex{};
         vertex.position = mesh.positions[pos_idx];
-        vertex.color = {0xff, 0xff, 0xff, 0xff};
+        vertex.color = active_material_color;
 
         if (has_vt) {
             const int32_t uv_idx = obj_index_to_zero_based(vt_idx_obj, mesh.uv_count);
@@ -280,6 +401,11 @@ ImportReport ObjImporter::parse(const char* text, size_t len, const ImportLimits
     if (mesh.groups && mesh.group_capacity > 0) mesh.group_count = 0;
 
     Cursor cur{text, text + len, 1};
+    // Active material colour for vertex emit. Tracks the most recent
+    // `usemtl` name that resolves in mesh.materials. Default white so
+    // the caller's back-paint pass (machine_model::import_mesh_into_meshpart)
+    // can override per-mesh when no MaterialMap is supplied.
+    gles1::Color4u8 active_material_color{0xff, 0xff, 0xff, 0xff};
     while (cur.ptr < cur.end) {
         skip_spaces(cur);
         if (cur.ptr >= cur.end) break;
@@ -342,7 +468,7 @@ ImportReport ObjImporter::parse(const char* text, size_t len, const ImportLimits
 
         if (*cur.ptr == 'f') {
             ++cur.ptr;
-            ImportReport report = parse_face(cur, limits, mesh);
+            ImportReport report = parse_face(cur, limits, mesh, active_material_color);
             if (report.status != ImportStatus::Ok) return report;
             skip_line(cur);
             continue;
@@ -354,11 +480,20 @@ ImportReport ObjImporter::parse(const char* text, size_t len, const ImportLimits
         // multi-part splitting is possible without re-parsing.
         if (starts_with_word(cur, "g") || starts_with_word(cur, "o") ||
             starts_with_word(cur, "usemtl")) {
+            const bool was_usemtl = starts_with_word(cur, "usemtl");
             // Skip the directive token itself.
             while (cur.ptr < cur.end && !is_space(*cur.ptr) && *cur.ptr != '\n') ++cur.ptr;
             char name[32];
             const size_t n = read_rest_of_line(cur, name, sizeof(name));
             close_and_open_group(mesh, name, n);
+            // Tier 4d: if this was a `usemtl` and the caller supplied a
+            // material map, look up the diffuse colour and apply it to
+            // subsequent vertex emits. Names that don't resolve fall back
+            // to the prior active colour, preserving any prior usemtl.
+            if (was_usemtl && mesh.materials) {
+                const auto* m = mesh.materials->lookup(name);
+                if (m) active_material_color = m->diffuse;
+            }
             skip_line(cur);
             continue;
         }
