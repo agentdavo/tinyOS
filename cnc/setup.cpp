@@ -108,9 +108,11 @@ void write_tools(Writer& w) noexcept {
     w.puts("[tool]\n");
     for (size_t i = 0; i < tool.size(); ++i) {
         const unsigned id = static_cast<unsigned>(tool[i].tool);
-        w.printf("T%u.length=%ld\n", id, static_cast<long>(to_micro(tool[i].length)));
-        w.printf("T%u.radius=%ld\n", id, static_cast<long>(to_micro(tool[i].radius)));
-        w.printf("T%u.wear=%ld\n",   id, static_cast<long>(to_micro(tool[i].wear)));
+        w.printf("T%u.length=%ld\n",   id, static_cast<long>(to_micro(tool[i].length)));
+        w.printf("T%u.length_x=%ld\n", id, static_cast<long>(to_micro(tool[i].length_x)));
+        w.printf("T%u.length_y=%ld\n", id, static_cast<long>(to_micro(tool[i].length_y)));
+        w.printf("T%u.radius=%ld\n",   id, static_cast<long>(to_micro(tool[i].radius)));
+        w.printf("T%u.wear=%ld\n",     id, static_cast<long>(to_micro(tool[i].wear)));
     }
     w.puts("\n");
 }
@@ -309,8 +311,10 @@ void apply_wcs(const char* key, const char* val, LoadCtx& ctx) noexcept {
     ++ctx.applied;
 }
 
-// Decode "T1.length" / "T8.wear" -> (tool_idx, field). Field encoding:
-// 0 = length, 1 = radius, 2 = wear.
+// Decode "T1.length" / "T8.wear" / "T2.length_x" -> (tool_idx, field).
+// Field encoding: 0 = length (Z component), 1 = radius, 2 = wear,
+// 3 = length_x, 4 = length_y. Older save files without length_x/length_y
+// keys still load — fields default to whatever was in the slot.
 bool decode_tool_key(const char* key, size_t& idx_out, int& field_out) noexcept {
     if (!key || key[0] != 'T') return false;
     size_t i = 1;
@@ -319,13 +323,12 @@ bool decode_tool_key(const char* key, size_t& idx_out, int& field_out) noexcept 
     while (kernel::util::isdigit(key[i])) { v = v * 10 + (key[i] - '0'); ++i; }
     if (key[i] != '.') return false;
     const char* tail = &key[i + 1];
-    if (eq(tail, "length")) { field_out = 0; }
-    else if (eq(tail, "radius")) { field_out = 1; }
-    else if (eq(tail, "wear")) { field_out = 2; }
+    if (eq(tail, "length"))        { field_out = 0; }
+    else if (eq(tail, "radius"))   { field_out = 1; }
+    else if (eq(tail, "wear"))     { field_out = 2; }
+    else if (eq(tail, "length_x")) { field_out = 3; }
+    else if (eq(tail, "length_y")) { field_out = 4; }
     else return false;
-    // Tool ids in cnc::offsets are 1-based in the .tool field but slot
-    // index is 0..TOOL_OFFSET_COUNT-1; treat the saved id as a slot
-    // index via (id - 1) with clamp.
     if (v <= 0) return false;
     idx_out = static_cast<size_t>(v - 1);
     return idx_out < cnc::offsets::TOOL_OFFSET_COUNT;
@@ -339,16 +342,21 @@ void apply_tool(const char* key, const char* val, LoadCtx& ctx) noexcept {
         return;
     }
     const auto& tools = cnc::offsets::g_service.tool_offsets();
-    float length = tools[idx].length;
-    float radius = tools[idx].radius;
-    float wear   = tools[idx].wear;
+    float length   = tools[idx].length;
+    float length_x = tools[idx].length_x;
+    float length_y = tools[idx].length_y;
+    float radius   = tools[idx].radius;
+    float wear     = tools[idx].wear;
     const float v = from_micro(static_cast<int32_t>(u));
     switch (field) {
-        case 0: length = v; break;
-        case 1: radius = v; break;
-        case 2: wear   = v; break;
+        case 0: length   = v; break;
+        case 1: radius   = v; break;
+        case 2: wear     = v; break;
+        case 3: length_x = v; break;
+        case 4: length_y = v; break;
     }
     (void)cnc::offsets::g_service.set_tool_value(idx, length, radius, wear);
+    (void)cnc::offsets::g_service.set_tool_length_vec(idx, length_x, length_y, length);
     ++ctx.applied;
 }
 

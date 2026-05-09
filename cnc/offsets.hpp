@@ -48,6 +48,12 @@ public:
     bool select_tool(size_t idx) noexcept;
     bool set_work_axis(size_t idx, size_t axis, float value) noexcept;
     bool set_tool_value(size_t idx, float length, float radius, float wear) noexcept;
+    // Set the tool-length vector (X/Y/Z) directly. Used by 5-axis TCP setups
+    // where length_x and length_y aren't zero. The legacy set_tool_value
+    // path leaves length_x / length_y unchanged so existing 3-axis flows
+    // are unaffected.
+    bool set_tool_length_vec(size_t idx, float length_x, float length_y,
+                             float length_z) noexcept;
 
 private:
     std::array<WorkOffset, WORK_OFFSET_COUNT> work_offsets_{};
