@@ -626,6 +626,68 @@ bool Master::upload_sdo_start(uint16_t station_addr, uint16_t index, uint8_t sub
     return true;
 }
 
+bool Master::enqueue_sdo_upload(const SdoRequest& req) noexcept {
+    if (!req.out_data || !req.out_bytes || !req.completion_state) return false;
+    const size_t head = sdo_queue_head_.load(std::memory_order_acquire);
+    const size_t tail = sdo_queue_tail_.load(std::memory_order_relaxed);
+    if (((tail + 1) % SDO_QUEUE_DEPTH) == head) {
+        // Queue full — caller is firing faster than the master can drain.
+        return false;
+    }
+    sdo_queue_[tail] = req;
+    req.completion_state->store(0, std::memory_order_release);
+    sdo_queue_tail_.store((tail + 1) % SDO_QUEUE_DEPTH,
+                          std::memory_order_release);
+    return true;
+}
+
+size_t Master::sdo_queue_depth() const noexcept {
+    const size_t head = sdo_queue_head_.load(std::memory_order_acquire);
+    const size_t tail = sdo_queue_tail_.load(std::memory_order_acquire);
+    return (tail + SDO_QUEUE_DEPTH - head) % SDO_QUEUE_DEPTH;
+}
+
+void Master::service_sdo_queue() noexcept {
+    // If a request is in flight, poll it.
+    if (sdo_request_in_flight_) {
+        uint8_t buf[4]{};
+        uint8_t bytes = 0;
+        uint32_t abort = 0;
+        const int r = upload_sdo_poll(buf, &bytes, &abort);
+        if (r == 0) return;  // still pending
+        // Copy result into caller's slot and signal completion.
+        if (r > 0 && sdo_active_request_.out_data) {
+            for (uint8_t i = 0; i < 4; ++i) sdo_active_request_.out_data[i] = buf[i];
+        }
+        if (sdo_active_request_.out_bytes) *sdo_active_request_.out_bytes = (r > 0 ? bytes : 0);
+        if (sdo_active_request_.abort_code) *sdo_active_request_.abort_code = (r > 0 ? 0 : abort);
+        if (sdo_active_request_.completion_state) {
+            sdo_active_request_.completion_state->store(
+                r > 0 ? 1u : 2u, std::memory_order_release);
+        }
+        sdo_request_in_flight_ = false;
+        sdo_active_request_ = SdoRequest{};
+    }
+    // No in-flight: kick the head of the queue.
+    const size_t head = sdo_queue_head_.load(std::memory_order_acquire);
+    const size_t tail = sdo_queue_tail_.load(std::memory_order_acquire);
+    if (head == tail) return;  // empty
+    SdoRequest req = sdo_queue_[head];
+    sdo_queue_head_.store((head + 1) % SDO_QUEUE_DEPTH,
+                          std::memory_order_release);
+    if (!upload_sdo_start(req.station, req.index, req.sub, req.timeout_us)) {
+        // Couldn't claim slot (race) — push back? Easiest: signal error.
+        if (req.completion_state) {
+            req.completion_state->store(2u, std::memory_order_release);
+        }
+        if (req.out_bytes) *req.out_bytes = 0;
+        if (req.abort_code) *req.abort_code = 0;
+        return;
+    }
+    sdo_active_request_ = req;
+    sdo_request_in_flight_ = true;
+}
+
 int Master::upload_sdo_poll(uint8_t out[4], uint8_t* out_bytes,
                             uint32_t* abort_code) noexcept {
     if (!out || !out_bytes) return -1;
@@ -1374,6 +1436,7 @@ void Master::run_loop() {
         // SafeOp too — that's where 1.3/1.4 need it.
         service_sdo_upload();
         service_esc_read();
+        service_sdo_queue();
 
         // Periodic DC-sync drift sampler. Self-rate-limits to
         // dc_drift_check_period_us_ and only reads one slave per tick, so

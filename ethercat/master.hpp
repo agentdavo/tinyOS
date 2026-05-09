@@ -103,6 +103,27 @@ public:
     [[nodiscard]] int  upload_sdo_poll(uint8_t out[4], uint8_t* out_bytes,
                                         uint32_t* abort_code = nullptr) noexcept;
 
+    // Tier 3a: per-slave-parallel-ish queue. Callers submit a complete
+    // request (station / index / sub / caller-owned 4-byte result + bytes
+    // out + completion_state out) and walk away. The master cycle drains
+    // requests one at a time (single mailbox, but no caller-side
+    // serialisation), and updates the caller's state atomic when each
+    // completes. Boot-time bus_config can fire 8 servos × 5 SDOs upfront
+    // and finish in ~5 cycles instead of 40 round-trip-blocking calls.
+    // Pending: 0 (queued/in-flight), Done: 1, Error: 2.
+    struct SdoRequest {
+        uint16_t station        = 0;
+        uint16_t index          = 0;
+        uint8_t  sub            = 0;
+        uint32_t timeout_us     = 0;
+        uint8_t* out_data       = nullptr;       // 4 bytes
+        uint8_t* out_bytes      = nullptr;
+        uint32_t* abort_code    = nullptr;       // nullable
+        std::atomic<uint8_t>* completion_state = nullptr; // 0/1/2
+    };
+    [[nodiscard]] bool enqueue_sdo_upload(const SdoRequest& req) noexcept;
+    [[nodiscard]] size_t sdo_queue_depth() const noexcept;
+
     // Task 1.2 follow-up — segmented SDO upload. Covers responses
     // larger than the 4-byte expedited window: 0x1008 device name,
     // 0x100A firmware version, 0x10F3:6..55 diag-history entries, etc.
@@ -410,6 +431,18 @@ private:
     uint64_t upload_deadline_us_      = 0;
     bool     upload_segment_toggle_   = false; // toggled 0/1 per segment request
     bool     upload_segment_request_inflight_ = false;
+
+    // Tier 3a — request queue. Single producer (caller), single
+    // consumer (master cycle). When upload_state_ idle, the cycle pulls
+    // the head request, kicks the existing single-slot machine, and
+    // copies the result into the caller's `out_*` slots when done.
+    static constexpr size_t SDO_QUEUE_DEPTH = 8;
+    std::array<SdoRequest, SDO_QUEUE_DEPTH> sdo_queue_{};
+    std::atomic<size_t>     sdo_queue_head_{0};   // next read
+    std::atomic<size_t>     sdo_queue_tail_{0};   // next write
+    SdoRequest              sdo_active_request_{};
+    bool                    sdo_request_in_flight_ = false;
+    void service_sdo_queue() noexcept;
 
     // --- Blocking ESC register read support --------------------------------
     enum class EscReadState : uint8_t {
