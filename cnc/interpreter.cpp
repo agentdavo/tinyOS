@@ -925,9 +925,21 @@ bool Runtime::tick_channel(size_t channel) noexcept {
         state.pending_outputs_count = kept;
     }
     if (state.arc.active) {
-        if (!advance_arc(state)) {
-            state.state = State::Fault;
-            return false;
+        // Tier 1c: arcs feed segments into the chain ring as fast as the
+        // ring accepts them, instead of one segment per ~1 ms tick. A
+        // 32-segment arc that previously took 32 ticks now finishes
+        // chain-fill in 4 ticks (CHAIN_DEPTH = 8) and the trajectory runs
+        // at chained-cruise speed across the segment seams. Bound the
+        // inner loop at CHAIN_DEPTH * 2 so a degenerate arc (huge segment
+        // count, all of them direction-mismatched and stalling the chain
+        // pop) can't spin forever.
+        for (size_t guard = 0; guard < motion::Axis::CHAIN_DEPTH * 2; ++guard) {
+            if (!channel_settled(channel)) break;  // chain ring full
+            if (!state.arc.active) break;          // arc completed mid-burst
+            if (!advance_arc(state)) {
+                state.state = State::Fault;
+                return false;
+            }
         }
         return true;
     }
