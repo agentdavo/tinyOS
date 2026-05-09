@@ -1212,10 +1212,14 @@ bool Kernel::sync_move(uint64_t axis_mask,
 
     if (!register_barrier) return true;
 
-    // Allocate a token if the caller didn't supply one.
+    // Allocate a token if the caller didn't supply one. Monotonic counter
+    // (relaxed fetch_add) — collision-free up to 2^16 sync moves. Skip 0
+    // since callers treat that as "please allocate" and would loop.
     if (barrier_token == 0) {
-        barrier_token = static_cast<uint16_t>(
-            0x9600u + (stats_.cycles.load(std::memory_order_relaxed) & 0xFFu));
+        do {
+            barrier_token = barrier_token_seq_.fetch_add(
+                1, std::memory_order_relaxed);
+        } while (barrier_token == 0);
     }
     // Every participating channel arrives at the barrier. They're all
     // about to freeze — but only *after* their moves begin, so the

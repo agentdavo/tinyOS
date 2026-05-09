@@ -1224,6 +1224,14 @@ private:
     std::array<Channel, MAX_CHANNELS>    channels_{};
     size_t                               channel_count_ = 0;
     std::array<Barrier, MAX_BARRIERS>    barriers_{};
+    // Monotonic counter for sync_move's auto-allocated barrier tokens. The
+    // pre-fix scheme derived a token from (cycles & 0xFF) plus a base offset,
+    // which wrapped every 256 cycles — so a second sync_move within that
+    // window could collide on an already-active barrier slot. This counter
+    // walks forwards forever (2^16 sync moves before aliasing, well past any
+    // realistic run) and skips 0 since the API treats that as "caller did
+    // not supply a token, please allocate one for me".
+    std::atomic<uint16_t>                barrier_token_seq_{0xA000};
     std::array<GearLink, MAX_GEARS>      gears_{};
     std::array<GantryLink, MAX_GANTRYS>  gantrys_{};
     std::array<LinearCalibration, MAX_AXES> linear_cal_{};

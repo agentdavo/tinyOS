@@ -575,7 +575,8 @@ static bool execute_axes(Runtime::ChannelState& state,
     for (size_t ax = 0; ax < motion::MAX_AXES; ++ax) {
         if ((axis_mask & (1ull << ax)) != 0) state.targets[ax] = targets[ax];
     }
-    ++state.block;
+    // Block counter is now incremented unconditionally in tick_channel for
+    // every parsed line, not per-helper. See the comment there.
     return true;
 }
 
@@ -700,7 +701,6 @@ static bool plan_arc(Runtime::ChannelState& state,
     arc.delta_angle = delta_angle;
     arc.total_segments = segments;
     arc.current_segment = 0;
-    ++state.block;
     return true;
 }
 
@@ -737,7 +737,7 @@ static bool advance_arc(Runtime::ChannelState& state) {
     return true;
 }
 
-static bool execute_home(Runtime::ChannelState& state,
+static bool execute_home(Runtime::ChannelState& /*state*/,
                          Runtime& runtime,
                          size_t channel,
                          const ParsedLine& parsed) {
@@ -765,7 +765,6 @@ static bool execute_home(Runtime::ChannelState& state,
         motion::g_motion.start_homing(ch.axis_indices[i], plan);
         started = true;
     }
-    if (started) ++state.block;
     return started;
 }
 
@@ -822,6 +821,12 @@ bool Runtime::tick_channel(size_t channel) noexcept {
 
     ParsedLine parsed{};
     if (!parse_line(line, parsed)) return true;
+
+    // Block counter advances on every non-empty parsed line, not only on
+    // motion-bearing or homing lines. Pure-modal lines (G90, F1000, M8)
+    // and macro/M-code lines used to leave state.block stuck at the last
+    // motion block, which made the HMI's "block %u" counter undercount.
+    ++state.block;
 
     if (parsed.set_absolute) state.absolute = parsed.absolute;
     if (parsed.set_inch_mode) state.inch_mode = parsed.inch_mode;
