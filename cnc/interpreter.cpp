@@ -199,6 +199,8 @@ bool Runtime::load_selected(size_t channel) noexcept {
     ch.pending_tool = ch.active_tool;
     ch.tool_length_active = false;
     ch.tool_length_counts = 0;
+    ch.tool_length_x_counts = 0;
+    ch.tool_length_y_counts = 0;
     ch.coolant_mist = false;
     ch.coolant_flood = false;
     ch.arc = Runtime::ChannelState::ArcState{};
@@ -287,6 +289,8 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
         if (parsed.tool_length_cancel) {
             state.tool_length_active = false;
             state.tool_length_counts = 0;
+            state.tool_length_x_counts = 0;
+            state.tool_length_y_counts = 0;
         }
         if (parsed.tool_length_enable) {
             size_t tool = state.active_tool;
@@ -295,8 +299,10 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
                 tool = static_cast<size_t>(parsed.h_word - 1);
             }
             state.tool_length_active = true;
-            state.tool_length_counts =
-                static_cast<int32_t>(offsets::g_service.tool_offsets()[tool].length * 100.0f);
+            const auto& tos = offsets::g_service.tool_offsets()[tool];
+            state.tool_length_counts   = static_cast<int32_t>(tos.length   * 100.0f);
+            state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
+            state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
         }
         // M6 in the source program would physically change the tool, but on
         // a dry scan we only promote the pending index to active so the
@@ -305,8 +311,10 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
         if (parsed.m_code == 6) {
             state.active_tool = state.pending_tool;
             if (state.tool_length_active) {
-                state.tool_length_counts = static_cast<int32_t>(
-                    offsets::g_service.tool_offsets()[state.active_tool].length * 100.0f);
+                const auto& tos = offsets::g_service.tool_offsets()[state.active_tool];
+                state.tool_length_counts   = static_cast<int32_t>(tos.length   * 100.0f);
+                state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
+                state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
             }
         }
         if (parsed.m_code == 7) state.coolant_mist = true;
@@ -554,8 +562,13 @@ static int32_t work_offset_counts(const Runtime::ChannelState& state, char word)
 }
 
 static int32_t tool_length_counts(const Runtime::ChannelState& state, char word) {
-    if (!state.tool_length_active || word != 'Z') return 0;
-    return state.tool_length_counts;
+    if (!state.tool_length_active) return 0;
+    switch (word) {
+        case 'X': return state.tool_length_x_counts;
+        case 'Y': return state.tool_length_y_counts;
+        case 'Z': return state.tool_length_counts;
+        default:  return 0;
+    }
 }
 
 static bool resolve_targets(Runtime::ChannelState& state,
@@ -927,6 +940,8 @@ bool Runtime::tick_channel(size_t channel) noexcept {
     if (parsed.tool_length_cancel) {
         state.tool_length_active = false;
         state.tool_length_counts = 0;
+        state.tool_length_x_counts = 0;
+        state.tool_length_y_counts = 0;
     }
     if (parsed.tool_length_enable) {
         size_t tool = state.active_tool;
@@ -934,7 +949,10 @@ bool Runtime::tick_channel(size_t channel) noexcept {
             tool = static_cast<size_t>(parsed.h_word - 1);
         }
         state.tool_length_active = true;
-        state.tool_length_counts = static_cast<int32_t>(offsets::g_service.tool_offsets()[tool].length * 100.0f);
+        const auto& tos = offsets::g_service.tool_offsets()[tool];
+        state.tool_length_counts   = static_cast<int32_t>(tos.length   * 100.0f);
+        state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
+        state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
     }
 
     if (parsed.home) {
@@ -956,8 +974,10 @@ bool Runtime::tick_channel(size_t channel) noexcept {
         }
         state.active_tool = state.pending_tool;
         if (state.tool_length_active) {
-            state.tool_length_counts = static_cast<int32_t>(
-                offsets::g_service.tool_offsets()[state.active_tool].length * 100.0f);
+            const auto& tos = offsets::g_service.tool_offsets()[state.active_tool];
+            state.tool_length_counts   = static_cast<int32_t>(tos.length   * 100.0f);
+            state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
+            state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
         }
         return true;
     }

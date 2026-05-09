@@ -97,7 +97,15 @@ public:
         size_t active_tool = 0;
         size_t pending_tool = 0;
         bool tool_length_active = false;
+        // Tool-length vector in axis counts. tool_length_counts is the Z
+        // component for 3-axis backwards compatibility; tool_length_x_counts
+        // / tool_length_y_counts default to 0 and are honoured by
+        // tool_length_counts() so any axis whose physical letter is X/Y/Z
+        // gets the right scalar component automatically. 5-axis TCP work
+        // populates all three; 3-axis mills only see the Z field move.
         int32_t tool_length_counts = 0;
+        int32_t tool_length_x_counts = 0;
+        int32_t tool_length_y_counts = 0;
         bool coolant_mist = false;
         bool coolant_flood = false;
         int32_t targets[motion::MAX_AXES]{};

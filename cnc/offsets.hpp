@@ -23,7 +23,14 @@ struct WorkOffset {
 
 struct ToolOffset {
     uint32_t tool = 0;
-    float length = 0.0f;
+    // Tool-length vector in user units. `length` (= length_z) remains the
+    // common case — a straight tool sticking out in +Z. length_x / length_y
+    // exist so 5-axis head/tail kinematics or angled spindles can express
+    // the tool tip's offset from the spindle reference frame as a full
+    // vector, applied per-axis by the interpreter under G43.
+    float length = 0.0f;        // legacy alias for length_z
+    float length_x = 0.0f;
+    float length_y = 0.0f;
     float radius = 0.0f;
     float wear = 0.0f;
 };
