@@ -448,10 +448,20 @@ static int32_t units_to_counts(const Runtime::ChannelState& state, float value) 
 // Convert to counts-per-second so the motion kernel's path-velocity clamp
 // can compare like-with-like. Returns 0 when the F-word hasn't been seen
 // (state.feed defaults to 1000 in load_selected, but interpret as mm/min).
-static uint32_t feed_cps_for_state(const Runtime::ChannelState& state) noexcept {
+//
+// The channel's feed override (set via the `override` CLI verb or the HMI
+// slider) scales the resulting cps when state.override_active is true.
+// M48 enables the slider; M49 disables it (treat permille as 1000).
+static uint32_t feed_cps_for_state(const Runtime::ChannelState& state,
+                                   size_t channel) noexcept {
     if (state.feed == 0) return 0;
     const uint64_t scale = state.inch_mode ? 2540u : 100u;
-    return static_cast<uint32_t>((static_cast<uint64_t>(state.feed) * scale) / 60u);
+    uint64_t cps = (static_cast<uint64_t>(state.feed) * scale) / 60u;
+    if (state.override_active && channel < motion::g_motion.channel_count()) {
+        const uint16_t permille = motion::g_motion.channel(channel).overrides.feed_permille;
+        cps = (cps * permille) / 1000u;
+    }
+    return static_cast<uint32_t>(cps);
 }
 
 // Combined-axis Euclidean distance in counts for the participating axes.
@@ -815,7 +825,7 @@ static bool execute_axes(Runtime::ChannelState& state,
     // per spec.
     uint64_t min_t_final_us = 0;
     if (state.motion_mode != MotionMode::Rapid) {
-        const uint32_t feed_cps = feed_cps_for_state(state);
+        const uint32_t feed_cps = feed_cps_for_state(state, channel);
         if (feed_cps > 0) {
             uint32_t path_counts;
             if (state.tcp_active) {
@@ -1004,7 +1014,7 @@ static bool advance_arc(Runtime::ChannelState& state) {
     // surface feedrate regardless of pitch — without this, a 360° helix
     // with 50 mm rise ran arc-only at F and the linear axis was just
     // dragged along, so the actual surface speed went up by sqrt(1 + (rise/circ)²).
-    const uint32_t feed_cps = feed_cps_for_state(state);
+    const uint32_t feed_cps = feed_cps_for_state(state, channel);
     uint64_t min_t_final_us = 0;
     if (feed_cps > 0) {
         const float arc_seg_len =
@@ -1325,13 +1335,36 @@ bool Runtime::tick_channel(size_t channel) noexcept {
             if (speed < 0) speed = -speed;
             if (parsed.m_code == 5) state.spindle = 0;
             else state.spindle = (parsed.m_code == 4) ? -speed : speed;
+            int32_t commanded = (parsed.m_code == 5) ? 0 : state.spindle;
+            // Apply the channel's spindle override when M48 is in effect.
+            if (state.override_active && commanded != 0 &&
+                channel < motion::g_motion.channel_count()) {
+                const uint16_t permille =
+                    motion::g_motion.channel(channel).overrides.spindle_permille;
+                commanded = static_cast<int32_t>(
+                    (static_cast<int64_t>(commanded) * permille) / 1000);
+            }
             motion::g_motion.set_axis_velocity(static_cast<size_t>(spindle_axis),
-                                               parsed.m_code == 5 ? 0 : state.spindle);
+                                               commanded);
         }
         return true;
     }
-    if (parsed.m_code == 100 || parsed.m_code == 110 || parsed.m_code == 200) {
-        const uint16_t token = static_cast<uint16_t>(parsed.p_word >= 0 ? parsed.p_word : (state.line & 0xFFFF));
+    // M48 / M49 — feed/spindle override enable/disable. Modal flag only;
+    // takes effect on the next feed_cps_for_state / spindle dispatch.
+    if (parsed.m_code == 48) { state.override_active = true;  return true; }
+    if (parsed.m_code == 49) { state.override_active = false; return true; }
+    // M100/M110/M200 — historical sync barrier verbs.
+    // M101..M109 — named alternates. Token defaults to (mcode * 1000 + line)
+    // so a program with multiple M101s at different lines doesn't collide
+    // unless P explicitly forces a shared token. Q (participants mask)
+    // defaults to all-channels (0x3 today; 0xFF leaves room for >2).
+    if (parsed.m_code == 100 || parsed.m_code == 110 || parsed.m_code == 200 ||
+        (parsed.m_code >= 101 && parsed.m_code <= 109)) {
+        const long mcode = parsed.m_code;
+        const uint16_t default_token = static_cast<uint16_t>(
+            (mcode * 1000l + static_cast<long>(state.line)) & 0xFFFF);
+        const uint16_t token = static_cast<uint16_t>(
+            parsed.p_word >= 0 ? parsed.p_word : default_token);
         const uint8_t mask = static_cast<uint8_t>(parsed.q_word >= 0 ? parsed.q_word : 0x3);
         const bool ok = motion::g_motion.arrive_at_barrier(channel, token, mask, 1, 3, 20000);
         if (!ok) {

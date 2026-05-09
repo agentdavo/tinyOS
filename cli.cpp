@@ -1662,6 +1662,62 @@ static int cmd_axis_load_calibrate(const char* args, kernel::hal::UARTDriverOps*
 static int cmd_barriers(const char*, kernel::hal::UARTDriverOps* uart) {
     motion::g_motion.dump_barriers(uart); return 0;
 }
+// One-shot mill-turn sync dashboard: per-channel state + override permilles
+// + interpreter snapshot + active barriers, all in a frame an operator can
+// scan without piecing together output from `channels`, `barriers`, and
+// `program_status`. Read-only.
+static int cmd_sync_status(const char*, kernel::hal::UARTDriverOps* uart) {
+    char buf[200];
+    uart->puts("--- sync_status ---\n");
+    for (size_t c = 0; c < motion::g_motion.channel_count(); ++c) {
+        const auto& ch = motion::g_motion.channel(c);
+        const char* state = "?";
+        switch (ch.state) {
+            case motion::ChannelState::Idle:           state = "idle";    break;
+            case motion::ChannelState::Running:        state = "running"; break;
+            case motion::ChannelState::FeedHold:       state = "hold";    break;
+            case motion::ChannelState::WaitingBarrier: state = "barrier"; break;
+            case motion::ChannelState::Gearing:        state = "gearing"; break;
+            case motion::ChannelState::Fault:          state = "fault";   break;
+        }
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "ch%zu(%s) state=%s feed=%u%% rapid=%u%% spindle=%u%% jd=%ld\n",
+            c, ch.name, state,
+            (unsigned)(ch.overrides.feed_permille    / 10),
+            (unsigned)(ch.overrides.rapid_permille   / 10),
+            (unsigned)(ch.overrides.spindle_permille / 10),
+            static_cast<long>(ch.overrides.junction_deviation_counts));
+        uart->puts(buf);
+        const auto snap = cnc::interp::g_runtime.snapshot(c);
+        const char* istate = "?";
+        switch (snap.state) {
+            case cnc::interp::State::Idle:            istate = "idle";       break;
+            case cnc::interp::State::Ready:           istate = "ready";      break;
+            case cnc::interp::State::Running:         istate = "running";    break;
+            case cnc::interp::State::WaitingBarrier:  istate = "barrier";    break;
+            case cnc::interp::State::WaitingMacro:    istate = "macro";      break;
+            case cnc::interp::State::Dwell:           istate = "dwell";      break;
+            case cnc::interp::State::Complete:        istate = "complete";   break;
+            case cnc::interp::State::Fault:           istate = "fault";      break;
+        }
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "  prog=%s line=%zu block=%zu interp=%s feed=%u spindle=%ld%s\n",
+            snap.program_name, snap.line, snap.block, istate,
+            snap.feed, static_cast<long>(snap.spindle),
+            snap.tool_length_active ? " G43" : "");
+        uart->puts(buf);
+        if (snap.barrier_token != 0) {
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "  waiting on token=0x%04x mask=0x%02x\n",
+                static_cast<unsigned>(snap.barrier_token),
+                static_cast<unsigned>(snap.barrier_mask));
+            uart->puts(buf);
+        }
+    }
+    uart->puts("--- barriers ---\n");
+    motion::g_motion.dump_barriers(uart);
+    return 0;
+}
 static int cmd_gears(const char*, kernel::hal::UARTDriverOps* uart) {
     motion::g_motion.dump_gears(uart); return 0;
 }
@@ -4841,6 +4897,7 @@ CLI::CLI() {
     register_command("axis_load_calibrate", cmd_axis_load_calibrate,
         "axis_load_calibrate <axis>");
     register_command("barriers", cmd_barriers, "List active cross-channel barriers (9.4)");
+    register_command("sync_status", cmd_sync_status, "Mill-turn sync dashboard: per-channel state, overrides, interpreter snap, barriers");
     register_command("barrier_arrive", cmd_barrier_arrive, "barrier_arrive <ch> <token-hex> <parts-mask-hex> [tol] [stable] [maxw]");
     register_command("sync_move", cmd_sync_move, "sync_move <mask-hex> <ax> <tgt> [<ax> <tgt> ...] — cross-channel coordinated move (9.6)");
     register_command("feedhold", cmd_feedhold, "feedhold <ch> <0|1> — per-channel pause/resume (9.7)");

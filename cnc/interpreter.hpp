@@ -96,6 +96,10 @@ public:
         size_t active_work = 0;
         size_t active_tool = 0;
         size_t pending_tool = 0;
+        // M48 enables feed/spindle override sliders, M49 disables them
+        // (treats permille as fixed at 1000). Default true so a fresh
+        // program respects the operator's overrides until told otherwise.
+        bool override_active = true;
         bool tool_length_active = false;
         // Tool-Centre-Point (TCP) mode. When enabled with a non-zero
         // tool-length vector, the interpreter treats X/Y/Z axis words in
