@@ -13,7 +13,16 @@
 namespace render::kinematic {
 
 constexpr size_t MAX_CHANNELS = 2;
-constexpr size_t MAX_AXES = 12;
+// Per-channel headroom: a 5-axis mill needs 6 (X/Y/Z/A/C + spindle), and a
+// MillTurn lathe channel adds at least 3 (X/Z/C + sub-spindle). 8 covers
+// both with a comfortable margin for an extra carriage / tailstock without
+// spilling into the other channel's budget.
+constexpr size_t MAX_AXES_PER_CHANNEL = 8;
+// Total flat-array cap. With 2 channels × 8 axes per channel we get 16,
+// which is room for a 5+5+spindles MillTurn or two independent 5-axis
+// mills. Each AxisConfig + LinkTransform pair is ~340 B, so the bump from
+// 12 → 16 costs ~1.4 KiB per chain — trivial.
+constexpr size_t MAX_AXES = MAX_AXES_PER_CHANNEL * MAX_CHANNELS;
 
 enum class AxisType : uint8_t {
     Linear,
