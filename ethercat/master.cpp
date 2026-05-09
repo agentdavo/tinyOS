@@ -1221,6 +1221,25 @@ void Master::service_dc_drift() noexcept {
         early_uart_puts(buf);
     }
 
+    // Phase-shift compensation. Compute a gentle correction toward the
+    // slave's DC clock and stage it for run_loop to apply on the next
+    // iteration. Positive drift means master got ahead — correction is
+    // positive (lengthen next cycle). Gain is 1/8 of the observed drift
+    // so a single outlier doesn't slew the master phase, and the result
+    // is hard-capped at ±DC_PHASE_MAX_ADJUST_US (5 µs) — a fraction of
+    // the 250 µs cycle, far less than the slave's SM watchdog can
+    // tolerate. Sampler runs at ~10 Hz so the correction tracks ~80
+    // ns/sample of residual drift before each new sample lands.
+    constexpr int32_t kPhaseGainShift  = 3;          // divide by 8
+    constexpr int32_t kPhaseMaxAdjustUs = 5;
+    int32_t adj_us =
+        static_cast<int32_t>((drift_ns >> kPhaseGainShift) / 1000);
+    if (adj_us >  kPhaseMaxAdjustUs) adj_us =  kPhaseMaxAdjustUs;
+    if (adj_us < -kPhaseMaxAdjustUs) adj_us = -kPhaseMaxAdjustUs;
+    if (adj_us != 0) {
+        dc_phase_adjust_us_.store(adj_us, std::memory_order_release);
+    }
+
     if (mag > dc_drift_threshold_ns_) {
         if (++consecutive_drift_misses_ >= CONSECUTIVE_DRIFT_THRESHOLD
             && !dc_sync_fault_.load(std::memory_order_relaxed)) {
@@ -1310,6 +1329,25 @@ void Master::run_loop() {
 
         const uint64_t cycle_start_us = t->get_system_time_us();
         next_us += period_us_;
+        // DC phase-shift compensation: apply any pending adjustment from
+        // service_dc_drift exactly once per cycle. Positive nudges the next
+        // cycle's deadline forward (slow down to let the slave catch up),
+        // negative pulls it back (speed up). The sampler caps the magnitude
+        // so a one-cycle skew can't blow the master period out of spec.
+        const int32_t phase_adj_us =
+            dc_phase_adjust_us_.exchange(0, std::memory_order_acquire);
+        if (phase_adj_us != 0) {
+            const int64_t adj_signed = phase_adj_us;
+            // next_us is uint64_t; clamp the shift so a negative adj can't
+            // wrap when next_us is small (early boot).
+            if (adj_signed < 0 &&
+                static_cast<uint64_t>(-adj_signed) > next_us) {
+                next_us = 0;
+            } else {
+                next_us = static_cast<uint64_t>(
+                    static_cast<int64_t>(next_us) + adj_signed);
+            }
+        }
 
         if (slave_count_ == 0) {
             const uint64_t t0 = t->get_system_time_us();

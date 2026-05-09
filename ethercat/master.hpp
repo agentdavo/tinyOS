@@ -372,6 +372,13 @@ private:
     uint64_t             last_dc_sample_us_    = 0;
     std::atomic<int64_t> last_dc_drift_ns_{0};
     size_t               dc_round_robin_idx_   = 0;
+    // Phase-shift compensation pending application by run_loop. Positive
+    // value means the master cycle should wait LONGER next iteration
+    // (master's wall clock leading slave DC); negative means SHORTER.
+    // Capped per-application to ±DC_PHASE_MAX_ADJUST_US so a single
+    // outlier sample can't slew the bus phase out from under itself.
+    // Applied once per cycle then atomically cleared.
+    std::atomic<int32_t> dc_phase_adjust_us_{0};
 
     // --- SDO upload state (task 1.2 + segmented follow-up) ----------------
     // Linear state machine driving a single mailbox exchange at a time.
