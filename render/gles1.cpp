@@ -325,6 +325,7 @@ bool Renderer::draw_mesh_solid(const MeshView& mesh) {
     const Mat4 mv = multiply(view_, model_);
     const Mat4 mvp = multiply(projection_, mv);
 
+    constexpr float kNearW = 0.001f;
     const size_t tri_count = mesh.index_count / 3;
     size_t drawn = 0;
 
@@ -333,14 +334,68 @@ bool Renderer::draw_mesh_solid(const MeshView& mesh) {
         const uint16_t i1 = mesh.indices[t * 3 + 1];
         const uint16_t i2 = mesh.indices[t * 3 + 2];
 
-        const Vertex& v0 = mesh.vertices[i0];
-        const Vertex& v1 = mesh.vertices[i1];
-        const Vertex& v2 = mesh.vertices[i2];
-        const RasterVertex rv0 = shade_vertex(mv, mvp, v0);
-        const RasterVertex rv1 = shade_vertex(mv, mvp, v1);
-        const RasterVertex rv2 = shade_vertex(mv, mvp, v2);
-        if (rasterize_triangle(rv0, rv1, rv2)) {
-            ++drawn;
+        const ClipVertex c[3] = {
+            transform_to_clip(mv, mvp, mesh.vertices[i0]),
+            transform_to_clip(mv, mvp, mesh.vertices[i1]),
+            transform_to_clip(mv, mvp, mesh.vertices[i2]),
+        };
+        const bool b[3] = {
+            c[0].clip_pos.w <= kNearW,
+            c[1].clip_pos.w <= kNearW,
+            c[2].clip_pos.w <= kNearW,
+        };
+        const int behind = (b[0] ? 1 : 0) + (b[1] ? 1 : 0) + (b[2] ? 1 : 0);
+        if (behind == 3) continue;
+
+        // Sutherland-Hodgman near-plane clip (single plane: w >= kNearW).
+        // 0 behind → emit the triangle as-is. 1 behind → split into two
+        // tris (the two visible vertices plus two lerp points along the
+        // edges to the behind vertex). 2 behind → emit one tri using the
+        // single visible vertex plus two lerp points.
+        ClipVertex out[6]{};
+        size_t out_count = 0;
+        if (behind == 0) {
+            out[0] = c[0]; out[1] = c[1]; out[2] = c[2];
+            out_count = 3;
+        } else if (behind == 1) {
+            // Find the behind vertex and the two in-front ones in order.
+            size_t bidx = b[0] ? 0 : (b[1] ? 1 : 2);
+            size_t in0 = (bidx + 1) % 3;
+            size_t in1 = (bidx + 2) % 3;
+            const auto& B = c[bidx];
+            const auto& A0 = c[in0];
+            const auto& A1 = c[in1];
+            // Edge A0→B intersection: lerp parameter t where w = kNearW.
+            // w(t) = A0.w + t*(B.w - A0.w) = kNearW → t = (kNearW - A0.w) / (B.w - A0.w).
+            const float t0 = (kNearW - A0.clip_pos.w) / (B.clip_pos.w - A0.clip_pos.w);
+            const float t1 = (kNearW - A1.clip_pos.w) / (B.clip_pos.w - A1.clip_pos.w);
+            const ClipVertex L0 = lerp_clip(A0, B, t0);
+            const ClipVertex L1 = lerp_clip(A1, B, t1);
+            // Emit two triangles: A0 A1 L1, then A0 L1 L0. Wind order
+            // preserves the original triangle's CCW.
+            out[0] = A0; out[1] = A1; out[2] = L1;
+            out[3] = A0; out[4] = L1; out[5] = L0;
+            out_count = 6;
+        } else { // behind == 2
+            size_t iidx = b[0] ? (b[1] ? 2 : 1) : 0;
+            size_t b0 = (iidx + 1) % 3;
+            size_t b1 = (iidx + 2) % 3;
+            const auto& A = c[iidx];
+            const auto& B0 = c[b0];
+            const auto& B1 = c[b1];
+            const float t0 = (kNearW - A.clip_pos.w) / (B0.clip_pos.w - A.clip_pos.w);
+            const float t1 = (kNearW - A.clip_pos.w) / (B1.clip_pos.w - A.clip_pos.w);
+            out[0] = A;
+            out[1] = lerp_clip(A, B0, t0);
+            out[2] = lerp_clip(A, B1, t1);
+            out_count = 3;
+        }
+
+        for (size_t v = 0; v + 2 < out_count + 1; v += 3) {
+            const RasterVertex rv0 = shade_clipped(out[v + 0]);
+            const RasterVertex rv1 = shade_clipped(out[v + 1]);
+            const RasterVertex rv2 = shade_clipped(out[v + 2]);
+            if (rasterize_triangle(rv0, rv1, rv2)) ++drawn;
         }
     }
     return drawn > 0;
@@ -367,36 +422,67 @@ bool Renderer::draw_polyline(const Vec3f* points, size_t point_count, Color4u8 c
     return drawn > 0;
 }
 
-Renderer::RasterVertex Renderer::shade_vertex(const Mat4& model_view, const Mat4& mvp,
-                                              const Vertex& vertex) const {
-    RasterVertex out{};
-    out.valid = false;
-
-    const Vec4f clip = multiply(mvp, Vec4f{
+Renderer::ClipVertex Renderer::transform_to_clip(const Mat4& model_view,
+                                                 const Mat4& mvp,
+                                                 const Vertex& vertex) const {
+    ClipVertex out{};
+    out.clip_pos = multiply(mvp, Vec4f{
         vertex.position.x, vertex.position.y, vertex.position.z, 1.0f});
-    if (clip.w <= 0.001f) {
-        return out;
-    }
-
-    const float inv_w = 1.0f / clip.w;
-    out.x = (clip.x * inv_w * 0.5f + 0.5f) * static_cast<float>(framebuffer_.width);
-    out.y = (1.0f - (clip.y * inv_w * 0.5f + 0.5f)) * static_cast<float>(framebuffer_.height);
-    out.z = clip.z * inv_w;
-
     const Vec4f eye_pos4 = multiply(model_view, Vec4f{
         vertex.position.x, vertex.position.y, vertex.position.z, 1.0f});
-    const Vec3f eye_pos{eye_pos4.x, eye_pos4.y, eye_pos4.z};
-
+    out.eye_pos = Vec3f{eye_pos4.x, eye_pos4.y, eye_pos4.z};
     Vec4f eye_n4 = multiply(model_view, Vec4f{
         vertex.normal.x, vertex.normal.y, vertex.normal.z, 0.0f});
-    Vec3f normal = normalize_v3_fast(Vec3f{eye_n4.x, eye_n4.y, eye_n4.z});
+    out.eye_normal = Vec3f{eye_n4.x, eye_n4.y, eye_n4.z};
+    out.base_color = Color4f{
+        static_cast<float>(vertex.color.r) * (1.0f / 255.0f),
+        static_cast<float>(vertex.color.g) * (1.0f / 255.0f),
+        static_cast<float>(vertex.color.b) * (1.0f / 255.0f),
+        static_cast<float>(vertex.color.a) * (1.0f / 255.0f)
+    };
+    out.valid = true;
+    return out;
+}
+
+Renderer::ClipVertex Renderer::lerp_clip(const ClipVertex& a, const ClipVertex& b,
+                                         float t) noexcept {
+    const float u = 1.0f - t;
+    ClipVertex r{};
+    r.clip_pos.x = a.clip_pos.x * u + b.clip_pos.x * t;
+    r.clip_pos.y = a.clip_pos.y * u + b.clip_pos.y * t;
+    r.clip_pos.z = a.clip_pos.z * u + b.clip_pos.z * t;
+    r.clip_pos.w = a.clip_pos.w * u + b.clip_pos.w * t;
+    r.eye_pos.x  = a.eye_pos.x  * u + b.eye_pos.x  * t;
+    r.eye_pos.y  = a.eye_pos.y  * u + b.eye_pos.y  * t;
+    r.eye_pos.z  = a.eye_pos.z  * u + b.eye_pos.z  * t;
+    r.eye_normal.x = a.eye_normal.x * u + b.eye_normal.x * t;
+    r.eye_normal.y = a.eye_normal.y * u + b.eye_normal.y * t;
+    r.eye_normal.z = a.eye_normal.z * u + b.eye_normal.z * t;
+    r.base_color.r = a.base_color.r * u + b.base_color.r * t;
+    r.base_color.g = a.base_color.g * u + b.base_color.g * t;
+    r.base_color.b = a.base_color.b * u + b.base_color.b * t;
+    r.base_color.a = a.base_color.a * u + b.base_color.a * t;
+    r.valid = true;
+    return r;
+}
+
+Renderer::RasterVertex Renderer::shade_clipped(const ClipVertex& cv) const {
+    RasterVertex out{};
+    out.valid = false;
+    if (!cv.valid || cv.clip_pos.w <= 0.001f) return out;
+
+    const float inv_w = 1.0f / cv.clip_pos.w;
+    out.x = (cv.clip_pos.x * inv_w * 0.5f + 0.5f) * static_cast<float>(framebuffer_.width);
+    out.y = (1.0f - (cv.clip_pos.y * inv_w * 0.5f + 0.5f)) * static_cast<float>(framebuffer_.height);
+    out.z = cv.clip_pos.z * inv_w;
+
+    Vec3f normal = normalize_v3_fast(cv.eye_normal);
     if (normal.x == 0.0f && normal.y == 0.0f && normal.z == 0.0f) {
         normal = Vec3f{0.0f, 0.0f, 1.0f};
     }
-
     Vec3f light_dir = normalize_v3_fast(light_.position);
     light_dir = mul_v3f(light_dir, -1.0f);
-    const Vec3f view_dir = normalize_v3_fast(mul_v3f(eye_pos, -1.0f));
+    const Vec3f view_dir = normalize_v3_fast(mul_v3f(cv.eye_pos, -1.0f));
     const Vec3f half_dir = normalize_v3_fast(add_v3(light_dir, view_dir));
 
     const float ndotl = maxf(0.0f, dot_v3v3(normal, light_dir));
@@ -406,23 +492,15 @@ Renderer::RasterVertex Renderer::shade_vertex(const Mat4& model_view, const Mat4
         : material_.shininess;
     const float specular = spec_power > 0.0f ? pow_approx(ndoth, spec_power) : 0.0f;
 
-    Color4f base{
-        static_cast<float>(vertex.color.r) * (1.0f / 255.0f),
-        static_cast<float>(vertex.color.g) * (1.0f / 255.0f),
-        static_cast<float>(vertex.color.b) * (1.0f / 255.0f),
-        static_cast<float>(vertex.color.a) * (1.0f / 255.0f)
-    };
-
     Color4f lit = add_c4(
-        mul_c4(base, mul_c4(material_.ambient, light_.ambient)),
+        mul_c4(cv.base_color, mul_c4(material_.ambient, light_.ambient)),
         add_c4(
-            mul_c4(base, scale_c4(mul_c4(material_.diffuse, light_.diffuse), ndotl)),
+            mul_c4(cv.base_color, scale_c4(mul_c4(material_.diffuse, light_.diffuse), ndotl)),
             scale_c4(mul_c4(material_.specular, light_.specular), specular)));
-
     lit.r = clampf(lit.r, 0.0f, 1.0f);
     lit.g = clampf(lit.g, 0.0f, 1.0f);
     lit.b = clampf(lit.b, 0.0f, 1.0f);
-    lit.a = clampf(base.a * material_.diffuse.a, 0.0f, 1.0f);
+    lit.a = clampf(cv.base_color.a * material_.diffuse.a, 0.0f, 1.0f);
     out.color = lit;
     out.valid = true;
     return out;

@@ -130,6 +130,18 @@ private:
         bool valid;
     };
 
+    // Clipper-stage vertex. Carries clip-space position + eye-space pos
+    // and normal + base colour so Sutherland-Hodgman near-plane clip can
+    // lerp every attribute along an edge before the screen-mapping +
+    // shading stages run on the resulting (potentially split) triangles.
+    struct ClipVertex {
+        Vec4f   clip_pos;
+        Vec3f   eye_pos;
+        Vec3f   eye_normal;
+        Color4f base_color;
+        bool    valid;
+    };
+
     FramebufferView framebuffer_{};
     Mat4 model_ = Mat4::identity();
     Mat4 view_ = Mat4::identity();
@@ -141,7 +153,14 @@ private:
 
     void put_pixel(int32_t x, int32_t y, uint32_t argb);
     void draw_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t argb);
-    RasterVertex shade_vertex(const Mat4& model_view, const Mat4& mvp, const Vertex& vertex) const;
+    // World→clip transform with attribute capture; called per input
+    // vertex BEFORE Sutherland-Hodgman near-plane clipping.
+    ClipVertex transform_to_clip(const Mat4& model_view, const Mat4& mvp,
+                                 const Vertex& vertex) const;
+    // Clip→screen + Phong shading for a (possibly clip-lerp'd) vertex.
+    RasterVertex shade_clipped(const ClipVertex& cv) const;
+    // Interpolate two ClipVertex along a parametric t in [0, 1].
+    static ClipVertex lerp_clip(const ClipVertex& a, const ClipVertex& b, float t) noexcept;
     bool rasterize_triangle(const RasterVertex& v0, const RasterVertex& v1, const RasterVertex& v2);
     static uint32_t pack_argb(Color4u8 color);
     static uint32_t pack_argb_f(Color4f color);
