@@ -97,6 +97,17 @@ public:
         size_t active_tool = 0;
         size_t pending_tool = 0;
         bool tool_length_active = false;
+        // Tool-Centre-Point (TCP) mode. When enabled with a non-zero
+        // tool-length vector, the interpreter treats X/Y/Z axis words in
+        // motion lines as TOOL-TIP coordinates in the part frame. The
+        // current (or move-target) B/C orientation is composed with the
+        // tool vector to yield the spindle-reference position the
+        // mechanical axes need to move to. Disabled = motion words
+        // command the spindle reference directly (3-axis convention).
+        // Future: G43.4 / G49.1 to enable/disable from G-code (parser
+        // needs decimal G-code dispatch first); CLI 'tcp on/off' until
+        // then.
+        bool tcp_active = false;
         // Tool-length vector in axis counts. tool_length_counts is the Z
         // component for 3-axis backwards compatibility; tool_length_x_counts
         // / tool_length_y_counts default to 0 and are honoured by
@@ -146,6 +157,14 @@ public:
     bool start_all_loaded() noexcept;
     bool stop(size_t channel) noexcept;
     void tick() noexcept;
+
+    // Tool-Centre-Point mode toggle. Returns false on out-of-range
+    // channel. Independent of tool_length_active — TCP without a tool
+    // length is effectively a no-op since the rotation is applied to a
+    // zero vector. CLI / setup persistence drive this until a G-code
+    // G43.4 / G49.1 path lands.
+    bool set_tcp_active(size_t channel, bool active) noexcept;
+    bool tcp_active(size_t channel) const noexcept;
 
     // Mid-program restart. Reloads the selected program on `channel`, then
     // does a motion-free scan of lines 0..target_line-1, applying only modal
