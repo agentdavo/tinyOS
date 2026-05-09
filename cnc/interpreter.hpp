@@ -173,6 +173,18 @@ public:
     bool set_tcp_active(size_t channel, bool active) noexcept;
     bool tcp_active(size_t channel) const noexcept;
 
+    // Rotation order for the head-kinematics composition. CB = R_C·R_B (the
+    // mill-turn TSV's C-then-B parenting, the historical default). BC = R_B
+    // ·R_C, used on AC/BC heads where B is parented to base. Set globally;
+    // read per-tick by apply_tcp_correction. Tail-kinematics gets its own
+    // mode; rotation order still applies inside it.
+    enum class TcpOrder : uint8_t { CB = 0, BC = 1 };
+    enum class TcpMode  : uint8_t { Head = 0, Tail = 1 };
+    void      set_tcp_order(TcpOrder order) noexcept { tcp_order_ = order; }
+    TcpOrder  tcp_order() const noexcept             { return tcp_order_; }
+    void      set_tcp_mode(TcpMode mode) noexcept    { tcp_mode_ = mode; }
+    TcpMode   tcp_mode() const noexcept              { return tcp_mode_; }
+
     // Mid-program restart. Reloads the selected program on `channel`, then
     // does a motion-free scan of lines 0..target_line-1, applying only modal
     // side effects (absolute/inch/plane/motion-mode, feed/spindle, active
@@ -205,6 +217,8 @@ private:
     uint64_t now_us() const noexcept;
 
     ChannelState channels_[programs::MAX_CHANNELS]{};
+    TcpOrder     tcp_order_ = TcpOrder::CB;
+    TcpMode      tcp_mode_  = TcpMode::Head;
 };
 
 extern Runtime g_runtime;

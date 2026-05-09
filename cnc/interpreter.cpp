@@ -8,6 +8,7 @@
 #include "../ethercat/master.hpp"
 #include "../ui/operator_api.hpp"
 #include "../miniOS.hpp"
+#include "../klog.hpp"
 #include "../util_math.hpp"
 
 namespace cnc::interp {
@@ -630,12 +631,13 @@ static int32_t tool_length_counts(const Runtime::ChannelState& state, char word)
     }
 }
 
-// Tool-tip → spindle-reference transform for 5-axis TCP. Composes a head-
-// kinematics R_C * R_B rotation of the tool vector and subtracts it from
-// the requested tool-tip target so the X/Y/Z axes drive the spindle to
-// the position that puts the tip at the requested point. Rotary
-// targets[B] / targets[C] are expected in axis counts; conversion to
-// radians uses the kernel's 100 cnt/degree convention. Linear length
+// Tool-tip → spindle-reference transform for 5-axis TCP. Composes a
+// head-kinematics rotation of the tool vector and subtracts it from the
+// requested tool-tip target so the X/Y/Z axes drive the spindle to the
+// position that puts the tip at the requested point.
+//
+// Rotary targets[B] / targets[C] are expected in axis counts; conversion
+// to radians uses the kernel's 100 cnt/degree convention. Linear length
 // components are in axis counts (already pre-scaled into
 // state.tool_length_*_counts at G43 time).
 //
@@ -644,7 +646,22 @@ static int32_t tool_length_counts(const Runtime::ChannelState& state, char word)
 // a typical mill head with a spindle pointing -Z when B = 0 and C = 0
 // and a positive length_z, the tool vector in the machine frame is
 // (0, 0, -length_z), so the spindle reference position equals
-// tool_tip - R_C * R_B * (length_x, length_y, length_z).
+// tool_tip - R · (length_x, length_y, length_z).
+//
+// Rotation composition is selectable via Runtime::tcp_order():
+//   CB (default) — R = R_C · R_B  (B applied first, then C; matches the
+//                  millturn TSV's C-then-B parent chain).
+//   BC           — R = R_B · R_C  (C applied first, then B; AC/BC heads
+//                  where B is the outer joint).
+//
+// Mode selectable via Runtime::tcp_mode():
+//   Head — rotaries carry the tool. The composition above runs unchanged.
+//   Tail — rotaries carry the workpiece. The relationship between the
+//          requested tool-tip (in workpiece coords) and the machine-frame
+//          target depends on the rotary pivot offset, which today is not
+//          captured in the kinematic_model TSV. Until that lands, Tail
+//          falls through to the Head path and emits a one-shot klog
+//          warning so the operator notices.
 static void apply_tcp_correction(Runtime::ChannelState& state,
                                  Runtime& runtime,
                                  size_t channel,
@@ -661,6 +678,20 @@ static void apply_tcp_correction(Runtime::ChannelState& state,
     if (!has_xy || !has_z) return;
     const bool has_b = runtime.resolve_axis_word(channel, 'B', b_idx);
     const bool has_c = runtime.resolve_axis_word(channel, 'C', c_idx);
+    if (runtime.tcp_mode() == Runtime::TcpMode::Tail) {
+        // One-shot warning so the operator sees the limitation in klog;
+        // motion still advances using the head path so a multi-axis
+        // toolpath at least retains the rotary correction's primary
+        // contribution. Pivot-offset support lands with the kinematic_
+        // model TSV extension (see CHANNELS.md "TCP" task).
+        static bool warned_once = false;
+        if (!warned_once) {
+            warned_once = true;
+            const char msg[] =
+                "[tcp] tail-kinematics not implemented; falling back to head\n";
+            kernel::klog::record(msg, sizeof(msg) - 1);
+        }
+    }
     // Convention: rotary axis counts at 100 cnt/degree → degrees/100 →
     // radians. cos(0)=1, sin(0)=0, so a 3-axis machine with no B/C falls
     // through with the tool vector unrotated and the correction reduces
@@ -676,19 +707,32 @@ static void apply_tcp_correction(Runtime::ChannelState& state,
         ? (static_cast<float>(targets[c_idx]) / 100.0f) *
           kernel::util::math::kDegToRad
         : 0.0f;
-    const float cb = cos_approx(beta_rad), sb = sin_approx(beta_rad);
+    const float cb = cos_approx(beta_rad),  sb = sin_approx(beta_rad);
     const float cc = cos_approx(gamma_rad), sc = sin_approx(gamma_rad);
     const float lx = static_cast<float>(state.tool_length_x_counts);
     const float ly = static_cast<float>(state.tool_length_y_counts);
     const float lz = static_cast<float>(state.tool_length_counts);
-    // R_B (pitch around Y): (x', y', z') = (x*cb + z*sb, y, -x*sb + z*cb)
-    const float xb =  lx * cb + lz * sb;
-    const float yb =  ly;
-    const float zb = -lx * sb + lz * cb;
-    // R_C (yaw around Z): (x', y', z') = (x*cc - y*sc, x*sc + y*cc, z)
-    const float xw = xb * cc - yb * sc;
-    const float yw = xb * sc + yb * cc;
-    const float zw = zb;
+
+    float xw, yw, zw;
+    if (runtime.tcp_order() == Runtime::TcpOrder::CB) {
+        // R = R_C · R_B applied to (lx, ly, lz):
+        //   step 1 — R_B (pitch around Y):
+        //   step 2 — R_C (yaw around Z) on the R_B output.
+        const float xb =  lx * cb + lz * sb;
+        const float yb =  ly;
+        const float zb = -lx * sb + lz * cb;
+        xw = xb * cc - yb * sc;
+        yw = xb * sc + yb * cc;
+        zw = zb;
+    } else {
+        // R = R_B · R_C — apply R_C first, then R_B.
+        const float xc =  lx * cc - ly * sc;
+        const float yc =  lx * sc + ly * cc;
+        const float zc =  lz;
+        xw =  xc * cb + zc * sb;
+        yw =  yc;
+        zw = -xc * sb + zc * cb;
+    }
     // Undo the G43-scalar Z addition that resolve_targets applied via
     // tool_length_counts() so we don't correct twice. tool_length_x/y
     // weren't applied (3-axis G43 path is Z-only) so no undo there.

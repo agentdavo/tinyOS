@@ -2912,15 +2912,62 @@ static int cmd_queue_depth(const char*, kernel::hal::UARTDriverOps* uart) {
 }
 
 static int cmd_tcp(const char* args, kernel::hal::UARTDriverOps* uart) {
-    // tcp <ch> <on|off>  — toggle 5-axis Tool-Centre-Point mode.
+    // tcp                        — show current TCP order/mode + per-channel state.
+    // tcp <ch> <on|off>          — toggle 5-axis Tool-Centre-Point mode on a channel.
+    // tcp order <cb|bc>          — set the head-kinematics rotation composition.
+    // tcp mode  <head|tail>      — head=rotaries on tool, tail=rotaries on table.
+    using cnc::interp::Runtime;
     if (!args || !*args) {
-        uart->puts("usage: tcp <channel> <on|off>\n");
-        return 1;
+        char buf[160];
+        const char* mode_s  = (cnc::interp::g_runtime.tcp_mode()  == Runtime::TcpMode::Head)  ? "head" : "tail";
+        const char* order_s = (cnc::interp::g_runtime.tcp_order() == Runtime::TcpOrder::CB)   ? "cb"   : "bc";
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "tcp: mode=%s order=%s\n  ch0=%s ch1=%s\n",
+            mode_s, order_s,
+            cnc::interp::g_runtime.tcp_active(0) ? "on" : "off",
+            cnc::interp::g_runtime.tcp_active(1) ? "on" : "off");
+        uart->puts(buf);
+        return 0;
     }
     const char* p = args;
+    while (*p == ' ') ++p;
+
+    if (kernel::util::kstrncmp(p, "order", 5) == 0 && (p[5] == ' ' || p[5] == '\0')) {
+        p += 5;
+        while (*p == ' ') ++p;
+        if (kernel::util::kstrcmp(p, "cb") == 0) {
+            cnc::interp::g_runtime.set_tcp_order(Runtime::TcpOrder::CB);
+            uart->puts("tcp: order=cb (R = R_C * R_B)\n");
+            return 0;
+        }
+        if (kernel::util::kstrcmp(p, "bc") == 0) {
+            cnc::interp::g_runtime.set_tcp_order(Runtime::TcpOrder::BC);
+            uart->puts("tcp: order=bc (R = R_B * R_C)\n");
+            return 0;
+        }
+        uart->puts("tcp: expected cb|bc\n");
+        return 1;
+    }
+    if (kernel::util::kstrncmp(p, "mode", 4) == 0 && (p[4] == ' ' || p[4] == '\0')) {
+        p += 4;
+        while (*p == ' ') ++p;
+        if (kernel::util::kstrcmp(p, "head") == 0) {
+            cnc::interp::g_runtime.set_tcp_mode(Runtime::TcpMode::Head);
+            uart->puts("tcp: mode=head\n");
+            return 0;
+        }
+        if (kernel::util::kstrcmp(p, "tail") == 0) {
+            cnc::interp::g_runtime.set_tcp_mode(Runtime::TcpMode::Tail);
+            uart->puts("tcp: mode=tail (NB: tail-kinematics not yet implemented; falls back to head with klog warning)\n");
+            return 0;
+        }
+        uart->puts("tcp: expected head|tail\n");
+        return 1;
+    }
+
     long ch = 0;
     if (!cli_parse_long(p, ch)) {
-        uart->puts("tcp: bad args\n");
+        uart->puts("usage: tcp [order cb|bc] [mode head|tail] | tcp <ch> on|off\n");
         return 1;
     }
     while (*p == ' ') ++p;
@@ -4800,7 +4847,7 @@ CLI::CLI() {
     register_command("tq", cmd_torque_limit, "tq <axis> <permille> — set CiA-402 0x6072 max-torque on the axis's drive");
     register_command("junction_dev", cmd_junction_dev, "junction_dev [<ch> <counts>] — get/set per-channel corner-error budget");
     register_command("queue_depth", cmd_queue_depth, "queue_depth — dump per-channel look-ahead chain occupancy");
-    register_command("tcp", cmd_tcp, "tcp <ch> <on|off> — toggle 5-axis Tool-Centre-Point mode");
+    register_command("tcp", cmd_tcp, "tcp [order cb|bc | mode head|tail | <ch> on|off] — 5-axis TCP control");
     register_command("topology", cmd_topology, "topology <name>=<ax,ax,...> [...] — rewrite axis-to-channel binding (9.8)");
     register_command("override", cmd_override, "override <ch> <feed|rapid|spindle> <permille> — per-channel speed override (9.7)");
     register_command("gears", cmd_gears, "List active electronic-gear links (9.5) + phase error (9.9)");
