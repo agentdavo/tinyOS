@@ -27,6 +27,7 @@
 #include "machine/machine_registry.hpp"
 #include "machine/motion_wiring.hpp"
 #include "machine/toolpods.hpp"
+#include "machine/pallet.hpp"
 #include "devices/device_db.hpp"
 #include "diag/jitter.hpp"
 #include "diag/cpu_load.hpp"
@@ -1242,6 +1243,90 @@ static int cmd_toolpod_assign(const char* args, kernel::hal::UARTDriverOps* uart
     uart->puts(ok ? "toolpod_assign: ok\n" : "toolpod_assign: failed\n");
     return ok ? 0 : 1;
 }
+
+// --- Lights-out pallet management ---
+static int cmd_pallets(const char*, kernel::hal::UARTDriverOps* uart) {
+    char buf[192];
+    const size_t n = machine::pallet::g_service.pallet_count();
+    const size_t active = machine::pallet::g_service.active_pallet();
+    kernel::util::k_snprintf(buf, sizeof(buf), "pallets: %lu  active=%s\n",
+                             static_cast<unsigned long>(n),
+                             active == SIZE_MAX ? "(none)"
+                                : machine::pallet::g_service.pallet(active)
+                                  ? machine::pallet::g_service.pallet(active)->id : "?");
+    uart->puts(buf);
+    for (size_t i = 0; i < n; ++i) {
+        const auto* pl = machine::pallet::g_service.pallet(i);
+        if (!pl) continue;
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "[%lu] %s station=%u fixture=%s wcs=%d status=%s prog=%s cycles=%u/%u%s%s\n",
+            static_cast<unsigned long>(i), pl->id,
+            static_cast<unsigned>(pl->station_index),
+            pl->fixture_id[0] ? pl->fixture_id : "-",
+            pl->work_offset_index,
+            machine::pallet::Service::status_name(pl->status),
+            pl->assigned_program[0] ? pl->assigned_program : "-",
+            static_cast<unsigned>(pl->cycles_completed),
+            static_cast<unsigned>(pl->target_cycles),
+            pl->last_message[0] ? "  msg=" : "",
+            pl->last_message[0] ? pl->last_message : "");
+        uart->puts(buf);
+    }
+    return 0;
+}
+
+static int cmd_pallet_status(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // pallet_status <id> <empty|loaded|cutting|done|fault|hold>
+    if (!args || !*args) {
+        uart->puts("usage: pallet_status <id> <empty|loaded|cutting|done|fault|hold>\n");
+        return 1;
+    }
+    const char* p = args;
+    while (*p == ' ') ++p;
+    char id[32];
+    size_t n = 0;
+    while (*p && *p != ' ' && n + 1 < sizeof(id)) id[n++] = *p++;
+    id[n] = '\0';
+    while (*p == ' ') ++p;
+    machine::pallet::PalletStatus s = machine::pallet::PalletStatus::Empty;
+    if (!machine::pallet::Service::parse_status(p, s)) {
+        uart->puts("pallet_status: bad status token\n");
+        return 1;
+    }
+    const bool ok = machine::pallet::g_service.set_status(id, s);
+    uart->puts(ok ? "pallet_status: ok\n" : "pallet_status: failed (unknown id?)\n");
+    return ok ? 0 : 1;
+}
+
+static int cmd_pallet_assign(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // pallet_assign <id> <program.ngc> <wcs-index 0..5>
+    if (!args || !*args) {
+        uart->puts("usage: pallet_assign <id> <program.ngc> <wcs-index>\n");
+        return 1;
+    }
+    const char* p = args;
+    while (*p == ' ') ++p;
+    char id[32];
+    size_t n = 0;
+    while (*p && *p != ' ' && n + 1 < sizeof(id)) id[n++] = *p++;
+    id[n] = '\0';
+    while (*p == ' ') ++p;
+    char prog[64];
+    n = 0;
+    while (*p && *p != ' ' && n + 1 < sizeof(prog)) prog[n++] = *p++;
+    prog[n] = '\0';
+    long wcs = -1;
+    (void)cli_parse_long(p, wcs);
+    size_t idx = 0;
+    if (!machine::pallet::g_service.find_pallet(id, idx)) {
+        uart->puts("pallet_assign: unknown pallet\n");
+        return 1;
+    }
+    const bool ok = machine::pallet::g_service.assign_program(idx, prog, static_cast<int>(wcs));
+    uart->puts(ok ? "pallet_assign: ok\n" : "pallet_assign: failed\n");
+    return ok ? 0 : 1;
+}
+
 
 static int cmd_ui_page(const char* args, kernel::hal::UARTDriverOps* uart) {
     if (!uart) return 1;
@@ -4852,6 +4937,9 @@ CLI::CLI() {
     register_command("symbol_set", cmd_symbol_set, "symbol_set <name> <value> — override a writable machine symbol");
     register_command("ladder_ls", cmd_ladder_ls, "ladder_ls — list loaded ladder rungs");
     register_command("toolpods", cmd_toolpods, "toolpods — list configured physical pods and virtual tool assignments");
+    register_command("pallets", cmd_pallets, "pallets — list pallet roster, status, and assigned program");
+    register_command("pallet_status", cmd_pallet_status, "pallet_status <id> <empty|loaded|cutting|done|fault|hold>");
+    register_command("pallet_assign", cmd_pallet_assign, "pallet_assign <id> <program.ngc> <wcs 0..5> — set per-pallet program + WCS");
     register_command("toolpod_select", cmd_toolpod_select, "toolpod_select <pod> <station> — move/select a physical pod station");
     register_command("toolpod_assign", cmd_toolpod_assign, "toolpod_assign <pod> <station> <virtual_tool> — remap virtual tool onto a physical station");
     register_command("ui_page", cmd_ui_page, "ui_page <id> — switch the active TSV UI page");

@@ -32,7 +32,7 @@ CORE_CPP = core.cpp hal.cpp util.cpp trace.cpp klog.cpp cli.cpp kernel_globals.c
             diag/histogram.cpp diag/jitter.cpp diag/cpu_load.cpp \
             rt/base_thread.cpp \
 ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
-             ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp hmi/hmi_service.cpp \
+             ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp machine/pallet.cpp hmi/hmi_service.cpp \
               cnc/offsets.cpp cnc/programs.cpp cnc/interpreter.cpp cnc/mdi.cpp \
               cnc/setup.cpp \
              render/gles1.cpp render/machine_model.cpp render/kinematic_model.cpp \
@@ -172,7 +172,7 @@ CORE_CPP  = kernel/main.cpp core.cpp util.cpp trace.cpp klog.cpp cli.cpp kernel_
                 diag/histogram.cpp diag/jitter.cpp diag/cpu_load.cpp \
                 rt/base_thread.cpp \
                 ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
-                ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp hmi/hmi_service.cpp \
+                ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp machine/pallet.cpp hmi/hmi_service.cpp \
                 cnc/offsets.cpp cnc/programs.cpp cnc/interpreter.cpp cnc/mdi.cpp \
                 cnc/setup.cpp \
                 render/gles1.cpp render/machine_model.cpp render/kinematic_model.cpp \

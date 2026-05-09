@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Pallet roster for lights-out CNC. Each row defines one platform on
+# the swap table. station=N is the physical station index a robot's
+# pick/place macro looks up; wcs=0..5 maps to G54..G59 so the swap
+# macro can flip the active work offset before re-arming the program.
+#
+# Format:
+#   pallet	id=...	fixture=...	program=...	station=N	wcs=N	target=N	status=...
+#
+# Notes:
+#   - Empty `program` leaves the pallet in Empty status (won't be picked
+#     by the scheduler). Setting a program promotes the default to Loaded.
+#   - target=0 means run forever (the scheduler keeps re-running the
+#     same program until status flips). target>0 caps total cycles for
+#     that pallet — useful when one fixture holds N parts.
+
+pallet	id=P01	fixture=vise_a	program=demo_face.ngc	station=0	wcs=0	target=4	status=loaded
+pallet	id=P02	fixture=vise_b	program=demo_pocket.ngc	station=1	wcs=1	target=4	status=loaded
+pallet	id=P03	fixture=plate	program=	station=2	wcs=2	target=0	status=empty
+pallet	id=P04	fixture=plate	program=	station=3	wcs=3	target=0	status=empty

@@ -22,6 +22,7 @@ namespace kernel { namespace core { void run_benchmark_test(); } }
 #include "automation/ladder_runtime.hpp"
 #include "automation/probe_runtime.hpp"
 #include "machine/toolpods.hpp"
+#include "machine/pallet.hpp"
 #include "machine/machine_topology.hpp"
 #include "machine/runtime_placement.hpp"
 #include "machine/motion_wiring.hpp"
@@ -591,6 +592,12 @@ void load_runtime_tsvs() {
         const char* tp_data = nullptr; size_t tp_len = 0;
         if (kernel::vfs::lookup("system/machine/embedded_toolpods.tsv", tp_data, tp_len) && tp_len > 0) {
             (void)machine::toolpods::g_service.load_tsv(tp_data, tp_len);
+        }
+    }
+    {
+        const char* pl_data = nullptr; size_t pl_len = 0;
+        if (kernel::vfs::lookup("system/machine/embedded_pallets.tsv", pl_data, pl_len) && pl_len > 0) {
+            (void)machine::pallet::g_service.load_tsv(pl_data, pl_len);
         }
     }
     const uintptr_t signals_start = reinterpret_cast<uintptr_t>(&_binary_embedded_signals_tsv_start);
