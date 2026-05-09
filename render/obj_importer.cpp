@@ -2,6 +2,8 @@
 
 #include "render/obj_importer.hpp"
 
+#include <cstring>
+
 namespace render::obj {
 
 namespace {
@@ -125,6 +127,51 @@ int32_t obj_index_to_zero_based(int32_t obj_index, size_t count) {
     return -1;
 }
 
+void copy_token_buf(char* dst, size_t dst_size, const char* src, size_t src_len) {
+    if (!dst || dst_size == 0) return;
+    const size_t n = src_len + 1 < dst_size ? src_len : dst_size - 1;
+    for (size_t i = 0; i < n; ++i) dst[i] = src[i];
+    dst[n] = '\0';
+}
+
+// Read the rest of the line, trimmed, into a stack buffer. Used by `g` /
+// `o` / `usemtl` to capture the name token. Stops at newline or EOF.
+size_t read_rest_of_line(Cursor& cur, char* dst, size_t dst_size) {
+    skip_spaces(cur);
+    const char* start = cur.ptr;
+    while (cur.ptr < cur.end && *cur.ptr != '\n' && *cur.ptr != '\r') ++cur.ptr;
+    size_t n = static_cast<size_t>(cur.ptr - start);
+    while (n > 0 && (start[n - 1] == ' ' || start[n - 1] == '\t')) --n;
+    copy_token_buf(dst, dst_size, start, n);
+    return n;
+}
+
+// Close out the current group (if any) by computing its index_count from
+// the imported mesh's running index_count, then push the new group.
+void close_and_open_group(ImportedMesh& mesh, const char* name, size_t name_len) {
+    if (!mesh.groups || mesh.group_capacity == 0) return;
+    if (mesh.group_count > 0) {
+        GroupRange& cur_grp = mesh.groups[mesh.group_count - 1];
+        cur_grp.index_count = mesh.index_count - cur_grp.first_index;
+    }
+    if (mesh.group_count >= mesh.group_capacity) return;
+    GroupRange& g = mesh.groups[mesh.group_count++];
+    copy_token_buf(g.name, sizeof(g.name), name, name_len);
+    g.first_index = mesh.index_count;
+    g.index_count = 0;
+}
+
+bool starts_with_word(const Cursor& cur, const char* word) {
+    const size_t n = std::strlen(word);
+    if (static_cast<size_t>(cur.end - cur.ptr) < n) return false;
+    for (size_t i = 0; i < n; ++i) {
+        if (cur.ptr[i] != word[i]) return false;
+    }
+    if (static_cast<size_t>(cur.end - cur.ptr) == n) return true;
+    const char c = cur.ptr[n];
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
 ImportReport parse_face(Cursor& cur, const ImportLimits& limits, ImportedMesh& mesh) {
     uint16_t face_indices[4]{};
     size_t face_count = 0;
@@ -230,6 +277,7 @@ ImportReport ObjImporter::parse(const char* text, size_t len, const ImportLimits
     mesh.uv_count = 0;
     mesh.vertex_count = 0;
     mesh.index_count = 0;
+    if (mesh.groups && mesh.group_capacity > 0) mesh.group_count = 0;
 
     Cursor cur{text, text + len, 1};
     while (cur.ptr < cur.end) {
@@ -300,7 +348,29 @@ ImportReport ObjImporter::parse(const char* text, size_t len, const ImportLimits
             continue;
         }
 
+        // Group / object / material directives. We collapse all of them into
+        // one mesh (the kernel's MeshPart can hold one), but if the caller
+        // supplied a `groups` table we record the index ranges so future
+        // multi-part splitting is possible without re-parsing.
+        if (starts_with_word(cur, "g") || starts_with_word(cur, "o") ||
+            starts_with_word(cur, "usemtl")) {
+            // Skip the directive token itself.
+            while (cur.ptr < cur.end && !is_space(*cur.ptr) && *cur.ptr != '\n') ++cur.ptr;
+            char name[32];
+            const size_t n = read_rest_of_line(cur, name, sizeof(name));
+            close_and_open_group(mesh, name, n);
+            skip_line(cur);
+            continue;
+        }
+        // Smoothing groups (`s 1`/`s off`) and material libraries (`mtllib`)
+        // are silently ignored — the renderer doesn't honour either.
         skip_line(cur);
+    }
+
+    // Close out the trailing group's index_count, if any.
+    if (mesh.groups && mesh.group_count > 0) {
+        GroupRange& last = mesh.groups[mesh.group_count - 1];
+        last.index_count = mesh.index_count - last.first_index;
     }
 
     return {};
