@@ -12,6 +12,8 @@
 
 #include <cstdlib>
 
+extern "C" void early_uart_puts(const char*);
+
 namespace motion {
 
 Kernel g_motion;
@@ -717,6 +719,23 @@ void Kernel::cycle_axis(Axis& a, uint64_t t_now, bool freeze_trajectory) noexcep
             a.last_error_code = a.drive->error_code;
             a.request_stop(StopAction::FaultReaction, t_now);
             stats_.faults.fetch_add(1, std::memory_order_relaxed);
+            // Persist the fault-rising-edge into klog. early_uart_puts goes
+            // through the platform UART driver, which klog::record hooks —
+            // so the line lives in the postmortem ring even if the system
+            // becomes unresponsive after this point. After a subsequent
+            // fault_reset clears `last_error_code`, this log line is the
+            // only place the operator can see what actually tripped.
+            const size_t axis_idx = static_cast<size_t>(&a - axes_.data());
+            char msg[160];
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                "[motion] axis %zu FAULT err=0x%04x station=0x%04x src=%s\n",
+                axis_idx,
+                static_cast<unsigned>(a.last_error_code),
+                static_cast<unsigned>(a.station_addr),
+                master_dl_fault ? "master-deadline"
+                                : (a.drive->state == cia402::State::FaultReactionActive
+                                    ? "drive-reaction" : "drive-fault"));
+            early_uart_puts(msg);
         }
         // NB: we do NOT auto-clear fault_latched on drive recovery. The
         // operator must explicitly acknowledge via Kernel::fault_reset —
@@ -780,6 +799,14 @@ void Kernel::cycle_axis(Axis& a, uint64_t t_now, bool freeze_trajectory) noexcep
                     a.last_error_code = 0xFFDA; // vendor-internal ~ load-side
                     a.request_stop(StopAction::FaultReaction, t_now);
                     stats_.faults.fetch_add(1, std::memory_order_relaxed);
+                    const size_t axis_idx =
+                        static_cast<size_t>(&a - axes_.data());
+                    char msg[128];
+                    kernel::util::k_snprintf(msg, sizeof(msg),
+                        "[motion] axis %zu FAULT load-feedback %s\n",
+                        axis_idx,
+                        a.load.error_latched ? "error-bit" : "watchdog-stale");
+                    early_uart_puts(msg);
                 }
             }
 
