@@ -766,6 +766,26 @@ action	widget=service_pec	event=click	target=goto:pec
 action	widget=service_geometry	event=click	target=goto:geometry
 action	widget=service_sphere	event=click	target=goto:sphere
 action	widget=service_network	event=click	target=goto:network
+
+# --- tier 5 — live state panel ---
+# Surfaces look-ahead chain depth (per channel), the TCP modal
+# composite, and the most recent klog tail so the operator can see why
+# a fault tripped without dropping to CLI. The lookahead labels share
+# the channel-level minimum-depth convention from queue_depth — the
+# slowest-feeding axis caps the effective queue.
+panel	id=service_tier5_panel	parent=service_root	x=20	y=1290	w=1040	h=380	bg=#111827	border=#334155
+label	id=service_tier5_title	parent=service_root	x=40	y=1304	w=400	h=28	text=LIVE STATE	color=#94A3B8	bg=#111827	scale=2
+label	id=service_la_lbl0	parent=service_root	x=40	y=1346	w=200	h=32	text=LOOKAHEAD CH0	color=#94A3B8	bg=#111827	scale=1
+label	id=service_la_val0	parent=service_root	x=250	y=1342	w=140	h=40	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=lookahead:0	align=center	scale=2
+label	id=service_la_lbl1	parent=service_root	x=400	y=1346	w=200	h=32	text=LOOKAHEAD CH1	color=#94A3B8	bg=#111827	scale=1
+label	id=service_la_val1	parent=service_root	x=610	y=1342	w=140	h=40	text=0	color=#7DD3FC	bg=#0F172A	border=#334155	bind=lookahead:1	align=center	scale=2
+label	id=service_la_capl	parent=service_root	x=760	y=1346	w=120	h=32	text=MAX	color=#94A3B8	bg=#111827	scale=1
+label	id=service_la_cap	parent=service_root	x=890	y=1342	w=130	h=40	text=0	color=#A1A1AA	bg=#0F172A	border=#334155	bind=lookahead:max	align=center	scale=2
+label	id=service_tcp_lbl	parent=service_root	x=40	y=1396	w=200	h=32	text=TCP	color=#94A3B8	bg=#111827	scale=1
+label	id=service_tcp_status	parent=service_root	x=250	y=1392	w=770	h=40	text=TCP off	color=#86EFAC	bg=#0F172A	border=#334155	bind=tcp:status	align=center	scale=2
+label	id=service_klog_lbl	parent=service_root	x=40	y=1446	w=200	h=32	text=FAULT TAIL	color=#94A3B8	bg=#111827	scale=1
+label	id=service_klog_tail	parent=service_root	x=40	y=1480	w=980	h=170	text=---	color=#FCA5A5	bg=#0F172A	border=#475569	bind=klog:tail	align=left	scale=1
+
 include	page=bottom_nav
 
 # ============================================================

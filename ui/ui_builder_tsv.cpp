@@ -9,10 +9,12 @@
 #include "machine/toolpods.hpp"
 #include "cnc/programs.hpp"
 #include "cnc/mdi.hpp"
+#include "cnc/interpreter.hpp"
 #include "motion/motion.hpp"
 #include "ui/operator_api.hpp"
 #include "ui/ui.hpp"
 #include "miniOS.hpp"
+#include "klog.hpp"
 #include "util.hpp"
 
 #include <cstring>
@@ -539,6 +541,15 @@ enum class BindKind : uint16_t {
     ToolChangeCurrentPod, ToolChangeCurrentStation, ToolChangeCurrentLabel,
     ToolChangeTargetPod, ToolChangeTargetStation, ToolChangeTargetLabel,
     ToolChangeStep, ToolChangeTotalSteps,
+    // Tier 5 — operator-visible look-ahead / fault / TCP surfaces. Numeric
+    // bindings return the live count for sliders + labels; string bindings
+    // (KlogTail / TcpStatus) build a multi-line text the fault dialog can
+    // show inline. The motion / klog / interp APIs already exist —
+    // operator-side CLI verbs are queue_depth / tq / klog / tcp.
+    LookaheadDepthCh0, LookaheadDepthCh1,
+    LookaheadCapacity,            // motion::Axis::CHAIN_DEPTH (constant; useful for slider max=)
+    KlogTail,                     // last few klog lines, formatted via klog::tail
+    TcpStatus,                    // "off / head CB / ch0 on" composite string
 };
 
 BindKind parse_bind(const char* s) {
@@ -824,6 +835,11 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "tc:target_lbl")  == 0) return BindKind::ToolChangeTargetLabel;
     if (strcmp(s, "tc:step")        == 0) return BindKind::ToolChangeStep;
     if (strcmp(s, "tc:total")       == 0) return BindKind::ToolChangeTotalSteps;
+    if (strcmp(s, "lookahead:0")    == 0) return BindKind::LookaheadDepthCh0;
+    if (strcmp(s, "lookahead:1")    == 0) return BindKind::LookaheadDepthCh1;
+    if (strcmp(s, "lookahead:max")  == 0) return BindKind::LookaheadCapacity;
+    if (strcmp(s, "klog:tail")      == 0) return BindKind::KlogTail;
+    if (strcmp(s, "tcp:status")     == 0) return BindKind::TcpStatus;
     return BindKind::None;
 }
 
@@ -1372,6 +1388,25 @@ int32_t bound_numeric_value(BindKind bind) {
             return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().step);
         case BindKind::ToolChangeTotalSteps:
             return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().total_steps);
+        case BindKind::LookaheadDepthCh0:
+        case BindKind::LookaheadDepthCh1: {
+            // Channel-level look-ahead depth = MIN over the channel's owned
+            // axes. The slowest-feeding axis caps the planner's effective
+            // queue; that's the number the operator wants on a label.
+            const size_t ci = (bind == BindKind::LookaheadDepthCh0) ? 0u : 1u;
+            if (ci >= motion::g_motion.channel_count()) return 0;
+            const auto& ch = motion::g_motion.channel(ci);
+            if (ch.axis_count == 0) return 0;
+            uint8_t min_depth = motion::Axis::CHAIN_DEPTH;
+            for (uint8_t k = 0; k < ch.axis_count; ++k) {
+                const uint8_t ai = ch.axis_indices[k];
+                const uint8_t d = motion::g_motion.axis_chain_count(ai);
+                if (d < min_depth) min_depth = d;
+            }
+            return static_cast<int32_t>(min_depth);
+        }
+        case BindKind::LookaheadCapacity:
+            return static_cast<int32_t>(motion::Axis::CHAIN_DEPTH);
         default: return 0;
     }
 }
@@ -2122,6 +2157,33 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         case BindKind::ToolChangeTotalSteps: {
             kernel::util::k_snprintf(buf, buf_size, "%s%ld", prefix ? prefix : "",
                                      static_cast<long>(bound_numeric_value(bind)));
+            return;
+        }
+        case BindKind::KlogTail: {
+            // Pull the most recent N bytes from the klog ring directly into
+            // the widget buffer. The fault dialog widget is sized at ~640
+            // chars / ~8 lines on a 1080x1920 canvas — plenty of room to
+            // surface the trip cause without dropping to CLI.
+            const size_t cap = (buf_size > 1) ? buf_size - 1 : 0;
+            const size_t n   = kernel::klog::tail(buf, cap);
+            buf[n < buf_size ? n : buf_size - 1] = '\0';
+            return;
+        }
+        case BindKind::TcpStatus: {
+            // "TCP off" / "TCP head CB ch0" — the simplest one-line state
+            // summary. Operator who needs more detail goes to CLI `tcp`.
+            using cnc::interp::Runtime;
+            const bool ch0 = cnc::interp::g_runtime.tcp_active(0);
+            const bool ch1 = cnc::interp::g_runtime.tcp_active(1);
+            if (!ch0 && !ch1) {
+                kernel::util::k_snprintf(buf, buf_size, "%sTCP off", prefix ? prefix : "");
+                return;
+            }
+            const char* mode  = (cnc::interp::g_runtime.tcp_mode()  == Runtime::TcpMode::Head) ? "head" : "tail";
+            const char* order = (cnc::interp::g_runtime.tcp_order() == Runtime::TcpOrder::CB)  ? "CB"   : "BC";
+            const char* who   = (ch0 && ch1) ? "both" : (ch0 ? "ch0" : "ch1");
+            kernel::util::k_snprintf(buf, buf_size, "%sTCP %s %s %s",
+                                     prefix ? prefix : "", mode, order, who);
             return;
         }
         default:
