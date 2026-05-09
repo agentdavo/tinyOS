@@ -973,13 +973,22 @@ public:
     // If `register_barrier` is true (default), the function also registers
     // a cross-channel barrier via `arrive_at_barrier` so motion commits
     // atomically on convergence.
+    //
+    // `min_t_final_us` is an optional path-velocity cap: when non-zero, the
+    // computed T_final is clamped from below to this value, which slows the
+    // whole move so the path-length / T_final ratio (the combined-axis path
+    // velocity) matches the requested feedrate. Used by the interpreter to
+    // enforce the F-word for both straight and helical moves; for an arc
+    // segment, pass `combined_path_length_counts * 1e6 / feed_cps` so the
+    // sqrt(chord² + linear²) helical feedrate matches the F-word setting.
     bool sync_move(uint64_t axis_mask,
                    const int32_t targets[MAX_AXES],
                    uint16_t barrier_token = 0,
                    int32_t  tolerance_counts = 1,
                    uint16_t stable_cycles_required = 3,
                    uint16_t max_wait_cycles = 20000,
-                   bool     register_barrier = true) noexcept;
+                   bool     register_barrier = true,
+                   uint64_t min_t_final_us = 0) noexcept;
 
     // Task 9.7 — per-channel feedhold. `on=true` flips the channel into
     // FeedHold state; cycle_channel will freeze its axes' trajectories

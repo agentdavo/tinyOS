@@ -397,6 +397,32 @@ static int32_t units_to_counts(const Runtime::ChannelState& state, float value) 
     return static_cast<int32_t>(value * scale);
 }
 
+// state.feed is in units-per-minute (mm/min in metric, inch/min in imperial).
+// Convert to counts-per-second so the motion kernel's path-velocity clamp
+// can compare like-with-like. Returns 0 when the F-word hasn't been seen
+// (state.feed defaults to 1000 in load_selected, but interpret as mm/min).
+static uint32_t feed_cps_for_state(const Runtime::ChannelState& state) noexcept {
+    if (state.feed == 0) return 0;
+    const uint64_t scale = state.inch_mode ? 2540u : 100u;
+    return static_cast<uint32_t>((static_cast<uint64_t>(state.feed) * scale) / 60u);
+}
+
+// Combined-axis Euclidean distance in counts for the participating axes.
+// Used to derive min_t_final_us = path / feed_cps so sync_move stretches
+// the move to honour the F-word when an axis-aligned move would otherwise
+// run at axis-vmax (faster than F when the move has multiple axis words).
+static uint32_t combined_path_counts(const int32_t start[motion::MAX_AXES],
+                                     const int32_t targets[motion::MAX_AXES],
+                                     uint64_t axis_mask) noexcept {
+    uint64_t sum_sq = 0;
+    for (size_t i = 0; i < motion::MAX_AXES; ++i) {
+        if ((axis_mask & (1ull << i)) == 0) continue;
+        const int64_t d = static_cast<int64_t>(targets[i]) - start[i];
+        sum_sq += static_cast<uint64_t>(d * d);
+    }
+    return static_cast<uint32_t>(sqrt_approx(static_cast<float>(sum_sq)));
+}
+
 static int axis_offset_slot(char word) {
     switch (word) {
         case 'X': return 0;
@@ -570,7 +596,20 @@ static bool execute_axes(Runtime::ChannelState& state,
     uint64_t axis_mask = 0;
     int32_t targets[motion::MAX_AXES]{};
     if (!resolve_targets(state, runtime, channel, parsed, targets, axis_mask)) return false;
-    const bool ok = motion::g_motion.sync_move(axis_mask, targets, 0, 1, 3, 20000, false);
+    // Path-velocity cap from the F-word: enforce that combined motion equals
+    // the requested feedrate. Skipped on Rapid (G0 runs at axis vmax) — F
+    // doesn't apply there per spec.
+    uint64_t min_t_final_us = 0;
+    if (state.motion_mode != MotionMode::Rapid) {
+        const uint32_t feed_cps = feed_cps_for_state(state);
+        if (feed_cps > 0) {
+            const uint32_t path_counts =
+                combined_path_counts(state.targets, targets, axis_mask);
+            min_t_final_us = (static_cast<uint64_t>(path_counts) * 1'000'000ULL) / feed_cps;
+        }
+    }
+    const bool ok = motion::g_motion.sync_move(
+        axis_mask, targets, 0, 1, 3, 20000, false, min_t_final_us);
     if (!ok) return false;
     for (size_t ax = 0; ax < motion::MAX_AXES; ++ax) {
         if ((axis_mask & (1ull << ax)) != 0) state.targets[ax] = targets[ax];
@@ -728,7 +767,34 @@ static bool advance_arc(Runtime::ChannelState& state) {
         }
     }
 
-    const bool ok = motion::g_motion.sync_move(arc.axis_mask, targets, 0, 1, 3, 20000, false);
+    // Helical feedrate: per-segment combined path length =
+    // sqrt(arc_chord_xy² + linear_segment_z²). Splitting the F-word across
+    // arc and linear components keeps the tool moving at the requested
+    // surface feedrate regardless of pitch — without this, a 360° helix
+    // with 50 mm rise ran arc-only at F and the linear axis was just
+    // dragged along, so the actual surface speed went up by sqrt(1 + (rise/circ)²).
+    const uint32_t feed_cps = feed_cps_for_state(state);
+    uint64_t min_t_final_us = 0;
+    if (feed_cps > 0) {
+        const float arc_seg_len =
+            arc.radius * absf(arc.delta_angle) /
+            static_cast<float>(arc.total_segments);
+        float linear_seg_len = 0.0f;
+        if (arc.has_linear_axis) {
+            linear_seg_len = static_cast<float>(arc.end_linear - arc.start_linear) /
+                             static_cast<float>(arc.total_segments);
+            if (linear_seg_len < 0.0f) linear_seg_len = -linear_seg_len;
+        }
+        const float combined = sqrt_approx(
+            arc_seg_len * arc_seg_len + linear_seg_len * linear_seg_len);
+        if (combined > 0.0f) {
+            min_t_final_us = static_cast<uint64_t>(
+                (combined * 1'000'000.0f) / static_cast<float>(feed_cps));
+        }
+    }
+
+    const bool ok = motion::g_motion.sync_move(
+        arc.axis_mask, targets, 0, 1, 3, 20000, false, min_t_final_us);
     if (!ok) return false;
     for (size_t ax = 0; ax < motion::MAX_AXES; ++ax) {
         if ((arc.axis_mask & (1ull << ax)) != 0) state.targets[ax] = targets[ax];

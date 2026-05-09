@@ -1202,7 +1202,8 @@ bool Kernel::sync_move(uint64_t axis_mask,
                        int32_t  tolerance_counts,
                        uint16_t stable_cycles_required,
                        uint16_t max_wait_cycles,
-                       bool     register_barrier) noexcept {
+                       bool     register_barrier,
+                       uint64_t min_t_final_us) noexcept {
     if (axis_mask == 0 || !targets) return false;
 
     // Pass 1 — compute the slowest axis's nominal T_final in microseconds.
@@ -1220,6 +1221,13 @@ bool Kernel::sync_move(uint64_t axis_mask,
                              / static_cast<uint32_t>(a.vmax_cps);
         if (t_us > t_final_us) t_final_us = t_us;
     }
+    // Path-velocity cap: when the caller supplies a min_t_final_us derived
+    // from sqrt(sum_delta_squared) / feed_cps, the move stretches to make
+    // the combined-axis path velocity equal to the requested feedrate.
+    // Without this clamp a 45° X+Y G1 ran at vmax * sqrt(2) along the path,
+    // and a helical G2 ignored the linear-axis contribution to path
+    // length entirely.
+    if (min_t_final_us > t_final_us) t_final_us = min_t_final_us;
     if (t_final_us == 0) return false; // zero-length move — nothing to do
 
     // Pass 2 — commit each participating axis. Scale vmax so everyone
