@@ -176,6 +176,30 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
             && dg.wkc > 0
             && dg.data != nullptr) {
             const uint16_t station = static_cast<uint16_t>(dg.address >> 16);
+            // Tier 3b: peek at the CoE service / cmd byte to recognise an
+            // SDO download confirm/abort response. CoE header is 2 bytes
+            // at offset 6 (after the 6-byte mailbox header); cmd byte at
+            // offset 8. A download-direction response (master initiated)
+            // has cmd nibble 0x60 (confirm) or 0x80 (abort).
+            if (dl_in_flight_ && station == dl_station_ && dg.data_len >= 12) {
+                const uint8_t  cmd      = dg.data[8];
+                const uint16_t resp_idx =
+                    static_cast<uint16_t>(dg.data[9]) |
+                    (static_cast<uint16_t>(dg.data[10]) << 8);
+                const uint8_t  resp_sub = dg.data[11];
+                const uint32_t abort_code = (dg.data_len >= 16)
+                    ? (static_cast<uint32_t>(dg.data[12]) |
+                       (static_cast<uint32_t>(dg.data[13]) << 8) |
+                       (static_cast<uint32_t>(dg.data[14]) << 16) |
+                       (static_cast<uint32_t>(dg.data[15]) << 24))
+                    : 0u;
+                if ((cmd & 0xE0) == 0x60 || (cmd & 0xE0) == 0x80) {
+                    on_sdo_download_response(station, cmd,
+                                             resp_idx, resp_sub, abort_code);
+                    if (!dg.more) break;
+                    continue;
+                }
+            }
             if (station != upload_station_) {
                 if (!dg.more) break;
                 continue;
@@ -624,6 +648,69 @@ bool Master::upload_sdo_start(uint16_t station_addr, uint16_t index, uint8_t sub
     upload_deadline_us_  = now_us() + timeout_us;
     upload_state_.store(UploadState::Pending, std::memory_order_release);
     return true;
+}
+
+bool Master::send_sdo_download_tracked(uint16_t station_addr,
+                                       uint16_t index, uint8_t sub,
+                                       const uint8_t* data, uint8_t len_bytes,
+                                       std::atomic<uint8_t>* completion_state,
+                                       uint32_t* abort_code,
+                                       uint32_t timeout_us) noexcept {
+    if (dl_in_flight_) return false;
+    if (completion_state) completion_state->store(0, std::memory_order_release);
+    if (abort_code) *abort_code = 0;
+    if (!send_sdo_download(station_addr, index, sub, data, len_bytes)) {
+        if (completion_state) completion_state->store(2, std::memory_order_release);
+        return false;
+    }
+    dl_in_flight_   = true;
+    dl_station_     = station_addr;
+    dl_index_       = index;
+    dl_sub_         = sub;
+    dl_completion_  = completion_state;
+    dl_abort_code_  = abort_code;
+    dl_deadline_us_ = now_us() + timeout_us;
+    return true;
+}
+
+void Master::service_sdo_download() noexcept {
+    if (!dl_in_flight_) return;
+    // Poll SM1 mailbox for the slave's CoE response. Most slaves answer
+    // an expedited download in <2 cycles; we issue one FPRD per cycle
+    // until something lands or the deadline expires.
+    {
+        FrameBuilder fb(tx_scratch_.data(), tx_scratch_.size(),
+                        BROADCAST_MAC, SRC_MAC);
+        uint8_t pad[SDO_MAILBOX_LEN] = {};
+        const uint32_t addr = (static_cast<uint32_t>(dl_station_) << 16)
+                            | SM1_MAILBOX_IN_OFFS;
+        if (fb.add_datagram(Cmd::FPRD, dgram_idx_++, addr, pad, SDO_MAILBOX_LEN)) {
+            send_frame(tx_scratch_.data(), fb.finalize());
+        }
+    }
+    if (now_us() <= dl_deadline_us_) return;
+    if (dl_completion_) dl_completion_->store(2, std::memory_order_release);
+    if (dl_abort_code_) *dl_abort_code_ = 0; // 0 = timeout
+    dl_in_flight_   = false;
+    dl_completion_  = nullptr;
+    dl_abort_code_  = nullptr;
+}
+
+void Master::on_sdo_download_response(uint16_t station, uint8_t cmd,
+                                      uint16_t index, uint8_t sub,
+                                      uint32_t abort_code) noexcept {
+    if (!dl_in_flight_) return;
+    if (station != dl_station_ || index != dl_index_ || sub != dl_sub_) return;
+    // CoE: cmd 0x60 = download confirm; cmd 0x80 = abort.
+    if ((cmd & 0xE0) == 0x60) {
+        if (dl_completion_) dl_completion_->store(1, std::memory_order_release);
+    } else {
+        if (dl_completion_) dl_completion_->store(2, std::memory_order_release);
+        if (dl_abort_code_) *dl_abort_code_ = abort_code;
+    }
+    dl_in_flight_   = false;
+    dl_completion_  = nullptr;
+    dl_abort_code_  = nullptr;
 }
 
 bool Master::enqueue_sdo_upload(const SdoRequest& req) noexcept {
@@ -1435,6 +1522,7 @@ void Master::run_loop() {
         // the OP gate because SDO mailbox traffic is valid in PREOP and
         // SafeOp too — that's where 1.3/1.4 need it.
         service_sdo_upload();
+        service_sdo_download();
         service_esc_read();
         service_sdo_queue();
 

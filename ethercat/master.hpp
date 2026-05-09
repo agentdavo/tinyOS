@@ -71,6 +71,24 @@ public:
     [[nodiscard]] bool send_sdo_download(uint16_t station_addr, uint16_t index, uint8_t sub,
                                          const uint8_t* data, uint8_t len_bytes) noexcept;
 
+    // Tier 3b. Tracked SDO download — fires the same expedited download
+    // frame send_sdo_download does, but additionally records the {station,
+    // index, sub} so the cycle's mailbox-RX path can recognise the
+    // slave's CoE confirm (cmd 0x60) or abort (cmd 0x80) response and
+    // update the caller's completion_state atomic. {0=pending, 1=done,
+    // 2=error/abort/timeout}. Single-slot — concurrent calls return
+    // false until the in-flight download completes. timeout_us bounds
+    // the wait; on expiry, completion_state goes to 2 and abort_code
+    // (if non-null) gets 0. Most call sites that care about the SDO
+    // landing (set_torque_limit, arm_post_homing_limits) should use
+    // this rather than the fire-and-forget send_sdo_download.
+    [[nodiscard]] bool send_sdo_download_tracked(
+        uint16_t station_addr, uint16_t index, uint8_t sub,
+        const uint8_t* data, uint8_t len_bytes,
+        std::atomic<uint8_t>* completion_state,
+        uint32_t* abort_code,
+        uint32_t timeout_us) noexcept;
+
     // Task 1.2 — blocking SDO upload (expedited only, ≤ 4 bytes). Sends an
     // "initiate upload request" into SM0 and polls SM1 via FPRD every cycle
     // until either the response arrives (returns true, fills `out`/`out_bytes`)
@@ -443,6 +461,24 @@ private:
     SdoRequest              sdo_active_request_{};
     bool                    sdo_request_in_flight_ = false;
     void service_sdo_queue() noexcept;
+
+    // Tier 3b — download tracker. Single-slot. When dl_in_flight_, the
+    // mailbox-RX path watches for a CoE response matching {station,
+    // index, sub} and updates dl_completion_ accordingly. service_sdo_
+    // download polls the deadline and fails out if the slave never
+    // ack'd. Independent of upload state — a download and an upload can
+    // be in flight concurrently (different mailbox slots).
+    bool                    dl_in_flight_   = false;
+    uint16_t                dl_station_     = 0;
+    uint16_t                dl_index_       = 0;
+    uint8_t                 dl_sub_         = 0;
+    uint64_t                dl_deadline_us_ = 0;
+    std::atomic<uint8_t>*   dl_completion_  = nullptr;
+    uint32_t*               dl_abort_code_  = nullptr;
+    void service_sdo_download() noexcept;
+    void on_sdo_download_response(uint16_t station, uint8_t cmd,
+                                  uint16_t index, uint8_t sub,
+                                  uint32_t abort_code) noexcept;
 
     // --- Blocking ESC register read support --------------------------------
     enum class EscReadState : uint8_t {
