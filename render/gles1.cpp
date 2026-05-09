@@ -2,66 +2,31 @@
 // GLES1.1 software renderer - fixed
 
 #include "render/gles1.hpp"
+#include "util_math.hpp"
 #include <cstdio>
 
 namespace render::gles1 {
 
 namespace {
 
-constexpr float kPi = 3.14159265358979323846f;
-constexpr float k2Pi = kPi * 2.0f;
-constexpr float kHalfPi = kPi * 0.5f;
-
 #define GLES_INLINE __attribute__((always_inline)) inline
 
-GLES_INLINE float absf(float v) {
-    union { float f; uint32_t u; } val = {v};
-    val.u &= 0x7FFFFFFFU;
-    return val.f;
-}
+using kernel::util::math::absf;
+using kernel::util::math::minf;
+using kernel::util::math::maxf;
+using kernel::util::math::clampf;
+using kernel::util::math::sin_approx;
+using kernel::util::math::cos_approx;
+using kernel::util::math::sincos_approx;
+using kernel::util::math::rsqrt_approx;
+using kernel::util::math::log2_approx;
+using kernel::util::math::exp2_approx;
+using kernel::util::math::pow_approx;
+using kernel::util::math::kHalfPi;
+using kernel::util::math::kDegToRad;
 
-GLES_INLINE float minf(float a, float b) { return a < b ? a : b; }
-GLES_INLINE float maxf(float a, float b) { return a > b ? a : b; }
-GLES_INLINE float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 GLES_INLINE int32_t mini(int32_t a, int32_t b) { return a < b ? a : b; }
 GLES_INLINE int32_t maxi(int32_t a, int32_t b) { return a > b ? a : b; }
-
-GLES_INLINE float wrap_pi(float radians) {
-    while (radians > kPi) radians -= k2Pi;
-    while (radians < -kPi) radians += k2Pi;
-    return radians;
-}
-
-GLES_INLINE float sin_approx(float x) {
-    x = wrap_pi(x);
-    const float x2 = x * x;
-    const float x3 = x2 * x;
-    const float x5 = x3 * x2;
-    const float x7 = x5 * x2;
-    return x - x3 / 6.0f + x5 / 120.0f - x7 / 5040.0f;
-}
-
-GLES_INLINE float cos_approx(float x) {
-    return sin_approx(x + kHalfPi);
-}
-
-GLES_INLINE float rsqrt_approx(float v) {
-    if (v <= 1e-6f) return 0.0f;
-    float x = 1.0f / v;
-    x = 0.5f * x * (3.0f - v * x * x);
-    x = 0.5f * x * (3.0f - v * x * x);
-    return x;
-}
-
-GLES_INLINE void sincos_approx(float x, float& s, float& c) {
-    x = wrap_pi(x);
-    const float x2 = x * x;
-    const float x3 = x2 * x;
-    const float x4 = x2 * x2;
-    const float x5 = x4 * x;
-    s = x - x3 / 6.0f + x5 / 120.0f;
-    c = 1.0f - x2 / 2.0f + x4 / 24.0f;
-}
 
 GLES_INLINE float dot_v3v3(const Vec3f& a, const Vec3f& b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
@@ -104,43 +69,6 @@ GLES_INLINE Color4f scale_c4(const Color4f& c, float s) {
 
 GLES_INLINE float edge_function(float ax, float ay, float bx, float by, float px, float py) {
     return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
-}
-
-// log2_approx for x in (0, 1]. Uses the IEEE-754 exponent extraction trick
-// followed by a quartic minimax polynomial in the mantissa range [1, 2).
-// Accurate to roughly 1e-3, which is enough for specular shading. Costs
-// ~6 mul/add — far less than the integer-power loop the old pow_approx ran.
-GLES_INLINE float log2_approx(float x) {
-    if (x <= 0.0f) return -127.0f;
-    union { float f; uint32_t u; } v = {x};
-    const int32_t e = static_cast<int32_t>((v.u >> 23) & 0xFF) - 127;
-    v.u = (v.u & 0x007FFFFFU) | 0x3F800000U; // mantissa in [1, 2)
-    const float m = v.f;
-    // Quartic fit of log2(m) on [1, 2): coefficients from a least-squares
-    // pass; matches log2 to ~1e-3 across the range.
-    const float p = -0.34484843f * m * m + 2.02466578f * m - 1.67487759f;
-    return p + static_cast<float>(e);
-}
-
-GLES_INLINE float exp2_approx(float x) {
-    if (x < -126.0f) return 0.0f;
-    if (x > 127.0f) x = 127.0f;
-    const float xi = static_cast<float>(static_cast<int32_t>(x) - (x < 0.0f ? 1 : 0));
-    const float xf = x - xi;
-    // Quartic fit of 2^f on [0, 1).
-    const float p = ((0.07252294f * xf + 0.24279419f) * xf + 0.69502427f) * xf + 1.0f;
-    union { uint32_t u; float f; } v;
-    v.u = static_cast<uint32_t>((static_cast<int32_t>(xi) + 127) & 0xFF) << 23;
-    return v.f * p;
-}
-
-// pow(base, exp) via 2^(exp * log2(base)). Closer to the real curve than the
-// old integer-loop + linear-fractional approximation, especially for the
-// specular term where shininess > ~16 used to stair-step badly.
-GLES_INLINE float pow_approx(float base, float exp) {
-    if (base <= 0.0f) return 0.0f;
-    if (exp == 0.0f) return 1.0f;
-    return exp2_approx(exp * log2_approx(base));
 }
 
 GLES_INLINE Vec3f cross_v3v3(const Vec3f& a, const Vec3f& b) {
@@ -260,7 +188,6 @@ Mat4 make_rotation_axis_angle(const Vec3f& axis, float radians) {
 }
 
 Mat4 make_rotation_xyz_intrinsic_deg(float rx_deg, float ry_deg, float rz_deg) {
-    constexpr float kDegToRad = 0.01745329252f;
     const Mat4 rx = make_rotation_x(rx_deg * kDegToRad);
     const Mat4 ry = make_rotation_y(ry_deg * kDegToRad);
     const Mat4 rz = make_rotation_z(rz_deg * kDegToRad);
