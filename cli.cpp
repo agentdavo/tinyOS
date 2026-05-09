@@ -2743,6 +2743,108 @@ static int cmd_feedhold(const char* args, kernel::hal::UARTDriverOps* uart) {
     uart->puts(buf);
     return ok ? 0 : 1;
 }
+static int cmd_torque_limit(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // tq <axis> <permille>  — sets CiA-402 0x6072 (Max Torque) on the
+    // axis's drive. permille of motor rated torque (1000 = 100%).
+    if (!args || !*args) {
+        uart->puts("usage: tq <axis> <permille>\n");
+        return 1;
+    }
+    const char* p = args;
+    long axis = 0, permille = 0;
+    if (!cli_parse_long(p, axis) || !cli_parse_long(p, permille)) {
+        uart->puts("tq: bad args\n");
+        return 1;
+    }
+    const bool ok = motion::g_motion.set_torque_limit(
+        static_cast<size_t>(axis), static_cast<uint16_t>(permille));
+    char buf[80];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "tq ax%ld permille=%ld => %s\n", axis, permille, ok ? "queued" : "FAIL");
+    uart->puts(buf);
+    return ok ? 0 : 1;
+}
+
+static int cmd_junction_dev(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // junction_dev <ch> [counts]  — get/set the corner-error budget.
+    if (!args || !*args) {
+        for (size_t c = 0; c < motion::g_motion.channel_count(); ++c) {
+            char buf[80];
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "junction_dev ch%zu = %ld counts\n",
+                c, static_cast<long>(motion::g_motion.junction_deviation(c)));
+            uart->puts(buf);
+        }
+        return 0;
+    }
+    const char* p = args;
+    long ch = 0, counts = 0;
+    if (!cli_parse_long(p, ch) || !cli_parse_long(p, counts)) {
+        uart->puts("junction_dev: bad args\n");
+        return 1;
+    }
+    const bool ok = motion::g_motion.set_junction_deviation(
+        static_cast<size_t>(ch), static_cast<int32_t>(counts));
+    char buf[80];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "junction_dev ch%ld = %ld counts => %s\n",
+        ch, counts, ok ? "ok" : "FAIL");
+    uart->puts(buf);
+    return ok ? 0 : 1;
+}
+
+static int cmd_queue_depth(const char*, kernel::hal::UARTDriverOps* uart) {
+    // queue_depth — dump per-channel chain occupancy. Useful for tuning
+    // look-ahead — a value hovering at CHAIN_DEPTH means the planner is
+    // saturated; hovering at 0 means the program is starving the chain.
+    char buf[160];
+    for (size_t c = 0; c < motion::g_motion.channel_count(); ++c) {
+        const auto& ch = motion::g_motion.channel(c);
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "ch%zu (%s) completed_block=%u:\n",
+            c, ch.name,
+            static_cast<unsigned>(motion::g_motion.channel_completed_block_id(c)));
+        uart->puts(buf);
+        for (uint8_t k = 0; k < ch.axis_count; ++k) {
+            const uint8_t ai = ch.axis_indices[k];
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "  ax%u: chain %u/%zu  active_block=%u\n",
+                static_cast<unsigned>(ai),
+                static_cast<unsigned>(motion::g_motion.axis_chain_count(ai)),
+                static_cast<size_t>(motion::Axis::CHAIN_DEPTH),
+                static_cast<unsigned>(motion::g_motion.axis_active_block_id(ai)));
+            uart->puts(buf);
+        }
+    }
+    return 0;
+}
+
+static int cmd_tcp(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // tcp <ch> <on|off>  — toggle 5-axis Tool-Centre-Point mode.
+    if (!args || !*args) {
+        uart->puts("usage: tcp <channel> <on|off>\n");
+        return 1;
+    }
+    const char* p = args;
+    long ch = 0;
+    if (!cli_parse_long(p, ch)) {
+        uart->puts("tcp: bad args\n");
+        return 1;
+    }
+    while (*p == ' ') ++p;
+    bool active = false;
+    if (kernel::util::kstrcmp(p, "on") == 0) active = true;
+    else if (kernel::util::kstrcmp(p, "off") == 0) active = false;
+    else { uart->puts("tcp: expected on|off\n"); return 1; }
+    const bool ok = cnc::interp::g_runtime.set_tcp_active(
+        static_cast<size_t>(ch), active);
+    char buf[80];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "tcp ch%ld %s => %s\n", ch, active ? "on" : "off", ok ? "ok" : "FAIL");
+    uart->puts(buf);
+    return ok ? 0 : 1;
+}
+
 static int cmd_override(const char* args, kernel::hal::UARTDriverOps* uart) {
     // override <ch> <feed|rapid|spindle> <permille>
     if (!args || !*args) {
@@ -4603,6 +4705,10 @@ CLI::CLI() {
     register_command("barrier_arrive", cmd_barrier_arrive, "barrier_arrive <ch> <token-hex> <parts-mask-hex> [tol] [stable] [maxw]");
     register_command("sync_move", cmd_sync_move, "sync_move <mask-hex> <ax> <tgt> [<ax> <tgt> ...] — cross-channel coordinated move (9.6)");
     register_command("feedhold", cmd_feedhold, "feedhold <ch> <0|1> — per-channel pause/resume (9.7)");
+    register_command("tq", cmd_torque_limit, "tq <axis> <permille> — set CiA-402 0x6072 max-torque on the axis's drive");
+    register_command("junction_dev", cmd_junction_dev, "junction_dev [<ch> <counts>] — get/set per-channel corner-error budget");
+    register_command("queue_depth", cmd_queue_depth, "queue_depth — dump per-channel look-ahead chain occupancy");
+    register_command("tcp", cmd_tcp, "tcp <ch> <on|off> — toggle 5-axis Tool-Centre-Point mode");
     register_command("topology", cmd_topology, "topology <name>=<ax,ax,...> [...] — rewrite axis-to-channel binding (9.8)");
     register_command("override", cmd_override, "override <ch> <feed|rapid|spindle> <permille> — per-channel speed override (9.7)");
     register_command("gears", cmd_gears, "List active electronic-gear links (9.5) + phase error (9.9)");

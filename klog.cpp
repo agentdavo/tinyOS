@@ -74,4 +74,26 @@ void dump(kernel::hal::UARTDriverOps* uart) noexcept {
     if (n > 0) uart->puts(footer);
 }
 
+size_t tail(char* out, size_t cap) noexcept {
+    if (!out || cap == 0) return 0;
+    const size_t total = g_total.load(std::memory_order_acquire);
+    if (total == 0) return 0;
+    const bool wrapped = (total >= RING_SIZE);
+    const size_t avail = wrapped ? RING_SIZE : total;
+    const size_t take  = avail < cap ? avail : cap;
+    // Walk backwards from the write head by `take` bytes.
+    const size_t end_pos = total & (RING_SIZE - 1);
+    // start_pos is "end_pos - take" mod ring; copy in two segments if
+    // the slice wraps.
+    const size_t start_pos = (end_pos + RING_SIZE - take) & (RING_SIZE - 1);
+    if (start_pos + take <= RING_SIZE) {
+        for (size_t i = 0; i < take; ++i) out[i] = g_ring[start_pos + i];
+    } else {
+        const size_t first = RING_SIZE - start_pos;
+        for (size_t i = 0; i < first; ++i) out[i] = g_ring[start_pos + i];
+        for (size_t i = 0; i < take - first; ++i) out[first + i] = g_ring[i];
+    }
+    return take;
+}
+
 }} // namespace kernel::klog

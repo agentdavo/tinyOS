@@ -39,4 +39,11 @@ void record(const char* data, size_t n) noexcept;
 // a "[klog: <bytes> bytes, <total> total]\n" footer.
 void dump(kernel::hal::UARTDriverOps* uart) noexcept;
 
+// Copy the most recent `cap` bytes into `out`. Returns the number of
+// bytes actually copied (≤ cap). Used by the HMI's fault dialog to
+// surface the last few klog lines inline so the operator can see the
+// trip cause without dropping to CLI. `out` is plain bytes — caller
+// is responsible for null-termination if needed.
+size_t tail(char* out, size_t cap) noexcept;
+
 }} // namespace kernel::klog
