@@ -291,15 +291,33 @@ struct Axis {
     int32_t   decel_start_pos          = 0;         // position where decel begins
     int32_t   prev_target_velocity     = 0;        // for smooth velocity transitions
 
-    // Look-ahead chain slot (depth 1). When a fresh `move_to` arrives while
-    // the trajectory is mid-flight, the new target is queued here instead
-    // of overwriting `target`. step_trajectory swaps it in at the moment
-    // the current target would have transitioned to Holding — preserving
-    // velocity if the chained block continues in the same direction
-    // (vmax stays as the chained-pre-scale value), so back-to-back same-
-    // direction G1 blocks no longer dwell at velocity zero between blocks.
-    int32_t   next_target              = 0;
-    bool      has_next_target          = false;
+    // Look-ahead chain ring (depth N). When a fresh `move_to` arrives
+    // while the trajectory is mid-flight, the new {target, vmax} pair is
+    // queued here instead of overwriting `target`. step_trajectory pops
+    // the head at the moment the current target would have transitioned
+    // to Holding, preserving velocity through same-direction transitions
+    // and applying the popped block's pre-scaled vmax (so a coordinated
+    // multi-axis block's scaling carries to the chain seam without
+    // contaminating the next block's pace). Reverse-direction chain
+    // entries fall through to a normal Holding stop and stay queued for
+    // the next move_to to pick them up.
+    struct ChainEntry {
+        int32_t target   = 0;
+        int32_t vmax_cps = 0;     // axis-side vmax to apply on swap
+        uint16_t block_id = 0;    // tags the source block for M62/M63 sync drain
+        bool    valid    = false;
+    };
+    static constexpr size_t CHAIN_DEPTH = 8;
+    ChainEntry chain[CHAIN_DEPTH]{};
+    uint8_t    chain_head            = 0;
+    uint8_t    chain_count           = 0;
+    // Block id of the trajectory currently being executed (the active
+    // target). 0 = no block tagged. Updated at each chain pop.
+    uint16_t   active_block_id       = 0;
+    // Greatest block id that has retired on this axis (chain pop seam
+    // or chain-empty Holding seam). cycle_channel reduces these to a
+    // per-channel completed_block_id once per cycle.
+    uint16_t   last_completed_block_id = 0;
 
     // ---- Warm line (cache-line 1) ------------------------------------------
     // Cross-core mirrors + frequently-read scalars that aren't strictly on
@@ -311,6 +329,13 @@ struct Axis {
     int32_t   accel_cps2                = DEFAULT_ACCEL_CPS2;
     int32_t   jerk_cps3                 = DEFAULT_JERK_CPS3;
     int32_t   vmax_cps                  = DEFAULT_VMAX_CPS;
+    // Boot-time native vmax. sync_move's coordinated scale overwrites
+    // vmax_cps for the duration of a queued block; on chain-empty
+    // Holding we restore from this so subsequent un-coordinated moves
+    // (CLI jog, MDI single-axis) run at the axis's full cap rather than
+    // inheriting an ancient block's scale. Set by hook_drive /
+    // apply_drive_limits.
+    int32_t   natural_vmax_cps          = DEFAULT_VMAX_CPS;
     int32_t   max_following_error       = 0;         // |commanded - actual| peak
 
     // Kernel-owned state (cold — read at state-transition events, not per tick).
@@ -506,7 +531,10 @@ struct Axis {
                     int32_t accel_override = 0) noexcept {
         drive = d;
         station_addr = station;
-        if (vmax_override  > 0) vmax_cps   = vmax_override;
+        if (vmax_override  > 0) {
+            vmax_cps         = vmax_override;
+            natural_vmax_cps = vmax_override;
+        }
         if (accel_override > 0) accel_cps2 = accel_override;
     }
 
@@ -516,7 +544,10 @@ struct Axis {
     // for upper-bound sanity (negative values are rejected).
     void apply_drive_limits(int32_t vmax_override,
                             int32_t accel_override) noexcept {
-        if (vmax_override  > 0) vmax_cps   = vmax_override;
+        if (vmax_override  > 0) {
+            vmax_cps         = vmax_override;
+            natural_vmax_cps = vmax_override;
+        }
         if (accel_override > 0) accel_cps2 = accel_override;
     }
 
@@ -713,6 +744,11 @@ struct Channel {
     // rendezvous token this channel is stalled on. The arbiter uses it to
     // correlate with the Barrier record in Kernel::barriers_.
     uint16_t     barrier_token = 0;
+    // Greatest block id retired on any axis owned by this channel.
+    // Bumped at chain pop and at chain-empty Holding so the M62/M63
+    // sync drain can wait until "predecessor block done" without per-
+    // axis polling.
+    uint16_t     completed_block_id = 0;
 };
 
 // Task 9.4 — cross-channel rendezvous (G10.1-style).
@@ -812,6 +848,32 @@ public:
     // transitions the axis to MoveReady, and the motion kernel begins
     // executing the trajectory next cycle.
     void move_to(size_t axis_idx, int32_t position) noexcept;
+
+    // Look-ahead variant: queues a move with a specific vmax (the
+    // pre-coordinated value sync_move computed for this block) and a
+    // block id (for M62/M63 motion-end-sync drains). When the axis is
+    // mid-flight, the queued entry rides the chain ring; when it's
+    // Idle/Holding, the entry latches as the active target.
+    void queue_move(size_t axis_idx, int32_t position,
+                    int32_t vmax_for_block, uint16_t block_id) noexcept;
+
+    // Chain occupancy accessors. axis_chain_room returns true when the
+    // chain ring has room for at least one more queued move; the
+    // interpreter consults this per-participating-axis before
+    // dispatching a new block. axis_chain_count is the number of
+    // queued moves not yet active (informational; HMI surfaces it as
+    // queue depth). axis_active_block_id is the block currently being
+    // executed (0 = none / pre-block-id-tagging path).
+    [[nodiscard]] bool     axis_chain_room(size_t axis_idx) const noexcept;
+    [[nodiscard]] uint8_t  axis_chain_count(size_t axis_idx) const noexcept;
+    [[nodiscard]] uint16_t axis_active_block_id(size_t axis_idx) const noexcept;
+
+    // Most recently completed block id for `channel_idx`. Tracks the
+    // greatest block id that has been observed retiring on any axis owned
+    // by the channel (chain pop or chain-empty Holding). 0 = no block has
+    // completed yet on this channel. Used by M62/M63 sync-drain to match
+    // a pending output op to "predecessor block done".
+    [[nodiscard]] uint16_t channel_completed_block_id(size_t channel_idx) const noexcept;
 
     // Set axis velocity directly (for CSV spindle mode). Velocity is in
     // counts per second - axis will rotate at this rate continuously.
@@ -1262,6 +1324,17 @@ private:
     // realistic run) and skips 0 since the API treats that as "caller did
     // not supply a token, please allocate one for me".
     std::atomic<uint16_t>                barrier_token_seq_{0xA000};
+    // Monotonic block-id allocator. Each sync_move gets a fresh id (skip 0)
+    // that the chain ring entries carry, so M62/M63 sync-drain can match
+    // an output op to "the block that just finished" instead of guessing.
+    std::atomic<uint16_t>                block_id_seq_{1};
+    uint16_t next_block_id() noexcept {
+        uint16_t id;
+        do {
+            id = block_id_seq_.fetch_add(1, std::memory_order_relaxed);
+        } while (id == 0);
+        return id;
+    }
     std::array<GearLink, MAX_GEARS>      gears_{};
     std::array<GantryLink, MAX_GANTRYS>  gantrys_{};
     std::array<LinearCalibration, MAX_AXES> linear_cal_{};

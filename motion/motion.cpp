@@ -448,37 +448,35 @@ void Axis::step_trajectory(uint32_t dt_us) noexcept {
     commanded_position = new_pos;
 
     if (reached_target) {
-        // Look-ahead chain swap: if a chained target is queued AND the
-        // chain extends in the same direction this trajectory was already
-        // moving, swap it in WITHOUT clamping velocity to zero. The
-        // S-curve generator picks up next tick with the new target, no
-        // dwell at v=0. Direction mismatch (the chained block reverses)
-        // falls through to normal Holding so a clean stop happens before
-        // the reverse. vmax is restored at the same moment if it had
-        // been scaled — the chained block's sync_move (if any) will
-        // re-scale fresh, otherwise the axis falls back to its native
-        // vmax for the chain remainder.
-        if (has_next_target) {
-            const int32_t chain_delta = next_target - commanded_position;
-            const int32_t chain_dir = chain_delta > 0 ? 1 : (chain_delta < 0 ? -1 : 0);
-            if (chain_dir == dir && chain_dir != 0) {
-                target = next_target;
-                has_next_target = false;
-                // Restore vmax at the chain seam so the next block runs at
-                // its native cap rather than the prior block's
-                // coordinated-scale value. The new sync_move (if any) will
-                // re-scale fresh for its own participants. Without this,
-                // a multi-axis G1 followed by a single-axis chained G1
-                // would run the single-axis block at the multi-axis
-                // coordinated speed.
-                if (restore_vmax_cps > 0) {
-                    vmax_cps         = restore_vmax_cps;
-                    restore_vmax_cps = 0;
+        // Look-ahead chain pop. Peek the head of the chain ring; if the
+        // queued block extends in the same direction we're already moving,
+        // swap to its target/vmax/block_id WITHOUT zeroing velocity. The
+        // popped block's vmax is the per-axis coordinated scale that
+        // sync_move computed for THAT block, so each block runs at its
+        // own pace without leaking the previous block's coordination.
+        // restore_vmax_cps is cleared in the seam since the active vmax
+        // is now whatever the chain entry stored. Direction mismatch
+        // falls through to a clean Holding stop and keeps the chain
+        // queued for the next move_to / re-arm.
+        if (chain_count > 0) {
+            const ChainEntry& head = chain[chain_head];
+            if (head.valid) {
+                const int32_t chain_delta = head.target - commanded_position;
+                const int32_t chain_dir = chain_delta > 0 ? 1 : (chain_delta < 0 ? -1 : 0);
+                if (chain_dir == dir && chain_dir != 0) {
+                    if (active_block_id != 0) {
+                        last_completed_block_id = active_block_id;
+                    }
+                    target            = head.target;
+                    vmax_cps          = head.vmax_cps;
+                    active_block_id   = head.block_id;
+                    restore_vmax_cps  = 0;
+                    chain[chain_head].valid = false;
+                    chain_head = (chain_head + 1) % CHAIN_DEPTH;
+                    --chain_count;
+                    prev_target_velocity = target_velocity;
+                    return;
                 }
-                // Don't zero velocity — the chain continues. Trajectory
-                // generator will redecide accel/cruise/decel next tick.
-                prev_target_velocity = target_velocity;
-                return;
             }
         }
         target_velocity = 0;
@@ -490,6 +488,9 @@ void Axis::step_trajectory(uint32_t dt_us) noexcept {
         // the next move_to (the interpreter sees Holding and dispatches).
         traj_state = TrajState::Holding;
         current_accel_cps2 = 0;
+        if (active_block_id != 0 && last_completed_block_id != active_block_id) {
+            last_completed_block_id = active_block_id;
+        }
     }
 
     prev_target_velocity = target_velocity;
@@ -565,27 +566,63 @@ void Kernel::on_connection_lost(size_t i) noexcept {
 
 void Kernel::move_to(size_t i, int32_t position) noexcept {
     if (i >= MAX_AXES) return;
+    queue_move(i, position, axes_[i].vmax_cps, /*block_id=*/0);
+}
+
+void Kernel::queue_move(size_t i, int32_t position,
+                        int32_t vmax_for_block,
+                        uint16_t block_id) noexcept {
+    if (i >= MAX_AXES) return;
     auto& a = axes_[i];
     a.mode    = Mode::CSP;
     a.enabled = true;
-    // Look-ahead: if the axis is mid-flight (anything other than Idle or
-    // Holding), queue the new target into the depth-1 chain slot instead
-    // of overwriting the active target. step_trajectory swaps the chain
-    // in when it would otherwise enter Holding, eliminating the velocity-
-    // zero dwell between consecutive same-direction G1 blocks. Caller
-    // (sync_move / interpreter) is responsible for not over-issuing —
-    // we silently overwrite an existing chain entry rather than report
-    // an error so a back-to-back overshoot of the queue depth degrades
-    // to "older queued target lost" instead of stalling the channel.
+    if (vmax_for_block <= 0) vmax_for_block = a.vmax_cps;
+    // Mid-flight: push into the chain ring (caller has already verified
+    // there's room via axis_chain_room — overflow drops the OLDEST
+    // pending entry rather than the freshest, so a runaway interpreter
+    // loses look-ahead but never the immediately-next block).
     const bool mid_flight =
         a.traj_state != TrajState::Idle && a.traj_state != TrajState::Holding;
     if (mid_flight) {
-        a.next_target     = position;
-        a.has_next_target = true;
+        if (a.chain_count >= Axis::CHAIN_DEPTH) {
+            // Overflow: rotate one entry off the front (oldest).
+            a.chain_head = (a.chain_head + 1) % Axis::CHAIN_DEPTH;
+            --a.chain_count;
+        }
+        const uint8_t slot =
+            (a.chain_head + a.chain_count) % Axis::CHAIN_DEPTH;
+        a.chain[slot].target   = position;
+        a.chain[slot].vmax_cps = vmax_for_block;
+        a.chain[slot].block_id = block_id;
+        a.chain[slot].valid    = true;
+        ++a.chain_count;
         return;
     }
-    a.target     = position;
-    a.traj_state = TrajState::MoveReady;
+    // Idle or Holding: latch the target directly.
+    a.target          = position;
+    a.vmax_cps        = vmax_for_block;
+    a.active_block_id = block_id;
+    a.traj_state      = TrajState::MoveReady;
+}
+
+bool Kernel::axis_chain_room(size_t i) const noexcept {
+    if (i >= MAX_AXES) return false;
+    return axes_[i].chain_count < Axis::CHAIN_DEPTH;
+}
+
+uint8_t Kernel::axis_chain_count(size_t i) const noexcept {
+    if (i >= MAX_AXES) return 0;
+    return axes_[i].chain_count;
+}
+
+uint16_t Kernel::axis_active_block_id(size_t i) const noexcept {
+    if (i >= MAX_AXES) return 0;
+    return axes_[i].active_block_id;
+}
+
+uint16_t Kernel::channel_completed_block_id(size_t c) const noexcept {
+    if (c >= channel_count_) return 0;
+    return channels_[c].completed_block_id;
 }
 
 void Kernel::set_axis_velocity(size_t i, int32_t velocity_cps) noexcept {
@@ -840,11 +877,16 @@ void Kernel::cycle_axis(Axis& a, uint64_t t_now, bool freeze_trajectory) noexcep
             const int32_t aferr = ferr >= 0 ? ferr : -ferr;
             if (aferr > a.max_following_error) a.max_following_error = aferr;
 
-            // Task 9.6 — once a sync-scaled move lands in Holding, restore
-            // the axis's original vmax. `restore_vmax_cps == 0` means no
-            // scale is pending, so this is a no-op for normal moves.
-            if (a.traj_state == TrajState::Holding && a.restore_vmax_cps > 0) {
-                a.vmax_cps         = a.restore_vmax_cps;
+            // Task 9.6 — once a sync-scaled move lands in Holding AND
+            // there's nothing left in the chain ring, restore the axis's
+            // natural cap so subsequent un-coordinated moves (CLI jog,
+            // MDI single-axis) don't inherit the prior block's
+            // coordinated scale. With a non-empty chain we leave the
+            // active vmax alone — the next pop will overwrite it with
+            // the queued block's own pre-scaled value.
+            if (a.traj_state == TrajState::Holding && a.chain_count == 0 &&
+                a.natural_vmax_cps > 0 && a.vmax_cps != a.natural_vmax_cps) {
+                a.vmax_cps         = a.natural_vmax_cps;
                 a.restore_vmax_cps = 0;
             }
 
@@ -999,11 +1041,22 @@ void Kernel::cycle_channel(Channel& ch, uint64_t t_now) noexcept {
     // Running / Fault flip is one-way until the operator clears the
     // fault_reset on the offending axis.
     bool any_fault = false;
+    uint16_t max_completed = ch.completed_block_id;
     for (uint8_t k = 0; k < ch.axis_count; ++k) {
         const uint8_t ai = ch.axis_indices[k];
-        if (ai < MAX_AXES) cycle_axis(axes_[ai], t_now, freeze);
-        if (ai < MAX_AXES && axes_[ai].fault_latched) any_fault = true;
+        if (ai >= MAX_AXES) continue;
+        cycle_axis(axes_[ai], t_now, freeze);
+        if (axes_[ai].fault_latched) any_fault = true;
+        // Block ids are monotonic (per-channel sync_move counter), so
+        // "max" is well-defined as long as no axis has been re-armed
+        // with a block id that wraps below the current. With 16 bits
+        // and seq advance per sync_move, that's 2^16 moves before
+        // wraparound — enough for any realistic run.
+        if (axes_[ai].last_completed_block_id > max_completed) {
+            max_completed = axes_[ai].last_completed_block_id;
+        }
     }
+    ch.completed_block_id = max_completed;
     if (any_fault && ch.state != ChannelState::Fault &&
         ch.state != ChannelState::WaitingBarrier &&
         ch.state != ChannelState::Gearing) {
@@ -1287,26 +1340,35 @@ bool Kernel::sync_move(uint64_t axis_mask,
     if (min_t_final_us > t_final_us) t_final_us = min_t_final_us;
     if (t_final_us == 0) return false; // zero-length move — nothing to do
 
-    // Pass 2 — commit each participating axis. Scale vmax so everyone
-    // reaches the shared T_final. `restore_vmax_cps` gets saved so
-    // cycle_axis can revert once the axis lands in Holding.
+    // Pass 2 — commit each participating axis. Compute the per-axis
+    // coordinated vmax (so everyone reaches T_final together) and push
+    // it into the chain ring as part of THIS block's queued entry. Each
+    // chain block carries its own pre-scaled vmax, so multiple coordinated
+    // sync_moves can be in flight without one block's scaling
+    // contaminating another. Allocate a fresh block id per call so the
+    // chain entries can be matched to their source block (used by the
+    // M62/M63 sync drain in tier 1d).
+    const uint16_t block_id = next_block_id();
     uint8_t participants_mask = 0;
     for (size_t i = 0; i < MAX_AXES; ++i) {
         if ((axis_mask & (1ull << i)) == 0) continue;
         auto& a = axes_[i];
-        if (a.vmax_cps <= 0) continue;
+        if (a.natural_vmax_cps <= 0) continue;
         const int32_t delta = targets[i] - a.commanded_position;
         const uint32_t abs_delta = static_cast<uint32_t>(delta < 0 ? -delta : delta);
 
-        const uint64_t required_vmax =
+        // Coordinated vmax = |delta| / T_final. Cap at the axis's natural
+        // vmax so a longer-than-needed T_final from min_t_final_us doesn't
+        // ask the axis to run faster than its drive accepts.
+        uint64_t required_vmax =
             (static_cast<uint64_t>(abs_delta) * 1'000'000ULL) / t_final_us;
-        if (required_vmax > 0 && required_vmax < static_cast<uint64_t>(a.vmax_cps)) {
-            if (a.restore_vmax_cps == 0) a.restore_vmax_cps = a.vmax_cps;
-            a.vmax_cps = static_cast<int32_t>(required_vmax);
+        if (required_vmax == 0) required_vmax = static_cast<uint64_t>(a.natural_vmax_cps);
+        if (required_vmax > static_cast<uint64_t>(a.natural_vmax_cps)) {
+            required_vmax = static_cast<uint64_t>(a.natural_vmax_cps);
         }
-        // Fire the move — reuses the existing move_to path so fault / brake
-        // interlocks stay intact.
-        move_to(i, targets[i]);
+        queue_move(i, targets[i],
+                   static_cast<int32_t>(required_vmax),
+                   block_id);
 
         // Track which channels own a participating axis, for the barrier.
         for (size_t c = 0; c < channel_count_; ++c) {
