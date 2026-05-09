@@ -28,6 +28,7 @@
 #include "machine/motion_wiring.hpp"
 #include "machine/toolpods.hpp"
 #include "machine/pallet.hpp"
+#include "cnc/jobs.hpp"
 #include "devices/device_db.hpp"
 #include "diag/jitter.hpp"
 #include "diag/cpu_load.hpp"
@@ -1324,6 +1325,88 @@ static int cmd_pallet_assign(const char* args, kernel::hal::UARTDriverOps* uart)
     }
     const bool ok = machine::pallet::g_service.assign_program(idx, prog, static_cast<int>(wcs));
     uart->puts(ok ? "pallet_assign: ok\n" : "pallet_assign: failed\n");
+    return ok ? 0 : 1;
+}
+
+// --- Job scheduler ---
+static const char* job_state_name(cnc::jobs::JobState s) {
+    switch (s) {
+        case cnc::jobs::JobState::Pending: return "pending";
+        case cnc::jobs::JobState::Running: return "running";
+        case cnc::jobs::JobState::Done:    return "done";
+        case cnc::jobs::JobState::Faulted: return "faulted";
+        case cnc::jobs::JobState::Skipped: return "skipped";
+    }
+    return "?";
+}
+
+static const char* sched_state_name(cnc::jobs::SchedulerState s) {
+    switch (s) {
+        case cnc::jobs::SchedulerState::Idle:    return "idle";
+        case cnc::jobs::SchedulerState::Running: return "running";
+        case cnc::jobs::SchedulerState::Holding: return "holding";
+        case cnc::jobs::SchedulerState::Stopped: return "stopped";
+    }
+    return "?";
+}
+
+static int cmd_jobs(const char*, kernel::hal::UARTDriverOps* uart) {
+    char buf[224];
+    const size_t active = cnc::jobs::g_runtime.active_job();
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "scheduler: %s  jobs=%lu  active=%s\n",
+        sched_state_name(cnc::jobs::g_runtime.state()),
+        static_cast<unsigned long>(cnc::jobs::g_runtime.job_count()),
+        active == SIZE_MAX ? "(none)"
+            : (cnc::jobs::g_runtime.job(active) ? cnc::jobs::g_runtime.job(active)->id : "?"));
+    uart->puts(buf);
+    for (size_t i = 0; i < cnc::jobs::g_runtime.job_count(); ++i) {
+        const auto* j = cnc::jobs::g_runtime.job(i);
+        if (!j) continue;
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "[%lu] %s pri=%u pallet=%s prog=%s wcs=%d state=%s done=%u/%u%s%s\n",
+            static_cast<unsigned long>(i), j->id, static_cast<unsigned>(j->priority),
+            j->pallet_id[0] ? j->pallet_id : "-",
+            j->program[0] ? j->program : "-",
+            j->work_offset_index,
+            job_state_name(j->state),
+            static_cast<unsigned>(j->completed), static_cast<unsigned>(j->repeat),
+            j->last_message[0] ? "  msg=" : "",
+            j->last_message[0] ? j->last_message : "");
+        uart->puts(buf);
+    }
+    return 0;
+}
+
+static int cmd_job_run(const char*, kernel::hal::UARTDriverOps* uart) {
+    const bool ok = cnc::jobs::g_runtime.start_scheduler();
+    uart->puts(ok ? "scheduler: started\n" : "scheduler: cannot start (stopped — reload to reset)\n");
+    return ok ? 0 : 1;
+}
+
+static int cmd_job_pause(const char*, kernel::hal::UARTDriverOps* uart) {
+    const bool ok = cnc::jobs::g_runtime.pause_scheduler();
+    uart->puts(ok ? "scheduler: holding (will idle after current job)\n"
+                  : "scheduler: cannot pause (not running)\n");
+    return ok ? 0 : 1;
+}
+
+static int cmd_job_resume(const char*, kernel::hal::UARTDriverOps* uart) {
+    const bool ok = cnc::jobs::g_runtime.resume_scheduler();
+    uart->puts(ok ? "scheduler: resumed\n" : "scheduler: cannot resume (not holding)\n");
+    return ok ? 0 : 1;
+}
+
+static int cmd_job_skip(const char*, kernel::hal::UARTDriverOps* uart) {
+    const bool ok = cnc::jobs::g_runtime.skip_current();
+    uart->puts(ok ? "scheduler: current job skipped\n" : "scheduler: no active job\n");
+    return ok ? 0 : 1;
+}
+
+static int cmd_job_abort(const char*, kernel::hal::UARTDriverOps* uart) {
+    const bool ok = cnc::jobs::g_runtime.abort_current();
+    uart->puts(ok ? "scheduler: current job aborted; queue holding\n"
+                  : "scheduler: no active job\n");
     return ok ? 0 : 1;
 }
 
@@ -4940,6 +5023,12 @@ CLI::CLI() {
     register_command("pallets", cmd_pallets, "pallets — list pallet roster, status, and assigned program");
     register_command("pallet_status", cmd_pallet_status, "pallet_status <id> <empty|loaded|cutting|done|fault|hold>");
     register_command("pallet_assign", cmd_pallet_assign, "pallet_assign <id> <program.ngc> <wcs 0..5> — set per-pallet program + WCS");
+    register_command("jobs",       cmd_jobs,       "jobs — list lights-out job queue + scheduler state");
+    register_command("job_run",    cmd_job_run,    "job_run — start the scheduler (Idle → Running)");
+    register_command("job_pause",  cmd_job_pause,  "job_pause — Running → Holding (settles to Idle after current job)");
+    register_command("job_resume", cmd_job_resume, "job_resume — Holding → Running");
+    register_command("job_skip",   cmd_job_skip,   "job_skip — mark current job Skipped, advance");
+    register_command("job_abort",  cmd_job_abort,  "job_abort — stop interpreter on current job, queue → Holding");
     register_command("toolpod_select", cmd_toolpod_select, "toolpod_select <pod> <station> — move/select a physical pod station");
     register_command("toolpod_assign", cmd_toolpod_assign, "toolpod_assign <pod> <station> <virtual_tool> — remap virtual tool onto a physical station");
     register_command("ui_page", cmd_ui_page, "ui_page <id> — switch the active TSV UI page");

@@ -25,3 +25,9 @@ _binary_embedded_toolpods_tsv_end:
 _binary_embedded_pallets_tsv_start:
 	.incbin "devices/embedded_pallets.tsv"
 _binary_embedded_pallets_tsv_end:
+
+	.global _binary_embedded_jobs_tsv_start
+	.global _binary_embedded_jobs_tsv_end
+_binary_embedded_jobs_tsv_start:
+	.incbin "devices/embedded_jobs.tsv"
+_binary_embedded_jobs_tsv_end:
