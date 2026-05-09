@@ -475,6 +475,7 @@ Renderer::RasterVertex Renderer::shade_clipped(const ClipVertex& cv) const {
     out.x = (cv.clip_pos.x * inv_w * 0.5f + 0.5f) * static_cast<float>(framebuffer_.width);
     out.y = (1.0f - (cv.clip_pos.y * inv_w * 0.5f + 0.5f)) * static_cast<float>(framebuffer_.height);
     out.z = cv.clip_pos.z * inv_w;
+    out.inv_w = inv_w;
 
     Vec3f normal = normalize_v3_fast(cv.eye_normal);
     if (normal.x == 0.0f && normal.y == 0.0f && normal.z == 0.0f) {
@@ -573,11 +574,21 @@ bool Renderer::rasterize_triangle(const RasterVertex& v0, const RasterVertex& v1
                 depth_row[x] = depth01;
             }
 
+            // Perspective-correct attribute interpolation. Linear
+            // barycentric (the pre-tier-4b path) interpolates colour in
+            // screen space, which produces a visible kink across long
+            // foreshortened triangles. The standard fix weights each
+            // vertex's attribute by inv_w, sums, and divides by the
+            // interpolated inv_w to recover the world-space-linear
+            // attribute. inv_w is captured in shade_clipped from
+            // 1/clip.w.
+            const float iw_pix = w0 * v0.inv_w + w1 * v1.inv_w + w2 * v2.inv_w;
+            const float w_pix  = (iw_pix > 1e-6f) ? (1.0f / iw_pix) : 0.0f;
             const Color4f shade{
-                clampf(v0.color.r * w0 + v1.color.r * w1 + v2.color.r * w2, 0.0f, 1.0f),
-                clampf(v0.color.g * w0 + v1.color.g * w1 + v2.color.g * w2, 0.0f, 1.0f),
-                clampf(v0.color.b * w0 + v1.color.b * w1 + v2.color.b * w2, 0.0f, 1.0f),
-                clampf(v0.color.a * w0 + v1.color.a * w1 + v2.color.a * w2, 0.0f, 1.0f)
+                clampf((v0.color.r * v0.inv_w * w0 + v1.color.r * v1.inv_w * w1 + v2.color.r * v2.inv_w * w2) * w_pix, 0.0f, 1.0f),
+                clampf((v0.color.g * v0.inv_w * w0 + v1.color.g * v1.inv_w * w1 + v2.color.g * v2.inv_w * w2) * w_pix, 0.0f, 1.0f),
+                clampf((v0.color.b * v0.inv_w * w0 + v1.color.b * v1.inv_w * w1 + v2.color.b * v2.inv_w * w2) * w_pix, 0.0f, 1.0f),
+                clampf((v0.color.a * v0.inv_w * w0 + v1.color.a * v1.inv_w * w1 + v2.color.a * v2.inv_w * w2) * w_pix, 0.0f, 1.0f)
             };
             color_row[x] = pack_argb_f(shade);
         }

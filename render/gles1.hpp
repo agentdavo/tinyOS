@@ -126,6 +126,12 @@ private:
         float x;
         float y;
         float z;
+        // 1 / clip-space w, for perspective-correct attribute
+        // interpolation. Per-pixel attribute = (sum of w_i * attr_i *
+        // inv_w_i) / (sum of w_i * inv_w_i), which recovers the
+        // world-space-linear attribute across screen-space-non-linear
+        // foreshortened triangles.
+        float inv_w;
         Color4f color;
         bool valid;
     };
