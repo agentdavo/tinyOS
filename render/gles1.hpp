@@ -80,6 +80,15 @@ struct FramebufferView {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t stride_pixels = 0;
+    // Optional depth buffer covering the same `width × height` sub-rect.
+    // When non-null, draw_mesh_solid runs a per-pixel Z-test (less = closer
+    // wins); when null the rasterizer falls back to last-writes-win behaviour.
+    // depth_stride_pixels is independent from stride_pixels so callers can
+    // back the depth with a tightly-packed widget-local buffer (stride=width)
+    // instead of paying for a full-framebuffer-sized depth allocation.
+    // Caller owns the storage; clear() resets it to the far-plane sentinel.
+    float* depth = nullptr;
+    uint32_t depth_stride_pixels = 0;
 };
 
 class Renderer {
@@ -94,6 +103,12 @@ public:
 
     void set_material(const Material& mat);
     void set_light(const Light& light);
+
+    // Toggle back-face culling. Front-face winding is fixed: world-space CCW
+    // (the OBJ/STL convention). With the renderer's Y-flipped viewport this
+    // maps to a positive screen-space edge_function; back-faces have
+    // non-positive area and are skipped when culling is on. Default: on.
+    void set_cull_backfaces(bool enable);
 
     bool draw_mesh_wireframe(const MeshView& mesh);
     bool draw_mesh_solid(const MeshView& mesh);
@@ -122,6 +137,7 @@ private:
     Color4u8 flat_color_{0xff, 0xff, 0xff, 0xff};
     Material material_{};
     Light light_{};
+    bool cull_backfaces_ = true;
 
     void put_pixel(int32_t x, int32_t y, uint32_t argb);
     void draw_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t argb);

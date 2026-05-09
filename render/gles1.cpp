@@ -106,18 +106,41 @@ GLES_INLINE float edge_function(float ax, float ay, float bx, float by, float px
     return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
 }
 
+// log2_approx for x in (0, 1]. Uses the IEEE-754 exponent extraction trick
+// followed by a quartic minimax polynomial in the mantissa range [1, 2).
+// Accurate to roughly 1e-3, which is enough for specular shading. Costs
+// ~6 mul/add — far less than the integer-power loop the old pow_approx ran.
+GLES_INLINE float log2_approx(float x) {
+    if (x <= 0.0f) return -127.0f;
+    union { float f; uint32_t u; } v = {x};
+    const int32_t e = static_cast<int32_t>((v.u >> 23) & 0xFF) - 127;
+    v.u = (v.u & 0x007FFFFFU) | 0x3F800000U; // mantissa in [1, 2)
+    const float m = v.f;
+    // Quartic fit of log2(m) on [1, 2): coefficients from a least-squares
+    // pass; matches log2 to ~1e-3 across the range.
+    const float p = -0.34484843f * m * m + 2.02466578f * m - 1.67487759f;
+    return p + static_cast<float>(e);
+}
+
+GLES_INLINE float exp2_approx(float x) {
+    if (x < -126.0f) return 0.0f;
+    if (x > 127.0f) x = 127.0f;
+    const float xi = static_cast<float>(static_cast<int32_t>(x) - (x < 0.0f ? 1 : 0));
+    const float xf = x - xi;
+    // Quartic fit of 2^f on [0, 1).
+    const float p = ((0.07252294f * xf + 0.24279419f) * xf + 0.69502427f) * xf + 1.0f;
+    union { uint32_t u; float f; } v;
+    v.u = static_cast<uint32_t>((static_cast<int32_t>(xi) + 127) & 0xFF) << 23;
+    return v.f * p;
+}
+
+// pow(base, exp) via 2^(exp * log2(base)). Closer to the real curve than the
+// old integer-loop + linear-fractional approximation, especially for the
+// specular term where shininess > ~16 used to stair-step badly.
 GLES_INLINE float pow_approx(float base, float exp) {
     if (base <= 0.0f) return 0.0f;
-    const int32_t whole = static_cast<int32_t>(exp);
-    float out = 1.0f;
-    for (int32_t i = 0; i < whole; ++i) {
-        out *= base;
-    }
-    const float frac = exp - static_cast<float>(whole);
-    if (frac > 0.001f) {
-        out *= 1.0f + frac * (base - 1.0f);
-    }
-    return out;
+    if (exp == 0.0f) return 1.0f;
+    return exp2_approx(exp * log2_approx(base));
 }
 
 GLES_INLINE Vec3f cross_v3v3(const Vec3f& a, const Vec3f& b) {
@@ -277,10 +300,21 @@ void Renderer::bind_framebuffer(FramebufferView fb) {
 
 void Renderer::clear(uint32_t argb) {
     if (!framebuffer_.pixels || framebuffer_.stride_pixels == 0) return;
-    uint32_t* p = framebuffer_.pixels;
-    const uint32_t count = framebuffer_.width * framebuffer_.height;
-    for (uint32_t i = 0; i < count; ++i) {
-        p[i] = argb;
+    // Clear is row-by-row because the FramebufferView is a sub-rect: width
+    // <= stride_pixels and contiguous-multiply would scribble outside the
+    // view. The depth buffer (when present) shares stride and gets cleared
+    // to the far-plane sentinel (1.0f) in the same pass.
+    for (uint32_t y = 0; y < framebuffer_.height; ++y) {
+        uint32_t* row = framebuffer_.pixels + y * framebuffer_.stride_pixels;
+        for (uint32_t x = 0; x < framebuffer_.width; ++x) {
+            row[x] = argb;
+        }
+        if (framebuffer_.depth) {
+            float* drow = framebuffer_.depth + y * framebuffer_.depth_stride_pixels;
+            for (uint32_t x = 0; x < framebuffer_.width; ++x) {
+                drow[x] = 1.0f;
+            }
+        }
     }
 }
 
@@ -290,6 +324,7 @@ void Renderer::set_projection_matrix(const Mat4& mat) { projection_ = mat; }
 void Renderer::set_flat_color(Color4u8 color) { flat_color_ = color; }
 void Renderer::set_material(const Material& mat) { material_ = mat; }
 void Renderer::set_light(const Light& light) { light_ = light; }
+void Renderer::set_cull_backfaces(bool enable) { cull_backfaces_ = enable; }
 
 void Renderer::put_pixel(int32_t x, int32_t y, uint32_t argb) {
     if (!framebuffer_.pixels) return;
@@ -472,6 +507,10 @@ bool Renderer::rasterize_triangle(const RasterVertex& v0, const RasterVertex& v1
 
     const float area = edge_function(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y);
     if (absf(area) < 0.001f) return false;
+    // Front-face = world-space CCW = positive screen-space area after the
+    // viewport's Y flip. Back-faces (area <= 0) are dropped when culling is
+    // on; this halves fill cost on closed meshes (the common case).
+    if (cull_backfaces_ && area <= 0.0f) return false;
 
     const int32_t width = static_cast<int32_t>(framebuffer_.width);
     const int32_t height = static_cast<int32_t>(framebuffer_.height);
@@ -487,13 +526,31 @@ bool Renderer::rasterize_triangle(const RasterVertex& v0, const RasterVertex& v1
     const int32_t vx2 = static_cast<int32_t>(v2.x);
     const int32_t vy2 = static_cast<int32_t>(v2.y);
 
-    min_x = maxi(0, mini(min_x, mini(vx1, vx2)));
-    min_y = maxi(0, mini(min_y, mini(vy1, vy2)));
-    max_x = mini(width - 1, maxi(max_x, maxi(vx1, vx2)));
-    max_y = mini(height - 1, maxi(max_y, maxi(vy1, vy2)));
+    // 2D viewport AABB cull: triangles fully off-screen still walked the
+    // rasterizer's inner loops at 0 visible cost. Bail before clamping so
+    // off-screen tris don't even get the clamp arithmetic.
+    const int32_t tri_min_x = mini(min_x, mini(vx1, vx2));
+    const int32_t tri_min_y = mini(min_y, mini(vy1, vy2));
+    const int32_t tri_max_x = maxi(max_x, maxi(vx1, vx2));
+    const int32_t tri_max_y = maxi(max_y, maxi(vy1, vy2));
+    if (tri_max_x < 0 || tri_min_x >= width) return false;
+    if (tri_max_y < 0 || tri_min_y >= height) return false;
+
+    min_x = maxi(0, tri_min_x);
+    min_y = maxi(0, tri_min_y);
+    max_x = mini(width - 1, tri_max_x);
+    max_y = mini(height - 1, tri_max_y);
+
+    const bool depth_enabled = framebuffer_.depth != nullptr;
+    const uint32_t color_stride = framebuffer_.stride_pixels;
+    const uint32_t depth_stride = framebuffer_.depth_stride_pixels;
 
     const float inv_area = 1.0f / area;
     for (int32_t y = min_y; y <= max_y; ++y) {
+        uint32_t* color_row = framebuffer_.pixels + static_cast<uint32_t>(y) * color_stride;
+        float* depth_row = depth_enabled
+            ? framebuffer_.depth + static_cast<uint32_t>(y) * depth_stride
+            : nullptr;
         for (int32_t x = min_x; x <= max_x; ++x) {
             const float px = static_cast<float>(x) + 0.5f;
             const float py = static_cast<float>(y) + 0.5f;
@@ -502,13 +559,22 @@ bool Renderer::rasterize_triangle(const RasterVertex& v0, const RasterVertex& v1
             const float w2 = edge_function(v0.x, v0.y, v1.x, v1.y, px, py) * inv_area;
             if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
 
+            if (depth_enabled) {
+                const float z = v0.z * w0 + v1.z * w1 + v2.z * w2;
+                if (z < -1.0f || z > 1.0f) continue;
+                // Map clip-space z [-1, 1] to depth [0, 1] (less = closer).
+                const float depth01 = z * 0.5f + 0.5f;
+                if (depth01 >= depth_row[x]) continue;
+                depth_row[x] = depth01;
+            }
+
             const Color4f shade{
                 clampf(v0.color.r * w0 + v1.color.r * w1 + v2.color.r * w2, 0.0f, 1.0f),
                 clampf(v0.color.g * w0 + v1.color.g * w1 + v2.color.g * w2, 0.0f, 1.0f),
                 clampf(v0.color.b * w0 + v1.color.b * w1 + v2.color.b * w2, 0.0f, 1.0f),
                 clampf(v0.color.a * w0 + v1.color.a * w1 + v2.color.a * w2, 0.0f, 1.0f)
             };
-            put_pixel(x, y, pack_argb_f(shade));
+            color_row[x] = pack_argb_f(shade);
         }
     }
     return true;

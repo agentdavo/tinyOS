@@ -3613,13 +3613,33 @@ private:
         return *reinterpret_cast<gles1::Renderer*>(storage);
     }
 
+    // Each machine_view widget gets its own depth buffer sized to width × height
+    // so overlapping geometry resolves correctly without paying for a full
+    // FB-sized (8 MiB) depth allocation. Lazy alloc so widgets that never
+    // render 3D don't pay anything; the buffer is reused across redraws.
+    float* ensure_depth_buffer() const {
+        const size_t needed = static_cast<size_t>(width_) * static_cast<size_t>(height_);
+        if (needed == 0) return nullptr;
+        if (depth_buffer_ && depth_capacity_ >= needed) return depth_buffer_;
+        if (depth_buffer_) {
+            ::operator delete(depth_buffer_);
+            depth_buffer_ = nullptr;
+            depth_capacity_ = 0;
+        }
+        depth_buffer_ = static_cast<float*>(::operator new(needed * sizeof(float)));
+        depth_capacity_ = needed;
+        return depth_buffer_;
+    }
+
     gles1::FramebufferView bind_view(Framebuffer& fb) const {
-        return gles1::FramebufferView{
-            fb.data() + static_cast<uint32_t>(y_) * kernel::ui::FB_WIDTH + static_cast<uint32_t>(x_),
-            width_,
-            height_,
-            kernel::ui::FB_WIDTH
-        };
+        gles1::FramebufferView v{};
+        v.pixels = fb.data() + static_cast<uint32_t>(y_) * kernel::ui::FB_WIDTH + static_cast<uint32_t>(x_);
+        v.width = width_;
+        v.height = height_;
+        v.stride_pixels = kernel::ui::FB_WIDTH;
+        v.depth = ensure_depth_buffer();
+        v.depth_stride_pixels = width_;
+        return v;
     }
 
     static bool axis_is_live(size_t axis_idx) {
@@ -3931,6 +3951,11 @@ private:
     int32_t drag_x_ = 0;
     int32_t drag_y_ = 0;
     Camera camera_{};
+    // Per-widget depth buffer for the GLES1 Z-test path. Lazy-allocated by
+    // ensure_depth_buffer() the first time bind_view runs; mutable so the
+    // const bind_view can populate it without losing the const-call ergonomics.
+    mutable float* depth_buffer_ = nullptr;
+    mutable size_t depth_capacity_ = 0;
 };
 
 BuilderImage* BuilderImage::g_gles1_widgets[BuilderImage::kMaxGles1Widgets] = {};
