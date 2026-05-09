@@ -7,9 +7,11 @@
 #include "render/machine_model.hpp"
 #include "machine/machine_registry.hpp"
 #include "machine/toolpods.hpp"
+#include "machine/pallet.hpp"
 #include "cnc/programs.hpp"
 #include "cnc/mdi.hpp"
 #include "cnc/interpreter.hpp"
+#include "cnc/jobs.hpp"
 #include "motion/motion.hpp"
 #include "ui/operator_api.hpp"
 #include "ui/ui.hpp"
@@ -550,6 +552,15 @@ enum class BindKind : uint16_t {
     LookaheadCapacity,            // motion::Axis::CHAIN_DEPTH (constant; useful for slider max=)
     KlogTail,                     // last few klog lines, formatted via klog::tail
     TcpStatus,                    // "off / head CB / ch0 on" composite string
+    // Lights-out — per-pallet status text + scheduler dashboard. Pallet
+    // bindings index into machine::pallet::g_service by row 0..3.
+    PalletId0, PalletId1, PalletId2, PalletId3,
+    PalletStatus0, PalletStatus1, PalletStatus2, PalletStatus3,
+    PalletProgram0, PalletProgram1, PalletProgram2, PalletProgram3,
+    PalletCycles0, PalletCycles1, PalletCycles2, PalletCycles3,
+    SchedulerState,               // "idle / running / holding / stopped"
+    SchedulerActiveJob,           // active job's id or "(none)"
+    SchedulerJobCount,            // number of jobs in the queue
 };
 
 BindKind parse_bind(const char* s) {
@@ -840,6 +851,25 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "lookahead:max")  == 0) return BindKind::LookaheadCapacity;
     if (strcmp(s, "klog:tail")      == 0) return BindKind::KlogTail;
     if (strcmp(s, "tcp:status")     == 0) return BindKind::TcpStatus;
+    if (strcmp(s, "pallet:0:id")        == 0) return BindKind::PalletId0;
+    if (strcmp(s, "pallet:1:id")        == 0) return BindKind::PalletId1;
+    if (strcmp(s, "pallet:2:id")        == 0) return BindKind::PalletId2;
+    if (strcmp(s, "pallet:3:id")        == 0) return BindKind::PalletId3;
+    if (strcmp(s, "pallet:0:status")    == 0) return BindKind::PalletStatus0;
+    if (strcmp(s, "pallet:1:status")    == 0) return BindKind::PalletStatus1;
+    if (strcmp(s, "pallet:2:status")    == 0) return BindKind::PalletStatus2;
+    if (strcmp(s, "pallet:3:status")    == 0) return BindKind::PalletStatus3;
+    if (strcmp(s, "pallet:0:program")   == 0) return BindKind::PalletProgram0;
+    if (strcmp(s, "pallet:1:program")   == 0) return BindKind::PalletProgram1;
+    if (strcmp(s, "pallet:2:program")   == 0) return BindKind::PalletProgram2;
+    if (strcmp(s, "pallet:3:program")   == 0) return BindKind::PalletProgram3;
+    if (strcmp(s, "pallet:0:cycles")    == 0) return BindKind::PalletCycles0;
+    if (strcmp(s, "pallet:1:cycles")    == 0) return BindKind::PalletCycles1;
+    if (strcmp(s, "pallet:2:cycles")    == 0) return BindKind::PalletCycles2;
+    if (strcmp(s, "pallet:3:cycles")    == 0) return BindKind::PalletCycles3;
+    if (strcmp(s, "scheduler:state")    == 0) return BindKind::SchedulerState;
+    if (strcmp(s, "scheduler:active")   == 0) return BindKind::SchedulerActiveJob;
+    if (strcmp(s, "scheduler:jobcount") == 0) return BindKind::SchedulerJobCount;
     return BindKind::None;
 }
 
@@ -1407,6 +1437,17 @@ int32_t bound_numeric_value(BindKind bind) {
         }
         case BindKind::LookaheadCapacity:
             return static_cast<int32_t>(motion::Axis::CHAIN_DEPTH);
+        case BindKind::PalletCycles0:
+        case BindKind::PalletCycles1:
+        case BindKind::PalletCycles2:
+        case BindKind::PalletCycles3: {
+            const size_t row = static_cast<size_t>(static_cast<int>(bind) -
+                                                   static_cast<int>(BindKind::PalletCycles0));
+            const auto* pl = machine::pallet::g_service.pallet(row);
+            return pl ? static_cast<int32_t>(pl->cycles_completed) : 0;
+        }
+        case BindKind::SchedulerJobCount:
+            return static_cast<int32_t>(cnc::jobs::g_runtime.job_count());
         default: return 0;
     }
 }
@@ -2169,6 +2210,58 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             buf[n < buf_size ? n : buf_size - 1] = '\0';
             return;
         }
+        case BindKind::PalletId0:
+        case BindKind::PalletId1:
+        case BindKind::PalletId2:
+        case BindKind::PalletId3: {
+            const size_t row = static_cast<size_t>(static_cast<int>(bind) -
+                                                   static_cast<int>(BindKind::PalletId0));
+            const auto* pl = machine::pallet::g_service.pallet(row);
+            const char* id = pl ? pl->id : "-";
+            kernel::util::k_snprintf(buf, buf_size, "%s%s", prefix ? prefix : "", id);
+            return;
+        }
+        case BindKind::PalletStatus0:
+        case BindKind::PalletStatus1:
+        case BindKind::PalletStatus2:
+        case BindKind::PalletStatus3: {
+            const size_t row = static_cast<size_t>(static_cast<int>(bind) -
+                                                   static_cast<int>(BindKind::PalletStatus0));
+            const auto* pl = machine::pallet::g_service.pallet(row);
+            const char* st = pl ? machine::pallet::Service::status_name(pl->status) : "-";
+            kernel::util::k_snprintf(buf, buf_size, "%s%s", prefix ? prefix : "", st);
+            return;
+        }
+        case BindKind::PalletProgram0:
+        case BindKind::PalletProgram1:
+        case BindKind::PalletProgram2:
+        case BindKind::PalletProgram3: {
+            const size_t row = static_cast<size_t>(static_cast<int>(bind) -
+                                                   static_cast<int>(BindKind::PalletProgram0));
+            const auto* pl = machine::pallet::g_service.pallet(row);
+            const char* prog = (pl && pl->assigned_program[0]) ? pl->assigned_program : "-";
+            kernel::util::k_snprintf(buf, buf_size, "%s%s", prefix ? prefix : "", prog);
+            return;
+        }
+        case BindKind::SchedulerState: {
+            const auto s = cnc::jobs::g_runtime.state();
+            const char* name = "?";
+            switch (s) {
+                case cnc::jobs::SchedulerState::Idle:    name = "idle";    break;
+                case cnc::jobs::SchedulerState::Running: name = "running"; break;
+                case cnc::jobs::SchedulerState::Holding: name = "holding"; break;
+                case cnc::jobs::SchedulerState::Stopped: name = "stopped"; break;
+            }
+            kernel::util::k_snprintf(buf, buf_size, "%s%s", prefix ? prefix : "", name);
+            return;
+        }
+        case BindKind::SchedulerActiveJob: {
+            const size_t idx = cnc::jobs::g_runtime.active_job();
+            const auto* j = (idx == SIZE_MAX) ? nullptr : cnc::jobs::g_runtime.job(idx);
+            const char* id = j ? j->id : "(none)";
+            kernel::util::k_snprintf(buf, buf_size, "%s%s", prefix ? prefix : "", id);
+            return;
+        }
         case BindKind::TcpStatus: {
             // "TCP off" / "TCP head CB ch0" — the simplest one-line state
             // summary. Operator who needs more detail goes to CLI `tcp`.
@@ -2542,6 +2635,20 @@ void run_action_target(const char* target) {
         const char* command = target + 6;
         if (strcmp(command, "save") == 0) save_setup();
         else if (strcmp(command, "load") == 0) load_setup();
+        return;
+    }
+    // Lights-out scheduler controls — same verbs the CLI exposes via
+    // job_run / job_pause / job_resume / job_skip / job_abort. Routed
+    // directly to the runtime since the operator_api wrapper layer
+    // doesn't add anything for these (the runtime is itself the
+    // ground-truth state).
+    if (strncmp(target, "jobs:", 5) == 0) {
+        const char* command = target + 5;
+        if      (strcmp(command, "run")    == 0) (void)cnc::jobs::g_runtime.start_scheduler();
+        else if (strcmp(command, "pause")  == 0) (void)cnc::jobs::g_runtime.pause_scheduler();
+        else if (strcmp(command, "resume") == 0) (void)cnc::jobs::g_runtime.resume_scheduler();
+        else if (strcmp(command, "skip")   == 0) (void)cnc::jobs::g_runtime.skip_current();
+        else if (strcmp(command, "abort")  == 0) (void)cnc::jobs::g_runtime.abort_current();
         return;
     }
     if (strncmp(target, "offset:work:", 12) == 0) {

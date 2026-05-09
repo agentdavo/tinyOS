@@ -742,6 +742,7 @@ button	id=service_alarms	parent=service_root	x=300	y=710	w=240	h=120	text=ALARMS
 button	id=service_macros	parent=service_root	x=560	y=710	w=240	h=120	text=MACROS	bg=#5B21B6	color=#FFFFFF	scale=2	focus=340
 button	id=service_homing	parent=service_root	x=820	y=710	w=220	h=120	text=HOMING	bg=#0F766E	color=#FFFFFF	scale=2	focus=345
 button	id=service_network	parent=service_root	x=560	y=850	w=240	h=80	text=NETWORK	bg=#0E7490	color=#FFFFFF	scale=1	focus=349
+button	id=service_lights_out	parent=service_root	x=820	y=850	w=220	h=80	text=LIGHTS-OUT	bg=#7C2D12	color=#FFFFFF	scale=1	focus=350
 label	id=service_comp_title	parent=service_root	x=40	y=850	w=400	h=24	text=COMPENSATION	color=#64748B	bg=#111827	scale=1
 button	id=service_pec	parent=service_root	x=40	y=880	w=320	h=120	text=PITCH ERROR	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=346
 button	id=service_geometry	parent=service_root	x=380	y=880	w=320	h=120	text=GEOMETRY	bg=#1D4ED8	color=#FFFFFF	scale=2	focus=347
@@ -766,6 +767,7 @@ action	widget=service_pec	event=click	target=goto:pec
 action	widget=service_geometry	event=click	target=goto:geometry
 action	widget=service_sphere	event=click	target=goto:sphere
 action	widget=service_network	event=click	target=goto:network
+action	widget=service_lights_out	event=click	target=goto:lights_out
 
 # --- tier 5 — live state panel ---
 # Surfaces look-ahead chain depth (per channel), the TCP modal
@@ -1672,4 +1674,85 @@ button	id=rc_cancel	parent=rc_root	x=540	y=940	w=480	h=300	text=CANCEL	bg=#B91C1
 
 action	widget=rc_confirm	event=click	target=restart:confirm
 action	widget=rc_cancel	event=click	target=restart:cancel
+include	page=bottom_nav
+
+# ============================================================
+# lights_out -- per-pallet status grid + job scheduler controls.
+# Reached from SERVICE > LIGHTS-OUT. Each pallet row shows id /
+# status / assigned program / cycles done. Scheduler state strip
+# at the top, action buttons at the bottom (RUN / PAUSE / RESUME
+# / SKIP / ABORT). All state pulled live via the bindings added
+# alongside cnc::jobs::Runtime — operator can leave this page up
+# overnight to monitor an unattended batch.
+# ============================================================
+page	id=lights_out	title=Lights-Out
+panel	id=lo_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=lo_title	parent=lo_root	x=40	y=30	w=1000	h=40	text=LIGHTS-OUT BATCH	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+
+# --- scheduler strip ---
+panel	id=lo_sched_panel	parent=lo_root	x=20	y=110	w=1040	h=170	bg=#111827	border=#334155
+label	id=lo_sched_state_lbl	parent=lo_root	x=40	y=124	w=300	h=28	text=SCHEDULER	color=#94A3B8	bg=#111827	scale=2
+label	id=lo_sched_state	parent=lo_root	x=350	y=120	w=300	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=scheduler:state	align=center	scale=2
+label	id=lo_sched_jobs_lbl	parent=lo_root	x=680	y=124	w=160	h=28	text=JOBS	color=#94A3B8	bg=#111827	scale=2
+label	id=lo_sched_jobs	parent=lo_root	x=850	y=120	w=170	h=44	text=0	color=#86EFAC	bg=#0F172A	border=#334155	bind=scheduler:jobcount	align=center	scale=2
+label	id=lo_active_lbl	parent=lo_root	x=40	y=200	w=300	h=28	text=ACTIVE JOB	color=#94A3B8	bg=#111827	scale=2
+label	id=lo_active	parent=lo_root	x=350	y=196	w=670	h=44	text=(none)	color=#FCD34D	bg=#0F172A	border=#334155	bind=scheduler:active	align=center	scale=2
+
+# --- pallet grid ---
+panel	id=lo_pallet_panel	parent=lo_root	x=20	y=300	w=1040	h=620	bg=#111827	border=#334155
+label	id=lo_pallet_title	parent=lo_root	x=40	y=314	w=400	h=28	text=PALLETS	color=#94A3B8	bg=#111827	scale=2
+
+# Column headers
+label	id=lo_h_id	parent=lo_root	x=40	y=356	w=160	h=28	text=ID	color=#64748B	bg=#111827	scale=1
+label	id=lo_h_status	parent=lo_root	x=210	y=356	w=180	h=28	text=STATUS	color=#64748B	bg=#111827	scale=1
+label	id=lo_h_program	parent=lo_root	x=400	y=356	w=420	h=28	text=PROGRAM	color=#64748B	bg=#111827	scale=1
+label	id=lo_h_cycles	parent=lo_root	x=830	y=356	w=200	h=28	text=CYCLES DONE	color=#64748B	bg=#111827	scale=1
+
+# Row 0 — P01
+label	id=lo_p0_id	parent=lo_root	x=40	y=394	w=160	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=pallet:0:id	align=center	scale=2
+label	id=lo_p0_status	parent=lo_root	x=210	y=394	w=180	h=44	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=pallet:0:status	align=center	scale=2
+label	id=lo_p0_program	parent=lo_root	x=400	y=394	w=420	h=44	text=---	color=#CBD5E1	bg=#0F172A	border=#475569	bind=pallet:0:program	align=center	scale=1
+label	id=lo_p0_cycles	parent=lo_root	x=830	y=394	w=200	h=44	text=0	color=#FCD34D	bg=#0F172A	border=#334155	bind=pallet:0:cycles	align=center	scale=2
+
+# Row 1 — P02
+label	id=lo_p1_id	parent=lo_root	x=40	y=448	w=160	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=pallet:1:id	align=center	scale=2
+label	id=lo_p1_status	parent=lo_root	x=210	y=448	w=180	h=44	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=pallet:1:status	align=center	scale=2
+label	id=lo_p1_program	parent=lo_root	x=400	y=448	w=420	h=44	text=---	color=#CBD5E1	bg=#0F172A	border=#475569	bind=pallet:1:program	align=center	scale=1
+label	id=lo_p1_cycles	parent=lo_root	x=830	y=448	w=200	h=44	text=0	color=#FCD34D	bg=#0F172A	border=#334155	bind=pallet:1:cycles	align=center	scale=2
+
+# Row 2 — P03
+label	id=lo_p2_id	parent=lo_root	x=40	y=502	w=160	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=pallet:2:id	align=center	scale=2
+label	id=lo_p2_status	parent=lo_root	x=210	y=502	w=180	h=44	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=pallet:2:status	align=center	scale=2
+label	id=lo_p2_program	parent=lo_root	x=400	y=502	w=420	h=44	text=---	color=#CBD5E1	bg=#0F172A	border=#475569	bind=pallet:2:program	align=center	scale=1
+label	id=lo_p2_cycles	parent=lo_root	x=830	y=502	w=200	h=44	text=0	color=#FCD34D	bg=#0F172A	border=#334155	bind=pallet:2:cycles	align=center	scale=2
+
+# Row 3 — P04
+label	id=lo_p3_id	parent=lo_root	x=40	y=556	w=160	h=44	text=---	color=#7DD3FC	bg=#0F172A	border=#334155	bind=pallet:3:id	align=center	scale=2
+label	id=lo_p3_status	parent=lo_root	x=210	y=556	w=180	h=44	text=---	color=#86EFAC	bg=#0F172A	border=#334155	bind=pallet:3:status	align=center	scale=2
+label	id=lo_p3_program	parent=lo_root	x=400	y=556	w=420	h=44	text=---	color=#CBD5E1	bg=#0F172A	border=#475569	bind=pallet:3:program	align=center	scale=1
+label	id=lo_p3_cycles	parent=lo_root	x=830	y=556	w=200	h=44	text=0	color=#FCD34D	bg=#0F172A	border=#334155	bind=pallet:3:cycles	align=center	scale=2
+
+# --- action buttons ---
+# Five row of large buttons. Click semantics route through the action
+# table; the operator API or a small CLI wrapper actually fires the
+# scheduler verbs. Until those wrappers land, the buttons display the
+# affordance (and the CLI verbs `job_run` / `job_pause` / etc. work).
+panel	id=lo_action_panel	parent=lo_root	x=20	y=940	w=1040	h=300	bg=#111827	border=#334155
+label	id=lo_action_title	parent=lo_root	x=40	y=954	w=400	h=28	text=SCHEDULER CONTROL	color=#94A3B8	bg=#111827	scale=2
+button	id=lo_run	parent=lo_root	x=40	y=1000	w=200	h=200	text=RUN	bg=#15803D	color=#FFFFFF	scale=3	focus=970
+button	id=lo_pause	parent=lo_root	x=250	y=1000	w=200	h=200	text=PAUSE	bg=#B45309	color=#FFFFFF	scale=3	focus=971
+button	id=lo_resume	parent=lo_root	x=460	y=1000	w=200	h=200	text=RESUME	bg=#1D4ED8	color=#FFFFFF	scale=3	focus=972
+button	id=lo_skip	parent=lo_root	x=670	y=1000	w=180	h=200	text=SKIP	bg=#5B21B6	color=#FFFFFF	scale=3	focus=973
+button	id=lo_abort	parent=lo_root	x=860	y=1000	w=180	h=200	text=ABORT	bg=#B91C1C	color=#FFFFFF	scale=3	focus=974
+
+# --- klog tail panel for the lights-out night-watch view ---
+panel	id=lo_klog_panel	parent=lo_root	x=20	y=1260	w=1040	h=420	bg=#111827	border=#334155
+label	id=lo_klog_title	parent=lo_root	x=40	y=1274	w=400	h=28	text=KLOG TAIL	color=#94A3B8	bg=#111827	scale=2
+label	id=lo_klog	parent=lo_root	x=40	y=1310	w=1000	h=360	text=---	color=#FCA5A5	bg=#0F172A	border=#475569	bind=klog:tail	align=left	scale=1
+
+action	widget=lo_run	event=click	target=jobs:run
+action	widget=lo_pause	event=click	target=jobs:pause
+action	widget=lo_resume	event=click	target=jobs:resume
+action	widget=lo_skip	event=click	target=jobs:skip
+action	widget=lo_abort	event=click	target=jobs:abort
 include	page=bottom_nav
