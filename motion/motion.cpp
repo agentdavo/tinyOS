@@ -437,16 +437,57 @@ void Axis::step_trajectory(uint32_t dt_us) noexcept {
     const int32_t dp = (int32_t)(dp_num / 1'000'000LL);
 
     int32_t new_pos = commanded_position + dp;
+    bool reached_target = false;
     if (dir > 0 && new_pos >= target) {
         new_pos = target;
-        target_velocity = 0;
+        reached_target = true;
     } else if (dir < 0 && new_pos <= target) {
         new_pos = target;
-        target_velocity = 0;
+        reached_target = true;
     }
     commanded_position = new_pos;
 
+    if (reached_target) {
+        // Look-ahead chain swap: if a chained target is queued AND the
+        // chain extends in the same direction this trajectory was already
+        // moving, swap it in WITHOUT clamping velocity to zero. The
+        // S-curve generator picks up next tick with the new target, no
+        // dwell at v=0. Direction mismatch (the chained block reverses)
+        // falls through to normal Holding so a clean stop happens before
+        // the reverse. vmax is restored at the same moment if it had
+        // been scaled — the chained block's sync_move (if any) will
+        // re-scale fresh, otherwise the axis falls back to its native
+        // vmax for the chain remainder.
+        if (has_next_target) {
+            const int32_t chain_delta = next_target - commanded_position;
+            const int32_t chain_dir = chain_delta > 0 ? 1 : (chain_delta < 0 ? -1 : 0);
+            if (chain_dir == dir && chain_dir != 0) {
+                target = next_target;
+                has_next_target = false;
+                // Restore vmax at the chain seam so the next block runs at
+                // its native cap rather than the prior block's
+                // coordinated-scale value. The new sync_move (if any) will
+                // re-scale fresh for its own participants. Without this,
+                // a multi-axis G1 followed by a single-axis chained G1
+                // would run the single-axis block at the multi-axis
+                // coordinated speed.
+                if (restore_vmax_cps > 0) {
+                    vmax_cps         = restore_vmax_cps;
+                    restore_vmax_cps = 0;
+                }
+                // Don't zero velocity — the chain continues. Trajectory
+                // generator will redecide accel/cruise/decel next tick.
+                prev_target_velocity = target_velocity;
+                return;
+            }
+        }
+        target_velocity = 0;
+    }
+
     if (commanded_position == target && target_velocity == 0) {
+        // No chain or chain in opposite direction — full stop. If a
+        // reverse-direction chain is queued, leave it for re-arming via
+        // the next move_to (the interpreter sees Holding and dispatches).
         traj_state = TrajState::Holding;
         current_accel_cps2 = 0;
     }
@@ -525,9 +566,25 @@ void Kernel::on_connection_lost(size_t i) noexcept {
 void Kernel::move_to(size_t i, int32_t position) noexcept {
     if (i >= MAX_AXES) return;
     auto& a = axes_[i];
+    a.mode    = Mode::CSP;
+    a.enabled = true;
+    // Look-ahead: if the axis is mid-flight (anything other than Idle or
+    // Holding), queue the new target into the depth-1 chain slot instead
+    // of overwriting the active target. step_trajectory swaps the chain
+    // in when it would otherwise enter Holding, eliminating the velocity-
+    // zero dwell between consecutive same-direction G1 blocks. Caller
+    // (sync_move / interpreter) is responsible for not over-issuing —
+    // we silently overwrite an existing chain entry rather than report
+    // an error so a back-to-back overshoot of the queue depth degrades
+    // to "older queued target lost" instead of stalling the channel.
+    const bool mid_flight =
+        a.traj_state != TrajState::Idle && a.traj_state != TrajState::Holding;
+    if (mid_flight) {
+        a.next_target     = position;
+        a.has_next_target = true;
+        return;
+    }
     a.target     = position;
-    a.mode       = Mode::CSP;
-    a.enabled    = true;
     a.traj_state = TrajState::MoveReady;
 }
 

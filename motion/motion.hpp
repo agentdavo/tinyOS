@@ -291,6 +291,16 @@ struct Axis {
     int32_t   decel_start_pos          = 0;         // position where decel begins
     int32_t   prev_target_velocity     = 0;        // for smooth velocity transitions
 
+    // Look-ahead chain slot (depth 1). When a fresh `move_to` arrives while
+    // the trajectory is mid-flight, the new target is queued here instead
+    // of overwriting `target`. step_trajectory swaps it in at the moment
+    // the current target would have transitioned to Holding — preserving
+    // velocity if the chained block continues in the same direction
+    // (vmax stays as the chained-pre-scale value), so back-to-back same-
+    // direction G1 blocks no longer dwell at velocity zero between blocks.
+    int32_t   next_target              = 0;
+    bool      has_next_target          = false;
+
     // ---- Warm line (cache-line 1) ------------------------------------------
     // Cross-core mirrors + frequently-read scalars that aren't strictly on
     // every cycle but are close. `actual_pos` / `target_pos` are diagnostic

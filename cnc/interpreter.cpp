@@ -364,6 +364,27 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
 }
 
 bool Runtime::channel_settled(size_t channel) const noexcept {
+    // Look-ahead-aware "ready to dispatch the next block" predicate. With
+    // motion's depth-1 chain slot, the interpreter doesn't have to wait
+    // for the current trajectory to reach Holding — it can dispatch the
+    // next line whenever every channel-axis has an empty chain slot.
+    // motion::Kernel::move_to fills the chain on a busy axis instead of
+    // overwriting the active target, and step_trajectory swaps it in at
+    // the moment the current target would have stopped, preserving
+    // velocity through same-direction transitions. Net effect: instead
+    // of decel-to-zero / accel-from-zero between same-direction G1
+    // blocks, the channel runs continuously at cruise vmax.
+    if (channel >= motion::g_motion.channel_count()) return true;
+    const auto& ch = motion::g_motion.channel(channel);
+    if (ch.state != motion::ChannelState::Running) return false;
+    for (uint8_t i = 0; i < ch.axis_count; ++i) {
+        const auto& axis = motion::g_motion.axis(ch.axis_indices[i]);
+        if (axis.has_next_target) return false;
+    }
+    return true;
+}
+
+bool Runtime::channel_motion_complete(size_t channel) const noexcept {
     if (channel >= motion::g_motion.channel_count()) return true;
     const auto& ch = motion::g_motion.channel(channel);
     if (ch.state != motion::ChannelState::Running) return false;
@@ -373,6 +394,7 @@ bool Runtime::channel_settled(size_t channel) const noexcept {
             axis.traj_state != motion::TrajState::Holding) {
             return false;
         }
+        if (axis.has_next_target) return false;
     }
     return true;
 }
@@ -874,11 +896,14 @@ bool Runtime::tick_channel(size_t channel) noexcept {
     }
     if (state.state == State::Ready) return true;
     if (!channel_settled(channel)) return true;
-    // Channel just reached settled — every motion block prior to this point
-    // has hit Holding. Drain any sync-to-motion-end output ops queued by
-    // earlier M62/M63 lines so their flips happen at the predecessor
-    // block's completion edge instead of immediately at parse time.
-    if (state.pending_outputs_count > 0) {
+    // M62/M63 sync-to-motion-end drain. channel_settled is the chain-aware
+    // gate (room for the next block) but the M62 drain semantics need the
+    // strict predicate — the deferred output should flip when the
+    // preceding motion truly finishes, not when the look-ahead chain slot
+    // opens up. channel_motion_complete returns true only when every axis
+    // has hit Holding/Idle AND no chained target is queued, which is
+    // exactly the condition this drain wants.
+    if (state.pending_outputs_count > 0 && channel_motion_complete(channel)) {
         for (uint8_t k = 0; k < state.pending_outputs_count; ++k) {
             auto& slot = state.pending_outputs[k];
             if (!slot.used) continue;

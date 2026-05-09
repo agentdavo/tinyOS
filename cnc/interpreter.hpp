@@ -156,7 +156,16 @@ public:
 
 private:
     bool tick_channel(size_t channel) noexcept;
+    // Look-ahead-aware "ready to dispatch the next block" predicate. Returns
+    // true when every channel-axis has an empty chain slot — motion may
+    // still be physically in flight on the active target. Used to gate the
+    // line-read loop so the interpreter can run one block ahead.
     bool channel_settled(size_t channel) const noexcept;
+    // Strict "all motion has stopped" predicate — Holding/Idle on every
+    // axis and no chained target queued. Used by the M62/M63 sync-end
+    // drain so deferred-output ops fire when the preceding motion truly
+    // finishes, not when the chain slot opens up.
+    bool channel_motion_complete(size_t channel) const noexcept;
     int spindle_axis_for_channel(size_t channel) const noexcept;
     uint64_t now_us() const noexcept;
 
