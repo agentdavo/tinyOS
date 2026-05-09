@@ -655,10 +655,27 @@ static bool plan_arc(Runtime::ChannelState& state,
     const float start_angle = atan2_approx(start_dy, start_dx);
     float end_angle = atan2_approx(end_dy, end_dx);
     float delta_angle = arc_delta_for_mode(start_angle, end_angle, state.motion_mode);
-    const float arc_length = absf(delta_angle) * radius;
-    uint16_t segments = static_cast<uint16_t>(arc_length / 200.0f) + 1;
-    if (segments < 4) segments = 4;
-    if (segments > 96) segments = 96;
+    // Chord-error segmentation: bound the deviation between the polygonal
+    // approximation and the true arc to `tol_counts`. From geometry,
+    // chord_err = R * (1 - cos(theta/2)), so theta_max = 2 * acos(1 - tol/R).
+    // tol = 1 count (~10 µm at 100 cnt/mm) is conservative for finishing
+    // cuts; opens up to many segments at large radii but caps below at the
+    // old 96-segment ceiling so a degenerate radius can't cost the kernel a
+    // multi-thousand-segment plan. The previous arc_length/200 rule gave
+    // ~30 mm of chord error on a 100 mm-radius full circle — visibly faceted.
+    constexpr float kChordTolCounts = 1.0f;
+    uint16_t segments = 4;
+    if (radius > kChordTolCounts) {
+        const float ratio = 1.0f - kChordTolCounts / radius;
+        const float theta_max = 2.0f * acos_approx(ratio);
+        if (theta_max > 1e-4f) {
+            const float n = absf(delta_angle) / theta_max;
+            int32_t want = static_cast<int32_t>(n) + 1;
+            if (want < 4) want = 4;
+            if (want > 256) want = 256;
+            segments = static_cast<uint16_t>(want);
+        }
+    }
 
     auto& arc = state.arc;
     arc.active = true;

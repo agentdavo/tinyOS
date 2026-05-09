@@ -463,9 +463,26 @@ bool Store::parse_preview(ProgramEntry& entry) noexcept {
                     float delta = arc_delta_for_mode(start_angle, end_angle, motion_mode);
                     const float radius = sqrt_approx((start_u - center_u) * (start_u - center_u) +
                                                      (start_v - center_v) * (start_v - center_v));
-                    int segments = static_cast<int>((absf(delta) * radius) / 2.5f) + 1;
-                    if (segments < 4) segments = 4;
-                    if (segments > 64) segments = 64;
+                    // Chord-error segmentation: same formula as the live
+                    // interpreter (cnc/interpreter.cpp::plan_arc) so the
+                    // preview faceting matches the executed path. Preview
+                    // axis units are model units (mm-ish, not counts), so
+                    // the tolerance is in those same units; 0.05 mm gives
+                    // smooth previews at typical machining radii without
+                    // exploding the segment count.
+                    constexpr float kChordTolModelUnits = 0.05f;
+                    int segments = 4;
+                    if (radius > kChordTolModelUnits) {
+                        const float ratio = 1.0f - kChordTolModelUnits / radius;
+                        const float theta_max = 2.0f * acos_approx(ratio);
+                        if (theta_max > 1e-4f) {
+                            const float n = absf(delta) / theta_max;
+                            int want = static_cast<int>(n) + 1;
+                            if (want < 4) want = 4;
+                            if (want > 128) want = 128;
+                            segments = want;
+                        }
+                    }
                     for (int seg = 1; seg <= segments; ++seg) {
                         const float t = static_cast<float>(seg) / static_cast<float>(segments);
                         const float angle = start_angle + delta * t;
