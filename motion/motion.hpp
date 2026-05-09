@@ -722,6 +722,14 @@ struct ChannelOverrides {
     uint16_t feed_permille    = 1000;
     uint16_t rapid_permille   = 1000;
     uint16_t spindle_permille = 1000;
+    // Junction deviation in axis counts (the "chord error budget" at a
+    // direction change). Operators trade smoothness vs. accuracy via the
+    // HMI slider — 1 cnt (~10 µm at 100 cnt/mm) for accurate finishing,
+    // 100 cnt (~1 mm) for fast roughing. Currently informational; once
+    // tier 1c lands a per-channel block queue, the planner consumes it
+    // to compute corner velocities per the standard
+    // v_corner = sqrt(a_max * deviation / (1 - cos(theta/2))) formula.
+    int32_t  junction_deviation_counts = 10;
 };
 
 struct Channel {
@@ -874,6 +882,15 @@ public:
     // completed yet on this channel. Used by M62/M63 sync-drain to match
     // a pending output op to "predecessor block done".
     [[nodiscard]] uint16_t channel_completed_block_id(size_t channel_idx) const noexcept;
+
+    // Per-channel junction deviation (corner-error budget) in axis counts.
+    // Configures how much chord error the planner will tolerate at a
+    // direction change; smaller = sharper corners but lower corner
+    // velocity. Default 10 cnt (~0.1 mm at 100 cnt/mm). Range bound at
+    // [0, 10000] (anything larger gives nothing useful and risks
+    // pathological corner-velocity values).
+    [[nodiscard]] bool    set_junction_deviation(size_t channel_idx, int32_t counts) noexcept;
+    [[nodiscard]] int32_t junction_deviation(size_t channel_idx) const noexcept;
 
     // Set axis velocity directly (for CSV spindle mode). Velocity is in
     // counts per second - axis will rotate at this rate continuously.
@@ -1060,7 +1077,8 @@ public:
                    uint16_t stable_cycles_required = 3,
                    uint16_t max_wait_cycles = 20000,
                    bool     register_barrier = true,
-                   uint64_t min_t_final_us = 0) noexcept;
+                   uint64_t min_t_final_us = 0,
+                   uint16_t* out_block_id  = nullptr) noexcept;
 
     // Task 9.7 — per-channel feedhold. `on=true` flips the channel into
     // FeedHold state; cycle_channel will freeze its axes' trajectories

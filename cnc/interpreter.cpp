@@ -637,12 +637,14 @@ static bool execute_axes(Runtime::ChannelState& state,
             min_t_final_us = (static_cast<uint64_t>(path_counts) * 1'000'000ULL) / feed_cps;
         }
     }
+    uint16_t block_id = 0;
     const bool ok = motion::g_motion.sync_move(
-        axis_mask, targets, 0, 1, 3, 20000, false, min_t_final_us);
+        axis_mask, targets, 0, 1, 3, 20000, false, min_t_final_us, &block_id);
     if (!ok) return false;
     for (size_t ax = 0; ax < motion::MAX_AXES; ++ax) {
         if ((axis_mask & (1ull << ax)) != 0) state.targets[ax] = targets[ax];
     }
+    if (block_id != 0) state.last_dispatched_block_id = block_id;
     // Block counter is now incremented unconditionally in tick_channel for
     // every parsed line, not per-helper. See the comment there.
     return true;
@@ -822,9 +824,11 @@ static bool advance_arc(Runtime::ChannelState& state) {
         }
     }
 
+    uint16_t arc_block_id = 0;
     const bool ok = motion::g_motion.sync_move(
-        arc.axis_mask, targets, 0, 1, 3, 20000, false, min_t_final_us);
+        arc.axis_mask, targets, 0, 1, 3, 20000, false, min_t_final_us, &arc_block_id);
     if (!ok) return false;
+    if (arc_block_id != 0) state.last_dispatched_block_id = arc_block_id;
     for (size_t ax = 0; ax < motion::MAX_AXES; ++ax) {
         if ((arc.axis_mask & (1ull << ax)) != 0) state.targets[ax] = targets[ax];
     }
@@ -890,21 +894,35 @@ bool Runtime::tick_channel(size_t channel) noexcept {
     }
     if (state.state == State::Ready) return true;
     if (!channel_settled(channel)) return true;
-    // M62/M63 sync-to-motion-end drain. channel_settled is the chain-aware
-    // gate (room for the next block) but the M62 drain semantics need the
-    // strict predicate — the deferred output should flip when the
-    // preceding motion truly finishes, not when the look-ahead chain slot
-    // opens up. channel_motion_complete returns true only when every axis
-    // has hit Holding/Idle AND no chained target is queued, which is
-    // exactly the condition this drain wants.
-    if (state.pending_outputs_count > 0 && channel_motion_complete(channel)) {
+    // M62/M63 sync-to-motion-end drain. Each pending op is gated on its
+    // own predecessor block id; with the depth-N chain ring, multiple
+    // motion blocks can be queued ahead and an M62 inserted between them
+    // should fire when ITS particular predecessor finishes, not when the
+    // entire queue drains. We walk the pending list and only fire ops
+    // whose gate_block_id has been retired by the channel — others stay
+    // queued for later. Ops with gate=0 (queued when no motion was yet
+    // dispatched on this channel) wait for channel_motion_complete, the
+    // pre-tagging behaviour.
+    const uint16_t completed = motion::g_motion.channel_completed_block_id(channel);
+    if (state.pending_outputs_count > 0) {
+        const bool fully_complete = channel_motion_complete(channel);
+        uint8_t kept = 0;
         for (uint8_t k = 0; k < state.pending_outputs_count; ++k) {
             auto& slot = state.pending_outputs[k];
             if (!slot.used) continue;
-            (void)automation::signals::set_named_signal_bool(slot.name, slot.on);
-            slot.used = false;
+            const bool gate_passed =
+                (slot.gate_block_id == 0) ? fully_complete
+                                          : (completed >= slot.gate_block_id);
+            if (gate_passed) {
+                (void)automation::signals::set_named_signal_bool(slot.name, slot.on);
+                slot.used = false;
+                continue;
+            }
+            // Compact the kept entry forward.
+            if (kept != k) state.pending_outputs[kept] = slot;
+            ++kept;
         }
-        state.pending_outputs_count = 0;
+        state.pending_outputs_count = kept;
     }
     if (state.arc.active) {
         if (!advance_arc(state)) {
@@ -1056,6 +1074,12 @@ bool Runtime::tick_channel(size_t channel) noexcept {
                 slot.name[k] = '\0';
                 slot.on = on;
                 slot.used = true;
+                // Tag with the most recently dispatched motion block.
+                // Drain fires when channel_completed_block_id reaches
+                // (or passes) this value. If no motion has run yet on
+                // this channel (gate=0), the drain fires at the next
+                // motion-complete edge — same as pre-tier-1d.
+                slot.gate_block_id = state.last_dispatched_block_id;
                 ++state.pending_outputs_count;
             }
             // Overflow silently drops; deeper M62 chains are unusual.

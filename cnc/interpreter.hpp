@@ -124,10 +124,19 @@ public:
             char name[16] = {};
             bool on = false;
             bool used = false;
+            // Block id of the motion block this op is gated on. Drain
+            // fires when channel_completed_block_id >= gate_block_id.
+            // 0 = no motion ahead (drain immediately at next motion-
+            // complete edge — same as the pre-tier-1d behaviour).
+            uint16_t gate_block_id = 0;
         };
         static constexpr size_t MAX_PENDING_OUTPUTS = 4;
         PendingOutput pending_outputs[MAX_PENDING_OUTPUTS]{};
         uint8_t pending_outputs_count = 0;
+        // Block id of the most recent motion-bearing line dispatched on
+        // this channel. Captured from sync_move's out_block_id so M62/M63
+        // can tag their pending output with "predecessor block done".
+        uint16_t last_dispatched_block_id = 0;
     };
 
     Runtime() noexcept;

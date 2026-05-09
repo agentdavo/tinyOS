@@ -625,6 +625,18 @@ uint16_t Kernel::channel_completed_block_id(size_t c) const noexcept {
     return channels_[c].completed_block_id;
 }
 
+bool Kernel::set_junction_deviation(size_t c, int32_t counts) noexcept {
+    if (c >= channel_count_) return false;
+    if (counts < 0 || counts > 10000) return false;
+    channels_[c].overrides.junction_deviation_counts = counts;
+    return true;
+}
+
+int32_t Kernel::junction_deviation(size_t c) const noexcept {
+    if (c >= channel_count_) return 0;
+    return channels_[c].overrides.junction_deviation_counts;
+}
+
 void Kernel::set_axis_velocity(size_t i, int32_t velocity_cps) noexcept {
     if (i >= MAX_AXES) return;
     auto& a = axes_[i];
@@ -1313,7 +1325,9 @@ bool Kernel::sync_move(uint64_t axis_mask,
                        uint16_t stable_cycles_required,
                        uint16_t max_wait_cycles,
                        bool     register_barrier,
-                       uint64_t min_t_final_us) noexcept {
+                       uint64_t min_t_final_us,
+                       uint16_t* out_block_id) noexcept {
+    if (out_block_id) *out_block_id = 0;
     if (axis_mask == 0 || !targets) return false;
 
     // Pass 1 — compute the slowest axis's nominal T_final in microseconds.
@@ -1349,6 +1363,7 @@ bool Kernel::sync_move(uint64_t axis_mask,
     // chain entries can be matched to their source block (used by the
     // M62/M63 sync drain in tier 1d).
     const uint16_t block_id = next_block_id();
+    if (out_block_id) *out_block_id = block_id;
     uint8_t participants_mask = 0;
     for (size_t i = 0; i < MAX_AXES; ++i) {
         if ((axis_mask & (1ull << i)) == 0) continue;
