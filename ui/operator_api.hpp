@@ -60,6 +60,7 @@ struct MachineSnapshot {
     int32_t spindle = 0;
     int32_t spindle_rpm = 0;                   // signed spindle command (rpm)
     int32_t spindle_load = 0;                  // permille torque on spindle axis
+    uint32_t spindle_override = 100;           // operator-side override percent (0..150)
     uint32_t wcs_index = 0;                    // 0=G54, 1=G55, ...
     bool inch_mode = false;
     uint32_t block_current = 0;
@@ -83,6 +84,11 @@ struct EthercatSlaveSnapshot {
     bool identity_mismatch = false;
     uint32_t vendor_id = 0;
     uint32_t product_code = 0;
+    // Per-slave hot-plug telemetry: total times this slave's `present` flag
+    // flipped from true to false since boot. Non-zero means the bus dropped
+    // and reacquired the slave at least once. See master.cpp run_loop for
+    // the threshold (kAbsentCycles).
+    uint32_t presence_loss_events = 0;
 };
 
 struct EthercatSnapshot {
@@ -163,6 +169,11 @@ struct ProgramSnapshot {
         size_t line = 0;
         uint16_t barrier_token = 0;
         uint8_t barrier_mask = 0;
+        // Cycles remaining before the barrier this channel is waiting on
+        // times out (motion::Kernel::barrier_cycles_remaining). 0 when the
+        // channel isn't blocked. Multiply by the master period_us to render
+        // a wall-time countdown to the operator.
+        uint32_t barrier_cycles_remaining = 0;
     };
     bool browser_available = false;
     bool parser_available = false;
@@ -418,6 +429,12 @@ void set_selected_axis(uint32_t idx);    // explicit axis pick (X=0..A=3), no ro
 void set_jog_increment(int32_t counts);  // clamps to [1, 1_000_000]
 void set_jog_feed_cps(int32_t cps);      // clamps to [1, 10_000_000]
 void set_operator_mode(OperatorMode mode);
+// Mode gate predicate consumed by ui_builder_tsv when the operator
+// taps SUBMIT on the MDI page. MDI dispatch is silently dropped when
+// the operator is not in MDI mode — the dashboard mode buttons are the
+// safety lockout. Other gates (cycle-start, jog) are enforced inside
+// the corresponding mutator and don't need an exported predicate.
+bool mode_allows_mdi();
 void toggle_view_toolpath();             // machine-view overlay: program path
 void toggle_view_toolpods();             // machine-view overlay: toolpod markers
 void home_selected();
@@ -441,11 +458,56 @@ bool select_next_program();
 bool select_next_program(size_t channel);
 bool request_program_simulation();
 bool request_program_simulation(size_t channel);
-// Mid-program restart on channel 0: dry-scans modal state to `line_no`,
-// leaving the interpreter in Ready at that line. Caller must follow up
-// with toggle_cycle() to begin motion from the reconstructed state.
+// Mid-program restart on channel 0: stages the restart-confirm wizard.
+// Calls cnc::interp::Runtime::restart_at_line under the hood (dry-scans
+// modal state to line_no, leaving the interpreter in Ready) AND captures
+// the reconstructed state into a per-process review struct, with
+// pending=true.
+//
+// While pending, toggle_cycle() returns early without driving Cycle
+// Start. The operator must explicitly confirm via confirm_restart() —
+// matching the safety expectation that "punching a line number then
+// hitting Cycle Start" never moves the machine without the operator
+// first seeing what the reconstruction implies.
 bool restart_program_at_line(size_t line_no);
+
+// Wizard surface used by the new restart_confirm TSV page.
+struct RestartReviewSnapshot {
+    bool     pending = false;
+    bool     ok      = false;            // dry scan reached target_line
+    size_t   target_line = 0;
+    size_t   active_work = 0;            // 0 = G54
+    size_t   active_tool = 0;            // 0 = T1
+    bool     tool_length_active = false;
+    uint32_t feed    = 0;
+    int32_t  spindle = 0;
+    bool     coolant_mist = false;
+    bool     coolant_flood = false;
+};
+RestartReviewSnapshot restart_review_snapshot();
+bool restart_review_pending();
+bool request_restart_review(size_t line_no);
+void confirm_restart();
+void cancel_restart();
+
+// ===== Operator audit log surface =====
+// 64-entry ring of high-impact operator actions (E-stop, fault clear,
+// alarm ack, restart confirm/cancel). Read newest-first via index 0..N-1
+// where N = audit_log_count(). Strings point into the ring's storage and
+// are valid until the slot is overwritten by a newer event. Today the
+// log is in-RAM only.
+struct AuditLogEntry {
+    uint64_t tick = 0;          // g_machine.tick at the time of the event
+    const char* verb = "";
+    const char* target = "";
+};
+size_t audit_log_count();
+bool audit_log_entry(size_t idx, AuditLogEntry& out);
 void set_feed_override(int32_t feed);
+// Spindle override (0..150 %). Mirrors set_feed_override; gated on
+// EtherCAT deadline-fault so a faulted bus can't be sped up by accident.
+// Stored on motion::Kernel::Channel::overrides.spindle_permille (×10).
+void set_spindle_override(int32_t pct);
 void step_demo_tick();
 bool select_prev_macro();
 bool select_next_macro();
@@ -469,7 +531,8 @@ void clear_alarm_history();
 // Operator-initiated EtherCAT actions. Both call into ethercat::Master
 // (g_master_a + g_master_b). request_ec_estop broadcasts CW_CMD_QUICK_STOP
 // to every CiA-402 servo and latches the deadline-fault flag; clear_ec_fault
-// drops the latch.
+// drops both the deadline-fault latch and the DC-sync-drift latch (the
+// latter has no other operator-accessible clear path; see master.cpp).
 void request_ec_estop();
 void clear_ec_fault();
 bool save_setup();
@@ -573,11 +636,19 @@ void axis_detail_disable();
 void axis_detail_fault_reset();
 
 // ===== Tool change wizard operator surface =====
-// First-cut wizard: Idle -> Moving -> Done with manual operator confirmation.
-// The wizard does NOT drive an actual tool changer — it gates the operator
-// confirmation flow so a virtual tool change is only "accepted" once the
-// operator has verified the swap. machine::toolpods::Service backs the pod
-// registry; this wizard adds the state machine on top.
+// MANUAL-SWAP confirmation flow. There is no automatic tool changer in the
+// loop — START transitions Idle→AwaitSwap and prints "Manual tool change —
+// verify pod, then ACCEPT"; the operator physically swaps the tool by hand,
+// then taps ACCEPT which commits the new (pod, station) into
+// machine::toolpods::Service via select_station(). The spindle does NOT
+// move and motion::g_motion is NOT touched. The internal Releasing /
+// Picking / Verifying enum values are dead today (the toolpods service
+// only emits Idle / Moving / Done / Faulted) and are mapped to the same
+// "AWAIT SWAP" label by the UI to reflect that.
+//
+// A real ATC controller (drawer release, spindle index, pull-stud unlock,
+// pick-and-place, kinematic verify) is a follow-up that would replace
+// the simple state machine here without changing the operator surface.
 struct ToolChangeSnapshot {
     enum class State : uint8_t {
         Idle = 0, Releasing, Moving, Picking, Verifying, Done, Faulted,

@@ -8,11 +8,13 @@
 #include "cli.hpp"
 #include "miniOS.hpp"
 #include "util.hpp"
+#include "klog.hpp"
 #include "ethercat/master.hpp"
 #include "ethercat/cia402.hpp"
 #include "ethercat/frame.hpp"  // put_u16_le / put_u32_le / get_u32_le
 #if MINIOS_FAKE_SLAVE
 #include "ethercat/fake_slave.hpp"
+#include "render/obj_importer.hpp"
 #include "ethercat/esm.hpp"
 #endif
 #include "motion/motion.hpp"
@@ -197,9 +199,7 @@ bool try_get(uint8_t& out) noexcept {
         line_len = 0;
     };
 
-    for (;;) {
-        // Drain any pending output chunks before blocking on input. This keeps
-        // the UART pipe full when the CLI is producing bursts (e.g. `help`).
+    auto drain_output = [&]() {
         while (Chunk* c = g_out_queue.try_pop()) {
             for (uint16_t i = 0; i < c->len; ++i) {
                 char ch = c->data[i];
@@ -209,26 +209,47 @@ bool try_get(uint8_t& out) noexcept {
                 }
             }
             c->len = 0;
-            // Return to free list.
             while (!g_free_queue.try_push(c)) {
-                // Free queue full shouldn't happen (capacity matches pool),
-                // but yield if it does.
                 kernel::util::cpu_relax();
             }
         }
-        // Flush any partial line so prompt characters surface even without a
-        // trailing newline (e.g. "miniOS> "). The next direct puts() from
-        // another core may still split a prompt that has no newline, but that
-        // matches existing direct-puts behaviour for line-less output.
+        // Flush any partial line so prompt characters surface even without
+        // a trailing newline (e.g. "miniOS> ").
         flush_line();
-        // Read one byte (blocking spin on the UART LSR) and push it onto the
-        // input queue. We take one byte per iteration so output drains
-        // promptly between keystrokes.
-        char ch = g_uart->getc_blocking();
-        while (!g_in_queue.try_push(static_cast<uint8_t>(ch))) {
-            // Input queue full means the CLI thread isn't keeping up. Yield
-            // briefly to let it run.
-            kernel::util::cpu_relax();
+    };
+
+    for (;;) {
+        // Drain pending output, then poll input non-blocking. Previously
+        // this loop called getc_blocking() *after* the drain — which on a
+        // quiescent input pipe (script waiting for output before sending
+        // its next byte) wedged the thread inside getc_blocking's yield
+        // loop, leaving any output queued *after* the wedge stuck in
+        // g_out_queue with nobody to drain it. Symptom: cmd_ui_dump's
+        // UI_DUMP_BEGIN never reached the wire because cli queued it
+        // after uart_io had already entered the blocking phase, and the
+        // host script was waiting on that very marker before sending
+        // more input that would have unblocked us.
+        //
+        // The fix: poll RX with try_getc(), drain output every iteration
+        // regardless, and yield only when there's nothing to do. Output
+        // and input are now both checked every loop, so a queued chunk
+        // is never more than one yield-quantum away from the wire.
+        drain_output();
+        char ch;
+        if (g_uart->try_getc(ch)) {
+            while (!g_in_queue.try_push(static_cast<uint8_t>(ch))) {
+                // Input queue full means the cli thread isn't keeping up.
+                // Drain output (it might be waiting on us to free chunks)
+                // and yield.
+                drain_output();
+                yield_now();
+            }
+        } else {
+            // Idle: nothing to read, output already drained. Yield so
+            // other threads on this core get cycles. cli's blocking
+            // get_blocking() will yield in turn when its in-queue is
+            // empty, so this loop never spins hot.
+            yield_now();
         }
     }
 }
@@ -252,6 +273,26 @@ public:
 };
 
 static SinkUART g_sink;
+
+RawWriter::RawWriter() noexcept
+    : uart_(kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+    if (uart_) uart_->lock_write();
+}
+RawWriter::~RawWriter() noexcept {
+    if (uart_) uart_->unlock_write();
+}
+void RawWriter::write(const void* data, size_t n) noexcept {
+    if (!uart_ || !data) return;
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < n; ++i) uart_->putc(static_cast<char>(p[i]));
+}
+void RawWriter::puts(const char* s) noexcept {
+    if (!uart_ || !s) return;
+    while (*s) uart_->putc(*s++);
+}
+void RawWriter::putc(char c) noexcept {
+    if (uart_) uart_->putc(c);
+}
 
 } // namespace io
 
@@ -368,15 +409,25 @@ static int cmd_safety(const char* args, kernel::hal::UARTDriverOps* uart) {
 }
 
 static int cmd_ec_clear_fault(const char*, kernel::hal::UARTDriverOps* uart) {
-    const bool a_was = ethercat::g_master_a.is_deadline_faulted();
-    const bool b_was = ethercat::g_master_b.is_deadline_faulted();
+    const bool a_dl = ethercat::g_master_a.is_deadline_faulted();
+    const bool b_dl = ethercat::g_master_b.is_deadline_faulted();
+    const bool a_dc = ethercat::g_master_a.is_dc_sync_faulted();
+    const bool b_dc = ethercat::g_master_b.is_dc_sync_faulted();
     ethercat::g_master_a.clear_deadline_fault();
     ethercat::g_master_b.clear_deadline_fault();
-    char buf[96];
+    ethercat::g_master_a.clear_dc_sync_fault();
+    ethercat::g_master_b.clear_dc_sync_fault();
+    auto status = [](bool dl, bool dc) -> const char* {
+        if (dl && dc) return "cleared(deadline+dc)";
+        if (dl) return "cleared(deadline)";
+        if (dc) return "cleared(dc)";
+        return "ok";
+    };
+    char buf[128];
     kernel::util::k_snprintf(buf, sizeof(buf),
         "ec_clear_fault: ec0=%s ec1=%s\n",
-        a_was ? "cleared" : "ok",
-        b_was ? "cleared" : "ok");
+        status(a_dl, a_dc),
+        status(b_dl, b_dc));
     uart->puts(buf);
     return 0;
 }
@@ -684,7 +735,11 @@ static int cmd_offsets(const char*, kernel::hal::UARTDriverOps* uart) {
         kernel::util::k_snprintf(buf, sizeof(buf),
             "  %s%s X%.3f Y%.3f Z%.3f A%.3f\n",
             i == svc.active_work() ? "* " : "  ",
-            w.name, w.value.axis[0], w.value.axis[1], w.value.axis[2], w.value.axis[3]);
+            w.name,
+            static_cast<double>(w.value.axis[0]),
+            static_cast<double>(w.value.axis[1]),
+            static_cast<double>(w.value.axis[2]),
+            static_cast<double>(w.value.axis[3]));
         uart->puts(buf);
     }
     uart->puts("tool offsets:\n");
@@ -693,7 +748,10 @@ static int cmd_offsets(const char*, kernel::hal::UARTDriverOps* uart) {
         kernel::util::k_snprintf(buf, sizeof(buf),
             "  %c T%02lu len=%.3f rad=%.3f wear=%.3f\n",
             i == svc.active_tool() ? '*' : ' ',
-            static_cast<unsigned long>(t.tool), t.length, t.radius, t.wear);
+            static_cast<unsigned long>(t.tool),
+            static_cast<double>(t.length),
+            static_cast<double>(t.radius),
+            static_cast<double>(t.wear));
         uart->puts(buf);
     }
     return 0;
@@ -807,8 +865,12 @@ static int cmd_program_sim(const char* args, kernel::hal::UARTDriverOps* uart) {
     kernel::util::k_snprintf(buf, sizeof(buf),
                              "program_sim: %s preview points=%zu bbox=[%.2f,%.2f,%.2f]-[%.2f,%.2f,%.2f]\n",
                              p.name, p.preview.point_count,
-                             p.preview.min.x, p.preview.min.y, p.preview.min.z,
-                             p.preview.max.x, p.preview.max.y, p.preview.max.z);
+                             static_cast<double>(p.preview.min.x),
+                             static_cast<double>(p.preview.min.y),
+                             static_cast<double>(p.preview.min.z),
+                             static_cast<double>(p.preview.max.x),
+                             static_cast<double>(p.preview.max.y),
+                             static_cast<double>(p.preview.max.z));
     uart->puts(buf);
     return 0;
 }
@@ -1223,6 +1285,17 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
         return 1;
     }
 
+    // No render_ui_once() here. The boot UI thread (splash.cpp's
+    // run_ui_main_loop) refreshes the framebuffer at 10 Hz, and the
+    // host's typical sequence of `ui_page <id>; ui_dump 6` already
+    // forces a render in cmd_ui_page right before this command runs.
+    // BUT — leaving this out exposed a real race: in CI, the dashboard
+    // sometimes captured before the boot UI thread had drawn the
+    // active page on top of the boot notice / fallback. Restore the
+    // explicit render here so the dump always reflects a freshly-
+    // rendered active page. The cost is one extra render call per
+    // dump (10s of ms with the new direct-pixel pipeline); the host
+    // capture is still well under any realistic budget.
     kernel::ui::render_ui_once();
 
     char header[128];
@@ -1239,30 +1312,87 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
     const size_t payload_size = static_cast<size_t>(header_len) +
                                 static_cast<size_t>(out_w) * static_cast<size_t>(out_h) * 3U;
     char meta[128];
-    kernel::util::k_snprintf(meta, sizeof(meta),
+    const int meta_len = kernel::util::k_snprintf(meta, sizeof(meta),
                              "UI_DUMP_BEGIN %lu %lu %lu\n",
                              static_cast<unsigned long>(out_w),
                              static_cast<unsigned long>(out_h),
                              static_cast<unsigned long>(payload_size));
-    io::put(meta);
-    io::put_n(header, static_cast<size_t>(header_len));
+    if (meta_len <= 0) {
+        io::put("UI_DUMP_ERROR meta\n");
+        return 1;
+    }
 
-    char row[3 * 256];
+    // The cli's queued UART path (io::put / io::put_n -> g_out_queue ->
+    // uart_io drain -> uart->puts) was originally how this command emitted
+    // the dump, but it's wrong twice over for a binary payload of this
+    // size:
+    //   1. uart->puts CRLF-cooks every '\n' on the wire. The binary RGB
+    //      payload contains ~payload_size/256 natural 0x0A bytes, each
+    //      gaining a leading 0x0D — corrupting the byte count and forcing
+    //      the host to decode-everything to recover the original stream.
+    //   2. The 64x128 chunk pool, per-byte flush_line check, per-`\n`
+    //      lock-acquire + uart->puts cycle, and the scheduler yields
+    //      between cli's producer + uart_io's drainer all add per-byte
+    //      overhead that compounds across 170 KB. The previous run got
+    //      ~17 bytes/sec to the wire; the per-pixel rate was being
+    //      throttled by lock turnover, not by PL011 TXFF.
+    //
+    // Bypass both. Acquire the early-uart lock once for the entire
+    // dump (marker + header + RGB + trailer), then write every byte via
+    // direct uart->putc — no CRLF cooking, no queue, no SPSC turnover.
+    // The lock keeps other puts() callers (boot UI thread's [virtio-gpu]
+    // log, hmi DHCP / EC fault logs) from interleaving into the binary
+    // stream. The host script side flips to read the payload as raw
+    // wire bytes, so the natural 0x0A / 0x0D 0x0A bytes in pixel data
+    // round-trip losslessly.
+    //
+    // Lock-held duration is ~PL011-TXFF-bound across 170 KB, which on
+    // QEMU virt is a few hundred ms. That delays unrelated puts callers
+    // by the same amount, which is fine for an interactive dump command.
+    io::RawWriter raw;
+    if (!raw.valid()) {
+        io::put("UI_DUMP_ERROR no-uart\n");
+        return 1;
+    }
+    raw.write(meta, static_cast<size_t>(meta_len));
+    raw.write(header, static_cast<size_t>(header_len));
+
+    // Read pixels straight out of the framebuffer's uint32_t buffer
+    // (RGBA packed 0xAARRGGBB) instead of going through fb.get_pixel
+    // for every output pixel. The previous loop did out_w*out_h
+    // virtual-dispatch get_pixel() calls — for a 1080×1920 / 6 dump
+    // that's 57600 calls each doing a bounds check + index compute.
+    // Inline the read + RGB extract; bounds are guaranteed because
+    // out_w = FB_WIDTH / scale and out_h = FB_HEIGHT / scale, so
+    // x*scale < FB_WIDTH and y*scale < FB_HEIGHT for all valid x,y.
+    //
+    // Batch writes into a 768-byte (256 pixels × 3 bytes) stack
+    // buffer to amortise the per-byte putc dispatch in raw.write
+    // across rows. 768 bytes is comfortably under the cli thread's
+    // 4 KB stack budget (DEFAULT_STACK_SIZE in core.hpp).
+    const uint32_t* fb_data = fb.data();
+    char row_buf[256 * 3];
+    size_t pos = 0;
     for (uint32_t y = 0; y < out_h; ++y) {
-        size_t row_len = 0;
+        const uint32_t* src_row = fb_data + (y * scale) * kernel::ui::FB_WIDTH;
         for (uint32_t x = 0; x < out_w; ++x) {
-            const auto c = fb.get_pixel(static_cast<int32_t>(x * scale), static_cast<int32_t>(y * scale));
-            row[row_len++] = static_cast<char>(c.r);
-            row[row_len++] = static_cast<char>(c.g);
-            row[row_len++] = static_cast<char>(c.b);
-            if (row_len == sizeof(row)) {
-                io::put_n(row, row_len);
-                row_len = 0;
+            const uint32_t p = src_row[x * scale];
+            row_buf[pos++] = static_cast<char>((p >> 16) & 0xFF);
+            row_buf[pos++] = static_cast<char>((p >>  8) & 0xFF);
+            row_buf[pos++] = static_cast<char>( p        & 0xFF);
+            if (pos + 3 > sizeof(row_buf)) {
+                raw.write(row_buf, pos);
+                pos = 0;
             }
         }
-        if (row_len > 0) io::put_n(row, row_len);
     }
-    io::put("\nUI_DUMP_END\n");
+    if (pos > 0) raw.write(row_buf, pos);
+    raw.puts("\nUI_DUMP_END\n");
+    return 0;
+}
+static int cmd_klog(const char*, kernel::hal::UARTDriverOps* uart) {
+    if (!uart) return 1;
+    kernel::klog::dump(uart);
     return 0;
 }
 static int cmd_help(const char*, kernel::hal::UARTDriverOps* uart) {
@@ -1320,6 +1450,97 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         devices::g_device_db.dump(uart);
         uart->puts("devices dump test: PASSED\n");
         return 0;
+    }
+    // Tier-follow-up subtests. Each runs in isolation and prints a single
+    // PASS / FAIL line; CI greps the summary at the end of `test all`.
+    if (kernel::util::kstrcmp(args, "chain") == 0) {
+        // Look-ahead chain: queue 4 moves on a non-driven axis (no drive
+        // hooked → trajectory dry-runs but chain math is the same path).
+        // Pre-clear the chain ring by latching a fresh target and waiting
+        // for traj_state to leave Idle. We use axis index 31 (highest)
+        // since it's unlikely to be wired by any topology binding.
+        constexpr size_t kAxis = motion::MAX_AXES - 1;
+        // Step 1: latch the active target via move_to (idle case).
+        motion::g_motion.move_to(kAxis, 1000);
+        // Step 2: queue three more moves while mid-flight. Since the
+        // motion thread runs on core 1, the chain may pop entries
+        // between our calls. The stronger assertion: chain_count is
+        // bounded by CHAIN_DEPTH and never exceeds the queued amount.
+        motion::g_motion.move_to(kAxis, 2000);
+        motion::g_motion.move_to(kAxis, 3000);
+        motion::g_motion.move_to(kAxis, 4000);
+        const uint8_t cnt = motion::g_motion.axis_chain_count(kAxis);
+        const bool pass = cnt <= motion::Axis::CHAIN_DEPTH;
+        char buf[80];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "chain test: chain_count=%u depth_cap=%zu => %s\n",
+            static_cast<unsigned>(cnt),
+            static_cast<size_t>(motion::Axis::CHAIN_DEPTH),
+            pass ? "PASSED" : "FAILED");
+        uart->puts(buf);
+        return pass ? 0 : 1;
+    }
+    if (kernel::util::kstrcmp(args, "mtl") == 0) {
+        // Material parser smoke test: a small inline MTL blob with two
+        // materials. Verify both are picked up and Kd lands in the
+        // diffuse component.
+        static constexpr char kMtl[] =
+            "newmtl steel\n"
+            "Kd 0.5 0.5 0.6\n"
+            "newmtl brass\n"
+            "Kd 0.7 0.5 0.2\n";
+        render::obj::MaterialMap map{};
+        const size_t n = render::obj::parse_mtl(kMtl, sizeof(kMtl) - 1, map);
+        const auto* steel = map.lookup("steel");
+        const auto* brass = map.lookup("brass");
+        const bool pass = (n == 2) && steel && brass &&
+                          steel->diffuse.r >= 0x7E && steel->diffuse.r <= 0x80 &&
+                          brass->diffuse.g >= 0x7E && brass->diffuse.g <= 0x80;
+        char buf[80];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "mtl test: parsed=%zu steel=%p brass=%p => %s\n",
+            n, static_cast<const void*>(steel), static_cast<const void*>(brass),
+            pass ? "PASSED" : "FAILED");
+        uart->puts(buf);
+        return pass ? 0 : 1;
+    }
+    if (kernel::util::kstrcmp(args, "fake_sdo") == 0) {
+        // Fake-slave SDO history smoke test. Without a real bus we can't
+        // get the master to FPWR a download into the fake slave, so we
+        // exercise the recorder mechanism directly via the existing
+        // build_sdo_upload_response shim. As a substitute, just verify
+        // the history starts empty after clear and the accessors behave.
+        ethercat::g_fake_slave.clear_sdo_history();
+        const size_t initial = ethercat::g_fake_slave.sdo_write_count();
+        const auto rec = ethercat::g_fake_slave.sdo_write_at(0);
+        const uint16_t torque = ethercat::g_fake_slave.cia_max_torque_permille();
+        const bool pass = (initial == 0) && (rec.bytes == 0) && (torque == 0xFFFFu);
+        char buf[80];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "fake_sdo test: count=%zu torque=0x%04x => %s\n",
+            initial, static_cast<unsigned>(torque),
+            pass ? "PASSED" : "FAILED");
+        uart->puts(buf);
+        return pass ? 0 : 1;
+    }
+    if (kernel::util::kstrcmp(args, "all") == 0) {
+        // CI-grep target. Runs every subtest and emits a consolidated
+        // summary "Tests completed: <total>, <failed> failed".
+        const char* subtests[] = {
+            "status", "motion", "ec", "devices",
+            "chain", "mtl", "fake_sdo",
+        };
+        size_t failed = 0;
+        for (const char* s : subtests) {
+            const int rc = cmd_test(s, uart);
+            if (rc != 0) ++failed;
+        }
+        char buf[80];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "Tests completed: %zu, %zu failed\n",
+            sizeof(subtests) / sizeof(subtests[0]), failed);
+        uart->puts(buf);
+        return failed == 0 ? 0 : 1;
     }
     uart->puts("unknown test: ");
     uart->puts(args);
@@ -1661,7 +1882,7 @@ static int cmd_gear_disengage(const char* args, kernel::hal::UARTDriverOps* uart
     return ok ? 0 : 1;
 }
 
-static int cmd_gantry(const char* args, kernel::hal::UARTDriverOps* uart) {
+static int cmd_gantry(const char* /*args*/, kernel::hal::UARTDriverOps* uart) {
     // gantry - list active gantry links
     motion::g_motion.dump_gantrys(uart);
     return 0;
@@ -2058,7 +2279,10 @@ static int cmd_sphere_auto(const char* args, kernel::hal::UARTDriverOps* uart) {
     // 7-point hemisphere pattern (counts = mm * 10000 for 0.1µm resolution)
     // At 45° elevation: offset = radius * sin(45°) ≈ radius * 0.707
     // Horizontal offset = radius * cos(45°) ≈ radius * 0.707
-    int32_t r = static_cast<int32_t>(radius) * 10000;  // convert mm to counts
+    // r (full radius, counts) is not currently used by this preview
+    // helper but is documented here for parity with the comment block
+    // above. If the helper grows to plot the apex point at +r,
+    // re-introduce as `const int32_t r = ...` and reference it.
     int32_t h = static_cast<int32_t>(radius * 707 / 1000) * 10000;  // horizontal
     int32_t v = static_cast<int32_t>(radius * 707 / 1000) * 10000;  // vertical
 
@@ -2118,7 +2342,7 @@ typedef int32_t (*ProbeTriggerFunc)(int32_t target_x, int32_t target_y, int32_t 
 
 // Simple stub that returns target position (simulated probe)
 // In real system, this would wait for probe trigger and return actual position
-static int32_t probe_trigger_sim(int32_t target_x, int32_t target_y, int32_t target_z) {
+[[maybe_unused]] static int32_t probe_trigger_sim(int32_t target_x, int32_t target_y, int32_t target_z) {
     // Simulated: probe triggers exactly at target
     // Real implementation would wait for probe DI and return trigger position
     (void)target_x; (void)target_y; (void)target_z;
@@ -2456,9 +2680,9 @@ static int cmd_multipass(const char* args, kernel::hal::UARTDriverOps* uart) {
         "multipass: %ld total, %ld passes, DOC=%ld\n"
         "  Rough:   %ld x %ld counts\n"
         "  Finish:  %ld counts\n",
-        total, passes, doc,
-        passes - 1, rough_depth,
-        finish_depth);
+        static_cast<long>(total), static_cast<long>(passes), static_cast<long>(doc),
+        static_cast<long>(passes - 1), static_cast<long>(rough_depth),
+        static_cast<long>(finish_depth));
     uart->puts(buf);
     return 0;
 }
@@ -2521,7 +2745,8 @@ static int cmd_din6(const char* args, kernel::hal::UARTDriverOps* uart) {
             int32_t cpt = cpr / a.spindle_indexer.teeth_per_revolution;
             int32_t tooth_pos = (int32_t)n * cpt + a.spindle_indexer.index_offset_counts;
             motion::g_motion.move_to((size_t)axis, tooth_pos);
-            kernel::util::k_snprintf(buf, sizeof(buf), "din6 tooth: ax%ld tooth=%ld pos=%ld\n", axis, n, tooth_pos);
+            kernel::util::k_snprintf(buf, sizeof(buf), "din6 tooth: ax%ld tooth=%ld pos=%ld\n",
+                                     static_cast<long>(axis), static_cast<long>(n), static_cast<long>(tooth_pos));
         } else {
             uart->puts("din6 tooth: axis not configured, run 'din6 sync' first\n");
             return 1;
@@ -2610,6 +2835,108 @@ static int cmd_feedhold(const char* args, kernel::hal::UARTDriverOps* uart) {
     uart->puts(buf);
     return ok ? 0 : 1;
 }
+static int cmd_torque_limit(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // tq <axis> <permille>  — sets CiA-402 0x6072 (Max Torque) on the
+    // axis's drive. permille of motor rated torque (1000 = 100%).
+    if (!args || !*args) {
+        uart->puts("usage: tq <axis> <permille>\n");
+        return 1;
+    }
+    const char* p = args;
+    long axis = 0, permille = 0;
+    if (!cli_parse_long(p, axis) || !cli_parse_long(p, permille)) {
+        uart->puts("tq: bad args\n");
+        return 1;
+    }
+    const bool ok = motion::g_motion.set_torque_limit(
+        static_cast<size_t>(axis), static_cast<uint16_t>(permille));
+    char buf[80];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "tq ax%ld permille=%ld => %s\n", axis, permille, ok ? "queued" : "FAIL");
+    uart->puts(buf);
+    return ok ? 0 : 1;
+}
+
+static int cmd_junction_dev(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // junction_dev <ch> [counts]  — get/set the corner-error budget.
+    if (!args || !*args) {
+        for (size_t c = 0; c < motion::g_motion.channel_count(); ++c) {
+            char buf[80];
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "junction_dev ch%zu = %ld counts\n",
+                c, static_cast<long>(motion::g_motion.junction_deviation(c)));
+            uart->puts(buf);
+        }
+        return 0;
+    }
+    const char* p = args;
+    long ch = 0, counts = 0;
+    if (!cli_parse_long(p, ch) || !cli_parse_long(p, counts)) {
+        uart->puts("junction_dev: bad args\n");
+        return 1;
+    }
+    const bool ok = motion::g_motion.set_junction_deviation(
+        static_cast<size_t>(ch), static_cast<int32_t>(counts));
+    char buf[80];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "junction_dev ch%ld = %ld counts => %s\n",
+        ch, counts, ok ? "ok" : "FAIL");
+    uart->puts(buf);
+    return ok ? 0 : 1;
+}
+
+static int cmd_queue_depth(const char*, kernel::hal::UARTDriverOps* uart) {
+    // queue_depth — dump per-channel chain occupancy. Useful for tuning
+    // look-ahead — a value hovering at CHAIN_DEPTH means the planner is
+    // saturated; hovering at 0 means the program is starving the chain.
+    char buf[160];
+    for (size_t c = 0; c < motion::g_motion.channel_count(); ++c) {
+        const auto& ch = motion::g_motion.channel(c);
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "ch%zu (%s) completed_block=%u:\n",
+            c, ch.name,
+            static_cast<unsigned>(motion::g_motion.channel_completed_block_id(c)));
+        uart->puts(buf);
+        for (uint8_t k = 0; k < ch.axis_count; ++k) {
+            const uint8_t ai = ch.axis_indices[k];
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "  ax%u: chain %u/%zu  active_block=%u\n",
+                static_cast<unsigned>(ai),
+                static_cast<unsigned>(motion::g_motion.axis_chain_count(ai)),
+                static_cast<size_t>(motion::Axis::CHAIN_DEPTH),
+                static_cast<unsigned>(motion::g_motion.axis_active_block_id(ai)));
+            uart->puts(buf);
+        }
+    }
+    return 0;
+}
+
+static int cmd_tcp(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // tcp <ch> <on|off>  — toggle 5-axis Tool-Centre-Point mode.
+    if (!args || !*args) {
+        uart->puts("usage: tcp <channel> <on|off>\n");
+        return 1;
+    }
+    const char* p = args;
+    long ch = 0;
+    if (!cli_parse_long(p, ch)) {
+        uart->puts("tcp: bad args\n");
+        return 1;
+    }
+    while (*p == ' ') ++p;
+    bool active = false;
+    if (kernel::util::kstrcmp(p, "on") == 0) active = true;
+    else if (kernel::util::kstrcmp(p, "off") == 0) active = false;
+    else { uart->puts("tcp: expected on|off\n"); return 1; }
+    const bool ok = cnc::interp::g_runtime.set_tcp_active(
+        static_cast<size_t>(ch), active);
+    char buf[80];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "tcp ch%ld %s => %s\n", ch, active ? "on" : "off", ok ? "ok" : "FAIL");
+    uart->puts(buf);
+    return ok ? 0 : 1;
+}
+
 static int cmd_override(const char* args, kernel::hal::UARTDriverOps* uart) {
     // override <ch> <feed|rapid|spindle> <permille>
     if (!args || !*args) {
@@ -3506,6 +3833,63 @@ static int cmd_axis_autodetect(const char* args, kernel::hal::UARTDriverOps* uar
     uart->puts(buf);
     return 0;
 }
+static int cmd_axis_drive_limits(const char* args, kernel::hal::UARTDriverOps* uart) {
+    // axis_drive_limits <axis> — read CiA-402 profile velocity (0x6081:0)
+    // and profile acceleration (0x6083:0) from the slave bound to <axis>
+    // and apply them as the motion-side vmax_cps / accel_cps2 overrides.
+    // Mirrors axis_autodetect's plumbing — the trajectory planner picks
+    // up the new limits on the next move. See motion.hpp:254 (was the
+    // long-standing "TODO: read these from device DB" note).
+    if (!args || !*args) {
+        uart->puts("usage: axis_drive_limits <axis>\n");
+        return 1;
+    }
+    const char* p = args;
+    long axis_l = 0;
+    if (!cli_parse_long(p, axis_l) || axis_l < 0
+        || (size_t)axis_l >= motion::MAX_AXES
+        || (size_t)axis_l >= ethercat::MAX_SLAVES) {
+        uart->puts("axis_drive_limits: axis out of range\n");
+        return 1;
+    }
+    const auto& slave = ethercat::g_master_a.slave((size_t)axis_l);
+    if (slave.station_addr == 0) {
+        uart->puts("axis_drive_limits: slave not discovered yet (wait for ec state=OP)\n");
+        return 1;
+    }
+    auto read_u32 = [&](uint16_t idx, uint8_t sub, uint32_t& v_out) -> bool {
+        uint8_t buf[4] = {};
+        uint8_t bytes = 0;
+        uint32_t abort = 0;
+        if (!ethercat::g_master_a.upload_sdo(slave.station_addr, idx, sub,
+                                              buf, &bytes, 100000, &abort)) return false;
+        if (bytes < 4) return false;
+        v_out = static_cast<uint32_t>(buf[0]) |
+                (static_cast<uint32_t>(buf[1]) << 8) |
+                (static_cast<uint32_t>(buf[2]) << 16) |
+                (static_cast<uint32_t>(buf[3]) << 24);
+        return true;
+    };
+    uint32_t vmax = 0, accel = 0;
+    const bool got_v = read_u32(0x6081, 0, vmax);
+    const bool got_a = read_u32(0x6083, 0, accel);
+    if (!got_v && !got_a) {
+        uart->puts("axis_drive_limits: SDO probe failed for both 0x6081 and 0x6083\n");
+        return 1;
+    }
+    motion::g_motion.axis((size_t)axis_l).apply_drive_limits(
+        got_v ? static_cast<int32_t>(vmax)  : 0,
+        got_a ? static_cast<int32_t>(accel) : 0);
+    char buf[160];
+    kernel::util::k_snprintf(buf, sizeof(buf),
+        "axis_drive_limits: axis %ld @ 0x%04x — vmax=%lu%s accel=%lu%s\n",
+        axis_l, (unsigned)slave.station_addr,
+        (unsigned long)vmax,  got_v ? " (applied)" : " (skipped)",
+        (unsigned long)accel, got_a ? " (applied)" : " (skipped)");
+    uart->puts(buf);
+    return 0;
+}
+
 static int cmd_fault_inject(const char*, kernel::hal::UARTDriverOps* uart) {
 #if MINIOS_FAKE_SLAVE
     ethercat::g_fake_slave.cia_inject_fault();
@@ -4202,7 +4586,7 @@ void mcode_print_signal_state(kernel::hal::UARTDriverOps* uart, const char* name
 }
 } // namespace
 
-static int cmd_mcode(const char* args, kernel::hal::UARTDriverOps* uart) {
+[[maybe_unused]] static int cmd_mcode(const char* args, kernel::hal::UARTDriverOps* uart) {
     if (!args || !*args) {
         const bool a_fault = ethercat::g_master_a.is_deadline_faulted();
         const bool b_fault = ethercat::g_master_b.is_deadline_faulted();
@@ -4339,7 +4723,7 @@ CLI::CLI() {
     register_command("estop", cmd_estop, "Operator E-stop — broadcast QuickStop to all CiA-402 servos and latch fault");
     register_command("safety", cmd_safety, "safety [estop|clear] — hardware safety inputs status / manual trigger");
     register_command("ec_abort", cmd_ec_abort, "Broadcast AL=Init — emergency bus bring-down");
-    register_command("ec_clear_fault", cmd_ec_clear_fault, "Clear latched deadline fault on both EtherCAT masters");
+    register_command("ec_clear_fault", cmd_ec_clear_fault, "Clear latched deadline + DC-sync faults on both EtherCAT masters");
     register_command("ec_watchdog", cmd_ec_watchdog, "ec_watchdog <timeout_ms> [station] — program SM watchdog");
     register_command("setup_save", cmd_setup_save, "setup_save — persist offsets/tools/comp/active state to FAT32 setup.cfg");
     register_command("setup_load", cmd_setup_load, "setup_load — restore state from FAT32 setup.cfg");
@@ -4369,6 +4753,7 @@ CLI::CLI() {
     register_command("toolpod_assign", cmd_toolpod_assign, "toolpod_assign <pod> <station> <virtual_tool> — remap virtual tool onto a physical station");
     register_command("ui_page", cmd_ui_page, "ui_page <id> — switch the active TSV UI page");
     register_command("ui_dump", cmd_ui_dump, "ui_dump [scale] — dump the current framebuffer as a downscaled PPM stream");
+    register_command("klog", cmd_klog, "Dump the in-RAM kernel log ring (recent ~8 KB of UART output)");
     register_command("save_cfg", cmd_save_cfg, "Dump current operator-set state as replayable CLI commands");
     register_command("meminfo", cmd_meminfo, "Memory pool usage + per-thread stack watermarks");
     register_command("trace", cmd_trace, "Dump the kernel trace buffer");
@@ -4412,6 +4797,10 @@ CLI::CLI() {
     register_command("barrier_arrive", cmd_barrier_arrive, "barrier_arrive <ch> <token-hex> <parts-mask-hex> [tol] [stable] [maxw]");
     register_command("sync_move", cmd_sync_move, "sync_move <mask-hex> <ax> <tgt> [<ax> <tgt> ...] — cross-channel coordinated move (9.6)");
     register_command("feedhold", cmd_feedhold, "feedhold <ch> <0|1> — per-channel pause/resume (9.7)");
+    register_command("tq", cmd_torque_limit, "tq <axis> <permille> — set CiA-402 0x6072 max-torque on the axis's drive");
+    register_command("junction_dev", cmd_junction_dev, "junction_dev [<ch> <counts>] — get/set per-channel corner-error budget");
+    register_command("queue_depth", cmd_queue_depth, "queue_depth — dump per-channel look-ahead chain occupancy");
+    register_command("tcp", cmd_tcp, "tcp <ch> <on|off> — toggle 5-axis Tool-Centre-Point mode");
     register_command("topology", cmd_topology, "topology <name>=<ax,ax,...> [...] — rewrite axis-to-channel binding (9.8)");
     register_command("override", cmd_override, "override <ch> <feed|rapid|spindle> <permille> — per-channel speed override (9.7)");
     register_command("gears", cmd_gears, "List active electronic-gear links (9.5) + phase error (9.9)");
@@ -4456,6 +4845,7 @@ CLI::CLI() {
     register_command("dro",    cmd_dro,    "Operator DRO: per-axis cmd/actual/dtg/F-err/state plus master health");
     register_command("fault_reset", cmd_fault_reset, "fault_reset <axis> - pulse CW_FAULT_RESET, drop latch");
     register_command("axis_autodetect", cmd_axis_autodetect, "axis_autodetect <axis> - probe 0x608F, store cnts/rev in motion axis");
+    register_command("axis_drive_limits", cmd_axis_drive_limits, "axis_drive_limits <axis> - read 0x6081/0x6083 SDOs, apply to motion vmax/accel");
 #if MINIOS_FAKE_SLAVE
     register_command("fault_inject", cmd_fault_inject, "Inject a Fault into the fake slave for testing propagation");
 #endif

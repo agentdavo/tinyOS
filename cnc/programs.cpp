@@ -2,11 +2,22 @@
 
 #include "programs.hpp"
 #include "../util.hpp"
+#include "../util_math.hpp"
 #include "../fs/vfs.hpp"
 
 namespace cnc::programs {
 
 namespace {
+
+using kernel::util::math::absf;
+using kernel::util::math::sqrt_approx;
+using kernel::util::math::sin_approx;
+using kernel::util::math::cos_approx;
+using kernel::util::math::atan2_approx;
+using kernel::util::math::acos_approx;
+using kernel::util::math::clampf;
+using kernel::util::math::kPi;
+using kernel::util::math::kTwoPi;
 
 bool is_space(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
@@ -18,57 +29,7 @@ bool nearly_equal(float a, float b) {
     return delta < 0.0001f;
 }
 
-float absf(float v) {
-    return v < 0.0f ? -v : v;
-}
-
-float sqrt_approx(float v) {
-    if (v <= 0.0f) return 0.0f;
-    float x = v > 1.0f ? v : 1.0f;
-    for (int i = 0; i < 6; ++i) x = 0.5f * (x + v / x);
-    return x;
-}
-
-float wrap_pi(float x) {
-    static constexpr float kPi = 3.14159265359f;
-    static constexpr float kTwoPi = 6.28318530718f;
-    while (x > kPi) x -= kTwoPi;
-    while (x < -kPi) x += kTwoPi;
-    return x;
-}
-
-float sin_approx(float x) {
-    static constexpr float kB = 1.27323954474f;
-    static constexpr float kC = -0.40528473457f;
-    x = wrap_pi(x);
-    const float y = kB * x + kC * x * absf(x);
-    return 0.225f * (y * absf(y) - y) + y;
-}
-
-float cos_approx(float x) {
-    static constexpr float kHalfPi = 1.57079632679f;
-    return sin_approx(x + kHalfPi);
-}
-
-float atan_approx(float z) {
-    const float az = absf(z);
-    if (az <= 1.0f) return z / (1.0f + 0.28f * z * z);
-    const float base = 1.57079632679f - (az / (az * az + 0.28f));
-    return z < 0.0f ? -base : base;
-}
-
-float atan2_approx(float y, float x) {
-    static constexpr float kPi = 3.14159265359f;
-    if (x > 0.0f) return atan_approx(y / x);
-    if (x < 0.0f && y >= 0.0f) return atan_approx(y / x) + kPi;
-    if (x < 0.0f && y < 0.0f) return atan_approx(y / x) - kPi;
-    if (y > 0.0f) return 1.57079632679f;
-    if (y < 0.0f) return -1.57079632679f;
-    return 0.0f;
-}
-
 float arc_delta_for_mode(float start_angle, float end_angle, int motion_mode) {
-    static constexpr float kTwoPi = 6.28318530718f;
     float delta = end_angle - start_angle;
     if (motion_mode == 2) {
         if (delta >= 0.0f) delta -= kTwoPi;
@@ -104,7 +65,7 @@ bool solve_arc_center_from_radius(float start_u, float start_v,
         const float start_angle = atan2_approx(start_v - cand_v[idx], start_u - cand_u[idx]);
         const float end_angle = atan2_approx(end_v - cand_v[idx], end_u - cand_u[idx]);
         const float delta = arc_delta_for_mode(start_angle, end_angle, motion_mode);
-        const bool long_arc = absf(delta) > 3.14159265359f;
+        const bool long_arc = absf(delta) > kPi;
         const float score = long_arc == want_long ? absf(delta) : -absf(delta);
         if (score > best_score) {
             best_score = score;
@@ -502,9 +463,26 @@ bool Store::parse_preview(ProgramEntry& entry) noexcept {
                     float delta = arc_delta_for_mode(start_angle, end_angle, motion_mode);
                     const float radius = sqrt_approx((start_u - center_u) * (start_u - center_u) +
                                                      (start_v - center_v) * (start_v - center_v));
-                    int segments = static_cast<int>((absf(delta) * radius) / 2.5f) + 1;
-                    if (segments < 4) segments = 4;
-                    if (segments > 64) segments = 64;
+                    // Chord-error segmentation: same formula as the live
+                    // interpreter (cnc/interpreter.cpp::plan_arc) so the
+                    // preview faceting matches the executed path. Preview
+                    // axis units are model units (mm-ish, not counts), so
+                    // the tolerance is in those same units; 0.05 mm gives
+                    // smooth previews at typical machining radii without
+                    // exploding the segment count.
+                    constexpr float kChordTolModelUnits = 0.05f;
+                    int segments = 4;
+                    if (radius > kChordTolModelUnits) {
+                        const float ratio = 1.0f - kChordTolModelUnits / radius;
+                        const float theta_max = 2.0f * acos_approx(ratio);
+                        if (theta_max > 1e-4f) {
+                            const float n = absf(delta) / theta_max;
+                            int want = static_cast<int>(n) + 1;
+                            if (want < 4) want = 4;
+                            if (want > 128) want = 128;
+                            segments = want;
+                        }
+                    }
                     for (int seg = 1; seg <= segments; ++seg) {
                         const float t = static_cast<float>(seg) / static_cast<float>(segments);
                         const float angle = start_angle + delta * t;

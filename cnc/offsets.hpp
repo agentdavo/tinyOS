@@ -23,7 +23,14 @@ struct WorkOffset {
 
 struct ToolOffset {
     uint32_t tool = 0;
-    float length = 0.0f;
+    // Tool-length vector in user units. `length` (= length_z) remains the
+    // common case — a straight tool sticking out in +Z. length_x / length_y
+    // exist so 5-axis head/tail kinematics or angled spindles can express
+    // the tool tip's offset from the spindle reference frame as a full
+    // vector, applied per-axis by the interpreter under G43.
+    float length = 0.0f;        // legacy alias for length_z
+    float length_x = 0.0f;
+    float length_y = 0.0f;
     float radius = 0.0f;
     float wear = 0.0f;
 };
@@ -41,6 +48,12 @@ public:
     bool select_tool(size_t idx) noexcept;
     bool set_work_axis(size_t idx, size_t axis, float value) noexcept;
     bool set_tool_value(size_t idx, float length, float radius, float wear) noexcept;
+    // Set the tool-length vector (X/Y/Z) directly. Used by 5-axis TCP setups
+    // where length_x and length_y aren't zero. The legacy set_tool_value
+    // path leaves length_x / length_y unchanged so existing 3-axis flows
+    // are unaffected.
+    bool set_tool_length_vec(size_t idx, float length_x, float length_y,
+                             float length_z) noexcept;
 
 private:
     std::array<WorkOffset, WORK_OFFSET_COUNT> work_offsets_{};

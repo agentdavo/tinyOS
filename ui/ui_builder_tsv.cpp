@@ -95,6 +95,13 @@ static PageSpec g_pages[MAX_PAGES];
 static uint32_t g_page_count = 0;
 static ActionSpec g_actions[MAX_ACTIONS];
 static uint32_t g_action_count = 0;
+// Sorted index over g_actions, populated by build_action_index() after a
+// successful validate_actions(). Lets action_target_for_widget binary-search
+// instead of doing an O(action_count) strcmp scan on every button render.
+// Empty (g_action_index_count = 0) until parse completes; lookups fall back
+// to the linear scan in that window.
+static uint16_t g_action_index[MAX_ACTIONS];
+static uint32_t g_action_index_count = 0;
 static ChildSpec g_child_links[MAX_CHILD_LINKS];
 static uint32_t g_child_link_count = 0;
 static Widget* g_root_widget = nullptr;
@@ -345,7 +352,7 @@ const char* field_value(const KeyValueField* fields, uint32_t count, const char*
     return nullptr;
 }
 
-int32_t text_x_for_align(int32_t x, uint32_t width, const char* text, Align align) {
+[[maybe_unused]] int32_t text_x_for_align(int32_t x, uint32_t width, const char* text, Align align) {
     if (!text || align == Align::Left || width == 0) return x;
     const int32_t text_w = static_cast<int32_t>(strlen(text) * 8U);
     if (align == Align::Center) return x + static_cast<int32_t>(width / 2) - text_w / 2;
@@ -436,6 +443,21 @@ enum class BindKind : uint16_t {
     EcCycles,
     EcTxFrames,
     EcRxFrames,
+    EcDcFault,         // bool: DC sync drift latch tripped
+    EcDcDriftMaxNs,    // peak |drift| since boot, ns
+    EcDcDriftLastNs,   // most recent sample, ns (signed; rendered abs)
+    EcDcSamples,       // total DC drift samples taken
+    EcDcTrips,         // total DC drift fault latches
+    SpindleOverride,   // operator-side spindle override percent (0..150)
+    RestartPending,    // bool: restart-confirm wizard staged
+    RestartLine,       // target line number
+    RestartTool,       // reconstructed active tool (1-based)
+    RestartWcs,        // reconstructed WCS (G54..G59)
+    RestartFeed,       // reconstructed F word
+    RestartSpindle,    // reconstructed S word
+    RestartCoolant,    // reconstructed coolant flags rendered as text
+    Channel0BarrierMs, // Channel 0 barrier-timeout countdown in ms
+    Channel1BarrierMs, // Channel 1 barrier-timeout countdown in ms
     Alarm0Id, Alarm0Severity, Alarm0Axis, Alarm0Message, Alarm0Time,
     Alarm1Id, Alarm1Severity, Alarm1Axis, Alarm1Message, Alarm1Time,
     Alarm2Id, Alarm2Severity, Alarm2Axis, Alarm2Message, Alarm2Time,
@@ -528,6 +550,16 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "torque") == 0) return BindKind::Torque;
     if (strcmp(s, "feed") == 0) return BindKind::Feed;
     if (strcmp(s, "spindle") == 0) return BindKind::Spindle;
+    if (strcmp(s, "spindle_override") == 0) return BindKind::SpindleOverride;
+    if (strcmp(s, "restart:pending") == 0) return BindKind::RestartPending;
+    if (strcmp(s, "restart:line")    == 0) return BindKind::RestartLine;
+    if (strcmp(s, "restart:tool")    == 0) return BindKind::RestartTool;
+    if (strcmp(s, "restart:wcs")     == 0) return BindKind::RestartWcs;
+    if (strcmp(s, "restart:feed")    == 0) return BindKind::RestartFeed;
+    if (strcmp(s, "restart:spindle") == 0) return BindKind::RestartSpindle;
+    if (strcmp(s, "restart:coolant") == 0) return BindKind::RestartCoolant;
+    if (strcmp(s, "channel:0:barrier_ms") == 0) return BindKind::Channel0BarrierMs;
+    if (strcmp(s, "channel:1:barrier_ms") == 0) return BindKind::Channel1BarrierMs;
     if (strcmp(s, "axis:x") == 0) return BindKind::AxisX;
     if (strcmp(s, "axis:y") == 0) return BindKind::AxisY;
     if (strcmp(s, "axis:z") == 0) return BindKind::AxisZ;
@@ -613,6 +645,11 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "ec:cycles") == 0) return BindKind::EcCycles;
     if (strcmp(s, "ec:tx")     == 0) return BindKind::EcTxFrames;
     if (strcmp(s, "ec:rx")     == 0) return BindKind::EcRxFrames;
+    if (strcmp(s, "ec:dc_fault")     == 0) return BindKind::EcDcFault;
+    if (strcmp(s, "ec:dc_drift_max") == 0) return BindKind::EcDcDriftMaxNs;
+    if (strcmp(s, "ec:dc_drift_last")== 0) return BindKind::EcDcDriftLastNs;
+    if (strcmp(s, "ec:dc_samples")   == 0) return BindKind::EcDcSamples;
+    if (strcmp(s, "ec:dc_trips")     == 0) return BindKind::EcDcTrips;
     if (strcmp(s, "alarm:active_count")  == 0) return BindKind::AlarmActiveCount;
     if (strcmp(s, "alarm:history_count") == 0) return BindKind::AlarmHistoryCount;
     // Per-slot WCS / tool tokens. Match exact strings; any typo falls
@@ -828,6 +865,10 @@ int32_t bound_numeric_value(BindKind bind) {
         case BindKind::Feed: {
             const auto snap = kernel::ui::operator_api::machine_snapshot();
             return snap.feed;
+        }
+        case BindKind::SpindleOverride: {
+            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            return static_cast<int32_t>(snap.spindle_override);
         }
         case BindKind::Spindle: {
             const auto snap = kernel::ui::operator_api::machine_snapshot();
@@ -1523,6 +1564,75 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             copy_field(buf, buf_size, text, strlen(text));
             return;
         }
+        case BindKind::EcDcFault: {
+            const auto snap = kernel::ui::operator_api::ethercat_snapshot();
+            const char* text = snap.dc_sync_faulted ? "DC FAULT" : "ok";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::RestartPending: {
+            const bool p = kernel::ui::operator_api::restart_review_pending();
+            const char* text = p ? "STAGED" : "ok";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::RestartLine: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            kernel::util::k_snprintf(buf, buf_size, "%s%lu", prefix ? prefix : "",
+                                     static_cast<unsigned long>(r.target_line));
+            return;
+        }
+        case BindKind::RestartTool: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            kernel::util::k_snprintf(buf, buf_size, "%sT%lu%s", prefix ? prefix : "",
+                                     static_cast<unsigned long>(r.active_tool + 1),
+                                     r.tool_length_active ? " (H)" : "");
+            return;
+        }
+        case BindKind::RestartWcs: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            const char* names[] = {"G54", "G55", "G56", "G57", "G58", "G59"};
+            const char* text = r.active_work < 6 ? names[r.active_work] : "G54";
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::RestartFeed: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            kernel::util::k_snprintf(buf, buf_size, "%sF%lu", prefix ? prefix : "",
+                                     static_cast<unsigned long>(r.feed));
+            return;
+        }
+        case BindKind::RestartSpindle: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            kernel::util::k_snprintf(buf, buf_size, "%sS%ld", prefix ? prefix : "",
+                                     static_cast<long>(r.spindle));
+            return;
+        }
+        case BindKind::RestartCoolant: {
+            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            const char* text = r.coolant_flood ? (r.coolant_mist ? "FLOOD+MIST" : "FLOOD")
+                              : (r.coolant_mist ? "MIST" : "OFF");
+            copy_field(buf, buf_size, text, strlen(text));
+            return;
+        }
+        case BindKind::Channel0BarrierMs:
+        case BindKind::Channel1BarrierMs: {
+            const auto& prog = kernel::ui::operator_api::program_snapshot();
+            const auto ec = kernel::ui::operator_api::ethercat_snapshot();
+            const size_t ch = (bind == BindKind::Channel0BarrierMs) ? 0u : 1u;
+            const uint32_t cycles = (ch < prog.channels.size())
+                ? prog.channels[ch].barrier_cycles_remaining : 0u;
+            const uint32_t period_us = ec.period_us ? ec.period_us : 250u;
+            const uint64_t ms = (static_cast<uint64_t>(cycles) * period_us) / 1000u;
+            if (cycles == 0) {
+                copy_field(buf, buf_size, "-", 1);
+                return;
+            }
+            kernel::util::k_snprintf(buf, buf_size, "%s%llu ms",
+                                     prefix ? prefix : "",
+                                     static_cast<unsigned long long>(ms));
+            return;
+        }
         case BindKind::Alarm0Severity: case BindKind::Alarm1Severity:
         case BindKind::Alarm2Severity: case BindKind::Alarm3Severity: {
             const auto snap = kernel::ui::operator_api::alarms_snapshot();
@@ -1590,7 +1700,11 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         case BindKind::EcPeriod:
         case BindKind::EcCycles:
         case BindKind::EcTxFrames:
-        case BindKind::EcRxFrames: {
+        case BindKind::EcRxFrames:
+        case BindKind::EcDcDriftMaxNs:
+        case BindKind::EcDcDriftLastNs:
+        case BindKind::EcDcSamples:
+        case BindKind::EcDcTrips: {
             const auto snap = kernel::ui::operator_api::ethercat_snapshot();
             unsigned long long v = 0;
             switch (bind) {
@@ -1603,6 +1717,14 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
                 case BindKind::EcCycles:    v = snap.cycles;                              break;
                 case BindKind::EcTxFrames:  v = snap.tx_frames;                           break;
                 case BindKind::EcRxFrames:  v = snap.rx_frames;                           break;
+                case BindKind::EcDcDriftMaxNs: v = snap.dc_drift_max_ns;                  break;
+                case BindKind::EcDcDriftLastNs: {
+                    const int64_t s = snap.last_dc_drift_ns;
+                    v = (unsigned long long)(s < 0 ? -s : s);
+                    break;
+                }
+                case BindKind::EcDcSamples: v = snap.dc_sync_samples;                     break;
+                case BindKind::EcDcTrips:   v = snap.dc_sync_trips;                       break;
                 default: break;
             }
             kernel::util::k_snprintf(buf, buf_size, "%s%llu", prefix ? prefix : "", v);
@@ -1941,12 +2063,18 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
                                      static_cast<long>(bound_numeric_value(bind)));
             return;
         }
-        // Tool change wizard formatters.
+        // Tool change wizard formatters. The state labels are deliberately
+        // *not* "RELEASING / PICKING / VERIFYING" — the wizard does not
+        // drive a physical changer (see operator_api.hpp:ToolChangeSnapshot
+        // and machine::toolpods::Service). It's a confirmation flow over a
+        // manual swap: operator triggers, swaps tool by hand, accepts.
+        // Naming the states after physical motions misleads operators into
+        // thinking the spindle moved when it did not.
         case BindKind::ToolChangeState: {
             using TS = kernel::ui::operator_api::ToolChangeSnapshot::State;
             const int32_t v = bound_numeric_value(bind);
-            const char* names[] = {"IDLE", "RELEASING", "MOVING", "PICKING",
-                                   "VERIFYING", "DONE", "FAULTED"};
+            const char* names[] = {"IDLE", "REQUESTED", "AWAIT SWAP", "AWAIT SWAP",
+                                   "AWAIT SWAP", "DONE", "FAULTED"};
             const char* text = (v >= 0 && v <= static_cast<int32_t>(TS::Faulted)) ? names[v] : "?";
             copy_field(buf, buf_size, text, strlen(text));
             return;
@@ -2443,6 +2571,8 @@ void run_action_target(const char* target) {
     else if (strcmp(target, "view:zoom:out") == 0) view_zoom_all(1.18f);
     else if (strcmp(target, "ec:estop") == 0) request_ec_estop();
     else if (strcmp(target, "ec:clear_fault") == 0) clear_ec_fault();
+    else if (strcmp(target, "restart:confirm") == 0) confirm_restart();
+    else if (strcmp(target, "restart:cancel") == 0) cancel_restart();
     else if (strcmp(target, "alarm:clear_history") == 0) clear_alarm_history();
     else if (strncmp(target, "alarm:ack:", 10) == 0) {
         const int row = simple_atoi(target + 10);
@@ -2485,6 +2615,7 @@ void run_action_target(const char* target) {
         }
     }
     else if (strcmp(target, "mdi:submit") == 0) {
+        if (!kernel::ui::operator_api::mode_allows_mdi()) return;
         const auto s = cnc::mdi::g_service.snapshot();
         cnc::mdi::g_service.submit(s.input);
     }
@@ -2583,12 +2714,18 @@ bool commit_input_target(const char* target, const char* value_text, BindKind bi
     if (bind_hint == BindKind::ProgramName) return select_program_by_name(value_text);
     if (bind_hint == BindKind::MdiInput) {
         cnc::mdi::g_service.set_input(value_text);
+        if (!kernel::ui::operator_api::mode_allows_mdi()) return false;
         return cnc::mdi::g_service.submit(value_text);
     }
     if (target && *target && strcmp(target, "commit:restart:line") == 0) {
         const int32_t line_no = simple_atoi(value_text);
         if (line_no < 0) return false;
-        return restart_program_at_line(static_cast<size_t>(line_no));
+        const bool ok = restart_program_at_line(static_cast<size_t>(line_no));
+        // Hop the operator straight to the confirm wizard so they see the
+        // reconstructed state without manually navigating. Cycle Start on
+        // the dashboard is gated until they tap CONFIRM.
+        if (ok) (void)set_page("restart_confirm");
+        return ok;
     }
     if (target && *target && strcmp(target, "commit:spindle:rpm") == 0) {
         // Bare-number entry only — sign carries direction. Operator must
@@ -2678,12 +2815,63 @@ const char* helper_text_for_bind(BindKind bind) {
     }
 }
 
-char* action_target_for_widget(const char* id, BuilderEvent event, const char* inline_action) {
-    if (inline_action && *inline_action) return const_cast<char*>(inline_action);
+// Sort the action index by widget_id (then by event). Insertion sort is fine
+// at the scale we run (MAX_ACTIONS is small, parse-time-only).
+static void build_action_index() {
+    g_action_index_count = g_action_count;
     for (uint32_t i = 0; i < g_action_count; ++i) {
-        if (g_actions[i].event == event && strcmp(g_actions[i].widget_id, id) == 0) {
-            return g_actions[i].target;
+        g_action_index[i] = static_cast<uint16_t>(i);
+    }
+    for (uint32_t i = 1; i < g_action_index_count; ++i) {
+        const uint16_t key = g_action_index[i];
+        const ActionSpec& key_act = g_actions[key];
+        uint32_t j = i;
+        while (j > 0) {
+            const ActionSpec& prev = g_actions[g_action_index[j - 1]];
+            const int c = strcmp(prev.widget_id, key_act.widget_id);
+            if (c < 0) break;
+            if (c == 0 && static_cast<uint8_t>(prev.event)
+                          <= static_cast<uint8_t>(key_act.event)) break;
+            g_action_index[j] = g_action_index[j - 1];
+            --j;
         }
+        g_action_index[j] = key;
+    }
+}
+
+const char* action_target_for_widget(const char* id, BuilderEvent event, const char* inline_action) {
+    if (inline_action && *inline_action) return inline_action;
+    // Pre-parse window: index isn't built yet. Fall back to linear scan so
+    // anything that resolves actions during build_ui() (before
+    // build_action_index() runs) still works.
+    if (g_action_index_count == 0) {
+        for (uint32_t i = 0; i < g_action_count; ++i) {
+            if (g_actions[i].event == event && strcmp(g_actions[i].widget_id, id) == 0) {
+                return g_actions[i].target;
+            }
+        }
+        return nullptr;
+    }
+    // Binary search by widget_id, then linear walk over the (small) run of
+    // actions sharing that widget_id to match the event.
+    int32_t lo = 0;
+    int32_t hi = static_cast<int32_t>(g_action_index_count) - 1;
+    while (lo <= hi) {
+        const int32_t mid = lo + (hi - lo) / 2;
+        const ActionSpec& a = g_actions[g_action_index[mid]];
+        const int c = strcmp(a.widget_id, id);
+        if (c == 0) {
+            // Walk left to the first match, then forward over the run.
+            int32_t k = mid;
+            while (k > 0 && strcmp(g_actions[g_action_index[k - 1]].widget_id, id) == 0) --k;
+            for (; k < static_cast<int32_t>(g_action_index_count); ++k) {
+                const ActionSpec& cand = g_actions[g_action_index[k]];
+                if (strcmp(cand.widget_id, id) != 0) break;
+                if (cand.event == event) return cand.target;
+            }
+            return nullptr;
+        }
+        if (c < 0) lo = mid + 1; else hi = mid - 1;
     }
     return nullptr;
 }
@@ -2897,12 +3085,12 @@ public:
                                  spec_.id, nullptr,
                                  static_cast<long>(event.touch.x),
                                  static_cast<long>(event.touch.y));
-            if (char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
+            if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
                 run_action_target(target);
             }
         } else if (event.type == kernel::ui::EventType::KeyDown && is_focused(this) &&
                    (event.key.keycode == '\r' || event.key.keycode == ' ')) {
-            if (char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
+            if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
                 run_action_target(target);
             }
             return true;
@@ -3107,8 +3295,9 @@ private:
         if (ratio > 1.0f) ratio = 1.0f;
         value_ = static_cast<int32_t>(min_ + (max_ - min_) * ratio);
         if (bind_ == BindKind::Feed) kernel::ui::operator_api::set_feed_override(value_);
+        if (bind_ == BindKind::SpindleOverride) kernel::ui::operator_api::set_spindle_override(value_);
         mark_dirty();
-        if (char* target = action_target_for_widget(spec_.id, BuilderEvent::Change, spec_.action)) {
+        if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Change, spec_.action)) {
             run_action_target(target);
         }
     }
@@ -3192,7 +3381,7 @@ public:
             }
             if (key == '\r') {
                 bool ok = false;
-                if (char* target = action_target_for_widget(spec_.id, BuilderEvent::Change, spec_.action)) {
+                if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Change, spec_.action)) {
                     ok = commit_input_target(target, buffer_, bind_);
                 } else {
                     ok = commit_input_target(nullptr, buffer_, bind_);
@@ -3391,8 +3580,7 @@ private:
         alignas(machine::MachineModel) static unsigned char storage[sizeof(machine::MachineModel)];
         static bool constructed = false;
         if (!constructed) {
-            auto* model = new (storage) machine::MachineModel{};
-            machine::create_machine_model(*model);
+            new (storage) machine::MachineModel{};
             constructed = true;
         }
         return *reinterpret_cast<machine::MachineModel*>(storage);
@@ -3424,13 +3612,33 @@ private:
         return *reinterpret_cast<gles1::Renderer*>(storage);
     }
 
+    // Each machine_view widget gets its own depth buffer sized to width × height
+    // so overlapping geometry resolves correctly without paying for a full
+    // FB-sized (8 MiB) depth allocation. Lazy alloc so widgets that never
+    // render 3D don't pay anything; the buffer is reused across redraws.
+    float* ensure_depth_buffer() const {
+        const size_t needed = static_cast<size_t>(width_) * static_cast<size_t>(height_);
+        if (needed == 0) return nullptr;
+        if (depth_buffer_ && depth_capacity_ >= needed) return depth_buffer_;
+        if (depth_buffer_) {
+            ::operator delete(depth_buffer_);
+            depth_buffer_ = nullptr;
+            depth_capacity_ = 0;
+        }
+        depth_buffer_ = static_cast<float*>(::operator new(needed * sizeof(float)));
+        depth_capacity_ = needed;
+        return depth_buffer_;
+    }
+
     gles1::FramebufferView bind_view(Framebuffer& fb) const {
-        return gles1::FramebufferView{
-            fb.data() + static_cast<uint32_t>(y_) * kernel::ui::FB_WIDTH + static_cast<uint32_t>(x_),
-            width_,
-            height_,
-            kernel::ui::FB_WIDTH
-        };
+        gles1::FramebufferView v{};
+        v.pixels = fb.data() + static_cast<uint32_t>(y_) * kernel::ui::FB_WIDTH + static_cast<uint32_t>(x_);
+        v.width = width_;
+        v.height = height_;
+        v.stride_pixels = kernel::ui::FB_WIDTH;
+        v.depth = ensure_depth_buffer();
+        v.depth_stride_pixels = width_;
+        return v;
     }
 
     static bool axis_is_live(size_t axis_idx) {
@@ -3495,9 +3703,14 @@ private:
             sim.loaded = sim.chain.axis_count != 0;
         }
         sim.type = desired;
-        // Apply OBJ-file meshes from the TSV's obj_file column. No-op unless
-        // the machine editor has shipped OBJs embedded via the registry.
-        (void)machine::apply_axis_obj_meshes(machine_model(), sim.chain);
+        // Refresh per-axis meshes for the freshly-loaded chain. Each axis
+        // gets either an OBJ/STL blob from the registry (if `obj_file`
+        // resolves) or a name-keyed primitive fallback so every axis
+        // renders even when the kernel ships without authored meshes.
+        // Free anything from the previous chain first to avoid leaks on
+        // template switches.
+        machine::destroy_machine_model(machine_model());
+        (void)machine::populate_axis_meshes(machine_model(), sim.chain);
     }
 
     static float motion_to_scene_units(const kinematic::AxisConfig& axis_cfg, int32_t raw_pos) {
@@ -3531,21 +3744,12 @@ private:
     static const machine::MeshPart* mesh_for_axis(const machine::MachineModel& model,
                                                   const kinematic::AxisConfig& axis,
                                                   size_t axis_idx) {
-        // Imported OBJ (machine-editor-authored) takes precedence over the
-        // legacy programmatic slot whenever apply_axis_obj_meshes populated a
-        // mesh for this axis index.
+        (void)axis;
         if (axis_idx < kinematic::MAX_AXES &&
             model.per_axis[axis_idx].vertex_count > 0 &&
             model.per_axis[axis_idx].vertices != nullptr) {
             return &model.per_axis[axis_idx];
         }
-        if (strcmp(axis.name, "base") == 0) return &model.base;
-        if (strcmp(axis.name, "X") == 0) return &model.x_axis;
-        if (strcmp(axis.name, "Y") == 0) return &model.y_axis;
-        if (strcmp(axis.name, "Z") == 0) return &model.z_axis;
-        if (strcmp(axis.name, "A") == 0 || strcmp(axis.name, "B") == 0) return &model.pivot;
-        if (strcmp(axis.name, "C") == 0) return &model.table;
-        if (strcmp(axis.name, "spindle") == 0) return &model.spindle;
         return nullptr;
     }
 
@@ -3569,8 +3773,7 @@ private:
     }
 
     void render_toolpods(Framebuffer& fb, gles1::Renderer& renderer) {
-        auto& model = machine_model();
-        const auto* marker = &model.pivot;
+        const auto* marker = &machine::marker_mesh();
         for (size_t pod_idx = 0; pod_idx < ::machine::toolpods::g_service.pod_count(); ++pod_idx) {
             const auto* pod = ::machine::toolpods::g_service.pod(pod_idx);
             if (!pod) continue;
@@ -3742,6 +3945,11 @@ private:
     int32_t drag_x_ = 0;
     int32_t drag_y_ = 0;
     Camera camera_{};
+    // Per-widget depth buffer for the GLES1 Z-test path. Lazy-allocated by
+    // ensure_depth_buffer() the first time bind_view runs; mutable so the
+    // const bind_view can populate it without losing the const-call ergonomics.
+    mutable float* depth_buffer_ = nullptr;
+    mutable size_t depth_capacity_ = 0;
 };
 
 BuilderImage* BuilderImage::g_gles1_widgets[BuilderImage::kMaxGles1Widgets] = {};
@@ -3874,6 +4082,7 @@ void reset_state() {
     g_widget_count = 0;
     g_page_count = 0;
     g_action_count = 0;
+    g_action_index_count = 0;
     g_child_link_count = 0;
     g_root_widget = nullptr;
     g_active_page = 0;
@@ -3956,6 +4165,7 @@ bool build_ui(const WidgetSpec* specs, uint32_t count) {
     }
     if (!resolve_relationships(0)) return false;
     if (!validate_actions(0)) return false;
+    build_action_index();
     for (uint32_t i = 0; i < g_widget_count; ++i) apply_layout(static_cast<int>(i));
     for (uint32_t i = 0; i < g_widget_count; ++i) g_widgets[i].widget = create_widget(g_widgets[i].spec);
     static BuilderRoot root;
@@ -4085,6 +4295,7 @@ bool load_tsv(const char* buf, size_t len) {
     }
     if (!resolve_relationships(line_no)) return false;
     if (!validate_actions(line_no)) return false;
+    build_action_index();
 
     for (uint32_t i = 0; i < g_widget_count; ++i) apply_layout(static_cast<int>(i));
 

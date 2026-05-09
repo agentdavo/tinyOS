@@ -291,6 +291,34 @@ struct Axis {
     int32_t   decel_start_pos          = 0;         // position where decel begins
     int32_t   prev_target_velocity     = 0;        // for smooth velocity transitions
 
+    // Look-ahead chain ring (depth N). When a fresh `move_to` arrives
+    // while the trajectory is mid-flight, the new {target, vmax} pair is
+    // queued here instead of overwriting `target`. step_trajectory pops
+    // the head at the moment the current target would have transitioned
+    // to Holding, preserving velocity through same-direction transitions
+    // and applying the popped block's pre-scaled vmax (so a coordinated
+    // multi-axis block's scaling carries to the chain seam without
+    // contaminating the next block's pace). Reverse-direction chain
+    // entries fall through to a normal Holding stop and stay queued for
+    // the next move_to to pick them up.
+    struct ChainEntry {
+        int32_t target   = 0;
+        int32_t vmax_cps = 0;     // axis-side vmax to apply on swap
+        uint16_t block_id = 0;    // tags the source block for M62/M63 sync drain
+        bool    valid    = false;
+    };
+    static constexpr size_t CHAIN_DEPTH = 8;
+    ChainEntry chain[CHAIN_DEPTH]{};
+    uint8_t    chain_head            = 0;
+    uint8_t    chain_count           = 0;
+    // Block id of the trajectory currently being executed (the active
+    // target). 0 = no block tagged. Updated at each chain pop.
+    uint16_t   active_block_id       = 0;
+    // Greatest block id that has retired on this axis (chain pop seam
+    // or chain-empty Holding seam). cycle_channel reduces these to a
+    // per-channel completed_block_id once per cycle.
+    uint16_t   last_completed_block_id = 0;
+
     // ---- Warm line (cache-line 1) ------------------------------------------
     // Cross-core mirrors + frequently-read scalars that aren't strictly on
     // every cycle but are close. `actual_pos` / `target_pos` are diagnostic
@@ -301,6 +329,13 @@ struct Axis {
     int32_t   accel_cps2                = DEFAULT_ACCEL_CPS2;
     int32_t   jerk_cps3                 = DEFAULT_JERK_CPS3;
     int32_t   vmax_cps                  = DEFAULT_VMAX_CPS;
+    // Boot-time native vmax. sync_move's coordinated scale overwrites
+    // vmax_cps for the duration of a queued block; on chain-empty
+    // Holding we restore from this so subsequent un-coordinated moves
+    // (CLI jog, MDI single-axis) run at the axis's full cap rather than
+    // inheriting an ancient block's scale. Set by hook_drive /
+    // apply_drive_limits.
+    int32_t   natural_vmax_cps          = DEFAULT_VMAX_CPS;
     int32_t   max_following_error       = 0;         // |commanded - actual| peak
 
     // Kernel-owned state (cold — read at state-transition events, not per tick).
@@ -496,7 +531,23 @@ struct Axis {
                     int32_t accel_override = 0) noexcept {
         drive = d;
         station_addr = station;
-        if (vmax_override  > 0) vmax_cps   = vmax_override;
+        if (vmax_override  > 0) {
+            vmax_cps         = vmax_override;
+            natural_vmax_cps = vmax_override;
+        }
+        if (accel_override > 0) accel_cps2 = accel_override;
+    }
+
+    // Apply runtime drive limit overrides (e.g. from SDO 0x6081 profile
+    // velocity / 0x6083 profile acceleration). 0 means "leave unchanged" so
+    // a partial read of one object can still apply. Caller is responsible
+    // for upper-bound sanity (negative values are rejected).
+    void apply_drive_limits(int32_t vmax_override,
+                            int32_t accel_override) noexcept {
+        if (vmax_override  > 0) {
+            vmax_cps         = vmax_override;
+            natural_vmax_cps = vmax_override;
+        }
         if (accel_override > 0) accel_cps2 = accel_override;
     }
 
@@ -671,6 +722,14 @@ struct ChannelOverrides {
     uint16_t feed_permille    = 1000;
     uint16_t rapid_permille   = 1000;
     uint16_t spindle_permille = 1000;
+    // Junction deviation in axis counts (the "chord error budget" at a
+    // direction change). Operators trade smoothness vs. accuracy via the
+    // HMI slider — 1 cnt (~10 µm at 100 cnt/mm) for accurate finishing,
+    // 100 cnt (~1 mm) for fast roughing. Currently informational; once
+    // tier 1c lands a per-channel block queue, the planner consumes it
+    // to compute corner velocities per the standard
+    // v_corner = sqrt(a_max * deviation / (1 - cos(theta/2))) formula.
+    int32_t  junction_deviation_counts = 10;
 };
 
 struct Channel {
@@ -693,6 +752,11 @@ struct Channel {
     // rendezvous token this channel is stalled on. The arbiter uses it to
     // correlate with the Barrier record in Kernel::barriers_.
     uint16_t     barrier_token = 0;
+    // Greatest block id retired on any axis owned by this channel.
+    // Bumped at chain pop and at chain-empty Holding so the M62/M63
+    // sync drain can wait until "predecessor block done" without per-
+    // axis polling.
+    uint16_t     completed_block_id = 0;
 };
 
 // Task 9.4 — cross-channel rendezvous (G10.1-style).
@@ -793,6 +857,41 @@ public:
     // executing the trajectory next cycle.
     void move_to(size_t axis_idx, int32_t position) noexcept;
 
+    // Look-ahead variant: queues a move with a specific vmax (the
+    // pre-coordinated value sync_move computed for this block) and a
+    // block id (for M62/M63 motion-end-sync drains). When the axis is
+    // mid-flight, the queued entry rides the chain ring; when it's
+    // Idle/Holding, the entry latches as the active target.
+    void queue_move(size_t axis_idx, int32_t position,
+                    int32_t vmax_for_block, uint16_t block_id) noexcept;
+
+    // Chain occupancy accessors. axis_chain_room returns true when the
+    // chain ring has room for at least one more queued move; the
+    // interpreter consults this per-participating-axis before
+    // dispatching a new block. axis_chain_count is the number of
+    // queued moves not yet active (informational; HMI surfaces it as
+    // queue depth). axis_active_block_id is the block currently being
+    // executed (0 = none / pre-block-id-tagging path).
+    [[nodiscard]] bool     axis_chain_room(size_t axis_idx) const noexcept;
+    [[nodiscard]] uint8_t  axis_chain_count(size_t axis_idx) const noexcept;
+    [[nodiscard]] uint16_t axis_active_block_id(size_t axis_idx) const noexcept;
+
+    // Most recently completed block id for `channel_idx`. Tracks the
+    // greatest block id that has been observed retiring on any axis owned
+    // by the channel (chain pop or chain-empty Holding). 0 = no block has
+    // completed yet on this channel. Used by M62/M63 sync-drain to match
+    // a pending output op to "predecessor block done".
+    [[nodiscard]] uint16_t channel_completed_block_id(size_t channel_idx) const noexcept;
+
+    // Per-channel junction deviation (corner-error budget) in axis counts.
+    // Configures how much chord error the planner will tolerate at a
+    // direction change; smaller = sharper corners but lower corner
+    // velocity. Default 10 cnt (~0.1 mm at 100 cnt/mm). Range bound at
+    // [0, 10000] (anything larger gives nothing useful and risks
+    // pathological corner-velocity values).
+    [[nodiscard]] bool    set_junction_deviation(size_t channel_idx, int32_t counts) noexcept;
+    [[nodiscard]] int32_t junction_deviation(size_t channel_idx) const noexcept;
+
     // Set axis velocity directly (for CSV spindle mode). Velocity is in
     // counts per second - axis will rotate at this rate continuously.
     void set_axis_velocity(size_t axis_idx, int32_t velocity_cps) noexcept;
@@ -804,6 +903,17 @@ public:
     // SwitchOn → EnableOperation sequence (the drive FSA's own step()
     // handles that once statusword is refreshed).
     [[nodiscard]] bool fault_reset(size_t axis_idx) noexcept;
+
+    // Set the per-axis torque limit (CiA-402 0x6072 "Max torque"). Units are
+    // permille of motor rated torque (1000 = 100 %). Issues an SDO-download
+    // immediately on the master that owns this axis's slave, so the limit
+    // takes effect within a few cycles. Useful for finishing-cut limits
+    // (drop to ~600 permille on probe approach so a crash doesn't snap the
+    // probe stylus) and for safe-mode jog (cap to ~300 permille while the
+    // door is open). Returns false if the axis has no drive hooked, or if
+    // permille is out of [0, 5000] (5x rated as the spec ceiling). 0
+    // restores the drive's stored default — does NOT disable torque entirely.
+    [[nodiscard]] bool set_torque_limit(size_t axis_idx, uint16_t permille) noexcept;
 
     // Store an encoder resolution read from the drive (OD 0x608F via the
     // master's probe_encoder_resolution helper). Also initialises
@@ -929,6 +1039,14 @@ public:
     // per-channel stable-cycle counters).
     void dump_barriers(kernel::hal::UARTDriverOps* uart) const;
 
+    // Operator-side helper: cycles remaining before the barrier the given
+    // channel is currently waiting on times out. Returns 0 when the
+    // channel is not in WaitingBarrier or the barrier slot can't be
+    // matched. Conversion to wall time is the caller's job — the kernel
+    // intentionally exposes raw cycle counts so the UI side can decide
+    // how to render (250 µs default → multiply by period_us / 1000).
+    [[nodiscard]] uint32_t barrier_cycles_remaining(size_t channel_idx) const noexcept;
+
     // Task 9.6 — synchronous coordinated move across one or more channels.
     // `axis_mask` picks which axes participate (bit i = axis i). `targets[i]`
     // is the destination for axis i (only read for axes with a mask bit
@@ -944,13 +1062,23 @@ public:
     // If `register_barrier` is true (default), the function also registers
     // a cross-channel barrier via `arrive_at_barrier` so motion commits
     // atomically on convergence.
+    //
+    // `min_t_final_us` is an optional path-velocity cap: when non-zero, the
+    // computed T_final is clamped from below to this value, which slows the
+    // whole move so the path-length / T_final ratio (the combined-axis path
+    // velocity) matches the requested feedrate. Used by the interpreter to
+    // enforce the F-word for both straight and helical moves; for an arc
+    // segment, pass `combined_path_length_counts * 1e6 / feed_cps` so the
+    // sqrt(chord² + linear²) helical feedrate matches the F-word setting.
     bool sync_move(uint64_t axis_mask,
                    const int32_t targets[MAX_AXES],
                    uint16_t barrier_token = 0,
                    int32_t  tolerance_counts = 1,
                    uint16_t stable_cycles_required = 3,
                    uint16_t max_wait_cycles = 20000,
-                   bool     register_barrier = true) noexcept;
+                   bool     register_barrier = true,
+                   uint64_t min_t_final_us = 0,
+                   uint16_t* out_block_id  = nullptr) noexcept;
 
     // Task 9.7 — per-channel feedhold. `on=true` flips the channel into
     // FeedHold state; cycle_channel will freeze its axes' trajectories
@@ -1206,6 +1334,25 @@ private:
     std::array<Channel, MAX_CHANNELS>    channels_{};
     size_t                               channel_count_ = 0;
     std::array<Barrier, MAX_BARRIERS>    barriers_{};
+    // Monotonic counter for sync_move's auto-allocated barrier tokens. The
+    // pre-fix scheme derived a token from (cycles & 0xFF) plus a base offset,
+    // which wrapped every 256 cycles — so a second sync_move within that
+    // window could collide on an already-active barrier slot. This counter
+    // walks forwards forever (2^16 sync moves before aliasing, well past any
+    // realistic run) and skips 0 since the API treats that as "caller did
+    // not supply a token, please allocate one for me".
+    std::atomic<uint16_t>                barrier_token_seq_{0xA000};
+    // Monotonic block-id allocator. Each sync_move gets a fresh id (skip 0)
+    // that the chain ring entries carry, so M62/M63 sync-drain can match
+    // an output op to "the block that just finished" instead of guessing.
+    std::atomic<uint16_t>                block_id_seq_{1};
+    uint16_t next_block_id() noexcept {
+        uint16_t id;
+        do {
+            id = block_id_seq_.fetch_add(1, std::memory_order_relaxed);
+        } while (id == 0);
+        return id;
+    }
     std::array<GearLink, MAX_GEARS>      gears_{};
     std::array<GantryLink, MAX_GANTRYS>  gantrys_{};
     std::array<LinearCalibration, MAX_AXES> linear_cal_{};

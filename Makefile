@@ -22,7 +22,7 @@ FAKE_SLAVE ?= 1
 QEMU_EC_PORT ?= 20001
 
 # Kernel-wide objects (platform-independent).
-CORE_CPP = core.cpp hal.cpp util.cpp trace.cpp cli.cpp kernel_globals.cpp kernel/usb/usb.cpp \
+CORE_CPP = core.cpp hal.cpp util.cpp trace.cpp klog.cpp cli.cpp kernel_globals.cpp kernel/usb/usb.cpp \
            kernel/main.cpp \
            cpp_runtime_stubs.cpp freestanding_stubs.cpp \
            ethercat/master.cpp ethercat/frame.cpp ethercat/esm.cpp \
@@ -163,7 +163,7 @@ ifeq ($(TARGET),riscv64)
     # rv64: excludes hal.cpp (its hal_irq_handler is arm64 IRQ-asm specific
     #       and is_dedicated_rt_core is re-provided in rv64_stubs.cpp).
     # rv64: also excludes embedded_blob.S (arm64-only TSV blobs).
-CORE_CPP  = kernel/main.cpp core.cpp util.cpp trace.cpp cli.cpp kernel_globals.cpp kernel/usb/usb.cpp \
+CORE_CPP  = kernel/main.cpp core.cpp util.cpp trace.cpp klog.cpp cli.cpp kernel_globals.cpp kernel/usb/usb.cpp \
                 cpp_runtime_stubs.cpp freestanding_stubs.cpp \
                 ethercat/master.cpp ethercat/frame.cpp ethercat/esm.cpp \
                 ethercat/pdo.cpp ethercat/bus_config.cpp ethercat/fake_slave.cpp \

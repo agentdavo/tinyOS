@@ -7,6 +7,7 @@
 #include "hal_qemu_arm64.hpp"
 #include "miniOS.hpp"
 #include "util.hpp"
+#include "klog.hpp"
 #include "rt_wait.hpp"
 #include "hal/shared/fdt_scan.hpp"
 #include <cstring>
@@ -87,10 +88,15 @@ void UARTDriver::puts(const char* str) {
     // mixing them unlocked shreds any multi-caller log line (boot + [ui] +
     // [sched] + [virtio-gpu] + [hmi] all hit this path from different cores).
     early_uart_lock_acquire();
+    const char* const start = str;
     while (*str) {
         if (*str == '\n') this->putc('\r');
         this->putc(*str++);
     }
+    // Mirror what we just wrote to the klog ring while still holding the
+    // lock so the ring's content order matches the wire order. record()
+    // is ~n byte-copies into a power-of-2 ring; cheap, in-RAM, no MMIO.
+    kernel::klog::record(start, static_cast<size_t>(str - start));
     early_uart_lock_release();
 }
 void UARTDriver::uart_put_uint64_hex(uint64_t value) {
@@ -116,6 +122,22 @@ char UARTDriver::getc_blocking() {
     }
     return static_cast<char>(read_uart_reg(0x00) & 0xFF);
 }
+// Non-blocking poll. PL011 FR register bit 4 (RXFE) is set when the RX
+// FIFO is empty; if clear, DR has at least one byte. The cli's uart_io
+// thread uses this to interleave output drains with input polling so a
+// quiescent input pipe doesn't wedge queued output.
+bool UARTDriver::try_getc(char& out) {
+    if (read_uart_reg(0x18) & (1 << 4)) return false;
+    out = static_cast<char>(read_uart_reg(0x00) & 0xFF);
+    return true;
+}
+// Manual lock acquire/release that share the puts() lock. cli's
+// cmd_ui_dump uses these to write the entire dump (marker + binary
+// payload + trailer) atomically against other puts() callers, going
+// through this driver's putc() which doesn't CRLF-cook (so the binary
+// payload reaches the wire unmodified).
+void UARTDriver::lock_write()   { early_uart_lock_acquire(); }
+void UARTDriver::unlock_write() { early_uart_lock_release(); }
 
 // --- IRQController ---
 void IRQController::write_gicd_reg(uint32_t o, uint32_t v) { mmio_write32(GIC_DISTRIBUTOR_BASE + o, v); }

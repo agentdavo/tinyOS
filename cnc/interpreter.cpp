@@ -8,10 +8,21 @@
 #include "../ethercat/master.hpp"
 #include "../ui/operator_api.hpp"
 #include "../miniOS.hpp"
+#include "../util_math.hpp"
 
 namespace cnc::interp {
 
 namespace {
+
+using kernel::util::math::absf;
+using kernel::util::math::sqrt_approx;
+using kernel::util::math::sin_approx;
+using kernel::util::math::cos_approx;
+using kernel::util::math::atan2_approx;
+using kernel::util::math::acos_approx;
+using kernel::util::math::clampf;
+using kernel::util::math::kPi;
+using kernel::util::math::kTwoPi;
 
 struct ParsedLine {
     bool set_absolute = false;
@@ -53,57 +64,7 @@ bool is_space(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
-float absf(float v) {
-    return v < 0.0f ? -v : v;
-}
-
-float sqrt_approx(float v) {
-    if (v <= 0.0f) return 0.0f;
-    float x = v > 1.0f ? v : 1.0f;
-    for (int i = 0; i < 6; ++i) x = 0.5f * (x + v / x);
-    return x;
-}
-
-float wrap_pi(float x) {
-    static constexpr float kPi = 3.14159265359f;
-    static constexpr float kTwoPi = 6.28318530718f;
-    while (x > kPi) x -= kTwoPi;
-    while (x < -kPi) x += kTwoPi;
-    return x;
-}
-
-float sin_approx(float x) {
-    static constexpr float kB = 1.27323954474f;
-    static constexpr float kC = -0.40528473457f;
-    x = wrap_pi(x);
-    const float y = kB * x + kC * x * absf(x);
-    return 0.225f * (y * absf(y) - y) + y;
-}
-
-float cos_approx(float x) {
-    static constexpr float kHalfPi = 1.57079632679f;
-    return sin_approx(x + kHalfPi);
-}
-
-float atan_approx(float z) {
-    const float az = absf(z);
-    if (az <= 1.0f) return z / (1.0f + 0.28f * z * z);
-    const float base = 1.57079632679f - (az / (az * az + 0.28f));
-    return z < 0.0f ? -base : base;
-}
-
-float atan2_approx(float y, float x) {
-    static constexpr float kPi = 3.14159265359f;
-    if (x > 0.0f) return atan_approx(y / x);
-    if (x < 0.0f && y >= 0.0f) return atan_approx(y / x) + kPi;
-    if (x < 0.0f && y < 0.0f) return atan_approx(y / x) - kPi;
-    if (y > 0.0f) return 1.57079632679f;
-    if (y < 0.0f) return -1.57079632679f;
-    return 0.0f;
-}
-
 float arc_delta_for_mode(float start_angle, float end_angle, MotionMode mode) {
-    static constexpr float kTwoPi = 6.28318530718f;
     float delta = end_angle - start_angle;
     if (mode == MotionMode::ArcCW) {
         if (delta >= 0.0f) delta -= kTwoPi;
@@ -140,7 +101,7 @@ bool solve_arc_center_from_radius(float start_u, float start_v,
         const float start_angle = atan2_approx(start_v - cand_v[idx], start_u - cand_u[idx]);
         const float end_angle = atan2_approx(end_v - cand_v[idx], end_u - cand_u[idx]);
         const float delta = arc_delta_for_mode(start_angle, end_angle, mode);
-        const bool long_arc = absf(delta) > 3.14159265359f;
+        const bool long_arc = absf(delta) > kPi;
         const float score = long_arc == want_long ? absf(delta) : -absf(delta);
         if (score > best_score) {
             best_score = score;
@@ -238,6 +199,8 @@ bool Runtime::load_selected(size_t channel) noexcept {
     ch.pending_tool = ch.active_tool;
     ch.tool_length_active = false;
     ch.tool_length_counts = 0;
+    ch.tool_length_x_counts = 0;
+    ch.tool_length_y_counts = 0;
     ch.coolant_mist = false;
     ch.coolant_flood = false;
     ch.arc = Runtime::ChannelState::ArcState{};
@@ -272,6 +235,17 @@ bool Runtime::stop(size_t channel) noexcept {
     channels_[channel].state = State::Complete;
     channels_[channel].arc = ChannelState::ArcState{};
     return true;
+}
+
+bool Runtime::set_tcp_active(size_t channel, bool active) noexcept {
+    if (channel >= programs::MAX_CHANNELS) return false;
+    channels_[channel].tcp_active = active;
+    return true;
+}
+
+bool Runtime::tcp_active(size_t channel) const noexcept {
+    if (channel >= programs::MAX_CHANNELS) return false;
+    return channels_[channel].tcp_active;
 }
 
 bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
@@ -326,6 +300,8 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
         if (parsed.tool_length_cancel) {
             state.tool_length_active = false;
             state.tool_length_counts = 0;
+            state.tool_length_x_counts = 0;
+            state.tool_length_y_counts = 0;
         }
         if (parsed.tool_length_enable) {
             size_t tool = state.active_tool;
@@ -334,8 +310,10 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
                 tool = static_cast<size_t>(parsed.h_word - 1);
             }
             state.tool_length_active = true;
-            state.tool_length_counts =
-                static_cast<int32_t>(offsets::g_service.tool_offsets()[tool].length * 100.0f);
+            const auto& tos = offsets::g_service.tool_offsets()[tool];
+            state.tool_length_counts   = static_cast<int32_t>(tos.length   * 100.0f);
+            state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
+            state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
         }
         // M6 in the source program would physically change the tool, but on
         // a dry scan we only promote the pending index to active so the
@@ -344,8 +322,10 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
         if (parsed.m_code == 6) {
             state.active_tool = state.pending_tool;
             if (state.tool_length_active) {
-                state.tool_length_counts = static_cast<int32_t>(
-                    offsets::g_service.tool_offsets()[state.active_tool].length * 100.0f);
+                const auto& tos = offsets::g_service.tool_offsets()[state.active_tool];
+                state.tool_length_counts   = static_cast<int32_t>(tos.length   * 100.0f);
+                state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
+                state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
             }
         }
         if (parsed.m_code == 7) state.coolant_mist = true;
@@ -395,6 +375,21 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
 }
 
 bool Runtime::channel_settled(size_t channel) const noexcept {
+    // Look-ahead-aware "ready to dispatch the next block" predicate. With
+    // motion's depth-N chain ring, the interpreter dispatches whenever
+    // EVERY channel-axis has chain headroom. axis_chain_room returns
+    // false when an axis's ring is at CHAIN_DEPTH; the interpreter
+    // pauses until the trajectory pops at least one entry.
+    if (channel >= motion::g_motion.channel_count()) return true;
+    const auto& ch = motion::g_motion.channel(channel);
+    if (ch.state != motion::ChannelState::Running) return false;
+    for (uint8_t i = 0; i < ch.axis_count; ++i) {
+        if (!motion::g_motion.axis_chain_room(ch.axis_indices[i])) return false;
+    }
+    return true;
+}
+
+bool Runtime::channel_motion_complete(size_t channel) const noexcept {
     if (channel >= motion::g_motion.channel_count()) return true;
     const auto& ch = motion::g_motion.channel(channel);
     if (ch.state != motion::ChannelState::Running) return false;
@@ -404,6 +399,7 @@ bool Runtime::channel_settled(size_t channel) const noexcept {
             axis.traj_state != motion::TrajState::Holding) {
             return false;
         }
+        if (motion::g_motion.axis_chain_count(ch.axis_indices[i]) > 0) return false;
     }
     return true;
 }
@@ -434,6 +430,32 @@ int Runtime::spindle_axis_for_channel(size_t channel) const noexcept {
 static int32_t units_to_counts(const Runtime::ChannelState& state, float value) {
     const float scale = state.inch_mode ? 2540.0f : 100.0f;
     return static_cast<int32_t>(value * scale);
+}
+
+// state.feed is in units-per-minute (mm/min in metric, inch/min in imperial).
+// Convert to counts-per-second so the motion kernel's path-velocity clamp
+// can compare like-with-like. Returns 0 when the F-word hasn't been seen
+// (state.feed defaults to 1000 in load_selected, but interpret as mm/min).
+static uint32_t feed_cps_for_state(const Runtime::ChannelState& state) noexcept {
+    if (state.feed == 0) return 0;
+    const uint64_t scale = state.inch_mode ? 2540u : 100u;
+    return static_cast<uint32_t>((static_cast<uint64_t>(state.feed) * scale) / 60u);
+}
+
+// Combined-axis Euclidean distance in counts for the participating axes.
+// Used to derive min_t_final_us = path / feed_cps so sync_move stretches
+// the move to honour the F-word when an axis-aligned move would otherwise
+// run at axis-vmax (faster than F when the move has multiple axis words).
+static uint32_t combined_path_counts(const int32_t start[motion::MAX_AXES],
+                                     const int32_t targets[motion::MAX_AXES],
+                                     uint64_t axis_mask) noexcept {
+    uint64_t sum_sq = 0;
+    for (size_t i = 0; i < motion::MAX_AXES; ++i) {
+        if ((axis_mask & (1ull << i)) == 0) continue;
+        const int64_t d = static_cast<int64_t>(targets[i]) - start[i];
+        sum_sq += static_cast<uint64_t>(d * d);
+    }
+    return static_cast<uint32_t>(sqrt_approx(static_cast<float>(sum_sq)));
 }
 
 static int axis_offset_slot(char word) {
@@ -567,8 +589,82 @@ static int32_t work_offset_counts(const Runtime::ChannelState& state, char word)
 }
 
 static int32_t tool_length_counts(const Runtime::ChannelState& state, char word) {
-    if (!state.tool_length_active || word != 'Z') return 0;
-    return state.tool_length_counts;
+    if (!state.tool_length_active) return 0;
+    switch (word) {
+        case 'X': return state.tool_length_x_counts;
+        case 'Y': return state.tool_length_y_counts;
+        case 'Z': return state.tool_length_counts;
+        default:  return 0;
+    }
+}
+
+// Tool-tip → spindle-reference transform for 5-axis TCP. Composes a head-
+// kinematics R_C * R_B rotation of the tool vector and subtracts it from
+// the requested tool-tip target so the X/Y/Z axes drive the spindle to
+// the position that puts the tip at the requested point. Rotary
+// targets[B] / targets[C] are expected in axis counts; conversion to
+// radians uses the kernel's 100 cnt/degree convention. Linear length
+// components are in axis counts (already pre-scaled into
+// state.tool_length_*_counts at G43 time).
+//
+// Convention matches render::kinematic forward kinematics: R_C is yaw
+// around +Z (machine vertical), R_B is pitch around +Y (head tilt). For
+// a typical mill head with a spindle pointing -Z when B = 0 and C = 0
+// and a positive length_z, the tool vector in the machine frame is
+// (0, 0, -length_z), so the spindle reference position equals
+// tool_tip - R_C * R_B * (length_x, length_y, length_z).
+static void apply_tcp_correction(Runtime::ChannelState& state,
+                                 Runtime& runtime,
+                                 size_t channel,
+                                 int32_t targets[motion::MAX_AXES]) {
+    if (!state.tcp_active) return;
+    if (state.tool_length_counts == 0 &&
+        state.tool_length_x_counts == 0 &&
+        state.tool_length_y_counts == 0) return;
+    uint8_t x_idx=0, y_idx=0, z_idx=0, b_idx=0, c_idx=0;
+    const bool has_xy =
+        runtime.resolve_axis_word(channel, 'X', x_idx) &&
+        runtime.resolve_axis_word(channel, 'Y', y_idx);
+    const bool has_z = runtime.resolve_axis_word(channel, 'Z', z_idx);
+    if (!has_xy || !has_z) return;
+    const bool has_b = runtime.resolve_axis_word(channel, 'B', b_idx);
+    const bool has_c = runtime.resolve_axis_word(channel, 'C', c_idx);
+    // Convention: rotary axis counts at 100 cnt/degree → degrees/100 →
+    // radians. cos(0)=1, sin(0)=0, so a 3-axis machine with no B/C falls
+    // through with the tool vector unrotated and the correction reduces
+    // to a constant offset on Z (the same effect tool_length_counts
+    // already added in resolve_targets — TCP would double-correct, so
+    // this path subtracts the tool_length component before applying the
+    // rotated correction. Net: TCP supersedes G43 Z-only when active).
+    const float beta_rad  = has_b
+        ? (static_cast<float>(targets[b_idx]) / 100.0f) *
+          kernel::util::math::kDegToRad
+        : 0.0f;
+    const float gamma_rad = has_c
+        ? (static_cast<float>(targets[c_idx]) / 100.0f) *
+          kernel::util::math::kDegToRad
+        : 0.0f;
+    const float cb = cos_approx(beta_rad), sb = sin_approx(beta_rad);
+    const float cc = cos_approx(gamma_rad), sc = sin_approx(gamma_rad);
+    const float lx = static_cast<float>(state.tool_length_x_counts);
+    const float ly = static_cast<float>(state.tool_length_y_counts);
+    const float lz = static_cast<float>(state.tool_length_counts);
+    // R_B (pitch around Y): (x', y', z') = (x*cb + z*sb, y, -x*sb + z*cb)
+    const float xb =  lx * cb + lz * sb;
+    const float yb =  ly;
+    const float zb = -lx * sb + lz * cb;
+    // R_C (yaw around Z): (x', y', z') = (x*cc - y*sc, x*sc + y*cc, z)
+    const float xw = xb * cc - yb * sc;
+    const float yw = xb * sc + yb * cc;
+    const float zw = zb;
+    // Undo the G43-scalar Z addition that resolve_targets applied via
+    // tool_length_counts() so we don't correct twice. tool_length_x/y
+    // weren't applied (3-axis G43 path is Z-only) so no undo there.
+    targets[z_idx] -= state.tool_length_counts;
+    // Apply the rotated tool offset.
+    targets[x_idx] -= static_cast<int32_t>(xw);
+    targets[y_idx] -= static_cast<int32_t>(yw);
+    targets[z_idx] -= static_cast<int32_t>(zw);
 }
 
 static bool resolve_targets(Runtime::ChannelState& state,
@@ -576,9 +672,15 @@ static bool resolve_targets(Runtime::ChannelState& state,
                             size_t channel,
                             const ParsedLine& parsed,
                             int32_t targets[motion::MAX_AXES],
-                            uint64_t& axis_mask) {
+                            uint64_t& axis_mask,
+                            int32_t out_tip_targets[3] = nullptr) {
     axis_mask = 0;
     for (size_t ax = 0; ax < motion::MAX_AXES; ++ax) targets[ax] = state.targets[ax];
+    if (out_tip_targets) {
+        out_tip_targets[0] = state.tool_tip_pos[0];
+        out_tip_targets[1] = state.tool_tip_pos[1];
+        out_tip_targets[2] = state.tool_tip_pos[2];
+    }
     static constexpr char kAxisLetters[6] = {'X', 'Y', 'Z', 'A', 'B', 'C'};
     bool saw_axis = false;
     for (size_t i = 0; i < 6; ++i) {
@@ -599,6 +701,23 @@ static bool resolve_targets(Runtime::ChannelState& state,
         axis_mask |= (1ull << axis_idx);
         saw_axis = true;
     }
+    // Capture the pre-correction X/Y/Z target as the new tool-tip target
+    // before apply_tcp_correction rewrites the axis values into spindle-
+    // ref coords. For 3-axis (TCP off) tool-tip and spindle-ref coincide;
+    // the values are identical to targets[X/Y/Z]. Caller (execute_axes)
+    // uses out_tip_targets vs state.tool_tip_pos to compute tool-tip path
+    // length for the feedrate cap and updates state.tool_tip_pos AFTER
+    // the move commits.
+    if (saw_axis && out_tip_targets) {
+        uint8_t x_idx=0, y_idx=0, z_idx=0;
+        if (runtime.resolve_axis_word(channel, 'X', x_idx))
+            out_tip_targets[0] = targets[x_idx];
+        if (runtime.resolve_axis_word(channel, 'Y', y_idx))
+            out_tip_targets[1] = targets[y_idx];
+        if (runtime.resolve_axis_word(channel, 'Z', z_idx))
+            out_tip_targets[2] = targets[z_idx];
+    }
+    if (saw_axis) apply_tcp_correction(state, runtime, channel, targets);
     return saw_axis;
 }
 
@@ -608,13 +727,50 @@ static bool execute_axes(Runtime::ChannelState& state,
                          const ParsedLine& parsed) {
     uint64_t axis_mask = 0;
     int32_t targets[motion::MAX_AXES]{};
-    if (!resolve_targets(state, runtime, channel, parsed, targets, axis_mask)) return false;
-    const bool ok = motion::g_motion.sync_move(axis_mask, targets, 0, 1, 3, 20000, false);
+    int32_t tip_targets[3]{};
+    if (!resolve_targets(state, runtime, channel, parsed, targets, axis_mask,
+                         tip_targets)) return false;
+    // Path-velocity cap from the F-word: enforce that combined motion
+    // equals the requested feedrate. With TCP active, "combined motion"
+    // is measured in tool-tip frame so a reorientation move (B/C words
+    // changing tip orientation while X/Y/Z chase the rotated tool
+    // vector) doesn't run faster than the requested surface feedrate.
+    // Skipped on Rapid (G0 runs at axis vmax) — F doesn't apply there
+    // per spec.
+    uint64_t min_t_final_us = 0;
+    if (state.motion_mode != MotionMode::Rapid) {
+        const uint32_t feed_cps = feed_cps_for_state(state);
+        if (feed_cps > 0) {
+            uint32_t path_counts;
+            if (state.tcp_active) {
+                // Tool-tip frame distance: sqrt of XYZ tip deltas.
+                const int64_t dx = static_cast<int64_t>(tip_targets[0]) - state.tool_tip_pos[0];
+                const int64_t dy = static_cast<int64_t>(tip_targets[1]) - state.tool_tip_pos[1];
+                const int64_t dz = static_cast<int64_t>(tip_targets[2]) - state.tool_tip_pos[2];
+                const uint64_t sum_sq =
+                    static_cast<uint64_t>(dx * dx) +
+                    static_cast<uint64_t>(dy * dy) +
+                    static_cast<uint64_t>(dz * dz);
+                path_counts = static_cast<uint32_t>(sqrt_approx(static_cast<float>(sum_sq)));
+            } else {
+                path_counts = combined_path_counts(state.targets, targets, axis_mask);
+            }
+            min_t_final_us = (static_cast<uint64_t>(path_counts) * 1'000'000ULL) / feed_cps;
+        }
+    }
+    uint16_t block_id = 0;
+    const bool ok = motion::g_motion.sync_move(
+        axis_mask, targets, 0, 1, 3, 20000, false, min_t_final_us, &block_id);
     if (!ok) return false;
     for (size_t ax = 0; ax < motion::MAX_AXES; ++ax) {
         if ((axis_mask & (1ull << ax)) != 0) state.targets[ax] = targets[ax];
     }
-    ++state.block;
+    state.tool_tip_pos[0] = tip_targets[0];
+    state.tool_tip_pos[1] = tip_targets[1];
+    state.tool_tip_pos[2] = tip_targets[2];
+    if (block_id != 0) state.last_dispatched_block_id = block_id;
+    // Block counter is now incremented unconditionally in tick_channel for
+    // every parsed line, not per-helper. See the comment there.
     return true;
 }
 
@@ -694,10 +850,27 @@ static bool plan_arc(Runtime::ChannelState& state,
     const float start_angle = atan2_approx(start_dy, start_dx);
     float end_angle = atan2_approx(end_dy, end_dx);
     float delta_angle = arc_delta_for_mode(start_angle, end_angle, state.motion_mode);
-    const float arc_length = absf(delta_angle) * radius;
-    uint16_t segments = static_cast<uint16_t>(arc_length / 200.0f) + 1;
-    if (segments < 4) segments = 4;
-    if (segments > 96) segments = 96;
+    // Chord-error segmentation: bound the deviation between the polygonal
+    // approximation and the true arc to `tol_counts`. From geometry,
+    // chord_err = R * (1 - cos(theta/2)), so theta_max = 2 * acos(1 - tol/R).
+    // tol = 1 count (~10 µm at 100 cnt/mm) is conservative for finishing
+    // cuts; opens up to many segments at large radii but caps below at the
+    // old 96-segment ceiling so a degenerate radius can't cost the kernel a
+    // multi-thousand-segment plan. The previous arc_length/200 rule gave
+    // ~30 mm of chord error on a 100 mm-radius full circle — visibly faceted.
+    constexpr float kChordTolCounts = 1.0f;
+    uint16_t segments = 4;
+    if (radius > kChordTolCounts) {
+        const float ratio = 1.0f - kChordTolCounts / radius;
+        const float theta_max = 2.0f * acos_approx(ratio);
+        if (theta_max > 1e-4f) {
+            const float n = absf(delta_angle) / theta_max;
+            int32_t want = static_cast<int32_t>(n) + 1;
+            if (want < 4) want = 4;
+            if (want > 256) want = 256;
+            segments = static_cast<uint16_t>(want);
+        }
+    }
 
     auto& arc = state.arc;
     arc.active = true;
@@ -722,7 +895,6 @@ static bool plan_arc(Runtime::ChannelState& state,
     arc.delta_angle = delta_angle;
     arc.total_segments = segments;
     arc.current_segment = 0;
-    ++state.block;
     return true;
 }
 
@@ -750,8 +922,37 @@ static bool advance_arc(Runtime::ChannelState& state) {
         }
     }
 
-    const bool ok = motion::g_motion.sync_move(arc.axis_mask, targets, 0, 1, 3, 20000, false);
+    // Helical feedrate: per-segment combined path length =
+    // sqrt(arc_chord_xy² + linear_segment_z²). Splitting the F-word across
+    // arc and linear components keeps the tool moving at the requested
+    // surface feedrate regardless of pitch — without this, a 360° helix
+    // with 50 mm rise ran arc-only at F and the linear axis was just
+    // dragged along, so the actual surface speed went up by sqrt(1 + (rise/circ)²).
+    const uint32_t feed_cps = feed_cps_for_state(state);
+    uint64_t min_t_final_us = 0;
+    if (feed_cps > 0) {
+        const float arc_seg_len =
+            arc.radius * absf(arc.delta_angle) /
+            static_cast<float>(arc.total_segments);
+        float linear_seg_len = 0.0f;
+        if (arc.has_linear_axis) {
+            linear_seg_len = static_cast<float>(arc.end_linear - arc.start_linear) /
+                             static_cast<float>(arc.total_segments);
+            if (linear_seg_len < 0.0f) linear_seg_len = -linear_seg_len;
+        }
+        const float combined = sqrt_approx(
+            arc_seg_len * arc_seg_len + linear_seg_len * linear_seg_len);
+        if (combined > 0.0f) {
+            min_t_final_us = static_cast<uint64_t>(
+                (combined * 1'000'000.0f) / static_cast<float>(feed_cps));
+        }
+    }
+
+    uint16_t arc_block_id = 0;
+    const bool ok = motion::g_motion.sync_move(
+        arc.axis_mask, targets, 0, 1, 3, 20000, false, min_t_final_us, &arc_block_id);
     if (!ok) return false;
+    if (arc_block_id != 0) state.last_dispatched_block_id = arc_block_id;
     for (size_t ax = 0; ax < motion::MAX_AXES; ++ax) {
         if ((arc.axis_mask & (1ull << ax)) != 0) state.targets[ax] = targets[ax];
     }
@@ -759,7 +960,7 @@ static bool advance_arc(Runtime::ChannelState& state) {
     return true;
 }
 
-static bool execute_home(Runtime::ChannelState& state,
+static bool execute_home(Runtime::ChannelState& /*state*/,
                          Runtime& runtime,
                          size_t channel,
                          const ParsedLine& parsed) {
@@ -787,7 +988,6 @@ static bool execute_home(Runtime::ChannelState& state,
         motion::g_motion.start_homing(ch.axis_indices[i], plan);
         started = true;
     }
-    if (started) ++state.block;
     return started;
 }
 
@@ -818,10 +1018,52 @@ bool Runtime::tick_channel(size_t channel) noexcept {
     }
     if (state.state == State::Ready) return true;
     if (!channel_settled(channel)) return true;
+    // M62/M63 sync-to-motion-end drain. Each pending op is gated on its
+    // own predecessor block id; with the depth-N chain ring, multiple
+    // motion blocks can be queued ahead and an M62 inserted between them
+    // should fire when ITS particular predecessor finishes, not when the
+    // entire queue drains. We walk the pending list and only fire ops
+    // whose gate_block_id has been retired by the channel — others stay
+    // queued for later. Ops with gate=0 (queued when no motion was yet
+    // dispatched on this channel) wait for channel_motion_complete, the
+    // pre-tagging behaviour.
+    const uint16_t completed = motion::g_motion.channel_completed_block_id(channel);
+    if (state.pending_outputs_count > 0) {
+        const bool fully_complete = channel_motion_complete(channel);
+        uint8_t kept = 0;
+        for (uint8_t k = 0; k < state.pending_outputs_count; ++k) {
+            auto& slot = state.pending_outputs[k];
+            if (!slot.used) continue;
+            const bool gate_passed =
+                (slot.gate_block_id == 0) ? fully_complete
+                                          : (completed >= slot.gate_block_id);
+            if (gate_passed) {
+                (void)automation::signals::set_named_signal_bool(slot.name, slot.on);
+                slot.used = false;
+                continue;
+            }
+            // Compact the kept entry forward.
+            if (kept != k) state.pending_outputs[kept] = slot;
+            ++kept;
+        }
+        state.pending_outputs_count = kept;
+    }
     if (state.arc.active) {
-        if (!advance_arc(state)) {
-            state.state = State::Fault;
-            return false;
+        // Tier 1c: arcs feed segments into the chain ring as fast as the
+        // ring accepts them, instead of one segment per ~1 ms tick. A
+        // 32-segment arc that previously took 32 ticks now finishes
+        // chain-fill in 4 ticks (CHAIN_DEPTH = 8) and the trajectory runs
+        // at chained-cruise speed across the segment seams. Bound the
+        // inner loop at CHAIN_DEPTH * 2 so a degenerate arc (huge segment
+        // count, all of them direction-mismatched and stalling the chain
+        // pop) can't spin forever.
+        for (size_t guard = 0; guard < motion::Axis::CHAIN_DEPTH * 2; ++guard) {
+            if (!channel_settled(channel)) break;  // chain ring full
+            if (!state.arc.active) break;          // arc completed mid-burst
+            if (!advance_arc(state)) {
+                state.state = State::Fault;
+                return false;
+            }
         }
         return true;
     }
@@ -845,6 +1087,12 @@ bool Runtime::tick_channel(size_t channel) noexcept {
     ParsedLine parsed{};
     if (!parse_line(line, parsed)) return true;
 
+    // Block counter advances on every non-empty parsed line, not only on
+    // motion-bearing or homing lines. Pure-modal lines (G90, F1000, M8)
+    // and macro/M-code lines used to leave state.block stuck at the last
+    // motion block, which made the HMI's "block %u" counter undercount.
+    ++state.block;
+
     if (parsed.set_absolute) state.absolute = parsed.absolute;
     if (parsed.set_inch_mode) state.inch_mode = parsed.inch_mode;
     if (parsed.set_plane) state.plane = parsed.plane;
@@ -865,6 +1113,8 @@ bool Runtime::tick_channel(size_t channel) noexcept {
     if (parsed.tool_length_cancel) {
         state.tool_length_active = false;
         state.tool_length_counts = 0;
+        state.tool_length_x_counts = 0;
+        state.tool_length_y_counts = 0;
     }
     if (parsed.tool_length_enable) {
         size_t tool = state.active_tool;
@@ -872,7 +1122,10 @@ bool Runtime::tick_channel(size_t channel) noexcept {
             tool = static_cast<size_t>(parsed.h_word - 1);
         }
         state.tool_length_active = true;
-        state.tool_length_counts = static_cast<int32_t>(offsets::g_service.tool_offsets()[tool].length * 100.0f);
+        const auto& tos = offsets::g_service.tool_offsets()[tool];
+        state.tool_length_counts   = static_cast<int32_t>(tos.length   * 100.0f);
+        state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
+        state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
     }
 
     if (parsed.home) {
@@ -894,8 +1147,10 @@ bool Runtime::tick_channel(size_t channel) noexcept {
         }
         state.active_tool = state.pending_tool;
         if (state.tool_length_active) {
-            state.tool_length_counts = static_cast<int32_t>(
-                offsets::g_service.tool_offsets()[state.active_tool].length * 100.0f);
+            const auto& tos = offsets::g_service.tool_offsets()[state.active_tool];
+            state.tool_length_counts   = static_cast<int32_t>(tos.length   * 100.0f);
+            state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
+            state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
         }
         return true;
     }
@@ -930,9 +1185,11 @@ bool Runtime::tick_channel(size_t channel) noexcept {
     }
     if (parsed.m_code == 62 || parsed.m_code == 63 ||
         parsed.m_code == 64 || parsed.m_code == 65) {
-        // LinuxCNC convention: M62/M63 sync to motion-queue end, M64/M65 set
-        // immediately. First-cut implementation treats both pairs as
-        // immediate (set/clear). Motion-sync deferred.
+        // LinuxCNC convention: M62/M63 sync to motion-queue end (defer the
+        // output flip until the preceding motion block completes), M64/M65
+        // are immediate. M64/M65 stay on the immediate path; M62/M63
+        // enqueue into state.pending_outputs[] and tick_channel drains the
+        // queue at its next channel-settled edge.
         if (parsed.p_word < 0) return true;
         const uint32_t idx = static_cast<uint32_t>(parsed.p_word);
         char name[16];
@@ -940,7 +1197,31 @@ bool Runtime::tick_channel(size_t channel) noexcept {
             return true;  // out-of-range P-word: log-and-continue per spec
         }
         const bool on = (parsed.m_code == 62 || parsed.m_code == 64);
-        (void)automation::signals::set_named_signal_bool(name, on);
+        const bool sync_to_motion_end = (parsed.m_code == 62 || parsed.m_code == 63);
+        if (sync_to_motion_end) {
+            if (state.pending_outputs_count <
+                ChannelState::MAX_PENDING_OUTPUTS) {
+                auto& slot = state.pending_outputs[state.pending_outputs_count];
+                size_t k = 0;
+                while (name[k] && k + 1 < sizeof(slot.name)) {
+                    slot.name[k] = name[k];
+                    ++k;
+                }
+                slot.name[k] = '\0';
+                slot.on = on;
+                slot.used = true;
+                // Tag with the most recently dispatched motion block.
+                // Drain fires when channel_completed_block_id reaches
+                // (or passes) this value. If no motion has run yet on
+                // this channel (gate=0), the drain fires at the next
+                // motion-complete edge — same as pre-tier-1d.
+                slot.gate_block_id = state.last_dispatched_block_id;
+                ++state.pending_outputs_count;
+            }
+            // Overflow silently drops; deeper M62 chains are unusual.
+        } else {
+            (void)automation::signals::set_named_signal_bool(name, on);
+        }
         return true;
     }
     if (parsed.m_code == 3 || parsed.m_code == 4 || parsed.m_code == 5) {

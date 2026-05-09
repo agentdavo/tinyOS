@@ -321,6 +321,44 @@ static inline void put_i32_le(uint8_t* p, int32_t v) noexcept {
 }
 
 // Advance the CiA-402 FSA one cycle. Called after a new controlword has been
+void FakeSlave::record_sdo_download(uint16_t index, uint8_t sub,
+                                    const uint8_t* data, uint8_t bytes) noexcept {
+    SdoWriteRecord rec{};
+    rec.index = index;
+    rec.sub   = sub;
+    rec.bytes = bytes;
+    if (data) {
+        const uint8_t take = bytes > 4 ? 4 : bytes;
+        for (uint8_t i = 0; i < take; ++i) rec.data[i] = data[i];
+    }
+    const size_t head = sdo_write_head_.load(std::memory_order_relaxed);
+    sdo_writes_[head % SDO_WRITE_HISTORY] = rec;
+    sdo_write_head_.store((head + 1) % SDO_WRITE_HISTORY,
+                          std::memory_order_release);
+    const size_t cnt = sdo_write_count_.load(std::memory_order_relaxed);
+    if (cnt < SDO_WRITE_HISTORY) {
+        sdo_write_count_.store(cnt + 1, std::memory_order_release);
+    }
+    // Capture commonly-verified writes into dedicated atomics so a test
+    // doesn't have to walk the ring just to inspect the value.
+    if (index == 0x6072 && sub == 0 && bytes >= 2) {
+        const uint16_t v = static_cast<uint16_t>(rec.data[0]) |
+                           (static_cast<uint16_t>(rec.data[1]) << 8);
+        max_torque_permille_.store(v, std::memory_order_release);
+    }
+}
+
+FakeSlave::SdoWriteRecord FakeSlave::sdo_write_at(size_t newest_first_idx) const noexcept {
+    const size_t cnt = sdo_write_count_.load(std::memory_order_acquire);
+    if (newest_first_idx >= cnt) return SdoWriteRecord{};
+    const size_t head = sdo_write_head_.load(std::memory_order_acquire);
+    // head points to the slot the next write will occupy. The newest
+    // existing entry sits at (head - 1) mod SDO_WRITE_HISTORY.
+    const size_t back = (head + SDO_WRITE_HISTORY - 1 - newest_first_idx)
+                        % SDO_WRITE_HISTORY;
+    return sdo_writes_[back];
+}
+
 // latched (either from LRW or from cia_inject_controlword). Pure function of
 // the latched inputs — no frame/IO side effects.
 void FakeSlave::tick_cia402() noexcept {
@@ -557,6 +595,19 @@ void FakeSlave::process_frame(uint8_t* buf, size_t len) noexcept {
                     if (build_sdo_upload_response(idx, sub, cnt, sdo_response_buf_)) {
                         sdo_response_ready_ = true;
                     }
+                } else if (svc == 0x02 && (cmd & 0xE0) == 0x20) {
+                    // SDO download expedited (master writes to slave OD).
+                    // cmd byte encodes the payload width via bits 2..3:
+                    //   0x23 = 4 B, 0x27 = 3 B, 0x2B = 2 B, 0x2F = 1 B
+                    // Record into the history ring so subtests can verify
+                    // the kernel emitted the SDO it claimed to. Specifically
+                    // capture 0x6072 (Max torque) since it's the most common
+                    // dynamic write today.
+                    const uint16_t idx = get_u16_le(&mb[9]);
+                    const uint8_t  sub = mb[11];
+                    const uint8_t  size_code = (cmd >> 2) & 0x03;
+                    const uint8_t  bytes = static_cast<uint8_t>(4 - size_code);
+                    record_sdo_download(idx, sub, &mb[12], bytes);
                 } else if (svc == 0x02 && (cmd & 0xE0) == 0x60 && sdo_seg_active_) {
                     // Upload segment request — stage the next segment.
                     const uint8_t cnt = static_cast<uint8_t>((mb[5] >> 4) & 0x7);

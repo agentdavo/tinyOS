@@ -61,6 +61,25 @@ struct UARTDriverOps {
     virtual void puts(const char* str) = 0;
     virtual void uart_put_uint64_hex(uint64_t value) = 0;
     virtual char getc_blocking() = 0;
+    // Non-blocking RX poll. Returns true and stores the byte in `out` if
+    // one is available; returns false (leaving `out` untouched) if the
+    // RX FIFO is empty. Default returns false — the safe answer for
+    // adapter classes (cli's SinkUART, etc.) that don't have a real
+    // FIFO to poll. Platform UART drivers override this with the
+    // hardware FIFO-empty check, which is what cli.cpp:uart_io_entry
+    // needs to interleave output drains with input polling instead of
+    // wedging inside getc_blocking while queued output (UI_DUMP_BEGIN,
+    // command responses) sits in g_out_queue with nobody to drain it.
+    virtual bool try_getc(char& /*out*/) { return false; }
+    // Acquire / release the same lock that guards puts() so a caller can
+    // write a multi-byte transaction (the UI dump's marker + binary
+    // payload + trailer) without other threads' puts callers (boot UI
+    // [virtio-gpu] flushes, hmi DHCP/ping logs, EC fault banners)
+    // interleaving into the stream. Default is a no-op for adapter
+    // classes that don't have a hardware lock to hold; platform UART
+    // drivers override with the same lock primitive their puts() uses.
+    virtual void lock_write()   {}
+    virtual void unlock_write() {}
 };
 
 struct IRQControllerOps {

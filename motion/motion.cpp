@@ -9,8 +9,11 @@
 #include "diag/jitter.hpp"
 #include "ethercat/cia402.hpp"
 #include "ethercat/master.hpp"
+#include "machine/machine_topology.hpp"
 
 #include <cstdlib>
+
+extern "C" void early_uart_puts(const char*);
 
 namespace motion {
 
@@ -434,18 +437,60 @@ void Axis::step_trajectory(uint32_t dt_us) noexcept {
     const int32_t dp = (int32_t)(dp_num / 1'000'000LL);
 
     int32_t new_pos = commanded_position + dp;
+    bool reached_target = false;
     if (dir > 0 && new_pos >= target) {
         new_pos = target;
-        target_velocity = 0;
+        reached_target = true;
     } else if (dir < 0 && new_pos <= target) {
         new_pos = target;
-        target_velocity = 0;
+        reached_target = true;
     }
     commanded_position = new_pos;
 
+    if (reached_target) {
+        // Look-ahead chain pop. Peek the head of the chain ring; if the
+        // queued block extends in the same direction we're already moving,
+        // swap to its target/vmax/block_id WITHOUT zeroing velocity. The
+        // popped block's vmax is the per-axis coordinated scale that
+        // sync_move computed for THAT block, so each block runs at its
+        // own pace without leaking the previous block's coordination.
+        // restore_vmax_cps is cleared in the seam since the active vmax
+        // is now whatever the chain entry stored. Direction mismatch
+        // falls through to a clean Holding stop and keeps the chain
+        // queued for the next move_to / re-arm.
+        if (chain_count > 0) {
+            const ChainEntry& head = chain[chain_head];
+            if (head.valid) {
+                const int32_t chain_delta = head.target - commanded_position;
+                const int32_t chain_dir = chain_delta > 0 ? 1 : (chain_delta < 0 ? -1 : 0);
+                if (chain_dir == dir && chain_dir != 0) {
+                    if (active_block_id != 0) {
+                        last_completed_block_id = active_block_id;
+                    }
+                    target            = head.target;
+                    vmax_cps          = head.vmax_cps;
+                    active_block_id   = head.block_id;
+                    restore_vmax_cps  = 0;
+                    chain[chain_head].valid = false;
+                    chain_head = (chain_head + 1) % CHAIN_DEPTH;
+                    --chain_count;
+                    prev_target_velocity = target_velocity;
+                    return;
+                }
+            }
+        }
+        target_velocity = 0;
+    }
+
     if (commanded_position == target && target_velocity == 0) {
+        // No chain or chain in opposite direction — full stop. If a
+        // reverse-direction chain is queued, leave it for re-arming via
+        // the next move_to (the interpreter sees Holding and dispatches).
         traj_state = TrajState::Holding;
         current_accel_cps2 = 0;
+        if (active_block_id != 0 && last_completed_block_id != active_block_id) {
+            last_completed_block_id = active_block_id;
+        }
     }
 
     prev_target_velocity = target_velocity;
@@ -521,11 +566,75 @@ void Kernel::on_connection_lost(size_t i) noexcept {
 
 void Kernel::move_to(size_t i, int32_t position) noexcept {
     if (i >= MAX_AXES) return;
+    queue_move(i, position, axes_[i].vmax_cps, /*block_id=*/0);
+}
+
+void Kernel::queue_move(size_t i, int32_t position,
+                        int32_t vmax_for_block,
+                        uint16_t block_id) noexcept {
+    if (i >= MAX_AXES) return;
     auto& a = axes_[i];
-    a.target     = position;
-    a.mode       = Mode::CSP;
-    a.enabled    = true;
-    a.traj_state = TrajState::MoveReady;
+    a.mode    = Mode::CSP;
+    a.enabled = true;
+    if (vmax_for_block <= 0) vmax_for_block = a.vmax_cps;
+    // Mid-flight: push into the chain ring (caller has already verified
+    // there's room via axis_chain_room — overflow drops the OLDEST
+    // pending entry rather than the freshest, so a runaway interpreter
+    // loses look-ahead but never the immediately-next block).
+    const bool mid_flight =
+        a.traj_state != TrajState::Idle && a.traj_state != TrajState::Holding;
+    if (mid_flight) {
+        if (a.chain_count >= Axis::CHAIN_DEPTH) {
+            // Overflow: rotate one entry off the front (oldest).
+            a.chain_head = (a.chain_head + 1) % Axis::CHAIN_DEPTH;
+            --a.chain_count;
+        }
+        const uint8_t slot =
+            (a.chain_head + a.chain_count) % Axis::CHAIN_DEPTH;
+        a.chain[slot].target   = position;
+        a.chain[slot].vmax_cps = vmax_for_block;
+        a.chain[slot].block_id = block_id;
+        a.chain[slot].valid    = true;
+        ++a.chain_count;
+        return;
+    }
+    // Idle or Holding: latch the target directly.
+    a.target          = position;
+    a.vmax_cps        = vmax_for_block;
+    a.active_block_id = block_id;
+    a.traj_state      = TrajState::MoveReady;
+}
+
+bool Kernel::axis_chain_room(size_t i) const noexcept {
+    if (i >= MAX_AXES) return false;
+    return axes_[i].chain_count < Axis::CHAIN_DEPTH;
+}
+
+uint8_t Kernel::axis_chain_count(size_t i) const noexcept {
+    if (i >= MAX_AXES) return 0;
+    return axes_[i].chain_count;
+}
+
+uint16_t Kernel::axis_active_block_id(size_t i) const noexcept {
+    if (i >= MAX_AXES) return 0;
+    return axes_[i].active_block_id;
+}
+
+uint16_t Kernel::channel_completed_block_id(size_t c) const noexcept {
+    if (c >= channel_count_) return 0;
+    return channels_[c].completed_block_id;
+}
+
+bool Kernel::set_junction_deviation(size_t c, int32_t counts) noexcept {
+    if (c >= channel_count_) return false;
+    if (counts < 0 || counts > 10000) return false;
+    channels_[c].overrides.junction_deviation_counts = counts;
+    return true;
+}
+
+int32_t Kernel::junction_deviation(size_t c) const noexcept {
+    if (c >= channel_count_) return 0;
+    return channels_[c].overrides.junction_deviation_counts;
 }
 
 void Kernel::set_axis_velocity(size_t i, int32_t velocity_cps) noexcept {
@@ -589,6 +698,25 @@ bool Kernel::engage_spindle_gear(size_t leader, size_t follower, int32_t k_num, 
     // Engage regular gear link but override in cycle_axis for spindle indexing
     return engage_gear(static_cast<uint8_t>(leader), static_cast<uint8_t>(follower),
                         0, k_num, k_den, ramp);
+}
+
+bool Kernel::set_torque_limit(size_t i, uint16_t permille) noexcept {
+    if (i >= MAX_AXES) return false;
+    if (permille > 5000) return false;       // CiA-402 spec ceiling = 5x rated
+    auto& a = axes_[i];
+    if (!a.drive || a.station_addr == 0) return false;
+    // Resolve which master owns this axis. Falls back to master A when no
+    // topology binding exists — same fallback as the in-place 0x607D push,
+    // and consistent with single-master legacy setups.
+    ethercat::Master* m = &ethercat::g_master_a;
+    const auto* binding = machine::topology::g_service.servo_binding_for_axis(i);
+    if (binding && binding->master_id == 1) m = &ethercat::g_master_b;
+    // 0x6072 "Max torque" is u16, permille of motor rated torque.
+    uint8_t data[2] = {
+        static_cast<uint8_t>(permille & 0xFFu),
+        static_cast<uint8_t>((permille >> 8) & 0xFFu),
+    };
+    return m->send_sdo_download(a.station_addr, 0x6072, 0x00, data, 2);
 }
 
 bool Kernel::fault_reset(size_t i) noexcept {
@@ -717,6 +845,23 @@ void Kernel::cycle_axis(Axis& a, uint64_t t_now, bool freeze_trajectory) noexcep
             a.last_error_code = a.drive->error_code;
             a.request_stop(StopAction::FaultReaction, t_now);
             stats_.faults.fetch_add(1, std::memory_order_relaxed);
+            // Persist the fault-rising-edge into klog. early_uart_puts goes
+            // through the platform UART driver, which klog::record hooks —
+            // so the line lives in the postmortem ring even if the system
+            // becomes unresponsive after this point. After a subsequent
+            // fault_reset clears `last_error_code`, this log line is the
+            // only place the operator can see what actually tripped.
+            const size_t axis_idx = static_cast<size_t>(&a - axes_.data());
+            char msg[160];
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                "[motion] axis %zu FAULT err=0x%04x station=0x%04x src=%s\n",
+                axis_idx,
+                static_cast<unsigned>(a.last_error_code),
+                static_cast<unsigned>(a.station_addr),
+                master_dl_fault ? "master-deadline"
+                                : (a.drive->state == cia402::State::FaultReactionActive
+                                    ? "drive-reaction" : "drive-fault"));
+            early_uart_puts(msg);
         }
         // NB: we do NOT auto-clear fault_latched on drive recovery. The
         // operator must explicitly acknowledge via Kernel::fault_reset —
@@ -744,11 +889,16 @@ void Kernel::cycle_axis(Axis& a, uint64_t t_now, bool freeze_trajectory) noexcep
             const int32_t aferr = ferr >= 0 ? ferr : -ferr;
             if (aferr > a.max_following_error) a.max_following_error = aferr;
 
-            // Task 9.6 — once a sync-scaled move lands in Holding, restore
-            // the axis's original vmax. `restore_vmax_cps == 0` means no
-            // scale is pending, so this is a no-op for normal moves.
-            if (a.traj_state == TrajState::Holding && a.restore_vmax_cps > 0) {
-                a.vmax_cps         = a.restore_vmax_cps;
+            // Task 9.6 — once a sync-scaled move lands in Holding AND
+            // there's nothing left in the chain ring, restore the axis's
+            // natural cap so subsequent un-coordinated moves (CLI jog,
+            // MDI single-axis) don't inherit the prior block's
+            // coordinated scale. With a non-empty chain we leave the
+            // active vmax alone — the next pop will overwrite it with
+            // the queued block's own pre-scaled value.
+            if (a.traj_state == TrajState::Holding && a.chain_count == 0 &&
+                a.natural_vmax_cps > 0 && a.vmax_cps != a.natural_vmax_cps) {
+                a.vmax_cps         = a.natural_vmax_cps;
                 a.restore_vmax_cps = 0;
             }
 
@@ -780,6 +930,14 @@ void Kernel::cycle_axis(Axis& a, uint64_t t_now, bool freeze_trajectory) noexcep
                     a.last_error_code = 0xFFDA; // vendor-internal ~ load-side
                     a.request_stop(StopAction::FaultReaction, t_now);
                     stats_.faults.fetch_add(1, std::memory_order_relaxed);
+                    const size_t axis_idx =
+                        static_cast<size_t>(&a - axes_.data());
+                    char msg[128];
+                    kernel::util::k_snprintf(msg, sizeof(msg),
+                        "[motion] axis %zu FAULT load-feedback %s\n",
+                        axis_idx,
+                        a.load.error_latched ? "error-bit" : "watchdog-stale");
+                    early_uart_puts(msg);
                 }
             }
 
@@ -895,11 +1053,22 @@ void Kernel::cycle_channel(Channel& ch, uint64_t t_now) noexcept {
     // Running / Fault flip is one-way until the operator clears the
     // fault_reset on the offending axis.
     bool any_fault = false;
+    uint16_t max_completed = ch.completed_block_id;
     for (uint8_t k = 0; k < ch.axis_count; ++k) {
         const uint8_t ai = ch.axis_indices[k];
-        if (ai < MAX_AXES) cycle_axis(axes_[ai], t_now, freeze);
-        if (ai < MAX_AXES && axes_[ai].fault_latched) any_fault = true;
+        if (ai >= MAX_AXES) continue;
+        cycle_axis(axes_[ai], t_now, freeze);
+        if (axes_[ai].fault_latched) any_fault = true;
+        // Block ids are monotonic (per-channel sync_move counter), so
+        // "max" is well-defined as long as no axis has been re-armed
+        // with a block id that wraps below the current. With 16 bits
+        // and seq advance per sync_move, that's 2^16 moves before
+        // wraparound — enough for any realistic run.
+        if (axes_[ai].last_completed_block_id > max_completed) {
+            max_completed = axes_[ai].last_completed_block_id;
+        }
     }
+    ch.completed_block_id = max_completed;
     if (any_fault && ch.state != ChannelState::Fault &&
         ch.state != ChannelState::WaitingBarrier &&
         ch.state != ChannelState::Gearing) {
@@ -1155,7 +1324,10 @@ bool Kernel::sync_move(uint64_t axis_mask,
                        int32_t  tolerance_counts,
                        uint16_t stable_cycles_required,
                        uint16_t max_wait_cycles,
-                       bool     register_barrier) noexcept {
+                       bool     register_barrier,
+                       uint64_t min_t_final_us,
+                       uint16_t* out_block_id) noexcept {
+    if (out_block_id) *out_block_id = 0;
     if (axis_mask == 0 || !targets) return false;
 
     // Pass 1 — compute the slowest axis's nominal T_final in microseconds.
@@ -1173,28 +1345,45 @@ bool Kernel::sync_move(uint64_t axis_mask,
                              / static_cast<uint32_t>(a.vmax_cps);
         if (t_us > t_final_us) t_final_us = t_us;
     }
+    // Path-velocity cap: when the caller supplies a min_t_final_us derived
+    // from sqrt(sum_delta_squared) / feed_cps, the move stretches to make
+    // the combined-axis path velocity equal to the requested feedrate.
+    // Without this clamp a 45° X+Y G1 ran at vmax * sqrt(2) along the path,
+    // and a helical G2 ignored the linear-axis contribution to path
+    // length entirely.
+    if (min_t_final_us > t_final_us) t_final_us = min_t_final_us;
     if (t_final_us == 0) return false; // zero-length move — nothing to do
 
-    // Pass 2 — commit each participating axis. Scale vmax so everyone
-    // reaches the shared T_final. `restore_vmax_cps` gets saved so
-    // cycle_axis can revert once the axis lands in Holding.
+    // Pass 2 — commit each participating axis. Compute the per-axis
+    // coordinated vmax (so everyone reaches T_final together) and push
+    // it into the chain ring as part of THIS block's queued entry. Each
+    // chain block carries its own pre-scaled vmax, so multiple coordinated
+    // sync_moves can be in flight without one block's scaling
+    // contaminating another. Allocate a fresh block id per call so the
+    // chain entries can be matched to their source block (used by the
+    // M62/M63 sync drain in tier 1d).
+    const uint16_t block_id = next_block_id();
+    if (out_block_id) *out_block_id = block_id;
     uint8_t participants_mask = 0;
     for (size_t i = 0; i < MAX_AXES; ++i) {
         if ((axis_mask & (1ull << i)) == 0) continue;
         auto& a = axes_[i];
-        if (a.vmax_cps <= 0) continue;
+        if (a.natural_vmax_cps <= 0) continue;
         const int32_t delta = targets[i] - a.commanded_position;
         const uint32_t abs_delta = static_cast<uint32_t>(delta < 0 ? -delta : delta);
 
-        const uint64_t required_vmax =
+        // Coordinated vmax = |delta| / T_final. Cap at the axis's natural
+        // vmax so a longer-than-needed T_final from min_t_final_us doesn't
+        // ask the axis to run faster than its drive accepts.
+        uint64_t required_vmax =
             (static_cast<uint64_t>(abs_delta) * 1'000'000ULL) / t_final_us;
-        if (required_vmax > 0 && required_vmax < static_cast<uint64_t>(a.vmax_cps)) {
-            if (a.restore_vmax_cps == 0) a.restore_vmax_cps = a.vmax_cps;
-            a.vmax_cps = static_cast<int32_t>(required_vmax);
+        if (required_vmax == 0) required_vmax = static_cast<uint64_t>(a.natural_vmax_cps);
+        if (required_vmax > static_cast<uint64_t>(a.natural_vmax_cps)) {
+            required_vmax = static_cast<uint64_t>(a.natural_vmax_cps);
         }
-        // Fire the move — reuses the existing move_to path so fault / brake
-        // interlocks stay intact.
-        move_to(i, targets[i]);
+        queue_move(i, targets[i],
+                   static_cast<int32_t>(required_vmax),
+                   block_id);
 
         // Track which channels own a participating axis, for the barrier.
         for (size_t c = 0; c < channel_count_; ++c) {
@@ -1212,10 +1401,14 @@ bool Kernel::sync_move(uint64_t axis_mask,
 
     if (!register_barrier) return true;
 
-    // Allocate a token if the caller didn't supply one.
+    // Allocate a token if the caller didn't supply one. Monotonic counter
+    // (relaxed fetch_add) — collision-free up to 2^16 sync moves. Skip 0
+    // since callers treat that as "please allocate" and would loop.
     if (barrier_token == 0) {
-        barrier_token = static_cast<uint16_t>(
-            0x9600u + (stats_.cycles.load(std::memory_order_relaxed) & 0xFFu));
+        do {
+            barrier_token = barrier_token_seq_.fetch_add(
+                1, std::memory_order_relaxed);
+        } while (barrier_token == 0);
     }
     // Every participating channel arrives at the barrier. They're all
     // about to freeze — but only *after* their moves begin, so the
@@ -1682,6 +1875,22 @@ void Kernel::dump_channels(kernel::hal::UARTDriverOps* uart) const {
     }
 }
 
+uint32_t Kernel::barrier_cycles_remaining(size_t channel_idx) const noexcept {
+    if (channel_idx >= MAX_CHANNELS) return 0;
+    const auto& ch = channels_[channel_idx];
+    if (ch.state != ChannelState::WaitingBarrier) return 0;
+    if (ch.barrier_token == 0) return 0;
+    const uint64_t now_cycle = stats_.cycles.load(std::memory_order_relaxed);
+    for (const auto& b : barriers_) {
+        if (!b.in_use || b.token != ch.barrier_token) continue;
+        if ((b.participants_mask & (1u << channel_idx)) == 0) continue;
+        const uint64_t elapsed = now_cycle - b.created_cycle;
+        if (elapsed >= b.max_wait_cycles) return 0;
+        return static_cast<uint32_t>(b.max_wait_cycles - elapsed);
+    }
+    return 0;
+}
+
 void Kernel::dump_barriers(kernel::hal::UARTDriverOps* uart) const {
     if (!uart) return;
     char buf[160];
@@ -2075,7 +2284,10 @@ bool Kernel::sphere_compute_errors() {
     for (size_t i = 0; i < sphere_cal_.point_count; ++i) {
         const auto& pt = sphere_cal_.points[i];
         if (!pt.valid) continue;
-        int32_t dx = pt.act_x - pt.cmd_x - mean_dx;
+        // dx component intentionally not extracted — the regression below
+        // only uses dy / dz (the orthogonal-axis residuals against cmd_x /
+        // cmd_y). Reintroduce as `int32_t dx = pt.act_x - pt.cmd_x - mean_dx`
+        // if the fit gains a self-axis term.
         int32_t dy = pt.act_y - pt.cmd_y - mean_dy;
         int32_t dz = pt.act_z - pt.cmd_z - mean_dz;
         dx_dy += static_cast<int64_t>(pt.cmd_x) * dy;

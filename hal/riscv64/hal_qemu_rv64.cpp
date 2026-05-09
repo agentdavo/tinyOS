@@ -27,6 +27,7 @@
 #include "hal_qemu_rv64.hpp"
 #include "../../miniOS.hpp"
 #include "../../kernel/main.hpp"
+#include "../../klog.hpp"
 #include "rt_wait.hpp"
 #include "fdt.hpp"
 #include "hal/shared/fdt_scan.hpp"
@@ -184,10 +185,12 @@ void UARTDriver::puts(const char* str) {
     // lock-free for callers that have already taken the lock (or genuinely
     // want raw single-character output).
     UartLockGuard g;
+    const char* const start = str;
     while (*str) {
         if (*str == '\n') this->putc('\r');
         this->putc(*str++);
     }
+    kernel::klog::record(start, static_cast<size_t>(str - start));
 }
 void UARTDriver::uart_put_uint64_hex(uint64_t value) {
     static constexpr char hex[] = "0123456789ABCDEF";
@@ -204,6 +207,26 @@ char UARTDriver::getc_blocking() {
         }
     }
     return static_cast<char>(*uart_reg(NS16550_RBR));
+}
+// Non-blocking poll. NS16550 LSR bit 0 (Data Ready) is set when RBR has
+// a byte waiting. Mirrors arm64 PL011 try_getc; lets cli's uart_io
+// interleave output drains with input polling.
+bool UARTDriver::try_getc(char& out) {
+    if ((*uart_reg(NS16550_LSR) & LSR_DR) == 0) return false;
+    out = static_cast<char>(*uart_reg(NS16550_RBR));
+    return true;
+}
+// Manual lock acquire/release sharing the same g_uart_lock that
+// UartLockGuard uses inside puts/hex. cli's cmd_ui_dump uses these to
+// write the binary UI dump atomically against other puts callers,
+// going through this driver's putc which doesn't CRLF-cook.
+void UARTDriver::lock_write()   {
+    while (g_uart_lock.test_and_set(std::memory_order_acquire)) {
+        asm volatile("" ::: "memory");
+    }
+}
+void UARTDriver::unlock_write() {
+    g_uart_lock.clear(std::memory_order_release);
 }
 
 // ----------------------------------------------------------------------------

@@ -115,7 +115,7 @@ void short_name_to_string(const uint8_t name[11], char* out, size_t out_size) {
 // Copy LFN UCS-2 chars into an ASCII buffer (truncating non-ASCII).
 // `ucs` points at an array of `count` little-endian UCS-2 codepoints.
 // Returns true if a terminator (0x0000 or 0xFFFF) was reached.
-bool copy_lfn_segment(const uint16_t* ucs, size_t count, char* dst, size_t& dst_pos,
+[[maybe_unused]] bool copy_lfn_segment(const uint16_t* ucs, size_t count, char* dst, size_t& dst_pos,
                       size_t dst_cap) {
     for (size_t i = 0; i < count; ++i) {
         const uint16_t c = ucs[i];
@@ -273,13 +273,13 @@ bool find_cb(const char* name, uint8_t attr, uint32_t cluster, uint32_t size,
 
 // Split `path` at the next '/' and return the component length + whether
 // this is the last component.
-bool next_component(const char*& path, size_t& comp_len, bool& is_last) {
+[[maybe_unused]] bool next_component(const char*& path, size_t& comp_len, bool& is_last) {
     while (*path == '/') ++path;  // tolerate leading/duplicate slashes
     if (*path == '\0') return false;
     const char* start = path;
     while (*path && *path != '/') ++path;
     comp_len = static_cast<size_t>(path - start);
-    is_last = (*path == '\0' || *(path + 1) == '\0' && *path == '/');
+    is_last = (*path == '\0' || (*(path + 1) == '\0' && *path == '/'));
     path = start;
     return comp_len > 0;
 }

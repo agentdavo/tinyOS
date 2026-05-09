@@ -71,6 +71,24 @@ public:
     [[nodiscard]] bool send_sdo_download(uint16_t station_addr, uint16_t index, uint8_t sub,
                                          const uint8_t* data, uint8_t len_bytes) noexcept;
 
+    // Tier 3b. Tracked SDO download — fires the same expedited download
+    // frame send_sdo_download does, but additionally records the {station,
+    // index, sub} so the cycle's mailbox-RX path can recognise the
+    // slave's CoE confirm (cmd 0x60) or abort (cmd 0x80) response and
+    // update the caller's completion_state atomic. {0=pending, 1=done,
+    // 2=error/abort/timeout}. Single-slot — concurrent calls return
+    // false until the in-flight download completes. timeout_us bounds
+    // the wait; on expiry, completion_state goes to 2 and abort_code
+    // (if non-null) gets 0. Most call sites that care about the SDO
+    // landing (set_torque_limit, arm_post_homing_limits) should use
+    // this rather than the fire-and-forget send_sdo_download.
+    [[nodiscard]] bool send_sdo_download_tracked(
+        uint16_t station_addr, uint16_t index, uint8_t sub,
+        const uint8_t* data, uint8_t len_bytes,
+        std::atomic<uint8_t>* completion_state,
+        uint32_t* abort_code,
+        uint32_t timeout_us) noexcept;
+
     // Task 1.2 — blocking SDO upload (expedited only, ≤ 4 bytes). Sends an
     // "initiate upload request" into SM0 and polls SM1 via FPRD every cycle
     // until either the response arrives (returns true, fills `out`/`out_bytes`)
@@ -84,6 +102,45 @@ public:
                                   uint8_t out[4], uint8_t* out_bytes,
                                   uint32_t timeout_us,
                                   uint32_t* abort_code = nullptr) noexcept;
+
+    // Non-blocking upload pair. `upload_sdo_start` returns immediately:
+    // true if the request was accepted (one upload in flight per master,
+    // same single-slot constraint as `upload_sdo`), false if another
+    // transfer is already pending. The caller then polls
+    // `upload_sdo_poll` from any thread:
+    //   1  = transfer complete (out / out_bytes filled)
+    //  -1  = transfer failed (timeout, SDO abort, malformed reply)
+    //   0  = still pending — caller is free to do other work
+    // Used by callers that want to fire a probe and not block the calling
+    // core's scheduler — e.g. boot-time bus_config can issue an SDO read
+    // and continue advancing the ESM walker on subsequent cycles instead
+    // of stalling the whole bring-up on a single cycle's worth of
+    // mailbox round-trip.
+    [[nodiscard]] bool upload_sdo_start(uint16_t station_addr, uint16_t index, uint8_t sub,
+                                        uint32_t timeout_us) noexcept;
+    [[nodiscard]] int  upload_sdo_poll(uint8_t out[4], uint8_t* out_bytes,
+                                        uint32_t* abort_code = nullptr) noexcept;
+
+    // Tier 3a: per-slave-parallel-ish queue. Callers submit a complete
+    // request (station / index / sub / caller-owned 4-byte result + bytes
+    // out + completion_state out) and walk away. The master cycle drains
+    // requests one at a time (single mailbox, but no caller-side
+    // serialisation), and updates the caller's state atomic when each
+    // completes. Boot-time bus_config can fire 8 servos × 5 SDOs upfront
+    // and finish in ~5 cycles instead of 40 round-trip-blocking calls.
+    // Pending: 0 (queued/in-flight), Done: 1, Error: 2.
+    struct SdoRequest {
+        uint16_t station        = 0;
+        uint16_t index          = 0;
+        uint8_t  sub            = 0;
+        uint32_t timeout_us     = 0;
+        uint8_t* out_data       = nullptr;       // 4 bytes
+        uint8_t* out_bytes      = nullptr;
+        uint32_t* abort_code    = nullptr;       // nullable
+        std::atomic<uint8_t>* completion_state = nullptr; // 0/1/2
+    };
+    [[nodiscard]] bool enqueue_sdo_upload(const SdoRequest& req) noexcept;
+    [[nodiscard]] size_t sdo_queue_depth() const noexcept;
 
     // Task 1.2 follow-up — segmented SDO upload. Covers responses
     // larger than the 4-byte expedited window: 0x1008 device name,
@@ -240,6 +297,12 @@ public:
     // axes through their fault-reaction stop. Operator must explicitly
     // acknowledge via clear_deadline_fault() (e.g. CLI `ec_clear_fault`).
     static constexpr uint32_t CONSECUTIVE_MISS_THRESHOLD = 2;
+    // Number of cycles after master start during which deadline misses
+    // do NOT count toward the trip threshold. ~50 ms at 250 µs per
+    // cycle covers the cold-start surge (virtio-gpu init, hmi DHCP,
+    // framebuffer clear, etc) without leaving operators with a
+    // pre-faulted machine on every boot.
+    static constexpr uint32_t BOOT_GRACE_CYCLES = 200;
     bool is_deadline_faulted() const noexcept {
         return deadline_fault_.load(std::memory_order_acquire);
     }
@@ -284,11 +347,24 @@ public:
     const diag::LatencyHistogram& hist_lrw()    const noexcept { return hist_lrw_; }
     const diag::LatencyHistogram& hist_wait()   const noexcept { return hist_wait_; }
 
+    // Snapshot epoch — bumped once at the top of every run_loop iteration
+    // (master.cpp:1178) before any per-cycle write. Operator-side readers
+    // (operator_api::ethercat_snapshot) wrap their multi-field copy in a
+    // bounded retry: read epoch, copy fields, re-read epoch. If the epoch
+    // moved, the master ticked a cycle mid-copy and the snapshot is torn —
+    // retry. With a 250 µs cycle and ~20 atomic loads per snapshot the
+    // typical case is a single-shot success; the retry budget is the
+    // safety net for the unlucky overlap.
+    uint32_t snapshot_epoch() const noexcept {
+        return snapshot_epoch_.load(std::memory_order_acquire);
+    }
+
 private:
     int id_;
     int nic_idx_;
     uint32_t period_us_;
     std::atomic<State> state_{State::Init};
+    std::atomic<uint32_t> snapshot_epoch_{0};
     Stats stats_;
     kernel::hal::net::NetworkDriverOps* net_ = nullptr;
 
@@ -335,6 +411,13 @@ private:
     uint64_t             last_dc_sample_us_    = 0;
     std::atomic<int64_t> last_dc_drift_ns_{0};
     size_t               dc_round_robin_idx_   = 0;
+    // Phase-shift compensation pending application by run_loop. Positive
+    // value means the master cycle should wait LONGER next iteration
+    // (master's wall clock leading slave DC); negative means SHORTER.
+    // Capped per-application to ±DC_PHASE_MAX_ADJUST_US so a single
+    // outlier sample can't slew the bus phase out from under itself.
+    // Applied once per cycle then atomically cleared.
+    std::atomic<int32_t> dc_phase_adjust_us_{0};
 
     // --- SDO upload state (task 1.2 + segmented follow-up) ----------------
     // Linear state machine driving a single mailbox exchange at a time.
@@ -366,6 +449,36 @@ private:
     uint64_t upload_deadline_us_      = 0;
     bool     upload_segment_toggle_   = false; // toggled 0/1 per segment request
     bool     upload_segment_request_inflight_ = false;
+
+    // Tier 3a — request queue. Single producer (caller), single
+    // consumer (master cycle). When upload_state_ idle, the cycle pulls
+    // the head request, kicks the existing single-slot machine, and
+    // copies the result into the caller's `out_*` slots when done.
+    static constexpr size_t SDO_QUEUE_DEPTH = 8;
+    std::array<SdoRequest, SDO_QUEUE_DEPTH> sdo_queue_{};
+    std::atomic<size_t>     sdo_queue_head_{0};   // next read
+    std::atomic<size_t>     sdo_queue_tail_{0};   // next write
+    SdoRequest              sdo_active_request_{};
+    bool                    sdo_request_in_flight_ = false;
+    void service_sdo_queue() noexcept;
+
+    // Tier 3b — download tracker. Single-slot. When dl_in_flight_, the
+    // mailbox-RX path watches for a CoE response matching {station,
+    // index, sub} and updates dl_completion_ accordingly. service_sdo_
+    // download polls the deadline and fails out if the slave never
+    // ack'd. Independent of upload state — a download and an upload can
+    // be in flight concurrently (different mailbox slots).
+    bool                    dl_in_flight_   = false;
+    uint16_t                dl_station_     = 0;
+    uint16_t                dl_index_       = 0;
+    uint8_t                 dl_sub_         = 0;
+    uint64_t                dl_deadline_us_ = 0;
+    std::atomic<uint8_t>*   dl_completion_  = nullptr;
+    uint32_t*               dl_abort_code_  = nullptr;
+    void service_sdo_download() noexcept;
+    void on_sdo_download_response(uint16_t station, uint8_t cmd,
+                                  uint16_t index, uint8_t sub,
+                                  uint32_t abort_code) noexcept;
 
     // --- Blocking ESC register read support --------------------------------
     enum class EscReadState : uint8_t {

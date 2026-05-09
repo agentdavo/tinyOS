@@ -15,6 +15,7 @@
 #include "../motion/motion.hpp"
 #include "../machine/toolpods.hpp"
 #include "../hmi/hmi_service.hpp"
+#include "../fs/vfs.hpp"
 #include "../util.hpp"
 
 namespace kernel::ui::operator_api {
@@ -151,7 +152,7 @@ bool motion_busy_locked() {
     return false;
 }
 
-bool motion_settled_locked() {
+[[maybe_unused]] bool motion_settled_locked() {
     return !motion_busy_locked();
 }
 
@@ -204,6 +205,12 @@ uint32_t current_feed_locked() {
     return static_cast<uint32_t>(ch->overrides.feed_permille / 10u);
 }
 
+uint32_t current_spindle_override_locked() {
+    const auto* ch = primary_channel();
+    if (!ch) return 100u;
+    return static_cast<uint32_t>(ch->overrides.spindle_permille / 10u);
+}
+
 void stop_preview_cycle_locked(bool completed = false) {
     g_program_run.active = false;
     g_program_run.point_index = 0;
@@ -239,6 +246,7 @@ void refresh_machine_snapshot_locked() {
     g_machine.mode = current_mode_locked();
     g_machine.hold = (g_machine.mode == Mode::Hold);
     g_machine.feed = static_cast<int32_t>(current_feed_locked());
+    g_machine.spindle_override = current_spindle_override_locked();
     g_machine.torque = static_cast<uint32_t>(
         motion::g_motion.axis(selected_axis).actual_torque_permille.load(std::memory_order_relaxed));
     const size_t sp_idx = static_cast<size_t>(spindle_axis_index());
@@ -266,9 +274,55 @@ PageId current_page() {
     return g_machine.page;
 }
 
+// ---------------------------------------------------------------------------
+// Forward-declared internal state used by the mutators below.
+//
+// Order matters: jog_selected / jog_axis_step / start_continuous_jog /
+// toggle_cycle all reference mode_allows_*_locked() and (for toggle_cycle)
+// g_restart_review.pending. Their definitions originally lived further down
+// the file alongside set_operator_mode and the restart wizard, which left
+// the references unresolved at compile time. Hoisting them here is the
+// fix — the *_locked predicates only read g_machine.operator_mode and
+// g_restart_review is a plain in-RAM struct, so neither has any
+// initialisation-order dependency on the larger surface below.
+// ---------------------------------------------------------------------------
+
+struct RestartReviewState {
+    bool     pending             = false;
+    size_t   target_line         = 0;
+    size_t   active_work         = 0;     // 0 = G54
+    size_t   active_tool         = 0;
+    bool     tool_length_active  = false;
+    uint32_t feed                = 0;
+    int32_t  spindle             = 0;
+    bool     coolant_mist        = false;
+    bool     coolant_flood       = false;
+    bool     ok                  = false; // dry scan succeeded
+};
+static RestartReviewState g_restart_review{};
+
+// Mode-gating policy:
+//   Auto  → only the autonomous program may run; cycle_start enabled.
+//   MDI   → only the operator's manually-typed line is dispatched.
+//   Jog   → only continuous / step jog is permitted.
+//   Setup → calibration, offsets, homing wizard, jog (operator can move
+//           the machine while editing offsets, but cycle-start is locked).
+// Caller must hold g_lock.
+static bool mode_allows_jog_locked() {
+    return g_machine.operator_mode == OperatorMode::Jog ||
+           g_machine.operator_mode == OperatorMode::Setup;
+}
+static bool mode_allows_cycle_locked() {
+    return g_machine.operator_mode == OperatorMode::Auto;
+}
+static bool mode_allows_mdi_locked() {
+    return g_machine.operator_mode == OperatorMode::MDI;
+}
+
 void jog_selected(int32_t delta) {
     core::ScopedLock lock(g_lock);
     refresh_machine_snapshot_locked();
+    if (!mode_allows_jog_locked()) return;
     if (g_machine.mode == Mode::Alarm) return;
     stop_preview_cycle_locked(false);
     const uint32_t axis_idx = g_machine.selected_axis & 3u;
@@ -281,6 +335,7 @@ void jog_selected(int32_t delta) {
 void jog_axis_step(int32_t sign) {
     core::ScopedLock lock(g_lock);
     refresh_machine_snapshot_locked();
+    if (!mode_allows_jog_locked()) return;
     if (g_machine.mode == Mode::Alarm) return;
     stop_preview_cycle_locked(false);
     const uint32_t axis_idx = g_machine.selected_axis & 3u;
@@ -310,16 +365,23 @@ void set_jog_feed_cps(int32_t cps) {
 }
 
 void set_operator_mode(OperatorMode mode) {
-    // TODO: gate cycle-start / MDI submit / jog on the active mode once
-    // the surrounding subsystems agree on a mode-state machine. For now
-    // this is a declared intent for the dashboard mode buttons only.
     core::ScopedLock lock(g_lock);
     g_machine.operator_mode = mode;
+}
+
+bool mode_allows_mdi() {
+    core::ScopedLock lock(g_lock);
+    return mode_allows_mdi_locked();
 }
 
 void start_continuous_jog(uint32_t axis, int32_t sign) {
     core::ScopedLock lock(g_lock);
     refresh_machine_snapshot_locked();
+    // Mode gate: jog is only permitted in Jog or Setup mode. The operator
+    // explicitly picks one of those modes before the machine will move under
+    // a hold-to-move button — matches the lockout semantics of the
+    // dashboard mode buttons.
+    if (!mode_allows_jog_locked()) return;
     // Reject motion when any axis fault is latched, the channel is in Fault,
     // or either EtherCAT master is sitting on a deadline trip — hold-to-move
     // must never override an active safety latch.
@@ -370,7 +432,12 @@ void home_selected() {
 void toggle_cycle() {
     core::ScopedLock lock(g_lock);
     refresh_machine_snapshot_locked();
+    // Mode gate: cycle-start drives the autonomous program channel; only
+    // permitted in Auto mode. The dashboard mode buttons are now real
+    // safety lockouts rather than indicators.
+    if (!mode_allows_cycle_locked()) return;
     if (g_machine.mode == Mode::Alarm || g_machine.mode == Mode::Homing) return;
+    if (g_restart_review.pending) return;  // Wizard must be confirmed first.
     if (!cycle_start_ready_locked()) return;
     bool cycle_allowed = true;
     if (!machine::g_registry.get_bool("cycle_allowed", cycle_allowed) || !cycle_allowed) return;
@@ -397,14 +464,69 @@ void toggle_hold() {
     refresh_machine_snapshot_locked();
 }
 
+// Forward decl — defined alongside the alarm helpers further down.
+static void copy_text(char* dst, size_t cap, const char* src);
+
+// ===== Operator audit log =====
+// 64-entry ring of high-impact operator actions. Captures the safety-relevant
+// surface (E-stop, fault clear, alarm ack, restart confirm/cancel, mode
+// changes) so post-hoc review can answer "who pressed what, when". Pure
+// in-RAM today; persistence to FAT32 belongs alongside save_setup once
+// the writer lands.
+struct AuditEntry {
+    uint64_t tick     = 0;       // g_machine.tick at the time of the event
+    char     verb[24] = {};      // "ESTOP", "CLEAR_FAULT", "ACK_ALARM", ...
+    char     target[24]= {};     // "ec0", "alarm:101", "tool_change", ...
+};
+
+static constexpr size_t kAuditRingSize = 64;
+static AuditEntry g_audit[kAuditRingSize];
+static size_t g_audit_head = 0;       // next slot to write
+static size_t g_audit_count = 0;      // total entries up to ring size
+
+static void audit_locked(const char* verb, const char* target) {
+    auto& slot = g_audit[g_audit_head];
+    slot.tick = g_machine.tick;
+    copy_text(slot.verb, sizeof(slot.verb), verb);
+    copy_text(slot.target, sizeof(slot.target), target ? target : "");
+    g_audit_head = (g_audit_head + 1) % kAuditRingSize;
+    if (g_audit_count < kAuditRingSize) ++g_audit_count;
+}
+
+static void audit(const char* verb, const char* target) {
+    core::ScopedLock lock(g_lock);
+    audit_locked(verb, target);
+}
+
+size_t audit_log_count() {
+    core::ScopedLock lock(g_lock);
+    return g_audit_count;
+}
+
+bool audit_log_entry(size_t idx, AuditLogEntry& out) {
+    core::ScopedLock lock(g_lock);
+    if (idx >= g_audit_count) return false;
+    // Walk newest-first: idx 0 is the most recent.
+    const size_t slot = (g_audit_head + kAuditRingSize - 1 - idx) % kAuditRingSize;
+    const auto& src = g_audit[slot];
+    out.tick = src.tick;
+    out.verb = src.verb;
+    out.target = src.target;
+    return true;
+}
+
 void request_ec_estop() {
+    audit("ESTOP", "ec");
     ethercat::g_master_a.trip_fault("operator E-stop (UI)");
     ethercat::g_master_b.trip_fault("operator E-stop (UI)");
 }
 
 void clear_ec_fault() {
+    audit("CLEAR_FAULT", "ec");
     ethercat::g_master_a.clear_deadline_fault();
     ethercat::g_master_b.clear_deadline_fault();
+    ethercat::g_master_a.clear_dc_sync_fault();
+    ethercat::g_master_b.clear_dc_sync_fault();
 }
 
 int spindle_axis_index() noexcept {
@@ -534,12 +656,103 @@ bool request_program_simulation(size_t channel) {
     return cnc::programs::g_store.rebuild_preview(current);
 }
 
-bool restart_program_at_line(size_t line_no) {
+// ===== Restart confirm wizard =====
+// The interpreter's restart_at_line() does a motion-free dry scan of all
+// G-code lines from the top to target_line, applying modal side effects
+// only (G90/91, G20/21, plane, motion mode, F, S, WCS, active_tool,
+// tool-length, coolant flags). The machine itself is NOT moved and the
+// physical tool/coolant peripherals are NOT toggled — restart_at_line
+// reconstructs *intent*, not state.
+//
+// That's a sharp foot-gun: the operator can punch a line number, hit
+// resume, and crash a T1 spindle into a workpiece programmed for T3
+// because the interpreter says "active_tool=T3" while the operator
+// physically still has T1 mounted.
+//
+// This wizard adds an explicit confirm step. Flow:
+//   1. Operator types target line N, taps Enter on the input.
+//   2. request_restart_review(N) runs the dry scan, captures the
+//      reconstructed state into g_restart_review, sets pending=true.
+//   3. UI shows the captured state (tool, WCS, F, S, coolant) on the
+//      restart_confirm page; cycle_start is gated on pending=false.
+//   4. Operator either:
+//      - taps CONFIRM → confirm_restart() clears pending. Cycle Start
+//        re-enables on the dashboard.
+//      - taps CANCEL → cancel_restart() stops the channel.
+//
+// (RestartReviewState + g_restart_review live earlier in the file —
+// hoisted above jog_selected so toggle_cycle's pending check resolves.)
+
+bool restart_review_pending() {
+    core::ScopedLock lock(g_lock);
+    return g_restart_review.pending;
+}
+
+RestartReviewSnapshot restart_review_snapshot() {
+    core::ScopedLock lock(g_lock);
+    RestartReviewSnapshot snap{};
+    snap.pending = g_restart_review.pending;
+    snap.ok = g_restart_review.ok;
+    snap.target_line = g_restart_review.target_line;
+    snap.active_work = g_restart_review.active_work;
+    snap.active_tool = g_restart_review.active_tool;
+    snap.tool_length_active = g_restart_review.tool_length_active;
+    snap.feed = g_restart_review.feed;
+    snap.spindle = g_restart_review.spindle;
+    snap.coolant_mist = g_restart_review.coolant_mist;
+    snap.coolant_flood = g_restart_review.coolant_flood;
+    return snap;
+}
+
+bool request_restart_review(size_t line_no) {
     core::ScopedLock lock(g_lock);
     stop_preview_cycle_locked(false);
     const bool ok = cnc::interp::g_runtime.restart_at_line(0, line_no);
+    g_restart_review.pending = true;
+    g_restart_review.target_line = line_no;
+    g_restart_review.ok = ok;
+    if (ok) {
+        const auto chsnap = cnc::interp::g_runtime.snapshot(0);
+        g_restart_review.active_work = chsnap.active_work;
+        g_restart_review.active_tool = chsnap.active_tool;
+        g_restart_review.tool_length_active = chsnap.tool_length_active;
+        g_restart_review.feed = chsnap.feed;
+        g_restart_review.spindle = chsnap.spindle;
+        g_restart_review.coolant_mist = chsnap.coolant_mist;
+        g_restart_review.coolant_flood = chsnap.coolant_flood;
+    }
     refresh_machine_snapshot_locked();
     return ok;
+}
+
+void confirm_restart() {
+    core::ScopedLock lock(g_lock);
+    if (g_restart_review.pending) {
+        char tgt[24];
+        kernel::util::k_snprintf(tgt, sizeof(tgt), "line=%lu",
+                                 static_cast<unsigned long>(g_restart_review.target_line));
+        audit_locked("RESTART_CONFIRM", tgt);
+    }
+    g_restart_review.pending = false;
+    refresh_machine_snapshot_locked();
+}
+
+void cancel_restart() {
+    core::ScopedLock lock(g_lock);
+    if (g_restart_review.pending) {
+        audit_locked("RESTART_CANCEL", "");
+        (void)cnc::interp::g_runtime.stop(0);
+    }
+    g_restart_review = RestartReviewState{};
+    refresh_machine_snapshot_locked();
+}
+
+// Legacy single-shot entry point used by the existing program-page input
+// (commit:restart:line) and any external callers. Stages the wizard rather
+// than going straight to Ready — keeping the semantics of the old API would
+// re-introduce the foot-gun this wizard exists to plug.
+bool restart_program_at_line(size_t line_no) {
+    return request_restart_review(line_no);
 }
 
 bool select_prev_macro() {
@@ -575,6 +788,25 @@ void set_feed_override(int32_t feed) {
         (void)motion::g_motion.set_override(
             0, motion::Kernel::OverrideKind::Feed,
             static_cast<uint16_t>(feed * 10));
+    }
+    refresh_machine_snapshot_locked();
+}
+
+// Spindle override mirrors the feed override surface — the motion kernel
+// already carries spindle_permille on every channel; this just exposes the
+// operator-side knob the way the operator's mental model expects (a slider
+// or +/-10% buttons on the dashboard, same shape as feed). Range matches
+// the feed-override convention (0..150 %) and gates on no fault.
+void set_spindle_override(int32_t pct) {
+    core::ScopedLock lock(g_lock);
+    if (pct < 0) pct = 0;
+    if (pct > 150) pct = 150;
+    if (ethercat::g_master_a.is_deadline_faulted() ||
+        ethercat::g_master_b.is_deadline_faulted()) return;
+    if (has_primary_channel()) {
+        (void)motion::g_motion.set_override(
+            0, motion::Kernel::OverrideKind::Spindle,
+            static_cast<uint16_t>(pct * 10));
     }
     refresh_machine_snapshot_locked();
 }
@@ -700,6 +932,8 @@ const ProgramSnapshot& program_snapshot() {
         snap.channels[ch].line = runtime.line;
         snap.channels[ch].barrier_token = runtime.barrier_token;
         snap.channels[ch].barrier_mask = runtime.barrier_mask;
+        snap.channels[ch].barrier_cycles_remaining =
+            motion::g_motion.barrier_cycles_remaining(ch);
     }
 
     const auto* selected = cnc::programs::g_store.selected_program();
@@ -755,46 +989,224 @@ size_t selected_program_preview(size_t channel, const render::gles1::Vec3f*& poi
     return p->preview.point_count;
 }
 
-AlarmsSnapshot alarms_snapshot() {
-    static constexpr const char* kStatusOnline = "operator alarm board online";
-    static constexpr const char* kAxes[4] = {"X", "Y", "Z", "A"};
-    static char messages[4][48];
+// ===== Alarm journal =====
+// A small ring of persistent records. Replaces the previous derive-on-read
+// model where alarms_snapshot rebuilt active+history from the live axis
+// fault flags every call — that lost transient faults that auto-recovered,
+// dropped 9th-and-later concurrent faults silently, ignored alarm_id on
+// ack, and made clear_alarm_history a no-op.
+//
+// Each record is keyed by alarm id; raising an alarm with the same id
+// updates raised_count + last_seen instead of allocating a fresh slot.
+// Acknowledge sets the per-record ack flag, but the record stays in the
+// journal so the operator can still see the history. clear_alarm_history
+// drops every record that is both inactive and acknowledged.
+//
+// Thread safety: every mutation runs under g_lock (held by the surrounding
+// callers — alarms_snapshot, acknowledge_alarm, clear_alarm_history). The
+// raise path is invoked from inside alarms_snapshot so it inherits the lock.
+struct AlarmRecord {
+    uint32_t id            = 0;
+    char     message[64]   = {};
+    char     axis[6]       = {};
+    AlarmsSnapshot::Severity severity = AlarmsSnapshot::Severity::Info;
+    uint64_t first_seen_ns = 0;
+    uint64_t last_seen_ns  = 0;
+    uint32_t raised_count  = 0;
+    bool     active        = false;
+    bool     acknowledged  = false;
+    bool     in_use        = false;
+};
 
-    AlarmsSnapshot snap{};
-    snap.service_online = true;
-    snap.status = kStatusOnline;
-    for (size_t i = 0; i < 4 && i < snap.active.size(); ++i) {
-        const auto& axis = motion::g_motion.axis(i);
-        if (!axis.fault_latched) continue;
-        kernel::util::k_snprintf(messages[snap.active_count], sizeof(messages[0]),
-                                 "DRIVE FAULT 0x%04x", axis.last_error_code);
-        auto& entry = snap.active[snap.active_count];
-        entry.id = 100u + static_cast<uint32_t>(i);
-        entry.message = messages[snap.active_count];
-        entry.axis = kAxes[i];
-        entry.severity = AlarmsSnapshot::Severity::Error;
-        entry.timestamp_ns = static_cast<uint64_t>(g_machine.tick) * 100000000ULL;
-        entry.acknowledged = false;
-        ++snap.active_count;
+static constexpr size_t kAlarmRingSize = 32;
+static AlarmRecord g_alarms[kAlarmRingSize];
+
+static AlarmRecord* find_alarm_locked(uint32_t id) {
+    for (auto& r : g_alarms) {
+        if (r.in_use && r.id == id) return &r;
     }
-    snap.history_count = snap.active_count;
-    for (size_t i = 0; i < snap.active_count && i < snap.history.size(); ++i) {
-        snap.history[i] = snap.active[i];
+    return nullptr;
+}
+
+static AlarmRecord* allocate_alarm_locked() {
+    // Prefer an unused slot.
+    for (auto& r : g_alarms) {
+        if (!r.in_use) return &r;
+    }
+    // Else evict the oldest record that is both inactive and acknowledged.
+    AlarmRecord* victim = nullptr;
+    for (auto& r : g_alarms) {
+        if (r.active || !r.acknowledged) continue;
+        if (!victim || r.last_seen_ns < victim->last_seen_ns) victim = &r;
+    }
+    if (victim) return victim;
+    // Else evict the oldest inactive (un-acknowledged) record.
+    for (auto& r : g_alarms) {
+        if (r.active) continue;
+        if (!victim || r.last_seen_ns < victim->last_seen_ns) victim = &r;
+    }
+    if (victim) return victim;
+    // Last resort: evict the oldest active. Should only happen if 32+
+    // distinct alarms are simultaneously raised — pathological.
+    for (auto& r : g_alarms) {
+        if (!victim || r.last_seen_ns < victim->last_seen_ns) victim = &r;
+    }
+    return victim;
+}
+
+static void copy_text(char* dst, size_t cap, const char* src) {
+    if (!dst || cap == 0) return;
+    size_t i = 0;
+    if (src) {
+        for (; src[i] && i + 1 < cap; ++i) dst[i] = src[i];
+    }
+    dst[i] = '\0';
+}
+
+static void raise_alarm_locked(uint32_t id,
+                               const char* msg, const char* axis,
+                               AlarmsSnapshot::Severity sev,
+                               uint64_t now_ns) {
+    if (AlarmRecord* existing = find_alarm_locked(id)) {
+        existing->last_seen_ns = now_ns;
+        existing->raised_count++;
+        existing->active = true;
+        // Re-asserting clears acknowledgement so it shows as active again.
+        if (existing->acknowledged) existing->acknowledged = false;
+        copy_text(existing->message, sizeof(existing->message), msg);
+        copy_text(existing->axis, sizeof(existing->axis), axis);
+        existing->severity = sev;
+        return;
+    }
+    AlarmRecord* slot = allocate_alarm_locked();
+    if (!slot) return;
+    slot->id = id;
+    slot->first_seen_ns = now_ns;
+    slot->last_seen_ns = now_ns;
+    slot->raised_count = 1;
+    slot->active = true;
+    slot->acknowledged = false;
+    slot->in_use = true;
+    copy_text(slot->message, sizeof(slot->message), msg);
+    copy_text(slot->axis, sizeof(slot->axis), axis);
+    slot->severity = sev;
+}
+
+static void deassert_alarm_locked(uint32_t id) {
+    if (AlarmRecord* existing = find_alarm_locked(id))
+        existing->active = false;
+}
+
+// Walk current state (axis faults, macro_fault registry flag) and either
+// raise/refresh or clear the corresponding journal entries. Driven from
+// alarms_snapshot so the journal stays in step with live state without
+// the master / motion threads needing to know about alarms.
+static void refresh_alarm_journal_locked() {
+    static constexpr const char* kAxes[4] = {"X", "Y", "Z", "A"};
+    const uint64_t now_ns =
+        static_cast<uint64_t>(g_machine.tick) * 100000000ULL;
+    for (size_t i = 0; i < 4; ++i) {
+        const auto& axis = motion::g_motion.axis(i);
+        const uint32_t id = 100u + static_cast<uint32_t>(i);
+        if (axis.fault_latched) {
+            char msg[64];
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                                     "DRIVE FAULT 0x%04x",
+                                     axis.last_error_code);
+            raise_alarm_locked(id, msg, kAxes[i],
+                               AlarmsSnapshot::Severity::Error, now_ns);
+        } else {
+            deassert_alarm_locked(id);
+        }
     }
     bool macro_fault = false;
     int32_t macro_fault_code = 0;
     if (machine::g_registry.get_bool("macro_fault", macro_fault) && macro_fault &&
-        machine::g_registry.get_int("macro_fault_code", macro_fault_code) &&
-        snap.active_count < snap.active.size()) {
+        machine::g_registry.get_int("macro_fault_code", macro_fault_code)) {
+        // Pull the failed channel's snapshot so the alarm message carries
+        // step-level context (macro id, step index, reason). The macro
+        // runtime sets .fault=true and leaves .step_index pointing at the
+        // failing step + the reason in .message before clearing .active.
+        // Without this enrichment the operator only saw "MACRO FAULT" with
+        // no way to find the offending step short of reading serial logs.
+        const uint32_t id = 500u + static_cast<uint32_t>(macro_fault_code);
+        char msg[64] = {};
+        const auto& ch = macros::g_runtime.channel_state(0);
+        const auto* mac = macros::g_runtime.macro(ch.macro_index);
+        if (mac && ch.message[0]) {
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                                     "MACRO %s step %u: %s",
+                                     mac->id,
+                                     static_cast<unsigned>(ch.step_index),
+                                     ch.message);
+        } else if (mac) {
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                                     "MACRO %s step %u: fault",
+                                     mac->id,
+                                     static_cast<unsigned>(ch.step_index));
+        } else {
+            kernel::util::k_snprintf(msg, sizeof(msg), "MACRO FAULT");
+        }
+        raise_alarm_locked(id, msg, "MAC",
+                           AlarmsSnapshot::Severity::Error, now_ns);
+    } else {
+        // No fault flag → clear any active macro alarm regardless of code.
+        for (auto& r : g_alarms) {
+            if (r.in_use && r.active && r.id >= 500u && r.id < 1000u) {
+                r.active = false;
+            }
+        }
+    }
+}
+
+AlarmsSnapshot alarms_snapshot() {
+    static constexpr const char* kStatusOnline = "operator alarm board online";
+    core::ScopedLock lock(g_lock);
+    refresh_alarm_journal_locked();
+
+    AlarmsSnapshot snap{};
+    snap.service_online = true;
+    snap.status = kStatusOnline;
+
+    // Active = currently asserted, un-acknowledged. Order: severity desc,
+    // then last_seen desc — keeps the most recent critical entries on top.
+    for (auto& r : g_alarms) {
+        if (!r.in_use || !r.active || r.acknowledged) continue;
+        if (snap.active_count >= snap.active.size()) break;
         auto& entry = snap.active[snap.active_count++];
-        entry.id = 500u + static_cast<uint32_t>(macro_fault_code);
-        entry.message = "MACRO FAULT";
-        entry.axis = "MAC";
-        entry.severity = AlarmsSnapshot::Severity::Error;
-        entry.timestamp_ns = static_cast<uint64_t>(g_machine.tick) * 100000000ULL;
-        entry.acknowledged = false;
+        entry.id = r.id;
+        entry.message = r.message;
+        entry.axis = r.axis;
+        entry.severity = r.severity;
+        entry.timestamp_ns = r.last_seen_ns;
+        entry.acknowledged = r.acknowledged;
     }
     if (snap.active_count != 0) snap.status = "ACTIVE MACHINE ALARM";
+
+    // History = latest N records overall (active or not, ack'd or not),
+    // sorted by last_seen_ns descending. Inserted via insertion sort
+    // bounded by the array size — fine at 12 slots × 32 ring entries.
+    for (auto& r : g_alarms) {
+        if (!r.in_use) continue;
+        size_t pos = snap.history_count;
+        while (pos > 0 &&
+               snap.history[pos - 1].timestamp_ns < r.last_seen_ns) {
+            if (pos < snap.history.size()) {
+                snap.history[pos] = snap.history[pos - 1];
+            }
+            --pos;
+        }
+        if (pos < snap.history.size()) {
+            auto& entry = snap.history[pos];
+            entry.id = r.id;
+            entry.message = r.message;
+            entry.axis = r.axis;
+            entry.severity = r.severity;
+            entry.timestamp_ns = r.last_seen_ns;
+            entry.acknowledged = r.acknowledged;
+            if (snap.history_count < snap.history.size()) ++snap.history_count;
+        }
+    }
     return snap;
 }
 
@@ -842,11 +1254,90 @@ SetupSnapshot setup_snapshot() {
 }
 
 void acknowledge_alarm(uint32_t alarm_id) {
-    (void)alarm_id;
-    reset_alarm();
+    core::ScopedLock lock(g_lock);
+    if (AlarmRecord* r = find_alarm_locked(alarm_id)) {
+        r->acknowledged = true;
+        char tgt[24];
+        kernel::util::k_snprintf(tgt, sizeof(tgt), "alarm:%lu",
+                                 static_cast<unsigned long>(alarm_id));
+        audit_locked("ACK_ALARM", tgt);
+    }
 }
 
 void clear_alarm_history() {
+    core::ScopedLock lock(g_lock);
+    // Drop every record that is both inactive and acknowledged. Active or
+    // un-acknowledged records stay — the operator can't sweep an alarm
+    // they haven't seen yet.
+    for (auto& r : g_alarms) {
+        if (r.in_use && !r.active && r.acknowledged) {
+            r = AlarmRecord{};
+        }
+    }
+}
+
+// ===== File browser surface =====
+// Backed by kernel::vfs (see fs/vfs.hpp). The header has carried these
+// declarations since the service page was sketched, but no .cpp definitions
+// existed — the Service page was effectively dead code on every binding.
+// All four operations now go through the VFS, which handles the "embedded
+// blob vs SD-mounted file vs in-RAM shadow" layering for us.
+namespace {
+struct FileWalkContext {
+    FileSnapshot* snap;
+};
+
+bool file_walk_collect(const char* path, const char* /*data*/, size_t size, void* user) {
+    auto* ctx = static_cast<FileWalkContext*>(user);
+    if (!ctx || !ctx->snap) return false;
+    if (ctx->snap->file_count >= ctx->snap->files.size()) return false;
+    auto& slot = ctx->snap->files[ctx->snap->file_count++];
+    slot.name = path;       // VFS owns the storage; lifetime matches g_vfs.
+    slot.path = path;
+    slot.size = size;
+    slot.is_dir = false;    // VFS is flat — no real dirs.
+    ctx->snap->total_size += size;
+    return true;
+}
+}  // namespace
+
+FileSnapshot file_snapshot() {
+    FileSnapshot snap{};
+    snap.available = kernel::vfs::entry_count() > 0;
+    snap.mount_point = "vfs:/";
+    snap.free_size = 0;     // VFS doesn't expose a free-space figure today.
+    FileWalkContext ctx{&snap};
+    kernel::vfs::walk("", &file_walk_collect, &ctx);
+    return snap;
+}
+
+bool create_file(const char* path) {
+    if (!path || !*path) return false;
+    static const char empty = 0;
+    return kernel::vfs::write_blob(path, &empty, 0, nullptr);
+}
+
+bool delete_file(const char* /*path*/) {
+    // VFS has no delete primitive today (write_blob can shadow with empty
+    // bytes but the entry stays). Returning false until that lands rather
+    // than pretending success.
+    return false;
+}
+
+bool read_file(const char* path, char* buffer, size_t bufsize) {
+    if (!path || !buffer || bufsize == 0) return false;
+    const char* data = nullptr;
+    size_t size = 0;
+    if (!kernel::vfs::lookup(path, data, size)) return false;
+    const size_t take = (size + 1 <= bufsize) ? size : bufsize - 1;
+    for (size_t i = 0; i < take; ++i) buffer[i] = data[i];
+    buffer[take] = '\0';
+    return true;
+}
+
+bool write_file(const char* path, const char* data, size_t len) {
+    if (!path || (!data && len > 0)) return false;
+    return kernel::vfs::write_blob(path, data, len, nullptr);
 }
 
 bool save_setup() {
@@ -1210,37 +1701,54 @@ EthercatSnapshot ethercat_snapshot() {
     const ethercat::Master* master = primary_master();
     if (!master) return snap;
 
-    snap.available = true;
-    snap.master_state = static_cast<uint8_t>(master->state());
-    snap.discovered = master->stats().discovered.load(std::memory_order_relaxed);
-    snap.cycles = master->stats().cycles.load(std::memory_order_relaxed);
-    snap.tx_frames = master->stats().tx_frames.load(std::memory_order_relaxed);
-    snap.rx_frames = master->stats().rx_frames.load(std::memory_order_relaxed);
-    snap.deadline_miss = master->stats().cycle_deadline_miss.load(std::memory_order_relaxed);
-    snap.esm_timeouts = master->stats().esm_timeouts.load(std::memory_order_relaxed);
-    snap.deadline_trips = master->stats().deadline_trips.load(std::memory_order_relaxed);
-    snap.deadline_fault = master->is_deadline_faulted();
-    snap.last_dc_drift_ns = master->last_dc_drift_ns();
-    snap.dc_drift_max_ns  = master->stats().dc_drift_max_ns.load(std::memory_order_relaxed);
-    snap.dc_sync_samples  = master->stats().dc_sync_samples.load(std::memory_order_relaxed);
-    snap.dc_sync_trips    = master->stats().dc_sync_trips.load(std::memory_order_relaxed);
-    snap.dc_sync_faulted  = master->is_dc_sync_faulted();
-    snap.cycle_p99_us = master->hist_cycle().percentile(99);
-    snap.cycle_max_us = master->hist_cycle().percentile(100);
-    snap.period_us = master->period_us();
-    snap.slave_count = master->slave_count();
+    // Seqlock retry. Master bumps snapshot_epoch_ at the top of every cycle
+    // (master.cpp:1178). If the epoch moves between e1 and e2 the multi-field
+    // copy below is potentially torn — try again. At 250 µs cycle and ~20
+    // atomic loads per pass the typical case is single-shot; the cap stops a
+    // pathological loop on a runaway master.
+    constexpr int kMaxRetries = 4;
+    for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+        const uint32_t e1 = master->snapshot_epoch();
 
-    const size_t limit = snap.slave_count < 6 ? snap.slave_count : 6;
-    for (size_t i = 0; i < limit; ++i) {
-        const auto& slave = master->slave(i);
-        snap.slaves[i].present = slave.present;
-        snap.slaves[i].station_addr = slave.station_addr;
-        snap.slaves[i].current_state = slave.current_state;
-        snap.slaves[i].target_state = slave.target_state;
-        snap.slaves[i].identity_mismatch = slave.identity_mismatch;
-        snap.slaves[i].vendor_id = slave.vendor_id ? slave.vendor_id : slave.observed_vid;
-        snap.slaves[i].product_code = slave.product_code ? slave.product_code : slave.observed_pid;
+        snap.available = true;
+        snap.master_state = static_cast<uint8_t>(master->state());
+        snap.discovered = master->stats().discovered.load(std::memory_order_relaxed);
+        snap.cycles = master->stats().cycles.load(std::memory_order_relaxed);
+        snap.tx_frames = master->stats().tx_frames.load(std::memory_order_relaxed);
+        snap.rx_frames = master->stats().rx_frames.load(std::memory_order_relaxed);
+        snap.deadline_miss = master->stats().cycle_deadline_miss.load(std::memory_order_relaxed);
+        snap.esm_timeouts = master->stats().esm_timeouts.load(std::memory_order_relaxed);
+        snap.deadline_trips = master->stats().deadline_trips.load(std::memory_order_relaxed);
+        snap.deadline_fault = master->is_deadline_faulted();
+        snap.last_dc_drift_ns = master->last_dc_drift_ns();
+        snap.dc_drift_max_ns  = master->stats().dc_drift_max_ns.load(std::memory_order_relaxed);
+        snap.dc_sync_samples  = master->stats().dc_sync_samples.load(std::memory_order_relaxed);
+        snap.dc_sync_trips    = master->stats().dc_sync_trips.load(std::memory_order_relaxed);
+        snap.dc_sync_faulted  = master->is_dc_sync_faulted();
+        snap.cycle_p99_us = master->hist_cycle().percentile(99);
+        snap.cycle_max_us = master->hist_cycle().percentile(100);
+        snap.period_us = master->period_us();
+        snap.slave_count = master->slave_count();
+
+        const size_t limit = snap.slave_count < 6 ? snap.slave_count : 6;
+        for (size_t i = 0; i < limit; ++i) {
+            const auto& slave = master->slave(i);
+            snap.slaves[i].present = slave.present;
+            snap.slaves[i].station_addr = slave.station_addr;
+            snap.slaves[i].current_state = slave.current_state;
+            snap.slaves[i].target_state = slave.target_state;
+            snap.slaves[i].identity_mismatch = slave.identity_mismatch;
+            snap.slaves[i].vendor_id = slave.vendor_id ? slave.vendor_id : slave.observed_vid;
+            snap.slaves[i].product_code = slave.product_code ? slave.product_code : slave.observed_pid;
+            snap.slaves[i].presence_loss_events = slave.presence_loss_events;
+        }
+
+        const uint32_t e2 = master->snapshot_epoch();
+        if (e1 == e2) return snap;
+        // else: master ticked mid-copy; loop and resample.
     }
+    // Best-effort: return whatever the last attempt produced. The caller
+    // sees a (possibly torn) snapshot but never blocks here.
     return snap;
 }
 
@@ -1474,8 +1982,12 @@ void net_request_ping() {
         target = g_net_ui.pending_ping_target;
     }
     if (target == 0) return;
-    uint32_t rtt = 0;
-    (void)hmi::g_service.ping_ipv4(target, 2000u, rtt);
+    // Fire-and-forget: hmi::Service runs the exchange on its own worker
+    // thread; the result lands in last_ping_result() / last_ping_rtt_ms()
+    // and is picked up by the network snapshot. Previously this blocked
+    // the UI thread for the full 2 s ICMP timeout — every operator ping
+    // froze the dashboard.
+    (void)hmi::g_service.ping_ipv4_async(target, 2000u);
 }
 
 // ===== Per-axis status sub-page =====

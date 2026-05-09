@@ -107,6 +107,35 @@ public:
         force_fault_ticks_.store(cycles, std::memory_order_release);
     }
 
+    // ---- Test inspection hooks ------------------------------------------
+    // SDO download history: the cyclic mailbox path captures every
+    // expedited SDO download (cmd & 0xE0 == 0x20) so subtests can verify
+    // that a kernel-side action (e.g. motion::Kernel::set_torque_limit)
+    // actually emitted the expected SDO write to the wire. Capacity 16,
+    // newest-overwrites-oldest so a noisy stream doesn't lose the
+    // immediately-relevant write. `clear_sdo_history` resets between
+    // tests.
+    struct SdoWriteRecord {
+        uint16_t index   = 0;
+        uint8_t  sub     = 0;
+        uint8_t  bytes   = 0;
+        uint8_t  data[4] = {};
+    };
+    size_t sdo_write_count() const noexcept {
+        return sdo_write_count_.load(std::memory_order_acquire);
+    }
+    SdoWriteRecord sdo_write_at(size_t newest_first_idx) const noexcept;
+    void clear_sdo_history() noexcept {
+        sdo_write_count_.store(0, std::memory_order_release);
+        sdo_write_head_.store(0, std::memory_order_release);
+    }
+    // Snapshot of the last 0x6072 (Max Torque) write in permille of motor
+    // rated torque. 0xFFFF means "no write observed yet". Updated by the
+    // mailbox path each time a download to 0x6072:0 lands.
+    uint16_t cia_max_torque_permille() const noexcept {
+        return max_torque_permille_.load(std::memory_order_acquire);
+    }
+
 private:
     int nic_idx_;
     kernel::hal::net::NetworkDriverOps* net_ = nullptr;
@@ -148,6 +177,19 @@ private:
     std::atomic<uint8_t>  pending_cw_{1}; // wake FSA on first cycle
     std::atomic<uint16_t> force_fault_ticks_{0}; // test-hook: hold Fault for N ticks
     std::atomic<uint8_t>  homing_attained_{0};
+
+    // SDO-download history (test inspection). Atomic head + count form a
+    // ring; readers walk newest-first via sdo_write_at(). max_torque is
+    // captured separately so a test can assert the value directly without
+    // walking the ring.
+    static constexpr size_t SDO_WRITE_HISTORY = 16;
+    std::array<SdoWriteRecord, SDO_WRITE_HISTORY> sdo_writes_{};
+    std::atomic<size_t>   sdo_write_head_{0};
+    std::atomic<size_t>   sdo_write_count_{0};
+    std::atomic<uint16_t> max_torque_permille_{0xFFFFu};
+
+    void record_sdo_download(uint16_t index, uint8_t sub,
+                             const uint8_t* data, uint8_t bytes) noexcept;
     void tick_cia402() noexcept;
 
     // --- CoE SDO mailbox emulation (task 1.2) ------------------------------

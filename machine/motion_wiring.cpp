@@ -71,21 +71,42 @@ size_t wire_motion_axes_from_topology(kernel::hal::UARTDriverOps* uart) noexcept
     }
 
     size_t wired = 0;
+    size_t skipped_missing_slave = 0;
     for (size_t i = 0; i < machine::topology::g_service.binding_count(); ++i) {
         const auto* binding = machine::topology::g_service.binding(i);
         if (!binding || !binding->used || binding->role != machine::topology::Role::Servo) continue;
         ethercat::Master& master = (binding->master_id == 0) ? ethercat::g_master_a : ethercat::g_master_b;
+        // A Servo binding pointing at a slave that hasn't shown up on the
+        // bus (slave_count() not advanced past it) used to silently hook
+        // against an empty SlaveInfo, leaving the axis motionless with no
+        // hint why. Surface it as a UART warning at boot — caller can
+        // either fix the topology TSV or wait for the slave to enumerate.
+        if (binding->slave_index >= master.slave_count()) {
+            ++skipped_missing_slave;
+            if (uart) {
+                char buf[160];
+                kernel::util::k_snprintf(
+                    buf, sizeof(buf),
+                    "[motion] WARN: axis %u bound to master=%u slave=%u not on bus (slave_count=%zu) — axis will be inert\n",
+                    static_cast<unsigned>(binding->axis_index),
+                    static_cast<unsigned>(binding->master_id),
+                    static_cast<unsigned>(binding->slave_index),
+                    master.slave_count());
+                uart->puts(buf);
+            }
+            continue;
+        }
         if (hook_servo_axis(master, binding->slave_index, binding->axis_index, default_dev)) {
             ++wired;
         }
     }
 
     if (uart) {
-        char buf[112];
+        char buf[160];
         kernel::util::k_snprintf(
             buf, sizeof(buf),
-            "[motion] topology servo bindings applied: %zu\n",
-            wired);
+            "[motion] topology servo bindings applied: %zu wired, %zu skipped (slave not on bus)\n",
+            wired, skipped_missing_slave);
         uart->puts(buf);
     }
     return wired;

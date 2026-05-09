@@ -29,12 +29,12 @@ constexpr uint32_t SPI_FREQ_FAST = 25000000;
 
 alignas(64) SDCardDriver g_sdcard;
 
-uint32_t spi_read_reg(uintptr_t base, uint32_t reg) {
+[[maybe_unused]] uint32_t spi_read_reg(uintptr_t base, uint32_t reg) {
     volatile uint32_t* regs = reinterpret_cast<volatile uint32_t*>(base);
     return regs[reg / 4];
 }
 
-void spi_write_reg(uintptr_t base, uint32_t reg, uint32_t val) {
+[[maybe_unused]] void spi_write_reg(uintptr_t base, uint32_t reg, uint32_t val) {
     volatile uint32_t* regs = reinterpret_cast<volatile uint32_t*>(base);
     regs[reg / 4] = val;
 }
@@ -58,7 +58,7 @@ void spi_set_cs(uintptr_t base, bool cs) {
     regs[0x00 / 4] = ctrl;
 }
 
-void spi_set_frequency(uintptr_t base, uint32_t freq) {
+[[maybe_unused]] void spi_set_frequency(uintptr_t base, uint32_t freq) {
     (void)base; (void)freq;
 }
 

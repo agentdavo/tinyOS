@@ -266,6 +266,13 @@ label	id=jog_feed_lbl	parent=jog_root	x=40	y=812	w=160	h=32	text=FEED %	color=#9
 slider	id=jog_feed	parent=jog_root	x=210	y=810	w=720	h=42	min=0	max=150	value=100	color=#0EA5E9	bg=#1F2937	bind=feed	focus=80
 label	id=jog_feed_val	parent=jog_root	x=950	y=812	w=110	h=32	text=100	color=#7DD3FC	bg=#0B1220	border=#0EA5E9	bind=feed	align=center	scale=1
 
+# --- spindle override slider ---
+# Mirrors the feed slider. Backed by motion::Kernel channel
+# overrides.spindle_permille via operator_api::set_spindle_override.
+label	id=jog_spo_lbl	parent=jog_root	x=40	y=862	w=160	h=32	text=SPINDLE %	color=#94A3B8	bg=#0A0F1A	scale=1
+slider	id=jog_spo	parent=jog_root	x=210	y=860	w=720	h=42	min=0	max=150	value=100	color=#F59E0B	bg=#1F2937	bind=spindle_override	focus=82
+label	id=jog_spo_val	parent=jog_root	x=950	y=862	w=110	h=32	text=100	color=#FCD34D	bg=#0B1220	border=#F59E0B	bind=spindle_override	align=center	scale=1
+
 # --- jog pad ---
 # JOG-/JOG+ are discrete step (one click = jog_increment counts).
 # HOLD-/HOLD+ are press-to-toggle continuous: first tap starts axis
@@ -537,7 +544,7 @@ panel	id=program_restart_panel	parent=program_root	x=20	y=1110	w=1040	h=200	bg=#
 label	id=program_restart_title	parent=program_root	x=40	y=1124	w=400	h=28	text=RESTART AT LINE	color=#94A3B8	bg=#111827	scale=2
 label	id=restart_lbl	parent=program_root	x=40	y=1180	w=200	h=44	text=GOTO LINE	color=#F8FAFC	bg=#111827	scale=2
 input	id=restart_line	parent=program_root	x=260	y=1175	w=300	h=64	text=0	bg=#F8FAFC	border=#7C3AED	color=#0F172A	action=commit:restart:line	focus=180
-label	id=restart_hint	parent=program_root	x=580	y=1186	w=460	h=32	text=type N, press Enter to restart	color=#64748B	bg=#111827	scale=1
+label	id=restart_hint	parent=program_root	x=580	y=1186	w=460	h=32	text=type N, press Enter; confirm before Cycle Start	color=#64748B	bg=#111827	scale=1
 label	id=restart_cur_lbl	parent=program_root	x=40	y=1255	w=200	h=32	text=AT BLOCK	color=#94A3B8	bg=#111827	scale=1
 label	id=restart_cur	parent=program_root	x=260	y=1252	w=300	h=40	text=0	color=#FBBF24	bg=#0F172A	border=#475569	bind=block_current	align=center	scale=2
 label	id=restart_blkn_lbl	parent=program_root	x=580	y=1255	w=160	h=32	text=BLOCKS	color=#94A3B8	bg=#111827	scale=1
@@ -803,12 +810,27 @@ label	id=ec_cycles_v	parent=ec_root	x=290	y=772	w=240	h=110	text=0	color=#86EFAC
 label	id=ec_tx_v	parent=ec_root	x=540	y=772	w=240	h=110	text=0	color=#86EFAC	bg=#0F172A	border=#475569	scale=3	bind=ec:tx	align=center
 label	id=ec_rx_v	parent=ec_root	x=790	y=772	w=250	h=110	text=0	color=#86EFAC	bg=#0F172A	border=#475569	scale=3	bind=ec:rx	align=center
 
-# --- actions (panel y=930, h=180) ---
-panel	id=ec_actions_panel	parent=ec_root	x=20	y=930	w=1040	h=180	bg=#111827	border=#334155
-label	id=ec_actions_title	parent=ec_root	x=40	y=944	w=400	h=28	text=ACTIONS	color=#94A3B8	bg=#111827	scale=2
-button	id=ec_clear_fault_btn	parent=ec_root	x=40	y=988	w=320	h=110	text=CLEAR FAULT	bg=#15803D	color=#FFFFFF	scale=2	focus=340
-button	id=ec_estop_btn	parent=ec_root	x=380	y=988	w=320	h=110	text=E-STOP	bg=#B91C1C	color=#FFFFFF	scale=2	focus=350
-button	id=ec_back_btn	parent=ec_root	x=720	y=988	w=320	h=110	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=360
+# --- DC sync health (panel y=930, h=180) ---
+# Surfaces the DC drift sampler state (master.cpp service_dc_drift). DC FAULT
+# turns red when consecutive drift samples exceed the threshold; CLEAR FAULT
+# in the actions panel resets both deadline + DC latches in one press.
+panel	id=ec_dc_panel	parent=ec_root	x=20	y=930	w=1040	h=180	bg=#111827	border=#334155
+label	id=ec_dc_title	parent=ec_root	x=40	y=944	w=400	h=28	text=DC SYNC HEALTH	color=#94A3B8	bg=#111827	scale=2
+label	id=ec_dc_state_h	parent=ec_root	x=40	y=988	w=240	h=28	text=STATE	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_dc_drift_h	parent=ec_root	x=290	y=988	w=240	h=28	text=PEAK DRIFT ns	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_dc_trips_h	parent=ec_root	x=540	y=988	w=240	h=28	text=DC TRIPS	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_dc_samples_h	parent=ec_root	x=790	y=988	w=250	h=28	text=DC SAMPLES	color=#64748B	bg=#111827	align=center	scale=1
+label	id=ec_dc_state_v	parent=ec_root	x=40	y=1024	w=240	h=70	text=ok	color=#86EFAC	bg=#0F172A	border=#475569	scale=2	bind=ec:dc_fault	align=center
+label	id=ec_dc_drift_v	parent=ec_root	x=290	y=1024	w=240	h=70	text=0	color=#FBBF24	bg=#0F172A	border=#475569	scale=2	bind=ec:dc_drift_max	align=center
+label	id=ec_dc_trips_v	parent=ec_root	x=540	y=1024	w=240	h=70	text=0	color=#FCA5A5	bg=#0F172A	border=#475569	scale=2	bind=ec:dc_trips	align=center
+label	id=ec_dc_samples_v	parent=ec_root	x=790	y=1024	w=250	h=70	text=0	color=#86EFAC	bg=#0F172A	border=#475569	scale=2	bind=ec:dc_samples	align=center
+
+# --- actions (panel y=1130, h=180) ---
+panel	id=ec_actions_panel	parent=ec_root	x=20	y=1130	w=1040	h=180	bg=#111827	border=#334155
+label	id=ec_actions_title	parent=ec_root	x=40	y=1144	w=400	h=28	text=ACTIONS	color=#94A3B8	bg=#111827	scale=2
+button	id=ec_clear_fault_btn	parent=ec_root	x=40	y=1188	w=320	h=110	text=CLEAR FAULT	bg=#15803D	color=#FFFFFF	scale=2	focus=340
+button	id=ec_estop_btn	parent=ec_root	x=380	y=1188	w=320	h=110	text=E-STOP	bg=#B91C1C	color=#FFFFFF	scale=2	focus=350
+button	id=ec_back_btn	parent=ec_root	x=720	y=1188	w=320	h=110	text=BACK	bg=#334155	color=#F8FAFC	scale=2	focus=360
 
 action	widget=ec_clear_fault_btn	event=click	target=ec:clear_fault
 action	widget=ec_estop_btn	event=click	target=ec:estop
@@ -1528,7 +1550,8 @@ include	page=bottom_nav
 # ============================================================
 page	id=tool_change	title=Tool Change
 panel	id=tc_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
-label	id=tc_title	parent=tc_root	x=40	y=30	w=1000	h=40	text=TOOL CHANGE	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+label	id=tc_title	parent=tc_root	x=40	y=30	w=1000	h=40	text=TOOL CHANGE (MANUAL)	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+label	id=tc_subtitle	parent=tc_root	x=40	y=72	w=1000	h=24	text=This is a confirmation flow. The spindle does not move; you swap the tool by hand.	color=#FCA5A5	bg=#0A0F1A	align=center	scale=1
 
 # --- CURRENT panel (y=90, h=260) ---
 panel	id=tc_cur_panel	parent=tc_root	x=20	y=90	w=1040	h=260	bg=#111827	border=#334155
@@ -1586,4 +1609,47 @@ action	widget=tc_btn_start	event=click	target=tc:start
 action	widget=tc_btn_abort	event=click	target=tc:abort
 action	widget=tc_btn_accept	event=click	target=tc:accept
 action	widget=tc_btn_back	event=click	target=goto:offsets
+include	page=bottom_nav
+
+# ============================================================
+# restart_confirm -- mid-program restart safety wizard.
+# Shown after the operator types a target line on the Program page and
+# the dry scan reconstructs modal state. Cycle Start is gated on
+# confirm_restart() — operator must inspect tool / WCS / spindle /
+# coolant against what is physically mounted before resuming.
+# ============================================================
+page	id=restart_confirm	title=Restart Confirm
+panel	id=rc_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+label	id=rc_title	parent=rc_root	x=40	y=30	w=1000	h=40	text=RESTART AT LINE -- CONFIRM	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
+label	id=rc_subtitle	parent=rc_root	x=40	y=72	w=1000	h=24	text=Verify the reconstructed state matches the physical machine before tapping CONFIRM.	color=#FCA5A5	bg=#0A0F1A	align=center	scale=1
+
+panel	id=rc_state_panel	parent=rc_root	x=20	y=110	w=1040	h=240	bg=#111827	border=#334155
+label	id=rc_pending_lbl	parent=rc_root	x=40	y=124	w=240	h=28	text=WIZARD	color=#94A3B8	bg=#111827	scale=2
+label	id=rc_pending_v	parent=rc_root	x=290	y=120	w=300	h=80	text=---	color=#FEF3C7	bg=#451A03	border=#F59E0B	bind=restart:pending	align=center	scale=3
+label	id=rc_line_lbl	parent=rc_root	x=620	y=140	w=200	h=32	text=AT LINE	color=#94A3B8	bg=#111827	scale=1
+label	id=rc_line_v	parent=rc_root	x=830	y=124	w=210	h=72	text=0	color=#7DD3FC	bg=#0F172A	border=#475569	bind=restart:line	align=center	scale=3
+label	id=rc_summary_lbl	parent=rc_root	x=40	y=240	w=200	h=32	text=Reconstructed	color=#94A3B8	bg=#111827	scale=1
+label	id=rc_summary_v	parent=rc_root	x=40	y=276	w=1000	h=44	text=Tool / WCS / F / S / coolant below were inferred by dry-scan. The machine has NOT moved.	color=#CBD5E1	bg=#0F172A	border=#475569	align=center	scale=1
+
+panel	id=rc_state_grid	parent=rc_root	x=20	y=370	w=1040	h=480	bg=#111827	border=#334155
+label	id=rc_grid_title	parent=rc_root	x=40	y=384	w=400	h=28	text=PROGRAM STATE	color=#94A3B8	bg=#111827	scale=2
+label	id=rc_tool_lbl	parent=rc_root	x=40	y=440	w=240	h=32	text=TOOL	color=#64748B	bg=#111827	align=center	scale=1
+label	id=rc_tool_v	parent=rc_root	x=40	y=480	w=240	h=120	text=---	color=#FBBF24	bg=#0F172A	border=#475569	scale=3	bind=restart:tool	align=center
+label	id=rc_wcs_lbl	parent=rc_root	x=290	y=440	w=240	h=32	text=WCS	color=#64748B	bg=#111827	align=center	scale=1
+label	id=rc_wcs_v	parent=rc_root	x=290	y=480	w=240	h=120	text=G54	color=#DDD6FE	bg=#0F172A	border=#7C3AED	scale=3	bind=restart:wcs	align=center
+label	id=rc_feed_lbl	parent=rc_root	x=540	y=440	w=240	h=32	text=FEED	color=#64748B	bg=#111827	align=center	scale=1
+label	id=rc_feed_v	parent=rc_root	x=540	y=480	w=240	h=120	text=F0	color=#7DD3FC	bg=#0F172A	border=#475569	scale=3	bind=restart:feed	align=center
+label	id=rc_spindle_lbl	parent=rc_root	x=790	y=440	w=250	h=32	text=SPINDLE	color=#64748B	bg=#111827	align=center	scale=1
+label	id=rc_spindle_v	parent=rc_root	x=790	y=480	w=250	h=120	text=S0	color=#FCD34D	bg=#0F172A	border=#F59E0B	scale=3	bind=restart:spindle	align=center
+label	id=rc_coolant_lbl	parent=rc_root	x=40	y=620	w=400	h=32	text=COOLANT	color=#64748B	bg=#111827	align=center	scale=1
+label	id=rc_coolant_v	parent=rc_root	x=40	y=660	w=1000	h=70	text=OFF	color=#7DD3FC	bg=#0F172A	border=#475569	scale=2	bind=restart:coolant	align=center
+label	id=rc_caution_v	parent=rc_root	x=40	y=750	w=1000	h=80	text=Verify the spindle has the right tool mounted. Verify coolant valves match. The interpreter cannot.	color=#FCA5A5	bg=#0F172A	border=#7F1D1D	scale=1	align=center
+
+panel	id=rc_ctl_panel	parent=rc_root	x=20	y=880	w=1040	h=400	bg=#111827	border=#334155
+label	id=rc_ctl_title	parent=rc_root	x=40	y=894	w=400	h=28	text=DECISION	color=#94A3B8	bg=#111827	scale=2
+button	id=rc_confirm	parent=rc_root	x=40	y=940	w=480	h=300	text=CONFIRM RESTART	bg=#15803D	color=#FFFFFF	scale=3	focus=940
+button	id=rc_cancel	parent=rc_root	x=540	y=940	w=480	h=300	text=CANCEL	bg=#B91C1C	color=#FFFFFF	scale=3	focus=942
+
+action	widget=rc_confirm	event=click	target=restart:confirm
+action	widget=rc_cancel	event=click	target=restart:cancel
 include	page=bottom_nav

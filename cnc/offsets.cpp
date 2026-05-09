@@ -53,4 +53,14 @@ bool Service::set_tool_value(size_t idx, float length, float radius, float wear)
     return true;
 }
 
+bool Service::set_tool_length_vec(size_t idx, float length_x, float length_y,
+                                  float length_z) noexcept {
+    if (idx >= TOOL_OFFSET_COUNT) return false;
+    kernel::core::ScopedLock lock(lock_);
+    tool_offsets_[idx].length_x = length_x;
+    tool_offsets_[idx].length_y = length_y;
+    tool_offsets_[idx].length   = length_z;
+    return true;
+}
+
 } // namespace cnc::offsets

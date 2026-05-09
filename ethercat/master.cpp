@@ -127,6 +127,8 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
         if (dg.cmd == Cmd::BRD && dg.address == REG_DL_STATUS && dg.wkc > 0) {
             stats_.discovered.store(dg.wkc, std::memory_order_relaxed);
             if (dg.wkc > slave_count_ && dg.wkc <= MAX_SLAVES) {
+                const uint64_t epoch_now =
+                    snapshot_epoch_.load(std::memory_order_relaxed);
                 for (size_t i = slave_count_; i < dg.wkc; ++i) {
                     slaves_[i].station_addr   = static_cast<uint16_t>(0x1001 + i);
                     slaves_[i].current_state  = AL_INIT;
@@ -140,6 +142,8 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
                     slaves_[i].pdo_layout         = default_csp_layout();
                     slaves_[i].rx_process_data.fill(0);
                     slaves_[i].tx_process_data.fill(0);
+                    slaves_[i].present            = true;
+                    slaves_[i].last_seen_cycle    = epoch_now;
                 }
                 slave_count_ = dg.wkc;
             }
@@ -156,6 +160,8 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
             for (size_t i = 0; i < slave_count_; ++i) {
                 if (slaves_[i].station_addr == station) {
                     slaves_[i].current_state = static_cast<uint8_t>(dg.data[0] & 0x0F);
+                    slaves_[i].last_seen_cycle =
+                        snapshot_epoch_.load(std::memory_order_relaxed);
                     break;
                 }
             }
@@ -170,6 +176,30 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
             && dg.wkc > 0
             && dg.data != nullptr) {
             const uint16_t station = static_cast<uint16_t>(dg.address >> 16);
+            // Tier 3b: peek at the CoE service / cmd byte to recognise an
+            // SDO download confirm/abort response. CoE header is 2 bytes
+            // at offset 6 (after the 6-byte mailbox header); cmd byte at
+            // offset 8. A download-direction response (master initiated)
+            // has cmd nibble 0x60 (confirm) or 0x80 (abort).
+            if (dl_in_flight_ && station == dl_station_ && dg.data_len >= 12) {
+                const uint8_t  cmd      = dg.data[8];
+                const uint16_t resp_idx =
+                    static_cast<uint16_t>(dg.data[9]) |
+                    (static_cast<uint16_t>(dg.data[10]) << 8);
+                const uint8_t  resp_sub = dg.data[11];
+                const uint32_t abort_code = (dg.data_len >= 16)
+                    ? (static_cast<uint32_t>(dg.data[12]) |
+                       (static_cast<uint32_t>(dg.data[13]) << 8) |
+                       (static_cast<uint32_t>(dg.data[14]) << 16) |
+                       (static_cast<uint32_t>(dg.data[15]) << 24))
+                    : 0u;
+                if ((cmd & 0xE0) == 0x60 || (cmd & 0xE0) == 0x80) {
+                    on_sdo_download_response(station, cmd,
+                                             resp_idx, resp_sub, abort_code);
+                    if (!dg.more) break;
+                    continue;
+                }
+            }
             if (station != upload_station_) {
                 if (!dg.more) break;
                 continue;
@@ -264,6 +294,8 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
         // matches what cycle_lrw packs.
         if (dg.cmd == Cmd::LRW && dg.wkc > 0 && dg.address == 0
             && dg.data != nullptr) {
+            const uint64_t epoch_now =
+                snapshot_epoch_.load(std::memory_order_relaxed);
             size_t byte_offset = 0;
             for (size_t i = 0; i < slave_count_; ++i) {
                 auto& d = slaves_[i].drive;
@@ -274,6 +306,7 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
                 if (byte_offset + per_slave > dg.data_len) break;
                 const uint8_t* p = dg.data + byte_offset;
                 byte_offset += per_slave;
+                slaves_[i].last_seen_cycle = epoch_now;
                 const size_t tx_take = (lay.tx_size_bytes <= PDO_SLOT_BYTES)
                     ? lay.tx_size_bytes : PDO_SLOT_BYTES;
                 if (tx_take > 0) {
@@ -546,9 +579,14 @@ bool Master::upload_sdo(uint16_t station_addr, uint16_t index, uint8_t sub,
     upload_state_.store(UploadState::Pending, std::memory_order_release);
 
     // Spin-wait for the cycle loop to flip the state. Yield between polls
-    // so the scheduler can actually run the ec_a thread (caller is typically
-    // the CLI thread on a different core, but matching-core callers would
-    // starve without a yield).
+    // so the scheduler can actually run the ec_a thread; yield to the
+    // CALLING core, not core 0 — `yield(0)` always woke core 0's
+    // scheduler regardless of who called us, starving same-core callers
+    // when this code ran from a non-zero CLI thread or the bus_config
+    // helper migrated cores. Also bail when the deadline elapses so a
+    // wedged response can't leave the caller looping forever.
+    const uint32_t caller_core = kernel::g_platform
+        ? kernel::g_platform->get_core_id() : 0;
     for (;;) {
         const auto s = upload_state_.load(std::memory_order_acquire);
         if (s == UploadState::Done) {
@@ -568,10 +606,205 @@ bool Master::upload_sdo(uint16_t station_addr, uint16_t index, uint8_t sub,
             upload_busy_.store(false, std::memory_order_release);
             return false;
         }
-        // Yield between polls; the master's cycle loop runs on another core
-        // (core 2 / 3). kernel::Scheduler::yield is the cooperative hook.
-        if (kernel::g_scheduler_ptr) kernel::g_scheduler_ptr->yield(0);
+        if (now_us() > upload_deadline_us_) {
+            *out_bytes = 0;
+            if (abort_code) *abort_code = 0;
+            upload_segment_request_inflight_ = false;
+            upload_state_.store(UploadState::Idle, std::memory_order_release);
+            upload_busy_.store(false, std::memory_order_release);
+            return false;
+        }
+        if (kernel::g_scheduler_ptr) kernel::g_scheduler_ptr->yield(caller_core);
     }
+}
+
+bool Master::upload_sdo_start(uint16_t station_addr, uint16_t index, uint8_t sub,
+                              uint32_t timeout_us) noexcept {
+    bool expected = false;
+    if (!upload_busy_.compare_exchange_strong(expected, true,
+                                              std::memory_order_acq_rel)) {
+        return false; // another upload in flight
+    }
+    extern size_t build_sdo_upload_request(uint8_t*, size_t,
+                                           const uint8_t[6], const uint8_t[6],
+                                           uint16_t, uint16_t, uint8_t,
+                                           uint8_t&);
+    uint8_t frame[128];
+    const size_t n = build_sdo_upload_request(frame, sizeof(frame),
+                                              BROADCAST_MAC, SRC_MAC,
+                                              station_addr, index, sub,
+                                              sdo_counter_);
+    if (!n || !send_frame(frame, n)) {
+        upload_busy_.store(false, std::memory_order_release);
+        return false;
+    }
+    stats_.sdo_tx.fetch_add(1, std::memory_order_relaxed);
+    upload_station_ = station_addr;
+    upload_index_   = index;
+    upload_sub_     = sub;
+    upload_result_bytes_ = 0;
+    upload_abort_code_   = 0;
+    upload_segment_request_inflight_ = false;
+    upload_deadline_us_  = now_us() + timeout_us;
+    upload_state_.store(UploadState::Pending, std::memory_order_release);
+    return true;
+}
+
+bool Master::send_sdo_download_tracked(uint16_t station_addr,
+                                       uint16_t index, uint8_t sub,
+                                       const uint8_t* data, uint8_t len_bytes,
+                                       std::atomic<uint8_t>* completion_state,
+                                       uint32_t* abort_code,
+                                       uint32_t timeout_us) noexcept {
+    if (dl_in_flight_) return false;
+    if (completion_state) completion_state->store(0, std::memory_order_release);
+    if (abort_code) *abort_code = 0;
+    if (!send_sdo_download(station_addr, index, sub, data, len_bytes)) {
+        if (completion_state) completion_state->store(2, std::memory_order_release);
+        return false;
+    }
+    dl_in_flight_   = true;
+    dl_station_     = station_addr;
+    dl_index_       = index;
+    dl_sub_         = sub;
+    dl_completion_  = completion_state;
+    dl_abort_code_  = abort_code;
+    dl_deadline_us_ = now_us() + timeout_us;
+    return true;
+}
+
+void Master::service_sdo_download() noexcept {
+    if (!dl_in_flight_) return;
+    // Poll SM1 mailbox for the slave's CoE response. Most slaves answer
+    // an expedited download in <2 cycles; we issue one FPRD per cycle
+    // until something lands or the deadline expires.
+    {
+        FrameBuilder fb(tx_scratch_.data(), tx_scratch_.size(),
+                        BROADCAST_MAC, SRC_MAC);
+        uint8_t pad[SDO_MAILBOX_LEN] = {};
+        const uint32_t addr = (static_cast<uint32_t>(dl_station_) << 16)
+                            | SM1_MAILBOX_IN_OFFS;
+        if (fb.add_datagram(Cmd::FPRD, dgram_idx_++, addr, pad, SDO_MAILBOX_LEN)) {
+            send_frame(tx_scratch_.data(), fb.finalize());
+        }
+    }
+    if (now_us() <= dl_deadline_us_) return;
+    if (dl_completion_) dl_completion_->store(2, std::memory_order_release);
+    if (dl_abort_code_) *dl_abort_code_ = 0; // 0 = timeout
+    dl_in_flight_   = false;
+    dl_completion_  = nullptr;
+    dl_abort_code_  = nullptr;
+}
+
+void Master::on_sdo_download_response(uint16_t station, uint8_t cmd,
+                                      uint16_t index, uint8_t sub,
+                                      uint32_t abort_code) noexcept {
+    if (!dl_in_flight_) return;
+    if (station != dl_station_ || index != dl_index_ || sub != dl_sub_) return;
+    // CoE: cmd 0x60 = download confirm; cmd 0x80 = abort.
+    if ((cmd & 0xE0) == 0x60) {
+        if (dl_completion_) dl_completion_->store(1, std::memory_order_release);
+    } else {
+        if (dl_completion_) dl_completion_->store(2, std::memory_order_release);
+        if (dl_abort_code_) *dl_abort_code_ = abort_code;
+    }
+    dl_in_flight_   = false;
+    dl_completion_  = nullptr;
+    dl_abort_code_  = nullptr;
+}
+
+bool Master::enqueue_sdo_upload(const SdoRequest& req) noexcept {
+    if (!req.out_data || !req.out_bytes || !req.completion_state) return false;
+    const size_t head = sdo_queue_head_.load(std::memory_order_acquire);
+    const size_t tail = sdo_queue_tail_.load(std::memory_order_relaxed);
+    if (((tail + 1) % SDO_QUEUE_DEPTH) == head) {
+        // Queue full — caller is firing faster than the master can drain.
+        return false;
+    }
+    sdo_queue_[tail] = req;
+    req.completion_state->store(0, std::memory_order_release);
+    sdo_queue_tail_.store((tail + 1) % SDO_QUEUE_DEPTH,
+                          std::memory_order_release);
+    return true;
+}
+
+size_t Master::sdo_queue_depth() const noexcept {
+    const size_t head = sdo_queue_head_.load(std::memory_order_acquire);
+    const size_t tail = sdo_queue_tail_.load(std::memory_order_acquire);
+    return (tail + SDO_QUEUE_DEPTH - head) % SDO_QUEUE_DEPTH;
+}
+
+void Master::service_sdo_queue() noexcept {
+    // If a request is in flight, poll it.
+    if (sdo_request_in_flight_) {
+        uint8_t buf[4]{};
+        uint8_t bytes = 0;
+        uint32_t abort = 0;
+        const int r = upload_sdo_poll(buf, &bytes, &abort);
+        if (r == 0) return;  // still pending
+        // Copy result into caller's slot and signal completion.
+        if (r > 0 && sdo_active_request_.out_data) {
+            for (uint8_t i = 0; i < 4; ++i) sdo_active_request_.out_data[i] = buf[i];
+        }
+        if (sdo_active_request_.out_bytes) *sdo_active_request_.out_bytes = (r > 0 ? bytes : 0);
+        if (sdo_active_request_.abort_code) *sdo_active_request_.abort_code = (r > 0 ? 0 : abort);
+        if (sdo_active_request_.completion_state) {
+            sdo_active_request_.completion_state->store(
+                r > 0 ? 1u : 2u, std::memory_order_release);
+        }
+        sdo_request_in_flight_ = false;
+        sdo_active_request_ = SdoRequest{};
+    }
+    // No in-flight: kick the head of the queue.
+    const size_t head = sdo_queue_head_.load(std::memory_order_acquire);
+    const size_t tail = sdo_queue_tail_.load(std::memory_order_acquire);
+    if (head == tail) return;  // empty
+    SdoRequest req = sdo_queue_[head];
+    sdo_queue_head_.store((head + 1) % SDO_QUEUE_DEPTH,
+                          std::memory_order_release);
+    if (!upload_sdo_start(req.station, req.index, req.sub, req.timeout_us)) {
+        // Couldn't claim slot (race) — push back? Easiest: signal error.
+        if (req.completion_state) {
+            req.completion_state->store(2u, std::memory_order_release);
+        }
+        if (req.out_bytes) *req.out_bytes = 0;
+        if (req.abort_code) *req.abort_code = 0;
+        return;
+    }
+    sdo_active_request_ = req;
+    sdo_request_in_flight_ = true;
+}
+
+int Master::upload_sdo_poll(uint8_t out[4], uint8_t* out_bytes,
+                            uint32_t* abort_code) noexcept {
+    if (!out || !out_bytes) return -1;
+    const auto s = upload_state_.load(std::memory_order_acquire);
+    if (s == UploadState::Done) {
+        *out_bytes = upload_result_bytes_;
+        std::memcpy(out, upload_result_, 4);
+        if (abort_code) *abort_code = 0;
+        upload_segment_request_inflight_ = false;
+        upload_state_.store(UploadState::Idle, std::memory_order_release);
+        upload_busy_.store(false, std::memory_order_release);
+        return 1;
+    }
+    if (s == UploadState::Error) {
+        *out_bytes = 0;
+        if (abort_code) *abort_code = upload_abort_code_;
+        upload_segment_request_inflight_ = false;
+        upload_state_.store(UploadState::Idle, std::memory_order_release);
+        upload_busy_.store(false, std::memory_order_release);
+        return -1;
+    }
+    if (now_us() > upload_deadline_us_) {
+        *out_bytes = 0;
+        if (abort_code) *abort_code = 0;
+        upload_segment_request_inflight_ = false;
+        upload_state_.store(UploadState::Idle, std::memory_order_release);
+        upload_busy_.store(false, std::memory_order_release);
+        return -1;
+    }
+    return 0; // still pending
 }
 
 size_t Master::upload_sdo_segmented(uint16_t station_addr,
@@ -1137,6 +1370,25 @@ void Master::service_dc_drift() noexcept {
         early_uart_puts(buf);
     }
 
+    // Phase-shift compensation. Compute a gentle correction toward the
+    // slave's DC clock and stage it for run_loop to apply on the next
+    // iteration. Positive drift means master got ahead — correction is
+    // positive (lengthen next cycle). Gain is 1/8 of the observed drift
+    // so a single outlier doesn't slew the master phase, and the result
+    // is hard-capped at ±DC_PHASE_MAX_ADJUST_US (5 µs) — a fraction of
+    // the 250 µs cycle, far less than the slave's SM watchdog can
+    // tolerate. Sampler runs at ~10 Hz so the correction tracks ~80
+    // ns/sample of residual drift before each new sample lands.
+    constexpr int32_t kPhaseGainShift  = 3;          // divide by 8
+    constexpr int32_t kPhaseMaxAdjustUs = 5;
+    int32_t adj_us =
+        static_cast<int32_t>((drift_ns >> kPhaseGainShift) / 1000);
+    if (adj_us >  kPhaseMaxAdjustUs) adj_us =  kPhaseMaxAdjustUs;
+    if (adj_us < -kPhaseMaxAdjustUs) adj_us = -kPhaseMaxAdjustUs;
+    if (adj_us != 0) {
+        dc_phase_adjust_us_.store(adj_us, std::memory_order_release);
+    }
+
     if (mag > dc_drift_threshold_ns_) {
         if (++consecutive_drift_misses_ >= CONSECUTIVE_DRIFT_THRESHOLD
             && !dc_sync_fault_.load(std::memory_order_relaxed)) {
@@ -1176,12 +1428,75 @@ void Master::run_loop() {
     discover_slaves();
 
     for (;;) {
+        // Snapshot epoch fence — bumped before any per-cycle write so
+        // operator-side readers can detect a racing cycle. See header.
+        const uint64_t epoch_now = snapshot_epoch_.fetch_add(
+            1, std::memory_order_release) + 1;
+
+        // Per-slave presence sweep. A slave that hasn't contributed an RX
+        // response (FPRD AL_STATUS or LRW PDO) for more than kAbsentCycles
+        // is treated as disconnected. At 250 µs cycles the threshold gives
+        // ~25 ms of grace before a "lost" event latches — long enough to
+        // ride out a single dropped frame, short enough that a cable yank
+        // surfaces to the operator before motion drifts further. The first
+        // few cycles after boot are skipped so slaves get a chance to
+        // respond before we'd flag them.
+        constexpr uint64_t kAbsentCycles = 100;
+        constexpr uint64_t kBootGrace    = 50;
+        if (epoch_now > kBootGrace) {
+            for (size_t i = 0; i < slave_count_; ++i) {
+                auto& sl = slaves_[i];
+                const bool seen_recently =
+                    (epoch_now - sl.last_seen_cycle) < kAbsentCycles;
+                if (sl.present && !seen_recently) {
+                    sl.present = false;
+                    sl.presence_lost_cycle = epoch_now;
+                    sl.presence_loss_events++;
+                    char msg[96];
+                    kernel::util::k_snprintf(msg, sizeof(msg),
+                        "[ec%d] slave 0x%04x lost contact (cycle %llu)\n",
+                        id_,
+                        static_cast<unsigned>(sl.station_addr),
+                        static_cast<unsigned long long>(epoch_now));
+                    early_uart_puts(msg);
+                } else if (!sl.present && seen_recently) {
+                    sl.present = true;
+                    char msg[96];
+                    kernel::util::k_snprintf(msg, sizeof(msg),
+                        "[ec%d] slave 0x%04x reconnected (cycle %llu)\n",
+                        id_,
+                        static_cast<unsigned>(sl.station_addr),
+                        static_cast<unsigned long long>(epoch_now));
+                    early_uart_puts(msg);
+                }
+            }
+        }
+
         // Jitter sample at cycle top — tracks inter-cycle interval vs period.
         auto& jt = (id_ == 0) ? diag::rt::ecat_a : diag::rt::ecat_b;
         jt.sample(t->get_system_time_ns());
 
         const uint64_t cycle_start_us = t->get_system_time_us();
         next_us += period_us_;
+        // DC phase-shift compensation: apply any pending adjustment from
+        // service_dc_drift exactly once per cycle. Positive nudges the next
+        // cycle's deadline forward (slow down to let the slave catch up),
+        // negative pulls it back (speed up). The sampler caps the magnitude
+        // so a one-cycle skew can't blow the master period out of spec.
+        const int32_t phase_adj_us =
+            dc_phase_adjust_us_.exchange(0, std::memory_order_acquire);
+        if (phase_adj_us != 0) {
+            const int64_t adj_signed = phase_adj_us;
+            // next_us is uint64_t; clamp the shift so a negative adj can't
+            // wrap when next_us is small (early boot).
+            if (adj_signed < 0 &&
+                static_cast<uint64_t>(-adj_signed) > next_us) {
+                next_us = 0;
+            } else {
+                next_us = static_cast<uint64_t>(
+                    static_cast<int64_t>(next_us) + adj_signed);
+            }
+        }
 
         if (slave_count_ == 0) {
             const uint64_t t0 = t->get_system_time_us();
@@ -1207,7 +1522,9 @@ void Master::run_loop() {
         // the OP gate because SDO mailbox traffic is valid in PREOP and
         // SafeOp too — that's where 1.3/1.4 need it.
         service_sdo_upload();
+        service_sdo_download();
         service_esc_read();
+        service_sdo_queue();
 
         // Periodic DC-sync drift sampler. Self-rate-limits to
         // dc_drift_check_period_us_ and only reads one slave per tick, so
@@ -1243,8 +1560,22 @@ void Master::run_loop() {
         if (wait_t0 > next_us) {
             stats_.cycle_deadline_miss.fetch_add(1, std::memory_order_relaxed);
             next_us = wait_t0;
-            if (++consecutive_misses_ >= CONSECUTIVE_MISS_THRESHOLD &&
-                !deadline_fault_.load(std::memory_order_relaxed)) {
+            // Boot grace: the first BOOT_GRACE_CYCLES iterations after
+            // the master starts coexist with virtio-gpu scanout setup,
+            // hmi DHCP discover, framebuffer clear, ESI blob ingestion,
+            // and the rest of the cold-start surge — all of which
+            // routinely blow the 250 µs deadline on QEMU TCG. Counting
+            // those toward the trip threshold gave every cold boot a
+            // "[ec0] FAULT TRIPPED" within seconds, before any operator
+            // action. The miss is still recorded in stats so it shows
+            // up in `ec` / histograms, but it doesn't accumulate the
+            // consecutive-miss counter that latches the fault. After
+            // grace, normal CONSECUTIVE_MISS_THRESHOLD applies.
+            const uint64_t cycles = stats_.cycles.load(std::memory_order_relaxed);
+            if (cycles < BOOT_GRACE_CYCLES) {
+                consecutive_misses_ = 0;
+            } else if (++consecutive_misses_ >= CONSECUTIVE_MISS_THRESHOLD &&
+                       !deadline_fault_.load(std::memory_order_relaxed)) {
                 on_deadline_fault();
             }
         } else {
