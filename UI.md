@@ -31,6 +31,7 @@ downscaled by the factor noted at capture time.
 - [Axis Detail](#axis-status) — `axis_status`
 - [Tool Change](#tool-change) — `tool_change`
 - [Restart Confirm](#restart-confirm) — `restart_confirm`
+- [Lights-Out](#lights-out) — `lights_out`
 
 <a id="dashboard"></a>
 ### Dashboard
@@ -165,7 +166,14 @@ downscaled by the factor noted at capture time.
 
 ![Restart Confirm](screenshots/restart_confirm.png)
 
+<a id="lights-out"></a>
+### Lights-Out
+
+`ui_page lights_out` — defined in `devices/embedded_ui.tsv`.
+
+![Lights-Out](screenshots/lights_out.png)
+
 
 ---
 
-*Generated 2026-05-09 18:48:01 UTC from `devices/embedded_ui.tsv` (19 pages).*
+*Generated 2026-05-10 13:58:58 UTC from `devices/embedded_ui.tsv` (20 pages).*
