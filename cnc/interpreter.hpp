@@ -188,6 +188,19 @@ public:
     TcpOrder  tcp_order() const noexcept             { return tcp_order_; }
     void      set_tcp_mode(TcpMode mode) noexcept    { tcp_mode_ = mode; }
     TcpMode   tcp_mode() const noexcept              { return tcp_mode_; }
+    // Tail-kinematics rotary pivot in machine-frame axis counts. The
+    // pivot is the (X,Y,Z) point about which the workpiece rotates when
+    // both rotaries are at zero. apply_tcp_correction in tail mode
+    // rotates the requested target around this pivot. Default (0,0,0)
+    // means "rotaries pivot at the workpiece origin" — fine for a
+    // calibrated G54 setup. Per-machine commissioning sets it via the
+    // CLI or setup snapshot.
+    void      set_tcp_pivot(int32_t x, int32_t y, int32_t z) noexcept {
+        tcp_pivot_x_ = x; tcp_pivot_y_ = y; tcp_pivot_z_ = z;
+    }
+    void      tcp_pivot(int32_t& x, int32_t& y, int32_t& z) const noexcept {
+        x = tcp_pivot_x_; y = tcp_pivot_y_; z = tcp_pivot_z_;
+    }
 
     // Mid-program restart. Reloads the selected program on `channel`, then
     // does a motion-free scan of lines 0..target_line-1, applying only modal
@@ -223,6 +236,9 @@ private:
     ChannelState channels_[programs::MAX_CHANNELS]{};
     TcpOrder     tcp_order_ = TcpOrder::CB;
     TcpMode      tcp_mode_  = TcpMode::Head;
+    int32_t      tcp_pivot_x_ = 0;
+    int32_t      tcp_pivot_y_ = 0;
+    int32_t      tcp_pivot_z_ = 0;
 };
 
 extern Runtime g_runtime;

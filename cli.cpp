@@ -1726,16 +1726,25 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         cnc::interp::g_runtime.set_tcp_mode(Runtime::TcpMode::Head);
         const bool got_head = cnc::interp::g_runtime.tcp_mode() == Runtime::TcpMode::Head;
 
+        // Pivot round-trip: set, read, restore.
+        int32_t orig_px = 0, orig_py = 0, orig_pz = 0;
+        cnc::interp::g_runtime.tcp_pivot(orig_px, orig_py, orig_pz);
+        cnc::interp::g_runtime.set_tcp_pivot(1234, -5678, 9000);
+        int32_t got_px = 0, got_py = 0, got_pz = 0;
+        cnc::interp::g_runtime.tcp_pivot(got_px, got_py, got_pz);
+        const bool got_pivot = (got_px == 1234) && (got_py == -5678) && (got_pz == 9000);
+
         // Restore original state so downstream tests aren't perturbed.
+        cnc::interp::g_runtime.set_tcp_pivot(orig_px, orig_py, orig_pz);
         cnc::interp::g_runtime.set_tcp_mode(orig_mode);
         cnc::interp::g_runtime.set_tcp_order(orig_order);
         (void)cnc::interp::g_runtime.set_tcp_active(0, orig_ch0);
 
-        const bool pass = got_on && !got_off && got_bc && got_cb && got_tail && got_head;
-        char buf[120];
+        const bool pass = got_on && !got_off && got_bc && got_cb && got_tail && got_head && got_pivot;
+        char buf[150];
         kernel::util::k_snprintf(buf, sizeof(buf),
-            "tcp test: on=%d off=%d bc=%d cb=%d tail=%d head=%d => %s\n",
-            got_on, got_off, got_bc, got_cb, got_tail, got_head,
+            "tcp test: on=%d off=%d bc=%d cb=%d tail=%d head=%d pivot=%d => %s\n",
+            got_on, got_off, got_bc, got_cb, got_tail, got_head, got_pivot,
             pass ? "PASSED" : "FAILED");
         uart->puts(buf);
         return pass ? 0 : 1;
@@ -3265,18 +3274,22 @@ static int cmd_queue_depth(const char*, kernel::hal::UARTDriverOps* uart) {
 }
 
 static int cmd_tcp(const char* args, kernel::hal::UARTDriverOps* uart) {
-    // tcp                        — show current TCP order/mode + per-channel state.
-    // tcp <ch> <on|off>          — toggle 5-axis Tool-Centre-Point mode on a channel.
-    // tcp order <cb|bc>          — set the head-kinematics rotation composition.
-    // tcp mode  <head|tail>      — head=rotaries on tool, tail=rotaries on table.
+    // tcp                          — show current TCP order/mode/pivot + per-channel state.
+    // tcp <ch> <on|off>            — toggle 5-axis Tool-Centre-Point mode on a channel.
+    // tcp order <cb|bc>            — set the head-kinematics rotation composition.
+    // tcp mode  <head|tail>        — head=rotaries on tool, tail=rotaries on table.
+    // tcp pivot <x> <y> <z>        — set tail-mode pivot (machine-frame axis counts).
     using cnc::interp::Runtime;
     if (!args || !*args) {
-        char buf[160];
+        char buf[200];
         const char* mode_s  = (cnc::interp::g_runtime.tcp_mode()  == Runtime::TcpMode::Head)  ? "head" : "tail";
         const char* order_s = (cnc::interp::g_runtime.tcp_order() == Runtime::TcpOrder::CB)   ? "cb"   : "bc";
+        int32_t px = 0, py = 0, pz = 0;
+        cnc::interp::g_runtime.tcp_pivot(px, py, pz);
         kernel::util::k_snprintf(buf, sizeof(buf),
-            "tcp: mode=%s order=%s\n  ch0=%s ch1=%s\n",
+            "tcp: mode=%s order=%s pivot=(%ld,%ld,%ld)\n  ch0=%s ch1=%s\n",
             mode_s, order_s,
+            static_cast<long>(px), static_cast<long>(py), static_cast<long>(pz),
             cnc::interp::g_runtime.tcp_active(0) ? "on" : "off",
             cnc::interp::g_runtime.tcp_active(1) ? "on" : "off");
         uart->puts(buf);
@@ -3311,16 +3324,33 @@ static int cmd_tcp(const char* args, kernel::hal::UARTDriverOps* uart) {
         }
         if (kernel::util::kstrcmp(p, "tail") == 0) {
             cnc::interp::g_runtime.set_tcp_mode(Runtime::TcpMode::Tail);
-            uart->puts("tcp: mode=tail (NB: tail-kinematics not yet implemented; falls back to head with klog warning)\n");
+            uart->puts("tcp: mode=tail (rotate target around pivot; set pivot via `tcp pivot <x> <y> <z>`)\n");
             return 0;
         }
         uart->puts("tcp: expected head|tail\n");
         return 1;
     }
+    if (kernel::util::kstrncmp(p, "pivot", 5) == 0 && (p[5] == ' ' || p[5] == '\0')) {
+        p += 5;
+        long px = 0, py = 0, pz = 0;
+        if (!cli_parse_long(p, px) || !cli_parse_long(p, py) || !cli_parse_long(p, pz)) {
+            uart->puts("tcp: usage: tcp pivot <x_counts> <y_counts> <z_counts>\n");
+            return 1;
+        }
+        cnc::interp::g_runtime.set_tcp_pivot(static_cast<int32_t>(px),
+                                             static_cast<int32_t>(py),
+                                             static_cast<int32_t>(pz));
+        char buf[120];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "tcp: pivot=(%ld,%ld,%ld) counts (machine-frame; used by tail mode)\n",
+            px, py, pz);
+        uart->puts(buf);
+        return 0;
+    }
 
     long ch = 0;
     if (!cli_parse_long(p, ch)) {
-        uart->puts("usage: tcp [order cb|bc] [mode head|tail] | tcp <ch> on|off\n");
+        uart->puts("usage: tcp [order cb|bc] [mode head|tail] [pivot x y z] | tcp <ch> on|off\n");
         return 1;
     }
     while (*p == ' ') ++p;
@@ -5210,7 +5240,7 @@ CLI::CLI() {
     register_command("tq", cmd_torque_limit, "tq <axis> <permille> — set CiA-402 0x6072 max-torque on the axis's drive");
     register_command("junction_dev", cmd_junction_dev, "junction_dev [<ch> <counts>] — get/set per-channel corner-error budget");
     register_command("queue_depth", cmd_queue_depth, "queue_depth — dump per-channel look-ahead chain occupancy");
-    register_command("tcp", cmd_tcp, "tcp [order cb|bc | mode head|tail | <ch> on|off] — 5-axis TCP control");
+    register_command("tcp", cmd_tcp, "tcp [order cb|bc | mode head|tail | pivot x y z | <ch> on|off] — 5-axis TCP control");
     register_command("topology", cmd_topology, "topology <name>=<ax,ax,...> [...] — rewrite axis-to-channel binding (9.8)");
     register_command("override", cmd_override, "override <ch> <feed|rapid|spindle> <permille> — per-channel speed override (9.7)");
     register_command("gears", cmd_gears, "List active electronic-gear links (9.5) + phase error (9.9)");

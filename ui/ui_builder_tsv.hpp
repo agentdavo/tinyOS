@@ -59,25 +59,10 @@ class Widget;
 
 namespace ui_builder {
 
-// Sized to fit all currently-shipped pages (~280 widgets when the
-// parser ran with the original 256 cap; line 472 of embedded_ui.tsv was
-// where it tripped). The PR adding the lights-out page + the service-
-// page "LIVE STATE" panel pushed it past 256, but that was masking
-// pre-existing growth too — the entire TSV has ~950 widget directives,
-// and incremental page additions had been silently losing the tail of
-// the file for several commits. 1024 covers the present load with
-// headroom for another 50% growth before another bump. Each WidgetNode
-// is ~660 B (WidgetSpec dominates with six MAX_FIELD_LEN char arrays),
-// so 1024 entries cost ~680 KiB — affordable in the 128 MB RAM
-// allocation but worth keeping an eye on if the field-len ever grows.
-constexpr uint32_t MAX_WIDGETS = 1024;
+constexpr uint32_t MAX_WIDGETS = 256;
 constexpr uint32_t MAX_PAGES = 32;
-// Same headroom rationale as MAX_WIDGETS — embedded_ui.tsv has ~170
-// `action` directives today. 256 caps fit historical content; the new
-// lights-out page added five more action targets and more headroom is
-// needed for future operator-button additions.
-constexpr uint32_t MAX_ACTIONS = 384;
-constexpr uint32_t MAX_CHILD_LINKS = 1024;
+constexpr uint32_t MAX_ACTIONS = 128;
+constexpr uint32_t MAX_CHILD_LINKS = 256;
 constexpr uint32_t MAX_FIELD_LEN = 96;
 
 // Widget types
