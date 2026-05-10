@@ -104,28 +104,30 @@ bool Service::load_tsv(const char* buf, size_t len) noexcept {
     while (p < end) {
         p = next_line(p, end, line, sizeof(line));
         if (line[0] == '\0' || line[0] == '#') continue;
-        char* rest = line;
-        while (*rest && *rest != '\t') ++rest;
-        if (*rest == '\t') *rest++ = '\0';
-        if (kernel::util::kstrcmp(line, "pallet") == 0) {
+        // Match the record-kind prefix non-destructively. field_value
+        // walks past the first \t-delimited token internally, so we
+        // pass `line` (with the record kind still in place) instead of
+        // a pre-stripped `rest` — otherwise the very first key=value
+        // pair (id=...) gets double-skipped and reads back as null.
+        if (kernel::util::kstrncmp(line, "pallet\t", 7) == 0) {
             if (count_ >= MAX_PALLETS) continue;
             auto& q = pallets_[count_++];
             q = Pallet{};
             q.used = true;
             char a[64], b[64], c[64], d[64], e[64], f[64];
-            copy_string(q.id,         sizeof(q.id),         field_value(rest, "id",      a, sizeof(a)));
-            copy_string(q.fixture_id, sizeof(q.fixture_id), field_value(rest, "fixture", b, sizeof(b)));
-            const char* prog = field_value(rest, "program", c, sizeof(c));
+            copy_string(q.id,         sizeof(q.id),         field_value(line, "id",      a, sizeof(a)));
+            copy_string(q.fixture_id, sizeof(q.fixture_id), field_value(line, "fixture", b, sizeof(b)));
+            const char* prog = field_value(line, "program", c, sizeof(c));
             if (prog) copy_string(q.assigned_program, sizeof(q.assigned_program), prog);
             q.station_index     = static_cast<uint8_t>(
-                parse_long(field_value(rest, "station", d, sizeof(d)), static_cast<long>(count_ - 1)));
+                parse_long(field_value(line, "station", d, sizeof(d)), static_cast<long>(count_ - 1)));
             q.work_offset_index = static_cast<int>(
-                parse_long(field_value(rest, "wcs", e, sizeof(e)), -1));
+                parse_long(field_value(line, "wcs", e, sizeof(e)), -1));
             q.target_cycles     = static_cast<uint32_t>(
-                parse_long(field_value(rest, "target", f, sizeof(f)), 0));
+                parse_long(field_value(line, "target", f, sizeof(f)), 0));
             // Status is optional; Empty unless a program is wired up too,
             // in which case Loaded is the more useful default.
-            const char* status_tok = field_value(rest, "status", a, sizeof(a));
+            const char* status_tok = field_value(line, "status", a, sizeof(a));
             PalletStatus s = q.assigned_program[0] != '\0' ? PalletStatus::Loaded
                                                            : PalletStatus::Empty;
             if (status_tok) (void)parse_status(status_tok, s);

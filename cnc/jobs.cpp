@@ -82,22 +82,23 @@ bool Runtime::load_tsv(const char* buf, size_t len) noexcept {
     while (p < end) {
         p = next_line(p, end, line, sizeof(line));
         if (line[0] == '\0' || line[0] == '#') continue;
-        char* rest = line;
-        while (*rest && *rest != '\t') ++rest;
-        if (*rest == '\t') *rest++ = '\0';
-        if (kernel::util::kstrcmp(line, "job") == 0) {
+        // See machine/pallet.cpp for the rationale: field_value()
+        // walks past the first \t-delimited token internally, so we
+        // pass `line` (with the record kind still in place) to avoid
+        // double-skipping the first key=value pair.
+        if (kernel::util::kstrncmp(line, "job\t", 4) == 0) {
             if (job_count_ >= MAX_JOBS) continue;
             auto& j = jobs_[job_count_++];
             j = Job{};
             j.used = true;
             char a[64], b[64], c[64], d[64], e[64], f[64];
-            copy_string(j.id,        sizeof(j.id),        field_value(rest, "id",      a, sizeof(a)));
-            copy_string(j.pallet_id, sizeof(j.pallet_id), field_value(rest, "pallet",  b, sizeof(b)));
-            const char* prog = field_value(rest, "program", c, sizeof(c));
+            copy_string(j.id,        sizeof(j.id),        field_value(line, "id",      a, sizeof(a)));
+            copy_string(j.pallet_id, sizeof(j.pallet_id), field_value(line, "pallet",  b, sizeof(b)));
+            const char* prog = field_value(line, "program", c, sizeof(c));
             if (prog) copy_string(j.program, sizeof(j.program), prog);
-            j.work_offset_index = static_cast<int>(parse_long(field_value(rest, "wcs",     d, sizeof(d)), -1));
-            j.repeat            = static_cast<uint32_t>(parse_long(field_value(rest, "repeat",   e, sizeof(e)), 1));
-            j.priority          = static_cast<uint8_t>(parse_long(field_value(rest, "priority", f, sizeof(f)), 100));
+            j.work_offset_index = static_cast<int>(parse_long(field_value(line, "wcs",     d, sizeof(d)), -1));
+            j.repeat            = static_cast<uint32_t>(parse_long(field_value(line, "repeat",   e, sizeof(e)), 1));
+            j.priority          = static_cast<uint8_t>(parse_long(field_value(line, "priority", f, sizeof(f)), 100));
         }
     }
     return true;
@@ -255,8 +256,16 @@ bool Runtime::start_active(size_t idx) noexcept {
         }
         return false;
     }
-    if (!cnc::programs::g_store.select(0, prog_idx) ||
-        !cnc::programs::g_store.open_selected(0) ||
+    if (!cnc::programs::g_store.select(0, prog_idx)) {
+        copy_message(idx, "program select failed");
+        j.state = JobState::Faulted;
+        return false;
+    }
+    // load_selected resets interpreter line/block/text_offset and modal
+    // state; start() alone would skip the reset on the second-and-later
+    // job because ch.loaded is sticky from the previous run, leaving the
+    // resume cursor at EOF and the new program would Complete on tick 1.
+    if (!cnc::interp::g_runtime.load_selected(0) ||
         !cnc::interp::g_runtime.start(0)) {
         copy_message(idx, "interp start failed");
         j.state = JobState::Faulted;
@@ -283,11 +292,13 @@ void Runtime::on_interp_complete() noexcept {
     if (j.repeat == 0 || j.completed < j.repeat) {
         // More to make from the same fixture — re-arm on the same channel.
         // The program's swap macro (M310 etc.) may have moved the part out
-        // and reloaded; we just re-run the same .ngc.
+        // and reloaded; we just re-run the same .ngc. Must call
+        // load_selected explicitly to rewind the interpreter cursor;
+        // start() alone keeps text_offset at EOF since ch.loaded is true.
         size_t prog_idx = 0;
         if (cnc::programs::g_store.find_by_name(j.program, prog_idx) &&
             cnc::programs::g_store.select(0, prog_idx) &&
-            cnc::programs::g_store.open_selected(0) &&
+            cnc::interp::g_runtime.load_selected(0) &&
             cnc::interp::g_runtime.start(0)) {
             copy_message(active_, "re-armed for next cycle");
             return;

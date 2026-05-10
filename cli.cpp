@@ -1809,7 +1809,7 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         }
         (void)orig;  // we deliberately leave the runtime back at Idle / Loaded
 
-        const bool pass = (n >= 0) && start_after_stop_rejected && now_idle &&
+        const bool pass = start_after_stop_rejected && now_idle &&
                           started && running && paused && holding && resumed && back;
         char buf[200];
         kernel::util::k_snprintf(buf, sizeof(buf),

@@ -553,7 +553,7 @@ enum class BindKind : uint16_t {
     KlogTail,                     // last few klog lines, formatted via klog::tail
     TcpStatus,                    // "off / head CB / ch0 on" composite string
     // Lights-out — per-pallet status text + scheduler dashboard. Pallet
-    // bindings index into machine::pallet::g_service by row 0..3.
+    // bindings index into ::machine::pallet::g_service by row 0..3.
     PalletId0, PalletId1, PalletId2, PalletId3,
     PalletStatus0, PalletStatus1, PalletStatus2, PalletStatus3,
     PalletProgram0, PalletProgram1, PalletProgram2, PalletProgram3,
@@ -1443,7 +1443,7 @@ int32_t bound_numeric_value(BindKind bind) {
         case BindKind::PalletCycles3: {
             const size_t row = static_cast<size_t>(static_cast<int>(bind) -
                                                    static_cast<int>(BindKind::PalletCycles0));
-            const auto* pl = machine::pallet::g_service.pallet(row);
+            const auto* pl = ::machine::pallet::g_service.pallet(row);
             return pl ? static_cast<int32_t>(pl->cycles_completed) : 0;
         }
         case BindKind::SchedulerJobCount:
@@ -2216,7 +2216,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         case BindKind::PalletId3: {
             const size_t row = static_cast<size_t>(static_cast<int>(bind) -
                                                    static_cast<int>(BindKind::PalletId0));
-            const auto* pl = machine::pallet::g_service.pallet(row);
+            const auto* pl = ::machine::pallet::g_service.pallet(row);
             const char* id = pl ? pl->id : "-";
             kernel::util::k_snprintf(buf, buf_size, "%s%s", prefix ? prefix : "", id);
             return;
@@ -2227,8 +2227,8 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         case BindKind::PalletStatus3: {
             const size_t row = static_cast<size_t>(static_cast<int>(bind) -
                                                    static_cast<int>(BindKind::PalletStatus0));
-            const auto* pl = machine::pallet::g_service.pallet(row);
-            const char* st = pl ? machine::pallet::Service::status_name(pl->status) : "-";
+            const auto* pl = ::machine::pallet::g_service.pallet(row);
+            const char* st = pl ? ::machine::pallet::Service::status_name(pl->status) : "-";
             kernel::util::k_snprintf(buf, buf_size, "%s%s", prefix ? prefix : "", st);
             return;
         }
@@ -2238,7 +2238,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         case BindKind::PalletProgram3: {
             const size_t row = static_cast<size_t>(static_cast<int>(bind) -
                                                    static_cast<int>(BindKind::PalletProgram0));
-            const auto* pl = machine::pallet::g_service.pallet(row);
+            const auto* pl = ::machine::pallet::g_service.pallet(row);
             const char* prog = (pl && pl->assigned_program[0]) ? pl->assigned_program : "-";
             kernel::util::k_snprintf(buf, buf_size, "%s%s", prefix ? prefix : "", prog);
             return;

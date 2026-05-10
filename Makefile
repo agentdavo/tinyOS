@@ -286,6 +286,9 @@ $(OBJDIR)/%.o: automation/%.cpp | $(OBJDIR)
 $(OBJDIR)/%.o: ui/%.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+$(OBJDIR)/%.o: cnc/%.cpp | $(OBJDIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 $(OBJDIR)/virtio_blk.o: hal/shared/virtio_blk.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(OBJDIR)/fat32.o: fs/fat32.cpp | $(OBJDIR)

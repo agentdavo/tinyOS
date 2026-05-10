@@ -984,7 +984,7 @@ static bool plan_arc(Runtime::ChannelState& state,
     return true;
 }
 
-static bool advance_arc(Runtime::ChannelState& state) {
+static bool advance_arc(Runtime::ChannelState& state, size_t channel) {
     auto& arc = state.arc;
     if (!arc.active || arc.total_segments == 0) return false;
     ++arc.current_segment;
@@ -1146,7 +1146,7 @@ bool Runtime::tick_channel(size_t channel) noexcept {
         for (size_t guard = 0; guard < motion::Axis::CHAIN_DEPTH * 2; ++guard) {
             if (!channel_settled(channel)) break;  // chain ring full
             if (!state.arc.active) break;          // arc completed mid-burst
-            if (!advance_arc(state)) {
+            if (!advance_arc(state, channel)) {
                 state.state = State::Fault;
                 return false;
             }
