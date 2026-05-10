@@ -177,12 +177,31 @@ public:
     bool set_tcp_active(size_t channel, bool active) noexcept;
     bool tcp_active(size_t channel) const noexcept;
 
-    // Rotation order for the head-kinematics composition. CB = R_C·R_B (the
-    // mill-turn TSV's C-then-B parenting, the historical default). BC = R_B
-    // ·R_C, used on AC/BC heads where B is parented to base. Set globally;
-    // read per-tick by apply_tcp_correction. Tail-kinematics gets its own
-    // mode; rotation order still applies inside it.
-    enum class TcpOrder : uint8_t { CB = 0, BC = 1 };
+    // Rotation order for the TCP composition. Two-letter token names the
+    // axis pair and the order; in all cases, the SECOND letter's rotation
+    // is applied FIRST (matches the kinematic-chain convention where the
+    // outermost joint name comes first when reading the chain from base).
+    //
+    //   CB (default) — R = R_C · R_B  (B applied first, then C; matches
+    //                  the mill-turn TSV's C-then-B parent chain).
+    //   BC           — R = R_B · R_C  (C first, then B).
+    //   CA           — R = R_C · R_A  (A around X applied first, then C).
+    //   AC           — R = R_A · R_C
+    //   BA           — R = R_B · R_A
+    //   AB           — R = R_A · R_B
+    //
+    // R_A is roll about +X (A axis word), R_B pitch about +Y (B), R_C
+    // yaw about +Z (C). Set globally; read per-tick by apply_tcp_correction.
+    // Tail-kinematics gets its own mode; rotation order still applies
+    // inside it.
+    enum class TcpOrder : uint8_t {
+        CB = 0,
+        BC = 1,
+        CA = 2,
+        AC = 3,
+        BA = 4,
+        AB = 5,
+    };
     enum class TcpMode  : uint8_t { Head = 0, Tail = 1 };
     void      set_tcp_order(TcpOrder order) noexcept { tcp_order_ = order; }
     TcpOrder  tcp_order() const noexcept             { return tcp_order_; }

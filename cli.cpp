@@ -1714,11 +1714,20 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         (void)cnc::interp::g_runtime.set_tcp_active(0, false);
         const bool got_off = cnc::interp::g_runtime.tcp_active(0);
 
-        // Cycle order CB → BC → CB.
-        cnc::interp::g_runtime.set_tcp_order(Runtime::TcpOrder::BC);
-        const bool got_bc = cnc::interp::g_runtime.tcp_order() == Runtime::TcpOrder::BC;
+        // Walk every order — round-trip each one.
+        const Runtime::TcpOrder orders[] = {
+            Runtime::TcpOrder::CB, Runtime::TcpOrder::BC,
+            Runtime::TcpOrder::CA, Runtime::TcpOrder::AC,
+            Runtime::TcpOrder::BA, Runtime::TcpOrder::AB,
+        };
+        bool got_orders = true;
+        for (auto o : orders) {
+            cnc::interp::g_runtime.set_tcp_order(o);
+            if (cnc::interp::g_runtime.tcp_order() != o) { got_orders = false; break; }
+        }
         cnc::interp::g_runtime.set_tcp_order(Runtime::TcpOrder::CB);
         const bool got_cb = cnc::interp::g_runtime.tcp_order() == Runtime::TcpOrder::CB;
+        const bool got_bc = got_orders;  // any order failure flagged via this
 
         // Cycle mode head → tail → head.
         cnc::interp::g_runtime.set_tcp_mode(Runtime::TcpMode::Tail);
@@ -3283,7 +3292,16 @@ static int cmd_tcp(const char* args, kernel::hal::UARTDriverOps* uart) {
     if (!args || !*args) {
         char buf[200];
         const char* mode_s  = (cnc::interp::g_runtime.tcp_mode()  == Runtime::TcpMode::Head)  ? "head" : "tail";
-        const char* order_s = (cnc::interp::g_runtime.tcp_order() == Runtime::TcpOrder::CB)   ? "cb"   : "bc";
+        const char* order_s;
+        switch (cnc::interp::g_runtime.tcp_order()) {
+            case Runtime::TcpOrder::CB: order_s = "cb"; break;
+            case Runtime::TcpOrder::BC: order_s = "bc"; break;
+            case Runtime::TcpOrder::CA: order_s = "ca"; break;
+            case Runtime::TcpOrder::AC: order_s = "ac"; break;
+            case Runtime::TcpOrder::BA: order_s = "ba"; break;
+            case Runtime::TcpOrder::AB: order_s = "ab"; break;
+            default: order_s = "?"; break;
+        }
         int32_t px = 0, py = 0, pz = 0;
         cnc::interp::g_runtime.tcp_pivot(px, py, pz);
         kernel::util::k_snprintf(buf, sizeof(buf),
@@ -3301,18 +3319,20 @@ static int cmd_tcp(const char* args, kernel::hal::UARTDriverOps* uart) {
     if (kernel::util::kstrncmp(p, "order", 5) == 0 && (p[5] == ' ' || p[5] == '\0')) {
         p += 5;
         while (*p == ' ') ++p;
-        if (kernel::util::kstrcmp(p, "cb") == 0) {
-            cnc::interp::g_runtime.set_tcp_order(Runtime::TcpOrder::CB);
-            uart->puts("tcp: order=cb (R = R_C * R_B)\n");
-            return 0;
-        }
-        if (kernel::util::kstrcmp(p, "bc") == 0) {
-            cnc::interp::g_runtime.set_tcp_order(Runtime::TcpOrder::BC);
-            uart->puts("tcp: order=bc (R = R_B * R_C)\n");
-            return 0;
-        }
-        uart->puts("tcp: expected cb|bc\n");
-        return 1;
+        Runtime::TcpOrder ord = Runtime::TcpOrder::CB;
+        const char* desc = nullptr;
+        if      (kernel::util::kstrcmp(p, "cb") == 0) { ord = Runtime::TcpOrder::CB; desc = "(R = R_C * R_B)"; }
+        else if (kernel::util::kstrcmp(p, "bc") == 0) { ord = Runtime::TcpOrder::BC; desc = "(R = R_B * R_C)"; }
+        else if (kernel::util::kstrcmp(p, "ca") == 0) { ord = Runtime::TcpOrder::CA; desc = "(R = R_C * R_A)"; }
+        else if (kernel::util::kstrcmp(p, "ac") == 0) { ord = Runtime::TcpOrder::AC; desc = "(R = R_A * R_C)"; }
+        else if (kernel::util::kstrcmp(p, "ba") == 0) { ord = Runtime::TcpOrder::BA; desc = "(R = R_B * R_A)"; }
+        else if (kernel::util::kstrcmp(p, "ab") == 0) { ord = Runtime::TcpOrder::AB; desc = "(R = R_A * R_B)"; }
+        else { uart->puts("tcp: expected cb|bc|ca|ac|ba|ab\n"); return 1; }
+        cnc::interp::g_runtime.set_tcp_order(ord);
+        char buf[64];
+        kernel::util::k_snprintf(buf, sizeof(buf), "tcp: order=%s %s\n", p, desc);
+        uart->puts(buf);
+        return 0;
     }
     if (kernel::util::kstrncmp(p, "mode", 4) == 0 && (p[4] == ' ' || p[4] == '\0')) {
         p += 4;
@@ -5240,7 +5260,7 @@ CLI::CLI() {
     register_command("tq", cmd_torque_limit, "tq <axis> <permille> — set CiA-402 0x6072 max-torque on the axis's drive");
     register_command("junction_dev", cmd_junction_dev, "junction_dev [<ch> <counts>] — get/set per-channel corner-error budget");
     register_command("queue_depth", cmd_queue_depth, "queue_depth — dump per-channel look-ahead chain occupancy");
-    register_command("tcp", cmd_tcp, "tcp [order cb|bc | mode head|tail | pivot x y z | <ch> on|off] — 5-axis TCP control");
+    register_command("tcp", cmd_tcp, "tcp [order cb|bc|ca|ac|ba|ab | mode head|tail | pivot x y z | <ch> on|off] — 5-axis TCP control");
     register_command("topology", cmd_topology, "topology <name>=<ax,ax,...> [...] — rewrite axis-to-channel binding (9.8)");
     register_command("override", cmd_override, "override <ch> <feed|rapid|spindle> <permille> — per-channel speed override (9.7)");
     register_command("gears", cmd_gears, "List active electronic-gear links (9.5) + phase error (9.9)");

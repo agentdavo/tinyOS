@@ -641,30 +641,52 @@ static int32_t tool_length_counts(const Runtime::ChannelState& state, char word)
     }
 }
 
-// Apply the rotation R(β, γ) to (vx, vy, vz). β = pitch about Y (B),
-// γ = yaw about Z (C). order picks composition: CB applies R_B then R_C
-// (R = R_C · R_B); BC applies R_C then R_B (R = R_B · R_C). Sign of cb
-// / sb / cc / sc is built in by the caller — passing negated angles
-// computes R^-1 (== R^T for orthogonal R), used by tail mode.
-static void rotate_bc(float vx, float vy, float vz,
-                      float cb, float sb, float cc, float sc,
-                      Runtime::TcpOrder order,
-                      float& ox, float& oy, float& oz) {
-    if (order == Runtime::TcpOrder::CB) {
-        const float xb =  vx * cb + vz * sb;
-        const float yb =  vy;
-        const float zb = -vx * sb + vz * cb;
-        ox = xb * cc - yb * sc;
-        oy = xb * sc + yb * cc;
-        oz = zb;
-    } else {
-        const float xc =  vx * cc - vy * sc;
-        const float yc =  vx * sc + vy * cc;
-        const float zc =  vz;
-        ox =  xc * cb + zc * sb;
-        oy =  yc;
-        oz = -xc * sb + zc * cb;
+// Single-axis rotations. Each operates in place on (x, y, z) given the
+// pre-computed cos/sin of the angle. Convention:
+//   R_A (about +X / roll  — A axis word):
+//     y' =  y * ca - z * sa,  z' =  y * sa + z * ca
+//   R_B (about +Y / pitch — B axis word):
+//     x' =  x * cb + z * sb,  z' = -x * sb + z * cb
+//   R_C (about +Z / yaw   — C axis word):
+//     x' =  x * cc - y * sc,  y' =  x * sc + y * cc
+static inline void rot_a(float& x, float& y, float& z, float ca, float sa) {
+    (void)x;
+    const float ny = y * ca - z * sa;
+    const float nz = y * sa + z * ca;
+    y = ny; z = nz;
+}
+static inline void rot_b(float& x, float& y, float& z, float cb, float sb) {
+    (void)y;
+    const float nx =  x * cb + z * sb;
+    const float nz = -x * sb + z * cb;
+    x = nx; z = nz;
+}
+static inline void rot_c(float& x, float& y, float& z, float cc, float sc) {
+    (void)z;
+    const float nx = x * cc - y * sc;
+    const float ny = x * sc + y * cc;
+    x = nx; y = ny;
+}
+
+// Apply the composed rotation R to (vx, vy, vz) and write to (ox, oy, oz).
+// Convention: token "XY" composes R = R_X · R_Y, i.e. apply Y FIRST then
+// X. So CB applies B first, then C — same as the previous behaviour.
+static void rotate_axes(float vx, float vy, float vz,
+                        float ca, float sa,
+                        float cb, float sb,
+                        float cc, float sc,
+                        Runtime::TcpOrder order,
+                        float& ox, float& oy, float& oz) {
+    float x = vx, y = vy, z = vz;
+    switch (order) {
+        case Runtime::TcpOrder::CB: rot_b(x, y, z, cb, sb); rot_c(x, y, z, cc, sc); break;
+        case Runtime::TcpOrder::BC: rot_c(x, y, z, cc, sc); rot_b(x, y, z, cb, sb); break;
+        case Runtime::TcpOrder::CA: rot_a(x, y, z, ca, sa); rot_c(x, y, z, cc, sc); break;
+        case Runtime::TcpOrder::AC: rot_c(x, y, z, cc, sc); rot_a(x, y, z, ca, sa); break;
+        case Runtime::TcpOrder::BA: rot_a(x, y, z, ca, sa); rot_b(x, y, z, cb, sb); break;
+        case Runtime::TcpOrder::AB: rot_b(x, y, z, cb, sb); rot_a(x, y, z, ca, sa); break;
     }
+    ox = x; oy = y; oz = z;
 }
 
 // 5-axis TCP target correction.
@@ -703,18 +725,23 @@ static void apply_tcp_correction(Runtime::ChannelState& state,
                                  size_t channel,
                                  int32_t targets[motion::MAX_AXES]) {
     if (!state.tcp_active) return;
-    uint8_t x_idx=0, y_idx=0, z_idx=0, b_idx=0, c_idx=0;
+    uint8_t x_idx=0, y_idx=0, z_idx=0, a_idx=0, b_idx=0, c_idx=0;
     const bool has_xy =
         runtime.resolve_axis_word(channel, 'X', x_idx) &&
         runtime.resolve_axis_word(channel, 'Y', y_idx);
     const bool has_z = runtime.resolve_axis_word(channel, 'Z', z_idx);
     if (!has_xy || !has_z) return;
+    const bool has_a = runtime.resolve_axis_word(channel, 'A', a_idx);
     const bool has_b = runtime.resolve_axis_word(channel, 'B', b_idx);
     const bool has_c = runtime.resolve_axis_word(channel, 'C', c_idx);
 
     // Convention: rotary axis counts at 100 cnt/degree → degrees/100 →
-    // radians. cos(0)=1, sin(0)=0, so a 3-axis machine with no B/C falls
-    // through with the rotation reducing to identity.
+    // radians. cos(0)=1, sin(0)=0, so any axis the machine doesn't have
+    // contributes identity to the composition.
+    const float alpha_rad = has_a
+        ? (static_cast<float>(targets[a_idx]) / 100.0f) *
+          kernel::util::math::kDegToRad
+        : 0.0f;
     const float beta_rad  = has_b
         ? (static_cast<float>(targets[b_idx]) / 100.0f) *
           kernel::util::math::kDegToRad
@@ -723,6 +750,7 @@ static void apply_tcp_correction(Runtime::ChannelState& state,
         ? (static_cast<float>(targets[c_idx]) / 100.0f) *
           kernel::util::math::kDegToRad
         : 0.0f;
+    const float ca = cos_approx(alpha_rad), sa = sin_approx(alpha_rad);
     const float cb = cos_approx(beta_rad),  sb = sin_approx(beta_rad);
     const float cc = cos_approx(gamma_rad), sc = sin_approx(gamma_rad);
 
@@ -736,7 +764,7 @@ static void apply_tcp_correction(Runtime::ChannelState& state,
         const float ly = static_cast<float>(state.tool_length_y_counts);
         const float lz = static_cast<float>(state.tool_length_counts);
         float xw, yw, zw;
-        rotate_bc(lx, ly, lz, cb, sb, cc, sc, runtime.tcp_order(), xw, yw, zw);
+        rotate_axes(lx, ly, lz, ca, sa, cb, sb, cc, sc, runtime.tcp_order(), xw, yw, zw);
         // Undo the G43-scalar Z addition that resolve_targets applied
         // via tool_length_counts() so we don't correct twice.
         // tool_length_x/y weren't applied (3-axis G43 path is Z-only)
@@ -756,7 +784,7 @@ static void apply_tcp_correction(Runtime::ChannelState& state,
     const float dy = static_cast<float>(targets[y_idx] - pivot_y);
     const float dz = static_cast<float>(targets[z_idx] - pivot_z);
     float rx, ry, rz;
-    rotate_bc(dx, dy, dz, cb, sb, cc, sc, runtime.tcp_order(), rx, ry, rz);
+    rotate_axes(dx, dy, dz, ca, sa, cb, sb, cc, sc, runtime.tcp_order(), rx, ry, rz);
     targets[x_idx] = pivot_x + static_cast<int32_t>(rx);
     targets[y_idx] = pivot_y + static_cast<int32_t>(ry);
     targets[z_idx] = pivot_z + static_cast<int32_t>(rz);
