@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Lights-out job queue. The scheduler thread (cnc::jobs::Runtime) walks
+# this in priority order and runs each job's program on channel 0
+# until repeat-count is reached or the job faults.
+#
+# Format:
+#   job	id=...	pallet=...	program=...	wcs=N	repeat=N	priority=N
+#
+# Notes:
+#   - `pallet` references an id from devices/embedded_pallets.tsv. The
+#     scheduler promotes the pallet to Cutting on start and to Done on
+#     completion.
+#   - `wcs` overrides the pallet's default WCS when ≥ 0; -1 means use
+#     the pallet's wcs (or the program's modal G54..G59 if neither is
+#     set).
+#   - `repeat=0` runs forever — the scheduler re-arms the same program
+#     on the same pallet after each Complete.
+#   - `priority`: lower runs sooner (POSIX nice convention). Default 100.
+
+job	id=J001	pallet=P01	program=demo_face.ngc	wcs=0	repeat=4	priority=10
+job	id=J002	pallet=P02	program=demo_pocket.ngc	wcs=1	repeat=4	priority=20

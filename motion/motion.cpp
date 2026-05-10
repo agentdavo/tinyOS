@@ -1527,6 +1527,36 @@ void Kernel::run_sync_arbiter(uint64_t /*t_now*/) noexcept {
             }
         }
 
+        // Phase B fault-fast-release — if any participant has already
+        // transitioned to Fault, the others are now waiting on a peer that
+        // will never arrive (or never converge). Releasing the rest into
+        // Fault immediately keeps the operator from staring at "WaitingBarrier"
+        // for the full max_wait_cycles budget when they could have been
+        // alerted in the same cycle the trip happened. Same propagation
+        // shape as a timeout, just earlier.
+        bool any_participant_faulted = false;
+        for (size_t c = 0; c < channel_count_; ++c) {
+            const uint8_t bit = static_cast<uint8_t>(1u << c);
+            if ((b.participants_mask & bit) == 0) continue;
+            if (channels_[c].state == ChannelState::Fault) {
+                any_participant_faulted = true;
+                break;
+            }
+        }
+        if (any_participant_faulted) {
+            for (size_t c = 0; c < channel_count_; ++c) {
+                const uint8_t bit = static_cast<uint8_t>(1u << c);
+                if ((b.participants_mask & bit) == 0) continue;
+                if (channels_[c].state == ChannelState::WaitingBarrier) {
+                    channels_[c].state         = ChannelState::Fault;
+                    channels_[c].barrier_token = 0;
+                }
+            }
+            b.in_use = false;
+            stats_.faults.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+
         // Timeout check (applies whether or not everyone arrived — a
         // channel that never shows up counts against the budget).
         if (now_cycle - b.created_cycle > b.max_wait_cycles) {

@@ -51,6 +51,10 @@ extern const char _binary_kinematic_mx850_tsv_start[];
 extern const char _binary_kinematic_mx850_tsv_end[];
 extern const char _binary_embedded_toolpods_tsv_start[];
 extern const char _binary_embedded_toolpods_tsv_end[];
+extern const char _binary_embedded_pallets_tsv_start[];
+extern const char _binary_embedded_pallets_tsv_end[];
+extern const char _binary_embedded_jobs_tsv_start[];
+extern const char _binary_embedded_jobs_tsv_end[];
 extern const char _binary_demo_box_obj_start[];
 extern const char _binary_demo_box_obj_end[];
 extern const char _binary_demo_part_stl_start[];
@@ -107,6 +111,10 @@ void register_embedded_defaults() noexcept {
                       _binary_kinematic_mx850_tsv_start, _binary_kinematic_mx850_tsv_end);
     register_embedded("system/machine/embedded_toolpods.tsv",
                       _binary_embedded_toolpods_tsv_start, _binary_embedded_toolpods_tsv_end);
+    register_embedded("system/machine/embedded_pallets.tsv",
+                      _binary_embedded_pallets_tsv_start, _binary_embedded_pallets_tsv_end);
+    register_embedded("system/machine/embedded_jobs.tsv",
+                      _binary_embedded_jobs_tsv_start, _binary_embedded_jobs_tsv_end);
     register_embedded("system/machine/demo_box.obj",
                       _binary_demo_box_obj_start, _binary_demo_box_obj_end);
     register_embedded("system/machine/demo_part.stl",

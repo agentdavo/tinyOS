@@ -96,6 +96,10 @@ public:
         size_t active_work = 0;
         size_t active_tool = 0;
         size_t pending_tool = 0;
+        // M48 enables feed/spindle override sliders, M49 disables them
+        // (treats permille as fixed at 1000). Default true so a fresh
+        // program respects the operator's overrides until told otherwise.
+        bool override_active = true;
         bool tool_length_active = false;
         // Tool-Centre-Point (TCP) mode. When enabled with a non-zero
         // tool-length vector, the interpreter treats X/Y/Z axis words in
@@ -173,6 +177,50 @@ public:
     bool set_tcp_active(size_t channel, bool active) noexcept;
     bool tcp_active(size_t channel) const noexcept;
 
+    // Rotation order for the TCP composition. Two-letter token names the
+    // axis pair and the order; in all cases, the SECOND letter's rotation
+    // is applied FIRST (matches the kinematic-chain convention where the
+    // outermost joint name comes first when reading the chain from base).
+    //
+    //   CB (default) — R = R_C · R_B  (B applied first, then C; matches
+    //                  the mill-turn TSV's C-then-B parent chain).
+    //   BC           — R = R_B · R_C  (C first, then B).
+    //   CA           — R = R_C · R_A  (A around X applied first, then C).
+    //   AC           — R = R_A · R_C
+    //   BA           — R = R_B · R_A
+    //   AB           — R = R_A · R_B
+    //
+    // R_A is roll about +X (A axis word), R_B pitch about +Y (B), R_C
+    // yaw about +Z (C). Set globally; read per-tick by apply_tcp_correction.
+    // Tail-kinematics gets its own mode; rotation order still applies
+    // inside it.
+    enum class TcpOrder : uint8_t {
+        CB = 0,
+        BC = 1,
+        CA = 2,
+        AC = 3,
+        BA = 4,
+        AB = 5,
+    };
+    enum class TcpMode  : uint8_t { Head = 0, Tail = 1 };
+    void      set_tcp_order(TcpOrder order) noexcept { tcp_order_ = order; }
+    TcpOrder  tcp_order() const noexcept             { return tcp_order_; }
+    void      set_tcp_mode(TcpMode mode) noexcept    { tcp_mode_ = mode; }
+    TcpMode   tcp_mode() const noexcept              { return tcp_mode_; }
+    // Tail-kinematics rotary pivot in machine-frame axis counts. The
+    // pivot is the (X,Y,Z) point about which the workpiece rotates when
+    // both rotaries are at zero. apply_tcp_correction in tail mode
+    // rotates the requested target around this pivot. Default (0,0,0)
+    // means "rotaries pivot at the workpiece origin" — fine for a
+    // calibrated G54 setup. Per-machine commissioning sets it via the
+    // CLI or setup snapshot.
+    void      set_tcp_pivot(int32_t x, int32_t y, int32_t z) noexcept {
+        tcp_pivot_x_ = x; tcp_pivot_y_ = y; tcp_pivot_z_ = z;
+    }
+    void      tcp_pivot(int32_t& x, int32_t& y, int32_t& z) const noexcept {
+        x = tcp_pivot_x_; y = tcp_pivot_y_; z = tcp_pivot_z_;
+    }
+
     // Mid-program restart. Reloads the selected program on `channel`, then
     // does a motion-free scan of lines 0..target_line-1, applying only modal
     // side effects (absolute/inch/plane/motion-mode, feed/spindle, active
@@ -205,6 +253,11 @@ private:
     uint64_t now_us() const noexcept;
 
     ChannelState channels_[programs::MAX_CHANNELS]{};
+    TcpOrder     tcp_order_ = TcpOrder::CB;
+    TcpMode      tcp_mode_  = TcpMode::Head;
+    int32_t      tcp_pivot_x_ = 0;
+    int32_t      tcp_pivot_y_ = 0;
+    int32_t      tcp_pivot_z_ = 0;
 };
 
 extern Runtime g_runtime;

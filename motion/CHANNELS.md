@@ -158,3 +158,66 @@ What changes:
    on channel 2. Threading test: command spindle C1 to spin, engage
    Z2 at a known ratio, measure Z2 position vs C1 position over 1000
    cycles. Phase drift must be bounded.
+
+## Mill-turn G-code conventions (Phase B)
+
+Once the kernel has channels + barriers + gearing, programs need a
+small surface of M-codes to drive them. Fixed convention so a part
+program written against this kernel is portable across machines:
+
+### Sync barriers — M100 / M110 / M200 / M101..M109
+
+Same primitive (`Kernel::arrive_at_barrier`); ten distinct M-codes so
+a program can have multiple sync points without colliding tokens.
+
+- `M100 P<token> Q<channels-mask>` — generic rendezvous. Both `P`
+  and `Q` are optional. When `P` is omitted the token defaults to
+  `(mcode * 1000 + line) & 0xFFFF` so two `M100` lines on different
+  source lines automatically don't collide. When `Q` is omitted the
+  participants mask defaults to `0x3` (channel 0 + channel 1).
+- `M110`, `M200` — historical aliases of `M100`. Same shape.
+- `M101..M109` — named alternates. Useful when the source program
+  has a logical "after roughing", "after finishing", "after
+  part-off" sequence and the operator wants those distinct in
+  `barriers` / `sync_status` output.
+- Tolerance / stable_cycles / max_wait are kernel defaults today
+  (1 cnt / 3 cycles / 20 000 cycles ≈ 5 s at 250 µs). Per-program
+  tightening lands when a `G10.1 L<tol>` style verb is added.
+
+### Override enable/disable — M48 / M49
+
+- `M48` — feed and spindle override sliders are honoured for this
+  channel. Default at program start.
+- `M49` — overrides are pinned at 100 %. Used for synchronised cuts
+  (threading, rigid tap) where the operator's slider would otherwise
+  desynchronise the leader/follower phase relationship.
+
+The interpreter scales `feed_cps` and the spindle command by the
+channel's `feed_permille` / `spindle_permille` whenever
+`override_active` is true. M48/M49 toggle that flag.
+
+### Fault propagation across barriers (fault-fast-release)
+
+If any participant on an active barrier transitions to `Fault`
+(following error, drive trip, hard limit, ...) the arbiter
+immediately moves every other waiting participant to `Fault` in the
+same cycle. Without this fast-release, a peer fault left siblings
+stuck at `WaitingBarrier` for the full `max_wait_cycles` budget; the
+operator now sees the trip on every channel within one tick.
+
+### sync_status CLI
+
+`sync_status` is the one-shot mill-turn dashboard:
+
+```
+ch0(mill) state=running feed=100% rapid=100% spindle=100% jd=10
+  prog=part.ngc line=42 block=39 interp=running feed=600 spindle=2400 G43
+ch1(lathe) state=barrier feed=100% rapid=100% spindle=100% jd=10
+  prog=lathe.ngc line=78 block=66 interp=barrier feed=400 spindle=0
+  waiting on token=0x004f mask=0x03
+--- barriers ---
+[slot 0] token=0x004f parts=03 arrived=02 ...
+```
+
+Use this instead of stitching together `channels`, `barriers`, and
+`program_status` when triaging a stuck mill-turn program.

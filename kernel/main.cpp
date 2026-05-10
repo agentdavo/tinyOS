@@ -22,6 +22,8 @@ namespace kernel { namespace core { void run_benchmark_test(); } }
 #include "automation/ladder_runtime.hpp"
 #include "automation/probe_runtime.hpp"
 #include "machine/toolpods.hpp"
+#include "machine/pallet.hpp"
+#include "cnc/jobs.hpp"
 #include "machine/machine_topology.hpp"
 #include "machine/runtime_placement.hpp"
 #include "machine/motion_wiring.hpp"
@@ -593,6 +595,18 @@ void load_runtime_tsvs() {
             (void)machine::toolpods::g_service.load_tsv(tp_data, tp_len);
         }
     }
+    {
+        const char* pl_data = nullptr; size_t pl_len = 0;
+        if (kernel::vfs::lookup("system/machine/embedded_pallets.tsv", pl_data, pl_len) && pl_len > 0) {
+            (void)machine::pallet::g_service.load_tsv(pl_data, pl_len);
+        }
+    }
+    {
+        const char* jb_data = nullptr; size_t jb_len = 0;
+        if (kernel::vfs::lookup("system/machine/embedded_jobs.tsv", jb_data, jb_len) && jb_len > 0) {
+            (void)cnc::jobs::g_runtime.load_tsv(jb_data, jb_len);
+        }
+    }
     const uintptr_t signals_start = reinterpret_cast<uintptr_t>(&_binary_embedded_signals_tsv_start);
     const uintptr_t signals_end = reinterpret_cast<uintptr_t>(&_binary_embedded_signals_tsv_end);
     if (signals_end > signals_start) {
@@ -714,6 +728,10 @@ void create_runtime_services(CreateThreadFn create_thread) {
     (void)create_thread(&macros::Runtime::thread_entry, nullptr, 6, macro_core, "macro", false, 1000);
     (void)create_thread(&ladder::Runtime::thread_entry, nullptr, 7, ladder_core, "ladder", false, 1000);
     (void)create_thread(&probe::Runtime::thread_entry, nullptr, 6, probe_core, "probe", false, 1000);
+    // Job scheduler — low priority, decision-making only. Same core as
+    // the macro runtime (cooperative; no real-time requirements). The
+    // thread polls per-channel interpreter state every 250 ms.
+    (void)create_thread(&cnc::jobs::Runtime::thread_entry, nullptr, 5, macro_core, "jobs", false, 1000);
     if (num_nets > hmi_nic) {
         hmi::g_service.configure(hmi_nic);
         log_timestamped("hmi: eth0 service...");

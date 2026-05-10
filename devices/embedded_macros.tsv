@@ -219,3 +219,85 @@ step	type=pod_select	pod=upper_turret	value_type=int	value=3
 step	type=sphere_calibrate
 step	type=set	symbol=probe_stylus_ok	value_type=bool	value=1
 step	type=set	symbol=probe_cycle_done	value_type=bool	value=1
+
+# --- Lights-out interlock macros ---
+# These macros drive a pallet-swap / robot-load / robot-unload handshake
+# via signals. The signal symbols (pallet_*, robot_*, fixture_*) are
+# declared up top in this file; bind them to physical EtherCAT IO via
+# devices/embedded_signals.tsv if you have a real cell controller.
+#
+# Convention:
+#   M315  pallet_swap         — fully release current pallet, request a
+#                                robot pick/place, wait for the cell to
+#                                signal "swap done" before continuing.
+#   M316  robot_load_part     — clamp open, request robot deposit, wait
+#                                for part_loaded ack, clamp close.
+#   M317  robot_unload_part   — clamp open, request robot pick, wait for
+#                                part_clear ack.
+#   M318  fixture_clamp       — single-step clamp (fixture-specific).
+#   M319  lights_out_complete — signal end-of-batch to the cell so it
+#                                can flag empty-stock or call an operator.
+#
+# All steps use the signals registry; if a signal isn't bound to real
+# hardware the macros run as far as the wait-with-timeout and surface a
+# fault — that's the design (it forces the operator to wire the cell up
+# before lights-out runs unattended).
+
+symbol	name=pallet_release_cmd	type=bool	initial=0	writable=1
+symbol	name=pallet_clamp_cmd	type=bool	initial=1	writable=1
+symbol	name=pallet_clamped_fb	type=bool	initial=1	writable=1
+symbol	name=pallet_swap_request	type=bool	initial=0	writable=1
+symbol	name=pallet_swap_done	type=bool	initial=0	writable=1
+symbol	name=robot_load_request	type=bool	initial=0	writable=1
+symbol	name=robot_load_done	type=bool	initial=0	writable=1
+symbol	name=robot_unload_request	type=bool	initial=0	writable=1
+symbol	name=robot_unload_done	type=bool	initial=0	writable=1
+symbol	name=part_loaded_fb	type=bool	initial=0	writable=1
+symbol	name=part_clear_fb	type=bool	initial=1	writable=1
+symbol	name=lights_out_batch_done	type=bool	initial=0	writable=1
+
+macro	id=pallet_swap	title=Pallet Swap	mcode=315
+# Drop the in-cycle clamp, ask the cell controller to swap, wait for
+# its swap_done ack, re-clamp. Timeout is the wall-clock cap on a
+# robot move — adjust per cell. 60 s here so a slow robot pick still
+# fits without faulting.
+step	type=set	symbol=pallet_clamp_cmd	value_type=bool	value=0
+step	type=set	symbol=pallet_release_cmd	value_type=bool	value=1
+step	type=wait	symbol=pallet_clamped_fb	value_type=bool	compare=eq	value=0	timeout_ms=5000
+step	type=set	symbol=pallet_swap_done	value_type=bool	value=0
+step	type=set	symbol=pallet_swap_request	value_type=bool	value=1
+step	type=wait	symbol=pallet_swap_done	value_type=bool	compare=eq	value=1	timeout_ms=60000
+step	type=set	symbol=pallet_swap_request	value_type=bool	value=0
+step	type=set	symbol=pallet_release_cmd	value_type=bool	value=0
+step	type=set	symbol=pallet_clamp_cmd	value_type=bool	value=1
+step	type=wait	symbol=pallet_clamped_fb	value_type=bool	compare=eq	value=1	timeout_ms=5000
+
+macro	id=robot_load_part	title=Robot Load Part	mcode=316
+# Clamp opens, ask the robot to drop a part into the fixture, wait
+# for part_loaded_fb, then clamp closes. Smaller than M315 because
+# only the part moves — the pallet stays put.
+step	type=set	symbol=pallet_clamp_cmd	value_type=bool	value=0
+step	type=set	symbol=robot_load_done	value_type=bool	value=0
+step	type=set	symbol=robot_load_request	value_type=bool	value=1
+step	type=wait	symbol=part_loaded_fb	value_type=bool	compare=eq	value=1	timeout_ms=30000
+step	type=set	symbol=robot_load_request	value_type=bool	value=0
+step	type=set	symbol=robot_load_done	value_type=bool	value=1
+step	type=set	symbol=pallet_clamp_cmd	value_type=bool	value=1
+
+macro	id=robot_unload_part	title=Robot Unload Part	mcode=317
+step	type=set	symbol=pallet_clamp_cmd	value_type=bool	value=0
+step	type=set	symbol=robot_unload_done	value_type=bool	value=0
+step	type=set	symbol=robot_unload_request	value_type=bool	value=1
+step	type=wait	symbol=part_clear_fb	value_type=bool	compare=eq	value=1	timeout_ms=30000
+step	type=set	symbol=robot_unload_request	value_type=bool	value=0
+step	type=set	symbol=robot_unload_done	value_type=bool	value=1
+
+macro	id=fixture_clamp	title=Fixture Clamp	mcode=318
+step	type=set	symbol=pallet_clamp_cmd	value_type=bool	value=1
+step	type=wait	symbol=pallet_clamped_fb	value_type=bool	compare=eq	value=1	timeout_ms=5000
+
+macro	id=lights_out_complete	title=Lights-Out Batch Done	mcode=319
+# Final marker. The job scheduler (cnc::jobs::Runtime) advances
+# pallets through cycles_completed automatically; this macro is for
+# the operator-facing signal ("call me when the batch is done").
+step	type=set	symbol=lights_out_batch_done	value_type=bool	value=1

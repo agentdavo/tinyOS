@@ -8,6 +8,7 @@
 #include "../ethercat/master.hpp"
 #include "../ui/operator_api.hpp"
 #include "../miniOS.hpp"
+#include "../klog.hpp"
 #include "../util_math.hpp"
 
 namespace cnc::interp {
@@ -39,6 +40,12 @@ struct ParsedLine {
     bool home = false;
     bool tool_length_enable = false;
     bool tool_length_cancel = false;
+    // G43.4 / G43.5 TCP enable; G49.1 TCP cancel. Routed through the
+    // Runtime::set_tcp_active path so the executor mirrors the operator
+    // CLI verb's effect — keeps the snapshot and the interpreter modal
+    // state coherent regardless of which path flipped it.
+    bool tcp_enable = false;
+    bool tcp_cancel = false;
     long tool_word = -1;
     long h_word = -1;
     long m_code = -1;
@@ -315,6 +322,11 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
             state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
             state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
         }
+        // G43.4 / G49.1 — TCP modal flag mirrors the operator-side toggle so
+        // a dry-scan restart leaves the channel in the same TCP state the
+        // program reached, regardless of which line we resumed from.
+        if (parsed.tcp_cancel) state.tcp_active = false;
+        if (parsed.tcp_enable) state.tcp_active = true;
         // M6 in the source program would physically change the tool, but on
         // a dry scan we only promote the pending index to active so the
         // reconstructed state reflects "this is the tool the program expects".
@@ -436,10 +448,20 @@ static int32_t units_to_counts(const Runtime::ChannelState& state, float value) 
 // Convert to counts-per-second so the motion kernel's path-velocity clamp
 // can compare like-with-like. Returns 0 when the F-word hasn't been seen
 // (state.feed defaults to 1000 in load_selected, but interpret as mm/min).
-static uint32_t feed_cps_for_state(const Runtime::ChannelState& state) noexcept {
+//
+// The channel's feed override (set via the `override` CLI verb or the HMI
+// slider) scales the resulting cps when state.override_active is true.
+// M48 enables the slider; M49 disables it (treat permille as 1000).
+static uint32_t feed_cps_for_state(const Runtime::ChannelState& state,
+                                   size_t channel) noexcept {
     if (state.feed == 0) return 0;
     const uint64_t scale = state.inch_mode ? 2540u : 100u;
-    return static_cast<uint32_t>((static_cast<uint64_t>(state.feed) * scale) / 60u);
+    uint64_t cps = (static_cast<uint64_t>(state.feed) * scale) / 60u;
+    if (state.override_active && channel < motion::g_motion.channel_count()) {
+        const uint16_t permille = motion::g_motion.channel(channel).overrides.feed_permille;
+        cps = (cps * permille) / 1000u;
+    }
+    return static_cast<uint32_t>(cps);
 }
 
 // Combined-axis Euclidean distance in counts for the participating axes.
@@ -478,7 +500,11 @@ static motion::HomingPlan default_homing_plan() {
     return plan;
 }
 
-static void parse_g_word(int code, ParsedLine& parsed) {
+// `frac` is the first decimal digit of the G-code (43.4 → frac=4, 49.1 →
+// frac=1). Most G-codes are integer (frac == 0) and the existing dispatch
+// runs unchanged. Decimal cases (G43.4 / G49.1) route into separate
+// ParsedLine flags so executor logic stays a flat set of if-statements.
+static void parse_g_word(int code, int frac, ParsedLine& parsed) {
     if (code == 0) {
         parsed.set_motion_mode = true;
         parsed.motion_mode = MotionMode::Rapid;
@@ -511,9 +537,16 @@ static void parse_g_word(int code, ParsedLine& parsed) {
     } else if (code == 28) {
         parsed.home = true;
     } else if (code == 43) {
-        parsed.tool_length_enable = true;
+        // G43          — classic tool-length compensation enable.
+        // G43.4 / G43.5 — TCP enable. The active orientation lives on
+        //                 cnc::interp::Runtime::set_tcp_active(channel, true);
+        //                 the rotary axes are read by apply_tcp_correction.
+        if (frac == 4 || frac == 5) parsed.tcp_enable = true;
+        else                        parsed.tool_length_enable = true;
     } else if (code == 49) {
-        parsed.tool_length_cancel = true;
+        // G49   — tool-length comp cancel. G49.1 also cancels TCP.
+        if (frac == 1) parsed.tcp_cancel = true;
+        else           parsed.tool_length_cancel = true;
     } else if (code == 53) {
         parsed.machine_coordinates = true;
     } else if (code >= 54 && code <= 59) {
@@ -539,7 +572,17 @@ static bool parse_line(const char* s, ParsedLine& parsed) {
         if (word == 'N') {
             (void)parse_float_token(s, i);
         } else if (word == 'G') {
-            parse_g_word(static_cast<int>(parse_float_token(s, i)), parsed);
+            // Decimal G-code dispatch (G43.4 / G49.1 / G33.1 / ...). The
+            // integer part picks the major case in parse_g_word; the first
+            // decimal digit selects sub-case. Round-half-up so 0.45 reads as
+            // 4 — anything finer than .X is below the spec we ship.
+            const float gv = parse_float_token(s, i);
+            const int   gi = static_cast<int>(gv);
+            const float gf = gv - static_cast<float>(gi);
+            int frac = static_cast<int>(gf * 10.0f + 0.5f);
+            if (frac >= 10) frac = 9;
+            if (frac < 0)   frac = 0;
+            parse_g_word(gi, frac, parsed);
         } else if (word == 'M') {
             parsed.m_code = static_cast<long>(parse_float_token(s, i));
         } else if (word == 'F') {
@@ -598,44 +641,107 @@ static int32_t tool_length_counts(const Runtime::ChannelState& state, char word)
     }
 }
 
-// Tool-tip → spindle-reference transform for 5-axis TCP. Composes a head-
-// kinematics R_C * R_B rotation of the tool vector and subtracts it from
-// the requested tool-tip target so the X/Y/Z axes drive the spindle to
-// the position that puts the tip at the requested point. Rotary
-// targets[B] / targets[C] are expected in axis counts; conversion to
-// radians uses the kernel's 100 cnt/degree convention. Linear length
-// components are in axis counts (already pre-scaled into
-// state.tool_length_*_counts at G43 time).
+// Single-axis rotations. Each operates in place on (x, y, z) given the
+// pre-computed cos/sin of the angle. Convention:
+//   R_A (about +X / roll  — A axis word):
+//     y' =  y * ca - z * sa,  z' =  y * sa + z * ca
+//   R_B (about +Y / pitch — B axis word):
+//     x' =  x * cb + z * sb,  z' = -x * sb + z * cb
+//   R_C (about +Z / yaw   — C axis word):
+//     x' =  x * cc - y * sc,  y' =  x * sc + y * cc
+static inline void rot_a(float& x, float& y, float& z, float ca, float sa) {
+    (void)x;
+    const float ny = y * ca - z * sa;
+    const float nz = y * sa + z * ca;
+    y = ny; z = nz;
+}
+static inline void rot_b(float& x, float& y, float& z, float cb, float sb) {
+    (void)y;
+    const float nx =  x * cb + z * sb;
+    const float nz = -x * sb + z * cb;
+    x = nx; z = nz;
+}
+static inline void rot_c(float& x, float& y, float& z, float cc, float sc) {
+    (void)z;
+    const float nx = x * cc - y * sc;
+    const float ny = x * sc + y * cc;
+    x = nx; y = ny;
+}
+
+// Apply the composed rotation R to (vx, vy, vz) and write to (ox, oy, oz).
+// Convention: token "XY" composes R = R_X · R_Y, i.e. apply Y FIRST then
+// X. So CB applies B first, then C — same as the previous behaviour.
+static void rotate_axes(float vx, float vy, float vz,
+                        float ca, float sa,
+                        float cb, float sb,
+                        float cc, float sc,
+                        Runtime::TcpOrder order,
+                        float& ox, float& oy, float& oz) {
+    float x = vx, y = vy, z = vz;
+    switch (order) {
+        case Runtime::TcpOrder::CB: rot_b(x, y, z, cb, sb); rot_c(x, y, z, cc, sc); break;
+        case Runtime::TcpOrder::BC: rot_c(x, y, z, cc, sc); rot_b(x, y, z, cb, sb); break;
+        case Runtime::TcpOrder::CA: rot_a(x, y, z, ca, sa); rot_c(x, y, z, cc, sc); break;
+        case Runtime::TcpOrder::AC: rot_c(x, y, z, cc, sc); rot_a(x, y, z, ca, sa); break;
+        case Runtime::TcpOrder::BA: rot_a(x, y, z, ca, sa); rot_b(x, y, z, cb, sb); break;
+        case Runtime::TcpOrder::AB: rot_b(x, y, z, cb, sb); rot_a(x, y, z, ca, sa); break;
+    }
+    ox = x; oy = y; oz = z;
+}
+
+// 5-axis TCP target correction.
+//
+// Rotary targets[B] / targets[C] are expected in axis counts; conversion
+// to radians uses the kernel's 100 cnt/degree convention.
 //
 // Convention matches render::kinematic forward kinematics: R_C is yaw
-// around +Z (machine vertical), R_B is pitch around +Y (head tilt). For
-// a typical mill head with a spindle pointing -Z when B = 0 and C = 0
-// and a positive length_z, the tool vector in the machine frame is
-// (0, 0, -length_z), so the spindle reference position equals
-// tool_tip - R_C * R_B * (length_x, length_y, length_z).
+// around +Z (machine vertical), R_B is pitch around +Y (head tilt).
+//
+// Rotation composition selectable via Runtime::tcp_order():
+//   CB (default) — R = R_C · R_B  (B applied first, then C; matches the
+//                  millturn TSV's C-then-B parent chain).
+//   BC           — R = R_B · R_C  (C applied first, then B; AC/BC heads
+//                  where B is the outer joint).
+//
+// Mode selectable via Runtime::tcp_mode():
+//   Head — rotaries carry the TOOL. The tool vector
+//          (length_x, length_y, length_z) rotates with the head. To put
+//          the tool tip at the requested target, the spindle reference
+//          position is `tip - R · tool_vec`. The G43-scalar Z addition
+//          done in resolve_targets is undone here so it doesn't double-
+//          count.
+//   Tail — rotaries carry the WORKPIECE. The tool sits at fixed machine
+//          coordinates, and a tool-tip target written in workpiece-frame
+//          coordinates needs to be rotated around the pivot point to
+//          give the machine-frame command. The G43 tool-length addition
+//          stays (the tool is in fixed machine coordinates so plain
+//          tool-length comp is correct). The pivot is configured per-
+//          machine via Runtime::set_tcp_pivot — the (X,Y,Z) machine
+//          coordinates of the rotary pivot when both rotaries are at
+//          zero. Default (0,0,0) means "rotaries pivot at workpiece
+//          origin", a clean default for a calibrated G54 setup.
 static void apply_tcp_correction(Runtime::ChannelState& state,
                                  Runtime& runtime,
                                  size_t channel,
                                  int32_t targets[motion::MAX_AXES]) {
     if (!state.tcp_active) return;
-    if (state.tool_length_counts == 0 &&
-        state.tool_length_x_counts == 0 &&
-        state.tool_length_y_counts == 0) return;
-    uint8_t x_idx=0, y_idx=0, z_idx=0, b_idx=0, c_idx=0;
+    uint8_t x_idx=0, y_idx=0, z_idx=0, a_idx=0, b_idx=0, c_idx=0;
     const bool has_xy =
         runtime.resolve_axis_word(channel, 'X', x_idx) &&
         runtime.resolve_axis_word(channel, 'Y', y_idx);
     const bool has_z = runtime.resolve_axis_word(channel, 'Z', z_idx);
     if (!has_xy || !has_z) return;
+    const bool has_a = runtime.resolve_axis_word(channel, 'A', a_idx);
     const bool has_b = runtime.resolve_axis_word(channel, 'B', b_idx);
     const bool has_c = runtime.resolve_axis_word(channel, 'C', c_idx);
+
     // Convention: rotary axis counts at 100 cnt/degree → degrees/100 →
-    // radians. cos(0)=1, sin(0)=0, so a 3-axis machine with no B/C falls
-    // through with the tool vector unrotated and the correction reduces
-    // to a constant offset on Z (the same effect tool_length_counts
-    // already added in resolve_targets — TCP would double-correct, so
-    // this path subtracts the tool_length component before applying the
-    // rotated correction. Net: TCP supersedes G43 Z-only when active).
+    // radians. cos(0)=1, sin(0)=0, so any axis the machine doesn't have
+    // contributes identity to the composition.
+    const float alpha_rad = has_a
+        ? (static_cast<float>(targets[a_idx]) / 100.0f) *
+          kernel::util::math::kDegToRad
+        : 0.0f;
     const float beta_rad  = has_b
         ? (static_cast<float>(targets[b_idx]) / 100.0f) *
           kernel::util::math::kDegToRad
@@ -644,27 +750,44 @@ static void apply_tcp_correction(Runtime::ChannelState& state,
         ? (static_cast<float>(targets[c_idx]) / 100.0f) *
           kernel::util::math::kDegToRad
         : 0.0f;
-    const float cb = cos_approx(beta_rad), sb = sin_approx(beta_rad);
+    const float ca = cos_approx(alpha_rad), sa = sin_approx(alpha_rad);
+    const float cb = cos_approx(beta_rad),  sb = sin_approx(beta_rad);
     const float cc = cos_approx(gamma_rad), sc = sin_approx(gamma_rad);
-    const float lx = static_cast<float>(state.tool_length_x_counts);
-    const float ly = static_cast<float>(state.tool_length_y_counts);
-    const float lz = static_cast<float>(state.tool_length_counts);
-    // R_B (pitch around Y): (x', y', z') = (x*cb + z*sb, y, -x*sb + z*cb)
-    const float xb =  lx * cb + lz * sb;
-    const float yb =  ly;
-    const float zb = -lx * sb + lz * cb;
-    // R_C (yaw around Z): (x', y', z') = (x*cc - y*sc, x*sc + y*cc, z)
-    const float xw = xb * cc - yb * sc;
-    const float yw = xb * sc + yb * cc;
-    const float zw = zb;
-    // Undo the G43-scalar Z addition that resolve_targets applied via
-    // tool_length_counts() so we don't correct twice. tool_length_x/y
-    // weren't applied (3-axis G43 path is Z-only) so no undo there.
-    targets[z_idx] -= state.tool_length_counts;
-    // Apply the rotated tool offset.
-    targets[x_idx] -= static_cast<int32_t>(xw);
-    targets[y_idx] -= static_cast<int32_t>(yw);
-    targets[z_idx] -= static_cast<int32_t>(zw);
+
+    if (runtime.tcp_mode() == Runtime::TcpMode::Head) {
+        // Head mode: skip if there's no tool vector to rotate (the
+        // correction would be zero anyway).
+        if (state.tool_length_counts == 0 &&
+            state.tool_length_x_counts == 0 &&
+            state.tool_length_y_counts == 0) return;
+        const float lx = static_cast<float>(state.tool_length_x_counts);
+        const float ly = static_cast<float>(state.tool_length_y_counts);
+        const float lz = static_cast<float>(state.tool_length_counts);
+        float xw, yw, zw;
+        rotate_axes(lx, ly, lz, ca, sa, cb, sb, cc, sc, runtime.tcp_order(), xw, yw, zw);
+        // Undo the G43-scalar Z addition that resolve_targets applied
+        // via tool_length_counts() so we don't correct twice.
+        // tool_length_x/y weren't applied (3-axis G43 path is Z-only)
+        // so no undo there.
+        targets[z_idx] -= state.tool_length_counts;
+        targets[x_idx] -= static_cast<int32_t>(xw);
+        targets[y_idx] -= static_cast<int32_t>(yw);
+        targets[z_idx] -= static_cast<int32_t>(zw);
+        return;
+    }
+
+    // Tail mode: rotate the requested target around the pivot. The
+    // tool-length comp (G43) stays — spindle is fixed in machine frame.
+    int32_t pivot_x = 0, pivot_y = 0, pivot_z = 0;
+    runtime.tcp_pivot(pivot_x, pivot_y, pivot_z);
+    const float dx = static_cast<float>(targets[x_idx] - pivot_x);
+    const float dy = static_cast<float>(targets[y_idx] - pivot_y);
+    const float dz = static_cast<float>(targets[z_idx] - pivot_z);
+    float rx, ry, rz;
+    rotate_axes(dx, dy, dz, ca, sa, cb, sb, cc, sc, runtime.tcp_order(), rx, ry, rz);
+    targets[x_idx] = pivot_x + static_cast<int32_t>(rx);
+    targets[y_idx] = pivot_y + static_cast<int32_t>(ry);
+    targets[z_idx] = pivot_z + static_cast<int32_t>(rz);
 }
 
 static bool resolve_targets(Runtime::ChannelState& state,
@@ -739,7 +862,7 @@ static bool execute_axes(Runtime::ChannelState& state,
     // per spec.
     uint64_t min_t_final_us = 0;
     if (state.motion_mode != MotionMode::Rapid) {
-        const uint32_t feed_cps = feed_cps_for_state(state);
+        const uint32_t feed_cps = feed_cps_for_state(state, channel);
         if (feed_cps > 0) {
             uint32_t path_counts;
             if (state.tcp_active) {
@@ -898,7 +1021,7 @@ static bool plan_arc(Runtime::ChannelState& state,
     return true;
 }
 
-static bool advance_arc(Runtime::ChannelState& state) {
+static bool advance_arc(Runtime::ChannelState& state, size_t channel) {
     auto& arc = state.arc;
     if (!arc.active || arc.total_segments == 0) return false;
     ++arc.current_segment;
@@ -928,7 +1051,7 @@ static bool advance_arc(Runtime::ChannelState& state) {
     // surface feedrate regardless of pitch — without this, a 360° helix
     // with 50 mm rise ran arc-only at F and the linear axis was just
     // dragged along, so the actual surface speed went up by sqrt(1 + (rise/circ)²).
-    const uint32_t feed_cps = feed_cps_for_state(state);
+    const uint32_t feed_cps = feed_cps_for_state(state, channel);
     uint64_t min_t_final_us = 0;
     if (feed_cps > 0) {
         const float arc_seg_len =
@@ -1060,7 +1183,7 @@ bool Runtime::tick_channel(size_t channel) noexcept {
         for (size_t guard = 0; guard < motion::Axis::CHAIN_DEPTH * 2; ++guard) {
             if (!channel_settled(channel)) break;  // chain ring full
             if (!state.arc.active) break;          // arc completed mid-burst
-            if (!advance_arc(state)) {
+            if (!advance_arc(state, channel)) {
                 state.state = State::Fault;
                 return false;
             }
@@ -1127,6 +1250,12 @@ bool Runtime::tick_channel(size_t channel) noexcept {
         state.tool_length_x_counts = static_cast<int32_t>(tos.length_x * 100.0f);
         state.tool_length_y_counts = static_cast<int32_t>(tos.length_y * 100.0f);
     }
+    // G43.4 / G43.5 enable TCP; G49.1 cancels. set_tcp_active here ensures
+    // operator API + interpreter modal flag stay coherent — the operator
+    // could have flipped TCP via the `tcp` CLI verb mid-program; G43.4 in
+    // the part program then re-asserts the same flag with no surprise.
+    if (parsed.tcp_cancel) (void)set_tcp_active(channel, false);
+    if (parsed.tcp_enable) (void)set_tcp_active(channel, true);
 
     if (parsed.home) {
         if (!execute_home(state, *this, channel, parsed)) {
@@ -1243,13 +1372,36 @@ bool Runtime::tick_channel(size_t channel) noexcept {
             if (speed < 0) speed = -speed;
             if (parsed.m_code == 5) state.spindle = 0;
             else state.spindle = (parsed.m_code == 4) ? -speed : speed;
+            int32_t commanded = (parsed.m_code == 5) ? 0 : state.spindle;
+            // Apply the channel's spindle override when M48 is in effect.
+            if (state.override_active && commanded != 0 &&
+                channel < motion::g_motion.channel_count()) {
+                const uint16_t permille =
+                    motion::g_motion.channel(channel).overrides.spindle_permille;
+                commanded = static_cast<int32_t>(
+                    (static_cast<int64_t>(commanded) * permille) / 1000);
+            }
             motion::g_motion.set_axis_velocity(static_cast<size_t>(spindle_axis),
-                                               parsed.m_code == 5 ? 0 : state.spindle);
+                                               commanded);
         }
         return true;
     }
-    if (parsed.m_code == 100 || parsed.m_code == 110 || parsed.m_code == 200) {
-        const uint16_t token = static_cast<uint16_t>(parsed.p_word >= 0 ? parsed.p_word : (state.line & 0xFFFF));
+    // M48 / M49 — feed/spindle override enable/disable. Modal flag only;
+    // takes effect on the next feed_cps_for_state / spindle dispatch.
+    if (parsed.m_code == 48) { state.override_active = true;  return true; }
+    if (parsed.m_code == 49) { state.override_active = false; return true; }
+    // M100/M110/M200 — historical sync barrier verbs.
+    // M101..M109 — named alternates. Token defaults to (mcode * 1000 + line)
+    // so a program with multiple M101s at different lines doesn't collide
+    // unless P explicitly forces a shared token. Q (participants mask)
+    // defaults to all-channels (0x3 today; 0xFF leaves room for >2).
+    if (parsed.m_code == 100 || parsed.m_code == 110 || parsed.m_code == 200 ||
+        (parsed.m_code >= 101 && parsed.m_code <= 109)) {
+        const long mcode = parsed.m_code;
+        const uint16_t default_token = static_cast<uint16_t>(
+            (mcode * 1000l + static_cast<long>(state.line)) & 0xFFFF);
+        const uint16_t token = static_cast<uint16_t>(
+            parsed.p_word >= 0 ? parsed.p_word : default_token);
         const uint8_t mask = static_cast<uint8_t>(parsed.q_word >= 0 ? parsed.q_word : 0x3);
         const bool ok = motion::g_motion.arrive_at_barrier(channel, token, mask, 1, 3, 20000);
         if (!ok) {
