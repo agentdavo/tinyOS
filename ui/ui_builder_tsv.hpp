@@ -59,9 +59,15 @@ class Widget;
 
 namespace ui_builder {
 
-constexpr uint32_t MAX_WIDGETS = 256;
+// embedded_ui.tsv has ~953 widgets / ~169 actions raw, and 20 pages each
+// `include page=bottom_nav` — include_page_into_current clones bottom_nav's
+// 8 widgets and 7 actions into every including page, adding ~160 widgets
+// and ~140 actions. Working set is ~1113 widgets / ~309 actions; the prior
+// 256 / 128 caps aborted load_tsv mid-`machine_view` so no Widget* was
+// ever created and CI screenshots all rendered to a blank framebuffer.
+constexpr uint32_t MAX_WIDGETS = 1280;
 constexpr uint32_t MAX_PAGES = 32;
-constexpr uint32_t MAX_ACTIONS = 128;
+constexpr uint32_t MAX_ACTIONS = 384;
 constexpr uint32_t MAX_CHILD_LINKS = 256;
 constexpr uint32_t MAX_FIELD_LEN = 96;
 
