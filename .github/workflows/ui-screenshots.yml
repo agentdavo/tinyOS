@@ -121,5 +121,22 @@ jobs:
           else
               TARGET_BRANCH="${GITHUB_REF#refs/heads/}"
           fi
+          # Race-tolerant push. If the target branch advanced while CI
+          # was running (typical when a developer pushes more commits
+          # to the PR head while the screenshot job is in flight), the
+          # plain push fails non-fast-forward and the whole job is
+          # marked failed even though the captures are fine. Fetch and
+          # bail-out cleanly when behind so the operator can re-run the
+          # workflow against the fresh tip.
+          git fetch origin "${TARGET_BRANCH}"
+          REMOTE_TIP=$(git rev-parse "origin/${TARGET_BRANCH}")
+          PARENT=$(git rev-parse HEAD~1)
+          if [ "${REMOTE_TIP}" != "${PARENT}" ]; then
+              echo "Target branch ${TARGET_BRANCH} advanced since CI checkout"
+              echo "  expected parent: ${PARENT}"
+              echo "  remote tip:      ${REMOTE_TIP}"
+              echo "Skipping screenshot auto-commit; artifacts uploaded for manual review."
+              exit 0
+          fi
           echo "Pushing screenshot commit to ${TARGET_BRANCH}"
           git push origin "HEAD:${TARGET_BRANCH}"
