@@ -3103,7 +3103,17 @@ public:
                     text = kernel::ui::operator_api::offsets_snapshot().tool_name;
                     break;
                 default:
-                    format_bind_value(bind_, buf, sizeof(buf), spec_.text[0] ? spec_.text : "");
+                    // spec_.text is the placeholder shown before the bind
+                    // produces a value (e.g. "00:00:00" for an uptime, "---"
+                    // for an unbound IP). Don't pass it as prefix — every
+                    // bind formatter is "%s<value>", which would re-render
+                    // the placeholder in front of the live value and overflow
+                    // the widget. net_uptime_v (text="00:00:00",
+                    // bind=net:uptime, scale=2) produced "00:00:0000:00:00"
+                    // = 16 chars = 256 px, draw_x landing the tail at
+                    // x≥1080 — fb.fill_rect's bounds-check overflowed and
+                    // walked into unmapped MMIO at FAR=0x48000000.
+                    format_bind_value(bind_, buf, sizeof(buf), "");
                     text = buf;
                     break;
             }

@@ -240,10 +240,20 @@ Color Framebuffer::get_pixel(int32_t x, int32_t y) const {
 void Framebuffer::fill_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, Color c) {
     if (x < 0) { if ((uint32_t)(-x) >= w) return; w -= (-x); x = 0; }
     if (y < 0) { if ((uint32_t)(-y) >= h) return; h -= (-y); y = 0; }
-    if (x + (int32_t)w > (int32_t)FB_WIDTH) w = FB_WIDTH - x;
-    if (y + (int32_t)h > (int32_t)FB_HEIGHT) h = FB_HEIGHT - y;
+    // Reject fully off-screen rects. The prior `(x + (int32_t)w) > FB_WIDTH`
+    // form overflowed signed int32 when w was untrusted/garbage: the addition
+    // wrapped negative, the comparison returned false, w was never clamped,
+    // and the inner loop walked off the end of buffer_ until it hit unmapped
+    // memory (FAR=0x48000000 on the QEMU virt -m 128M map). Test against
+    // FB_{WIDTH,HEIGHT} as unsigned upper bounds instead, then clamp w/h to
+    // the remaining slack.
+    if (static_cast<uint32_t>(x) >= FB_WIDTH || static_cast<uint32_t>(y) >= FB_HEIGHT) return;
+    const uint32_t max_w = FB_WIDTH - static_cast<uint32_t>(x);
+    const uint32_t max_h = FB_HEIGHT - static_cast<uint32_t>(y);
+    if (w > max_w) w = max_w;
+    if (h > max_h) h = max_h;
     if (w == 0 || h == 0) return;
-    
+
     uint32_t pixel = (c.a << 24) | (c.r << 16) | (c.g << 8) | c.b;
     for (uint32_t row = 0; row < h; ++row) {
         uint32_t* row_ptr = &buffer_[(y + row) * FB_WIDTH + x];
