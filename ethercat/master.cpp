@@ -181,7 +181,7 @@ void Master::handle_rx_frame(const uint8_t* data, size_t len) noexcept {
             // at offset 6 (after the 6-byte mailbox header); cmd byte at
             // offset 8. A download-direction response (master initiated)
             // has cmd nibble 0x60 (confirm) or 0x80 (abort).
-            if (dl_in_flight_ && station == dl_station_ && dg.data_len >= 12) {
+            if (dl_in_flight_.load(std::memory_order_acquire) && station == dl_station_ && dg.data_len >= 12) {
                 const uint8_t  cmd      = dg.data[8];
                 const uint16_t resp_idx =
                     static_cast<uint16_t>(dg.data[9]) |
@@ -656,14 +656,24 @@ bool Master::send_sdo_download_tracked(uint16_t station_addr,
                                        std::atomic<uint8_t>* completion_state,
                                        uint32_t* abort_code,
                                        uint32_t timeout_us) noexcept {
-    if (dl_in_flight_) return false;
+    // Atomically claim the single download slot — prior form had TOCTOU
+    // between the check and the write that let two concurrent callers
+    // both pass the gate, both clobber {station,index,sub,deadline,
+    // completion_state}, and the second's caller never saw their slot's
+    // completion update.
+    bool expected = false;
+    if (!dl_in_flight_.compare_exchange_strong(expected, true,
+                                               std::memory_order_acq_rel,
+                                               std::memory_order_relaxed)) {
+        return false;
+    }
     if (completion_state) completion_state->store(0, std::memory_order_release);
     if (abort_code) *abort_code = 0;
     if (!send_sdo_download(station_addr, index, sub, data, len_bytes)) {
         if (completion_state) completion_state->store(2, std::memory_order_release);
+        dl_in_flight_.store(false, std::memory_order_release);
         return false;
     }
-    dl_in_flight_   = true;
     dl_station_     = station_addr;
     dl_index_       = index;
     dl_sub_         = sub;
@@ -674,7 +684,7 @@ bool Master::send_sdo_download_tracked(uint16_t station_addr,
 }
 
 void Master::service_sdo_download() noexcept {
-    if (!dl_in_flight_) return;
+    if (!dl_in_flight_.load(std::memory_order_acquire)) return;
     // Poll SM1 mailbox for the slave's CoE response. Most slaves answer
     // an expedited download in <2 cycles; we issue one FPRD per cycle
     // until something lands or the deadline expires.
@@ -691,15 +701,15 @@ void Master::service_sdo_download() noexcept {
     if (now_us() <= dl_deadline_us_) return;
     if (dl_completion_) dl_completion_->store(2, std::memory_order_release);
     if (dl_abort_code_) *dl_abort_code_ = 0; // 0 = timeout
-    dl_in_flight_   = false;
     dl_completion_  = nullptr;
     dl_abort_code_  = nullptr;
+    dl_in_flight_.store(false, std::memory_order_release);
 }
 
 void Master::on_sdo_download_response(uint16_t station, uint8_t cmd,
                                       uint16_t index, uint8_t sub,
                                       uint32_t abort_code) noexcept {
-    if (!dl_in_flight_) return;
+    if (!dl_in_flight_.load(std::memory_order_acquire)) return;
     if (station != dl_station_ || index != dl_index_ || sub != dl_sub_) return;
     // CoE: cmd 0x60 = download confirm; cmd 0x80 = abort.
     if ((cmd & 0xE0) == 0x60) {
@@ -708,9 +718,9 @@ void Master::on_sdo_download_response(uint16_t station, uint8_t cmd,
         if (dl_completion_) dl_completion_->store(2, std::memory_order_release);
         if (dl_abort_code_) *dl_abort_code_ = abort_code;
     }
-    dl_in_flight_   = false;
     dl_completion_  = nullptr;
     dl_abort_code_  = nullptr;
+    dl_in_flight_.store(false, std::memory_order_release);
 }
 
 bool Master::enqueue_sdo_upload(const SdoRequest& req) noexcept {
