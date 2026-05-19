@@ -22,7 +22,20 @@ extern "C" {
 }
 
 // --- Minimal new/delete ---
-#define KERNEL_SIMPLE_HEAP_SIZE (1024 * 256)
+// Bump allocator backing every kernel `operator new` — never freed, sized for
+// the full boot + first-render working set. The biggest consumers:
+//   - ui_builder::load_tsv constructs ~1113 BuilderXxx widgets (~220 KB)
+//   - render/machine_model.cpp imports several OBJ meshes (~32 KB scratch
+//     + per-mesh vertex/index blocks)
+//   - each BuilderImage running gles1::Renderer lazily allocates a
+//     widget-sized depth buffer (machine_view's preview pane is the
+//     largest at ~700 KB)
+//   - misc kernel bring-up paths (a few tens of KB)
+// The previous 256 KB cap OOM-panicked mid-tsv_load (every page rendered
+// blank, screenshots committed 336-byte placeholders); 2 MB still OOM'd at
+// machine_view's first render. 8 MB carries the full UI page-walk with
+// headroom. Costs 7.75 MB of .bss against the 128 MB QEMU image.
+#define KERNEL_SIMPLE_HEAP_SIZE (1024 * 1024 * 8)
 [[gnu::aligned(16)]] static char simple_kernel_heap[KERNEL_SIMPLE_HEAP_SIZE];
 static size_t simple_kernel_heap_ptr = 0;
 // This global Spinlock relies on its own constructor being called by call_constructors.

@@ -515,8 +515,21 @@ void show_main_page(Framebuffer& fb) {
 
         if (timer) {
             const uint64_t now = timer->get_system_time_ns();
-            if (now > next_ns) next_ns = now;
-            else wait_until_ns(next_ns);
+            if (now > next_ns) {
+                // Render took longer than UI_PERIOD_NS. Still sleep for one
+                // full period before the next iteration so lower-priority
+                // threads on this core (cli prio=3, uart_io prio=3 vs ui
+                // prio=10) actually get scheduled. The old "next_ns = now"
+                // path skipped the wait entirely; on machine_view, where
+                // the 1040 × 1240 software GLES1 render takes ~1 s on
+                // QEMU TCG, that pegged the UI thread continuously and
+                // the cli thread never woke to dispatch the queued
+                // `ui_dump 6` command — `UI_DUMP_BEGIN` never reached
+                // the wire and CI screenshots aborted at machine_view
+                // with `timeout waiting for UI_DUMP_BEGIN`.
+                next_ns = now + UI_PERIOD_NS;
+            }
+            wait_until_ns(next_ns);
         } else {
             kernel::util::cpu_relax();
         }
