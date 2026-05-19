@@ -261,6 +261,9 @@ static int num_to_str_base_internal(uint64_t value, char* buffer, size_t buffer_
 int int_to_str(int32_t value, char* buffer, size_t buffer_size, int base) noexcept {
     return num_to_str_base_internal(static_cast<uint64_t>(static_cast<int64_t>(value)), buffer, buffer_size, base, true);
 }
+int int64_to_str(int64_t value, char* buffer, size_t buffer_size, int base) noexcept {
+    return num_to_str_base_internal(static_cast<uint64_t>(value), buffer, buffer_size, base, true);
+}
 int uint_to_str(uint32_t value, char* buffer, size_t buffer_size, int base) noexcept {
     return num_to_str_base_internal(value, buffer, buffer_size, base, false);
 }
@@ -419,7 +422,10 @@ int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) no
                     break;
                 }
                 case 'd': case 'i': {
-                    if (is_long_long || is_size_t) current_segment_len = int_to_str(static_cast<int32_t>(va_arg(args, long long)), temp_num_buf, sizeof(temp_num_buf));
+                    // Prior form silently cast `long long` down to int32 — anything
+                    // past INT32_MAX (PSCI rc, motion frame counters, 64-bit ticks)
+                    // printed as garbage. Route 64-bit through int64_to_str instead.
+                    if (is_long_long || is_size_t) current_segment_len = int64_to_str(va_arg(args, long long), temp_num_buf, sizeof(temp_num_buf));
                     else current_segment_len = int_to_str(va_arg(args, int), temp_num_buf, sizeof(temp_num_buf));
                     break;
                 }

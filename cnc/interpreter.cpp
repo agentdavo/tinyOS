@@ -357,7 +357,7 @@ bool Runtime::restart_at_line(size_t channel, size_t target_line) noexcept {
         // everything up to target_line. This isn't motion — it's just
         // bookkeeping inside state.targets[].
         if (parsed.axis_words[0] || parsed.axis_words[1] || parsed.axis_words[2] ||
-            parsed.axis_words[3] || parsed.axis_words[4] || parsed.axis_values[5]) {
+            parsed.axis_words[3] || parsed.axis_words[4] || parsed.axis_words[5]) {
             static constexpr char kAxisLetters[6] = {'X', 'Y', 'Z', 'A', 'B', 'C'};
             for (size_t word_idx = 0; word_idx < 6; ++word_idx) {
                 if (!parsed.axis_words[word_idx]) continue;

@@ -113,6 +113,7 @@ bool ipv4_to_uint32(std::string_view ip_str, uint32_t& ip_addr) noexcept;
 
 // Number to string conversion helpers (definitions in util.cpp)
 int int_to_str(int32_t value, char* buffer, size_t buffer_size, int base = 10) noexcept;
+int int64_to_str(int64_t value, char* buffer, size_t buffer_size, int base = 10) noexcept;
 int uint_to_str(uint32_t value, char* buffer, size_t buffer_size, int base = 10) noexcept;
 int uint64_to_str(uint64_t value, char* buffer, size_t buffer_size, int base = 10) noexcept;
 int uint64_to_hex_str(uint64_t value, char* buffer, size_t buffer_size, bool leading_0x = true) noexcept;

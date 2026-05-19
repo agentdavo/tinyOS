@@ -468,7 +468,13 @@ private:
     // download polls the deadline and fails out if the slave never
     // ack'd. Independent of upload state — a download and an upload can
     // be in flight concurrently (different mailbox slots).
-    bool                    dl_in_flight_   = false;
+    // Caller threads (cli, motion) and the cycle thread both touch this
+    // gate. Used to be a plain bool with TOCTOU between the
+    // send_sdo_download_tracked check at line ~659 and the write at line
+    // ~666 — two concurrent callers both passed and clobbered each
+    // other's completion_state/station/deadline. CAS-set from callers,
+    // release-store-false from cycle paths; mirror upload_busy_.
+    std::atomic<bool>       dl_in_flight_{false};
     uint16_t                dl_station_     = 0;
     uint16_t                dl_index_       = 0;
     uint8_t                 dl_sub_         = 0;

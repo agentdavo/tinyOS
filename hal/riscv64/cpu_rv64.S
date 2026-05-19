@@ -515,5 +515,23 @@ cpu_context_switch_rv64:
     csrw    mepc, t0
     ld      t0, (TCB_MSTATUS_OFF)(a1)
     csrw    mstatus, t0
+
+    /* Clear g_irq_in_progress[hart] before mret — mirrors the trap-exit
+     * path at line ~422. The flag was set on entry (line ~467) so that a
+     * timer firing mid-switch would NOT spill into new_tcb. If we mret to
+     * the new thread without clearing, the flag stays at 1 and the next
+     * trap that fires on this hart skips its TCB save (trap_entry line
+     * ~291), then on trap-exit restores from a TCB whose caller-saved
+     * state was never written — corrupting pc/regs of whatever ran in
+     * between. Symptom: residual mcause=1 with mtval=0 / mepc landing on
+     * a stale-zero TCB.pc (the open CLAUDE.md rv64 boot regression).
+     * MIE is masked from line 455 onward so no trap can fire in this
+     * window; clearing is safe. */
+    csrr    t0, mhartid
+    lla     t1, g_irq_in_progress
+    slli    t2, t0, 3
+    add     t1, t1, t2
+    sd      zero, 0(t1)
+
     fence   i, rw                      /* sync instruction fetch with memory state */
     mret

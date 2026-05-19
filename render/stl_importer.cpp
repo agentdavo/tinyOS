@@ -76,11 +76,16 @@ bool parse_float(const char*& p, const char* end, float& out) {
         int esign = 1;
         if (p < end && *p == '+') ++p;
         else if (p < end && *p == '-') { esign = -1; ++p; }
+        // Cap exp at IEEE-754 single's range so the loop stays bounded and
+        // mul never silently inf/underflows from a multi-digit exponent in
+        // malformed input. Anything past 1e38 already saturates float.
+        constexpr int kMaxExp = 38;
         int exp = 0;
         while (p < end && *p >= '0' && *p <= '9') {
-            exp = exp * 10 + (*p - '0');
+            if (exp < kMaxExp + 1) exp = exp * 10 + (*p - '0');
             ++p;
         }
+        if (exp > kMaxExp) exp = kMaxExp;
         float mul = 1.0f;
         for (int i = 0; i < exp; ++i) mul *= 10.0f;
         value = (esign > 0) ? value * mul : value / mul;
