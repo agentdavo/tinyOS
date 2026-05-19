@@ -170,9 +170,22 @@ bool parse_int(Cursor& cur, int32_t& out) {
 
     if (cur.ptr >= cur.end || *cur.ptr < '0' || *cur.ptr > '9') return false;
 
+    // Saturating accumulator — a malformed face line ("f 999999999999/...")
+    // used to overflow int32 with signed-overflow UB and feed a wrapped
+    // index into obj_index_to_zero_based, which then read past the
+    // positions/normals/uvs arrays. Clamp at INT32_MAX/MIN and stop the
+    // loop; caller already validates the value is in [1, max_*] before
+    // use.
+    constexpr int32_t kIntMax = 0x7FFFFFFF;
     int32_t value = 0;
     while (cur.ptr < cur.end && *cur.ptr >= '0' && *cur.ptr <= '9') {
-        value = value * 10 + static_cast<int32_t>(*cur.ptr - '0');
+        const int32_t digit = static_cast<int32_t>(*cur.ptr - '0');
+        if (value > (kIntMax - digit) / 10) {
+            value = kIntMax;
+            while (cur.ptr < cur.end && *cur.ptr >= '0' && *cur.ptr <= '9') ++cur.ptr;
+            break;
+        }
+        value = value * 10 + digit;
         ++cur.ptr;
     }
     out = value * sign;
@@ -216,6 +229,12 @@ bool parse_float(Cursor& cur, float& out) {
         ++cur.ptr;
         int32_t exponent = 0;
         if (!parse_int(cur, exponent)) return false;
+        // Cap the exponent at IEEE-754 single's range — anything past 38
+        // already saturates float, but the prior loop ran 1e9 iterations
+        // for a malformed `1e999999999` in input.
+        constexpr int32_t kMaxExp = 38;
+        if (exponent > kMaxExp) exponent = kMaxExp;
+        if (exponent < -kMaxExp) exponent = -kMaxExp;
         float scale = 1.0f;
         if (exponent > 0) {
             for (int32_t i = 0; i < exponent; ++i) scale *= 10.0f;
