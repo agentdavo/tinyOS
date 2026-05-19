@@ -307,7 +307,13 @@ $(OBJDIR)/esm.o: ethercat/esm.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(OBJDIR)/embedded_ui.o: devices/embedded_ui.S devices/embedded_ui.tsv | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
-$(OBJDIR)/embedded_automation.o: devices/embedded_automation.S devices/embedded_macros.tsv devices/embedded_ladder.tsv devices/embedded_toolpods.tsv | $(OBJDIR)
+$(OBJDIR)/embedded_automation.o: devices/embedded_automation.S \
+                                  devices/embedded_macros.tsv \
+                                  devices/embedded_ladder.tsv \
+                                  devices/embedded_toolpods.tsv \
+                                  devices/embedded_pallets.tsv \
+                                  devices/embedded_jobs.tsv \
+                                  | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
 $(OBJDIR)/embedded_signals.o: devices/embedded_signals.S devices/embedded_signals.tsv | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
@@ -378,7 +384,17 @@ $(OBJDIR)/benchmark.o: render/benchmark.cpp | $(OBJDIR)
 # .incbin resolves paths relative to the assembler's include search paths
 # (-I). The rule runs from the project root, so `devices/clearpath_ec.tsv`
 # referenced inside embedded_blob.S resolves directly.
-$(OBJDIR)/embedded_blob.o: devices/embedded_blob.S devices/clearpath_ec.tsv | $(OBJDIR)
+$(OBJDIR)/embedded_blob.o: devices/embedded_blob.S \
+                            devices/clearpath_ec.tsv \
+                            devices/beckhoff_ek.tsv \
+                            devices/el5042_biss.tsv \
+                            devices/el1809_din.tsv \
+                            devices/el2809_dout.tsv \
+                            devices/el3162_ain.tsv \
+                            devices/el7201_9014_servo.tsv \
+                            devices/el7211_9014_servo.tsv \
+                            devices/el7221_9014_servo.tsv \
+                            | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<
 $(OBJDIR)/embedded_kinematics.o: devices/embedded_kinematics.S machines/kinematic_mill3.tsv machines/kinematic_millturn.tsv machines/kinematic_mx850.tsv | $(OBJDIR)
 	$(AS) $(ASFLAGS) -I. -x assembler-with-cpp -c -o $@ $<

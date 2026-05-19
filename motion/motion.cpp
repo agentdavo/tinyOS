@@ -414,9 +414,14 @@ void Axis::step_trajectory(uint32_t dt_us) noexcept {
         traj_state = TrajState::Accel;
     }
 
-    // Apply acceleration or deceleration
-    int32_t a_tick = decel ? jerk_limited_accel : jerk_limited_accel;
-    if (decel) a_tick = -a_tick;
+    // Apply acceleration or deceleration. Sign is direction-aware:
+    //   dir > 0 accel:   a_tick = +|a|   (velocity grows positive)
+    //   dir > 0 decel:   a_tick = -|a|   (velocity shrinks toward 0)
+    //   dir < 0 accel:   a_tick = -|a|   (velocity grows negative)
+    //   dir < 0 decel:   a_tick = +|a|   (velocity climbs toward 0)
+    // The prior form unconditionally accelerated positive, so any axis
+    // commanded toward a negative target with dir<0 walked the wrong way.
+    int32_t a_tick = (decel ? -dir : dir) * jerk_limited_accel;
 
     const int64_t dv_num = (int64_t)a_tick * (int64_t)dt_us;
     const int32_t dv = (int32_t)(dv_num / 1'000'000LL);

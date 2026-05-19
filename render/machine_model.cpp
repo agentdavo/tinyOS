@@ -84,7 +84,10 @@ void create_cylinder(MeshPart& part, float radius, float height, int segments, g
     if (segments > 32) segments = 32;
 
     part.vertex_count = static_cast<size_t>(segments * 2 + 2);
-    part.index_count = static_cast<size_t>(segments * 6);
+    // 4 triangles per segment (top cap + bottom cap + 2 sides) × 3 indices.
+    // Prior `segments * 6` undersized the index buffer by 2× and the loop
+    // below at lines 109-127 wrote past the end of the allocation.
+    part.index_count = static_cast<size_t>(segments * 12);
     part.color = color;
 
     part.vertices = static_cast<gles1::Vertex*>(alloc_aligned(part.vertex_count * sizeof(gles1::Vertex)));

@@ -27,29 +27,37 @@ const char* next_line(const char* p, const char* end, char* out, size_t out_size
     return p;
 }
 
+// Accepts either a full record line ("kind\tkey1=val1\tkey2=val2") OR a
+// pre-split rest pointer that already starts at the first key=value. The
+// prior form unconditionally skipped past the first `\t`, which dropped the
+// first key when callers passed `rest` (the broken pattern in
+// macro_runtime/ladder_runtime/toolpods/machine_registry — see pallet.cpp's
+// comment for the original diagnosis). Treat every `\t`-separated token as
+// a candidate field; tokens with no `=` (the record-kind prefix) just fall
+// through.
 const char* field_value(const char* line, const char* key, char* scratch, size_t scratch_size) {
     if (!line || !key || !scratch || scratch_size == 0) return nullptr;
     const char* p = line;
-    while (*p && *p != '\t') ++p;
-    while (*p == '\t') {
-        ++p;
+    for (;;) {
         const char* field = p;
         while (*p && *p != '\t') ++p;
         const char* eq = field;
         while (eq < p && *eq != '=') ++eq;
-        if (eq >= p) continue;
-        const size_t key_len = static_cast<size_t>(eq - field);
-        if (kernel::util::kstrlen(key) == key_len &&
-            kernel::util::kmemcmp(field, key, key_len) == 0) {
-            const char* value = eq + 1;
-            const size_t value_len = static_cast<size_t>(p - value);
-            const size_t copy = value_len + 1 < scratch_size ? value_len : scratch_size - 1;
-            for (size_t i = 0; i < copy; ++i) scratch[i] = value[i];
-            scratch[copy] = '\0';
-            return scratch;
+        if (eq < p) {
+            const size_t key_len = static_cast<size_t>(eq - field);
+            if (kernel::util::kstrlen(key) == key_len &&
+                kernel::util::kmemcmp(field, key, key_len) == 0) {
+                const char* value = eq + 1;
+                const size_t value_len = static_cast<size_t>(p - value);
+                const size_t copy = value_len + 1 < scratch_size ? value_len : scratch_size - 1;
+                for (size_t i = 0; i < copy; ++i) scratch[i] = value[i];
+                scratch[copy] = '\0';
+                return scratch;
+            }
         }
+        if (*p == '\0') return nullptr;
+        ++p;  // skip the tab separator
     }
-    return nullptr;
 }
 
 long parse_long(const char* s, long fallback = 0) {
