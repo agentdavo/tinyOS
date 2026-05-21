@@ -3762,6 +3762,20 @@ public:
         }
     }
 
+    ~BuilderImage() override {
+        // Release the lazy depth buffer (allocated by ensure_depth_buffer
+        // via ::operator new). The bump heap can't actually reclaim the
+        // bytes, but the matching delete here keeps the path correct for
+        // any future real allocator and documents the ownership. Until
+        // hot reload lands the destructor never fires; setting it up now
+        // means widget lifecycles are correct end-to-end when it does.
+        if (depth_buffer_) {
+            ::operator delete(depth_buffer_);
+            depth_buffer_ = nullptr;
+            depth_capacity_ = 0;
+        }
+    }
+
     static void reset_all_cameras() {
         for (uint32_t i = 0; i < g_gles1_widget_count; ++i) {
             if (g_gles1_widgets[i]) g_gles1_widgets[i]->reset_camera();

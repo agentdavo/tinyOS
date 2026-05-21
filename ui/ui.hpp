@@ -179,7 +179,17 @@ public:
     }
 
 protected:
-    std::array<Widget*, 32> children_;
+    // Per-container child capacity. The pages that ship today carry up to
+    // ~100 children on the offsets page (96 widgets under `offsets_root`),
+    // so 32 silently dropped 64 of them — the lower half of the offsets
+    // page rendered empty in screenshots (sampled at y=1200 showed only
+    // bg+border, no widget pixels). 128 fits every shipped page with
+    // headroom and costs an extra 768 bytes per Container instance
+    // (~75 KB total .bss against the 96 panels/containers + BuilderRoot
+    // + a handful of misc Container singletons — negligible vs the 8 MB
+    // heap and 128 MB QEMU image).
+    static constexpr size_t MAX_CHILDREN = 128;
+    std::array<Widget*, MAX_CHILDREN> children_;
     size_t child_count_;
 };
 
