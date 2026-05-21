@@ -158,6 +158,20 @@ void tick();
 void lock_state() noexcept;
 void unlock_state() noexcept;
 
+// A4: dialog Z-layer API. Dialogs are declared in the TSV via `dialog
+// id=foo title=...` (same shape as `page`) and behave as a modal layer
+// above the active page. show_dialog(id) makes the dialog visible and
+// causes BuilderRoot::render to paint a translucent backdrop over the
+// page underneath; hide_dialog() removes the dialog and triggers a
+// page re-render. Action targets `dialog:show:<id>` and `dialog:close`
+// route through the same API. set_active_page refuses to switch into
+// a dialog so an accidental `goto:<dialog_id>` can't trap the
+// operator in a modal with no exit.
+void show_dialog(const char* id);
+void hide_dialog();
+int  active_dialog_index();
+const char* active_dialog_id();
+
 }
 
 #endif // UI_BUILDER_TSV_HPP

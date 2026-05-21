@@ -300,6 +300,44 @@ void Framebuffer::fill_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, Color 
     mark_dirty_rect(x, y, w, h);
 }
 
+void Framebuffer::fill_rect_alpha(int32_t x, int32_t y, uint32_t w, uint32_t h, Color c) {
+    // Fast paths: fully opaque → solid fill; fully transparent → no-op.
+    if (c.a == 255) { fill_rect(x, y, w, h, c); return; }
+    if (c.a == 0)   return;
+    if (x < 0) { if ((uint32_t)(-x) >= w) return; w -= (-x); x = 0; }
+    if (y < 0) { if ((uint32_t)(-y) >= h) return; h -= (-y); y = 0; }
+    if (static_cast<uint32_t>(x) >= FB_WIDTH || static_cast<uint32_t>(y) >= FB_HEIGHT) return;
+    const uint32_t max_w = FB_WIDTH - static_cast<uint32_t>(x);
+    const uint32_t max_h = FB_HEIGHT - static_cast<uint32_t>(y);
+    if (w > max_w) w = max_w;
+    if (h > max_h) h = max_h;
+    if (w == 0 || h == 0) return;
+
+    // src-over Porter–Duff. Output alpha is forced to 255 (the framebuffer
+    // is treated as opaque from the scanout's POV — virtio-gpu draws it
+    // straight to screen).
+    const uint16_t a     = c.a;
+    const uint16_t inv_a = 255 - a;
+    const uint16_t r_pre = static_cast<uint16_t>(c.r) * a;
+    const uint16_t g_pre = static_cast<uint16_t>(c.g) * a;
+    const uint16_t b_pre = static_cast<uint16_t>(c.b) * a;
+    for (uint32_t row = 0; row < h; ++row) {
+        uint32_t* row_ptr = &buffer_[(y + row) * FB_WIDTH + x];
+        for (uint32_t col = 0; col < w; ++col) {
+            const uint32_t bg = row_ptr[col];
+            const uint16_t bgr = (bg >> 16) & 0xFFu;
+            const uint16_t bgg = (bg >>  8) & 0xFFu;
+            const uint16_t bgb = (bg      ) & 0xFFu;
+            const uint8_t outr = static_cast<uint8_t>((r_pre + bgr * inv_a) / 255);
+            const uint8_t outg = static_cast<uint8_t>((g_pre + bgg * inv_a) / 255);
+            const uint8_t outb = static_cast<uint8_t>((b_pre + bgb * inv_a) / 255);
+            row_ptr[col] = (0xFFu << 24) | (static_cast<uint32_t>(outr) << 16) |
+                           (static_cast<uint32_t>(outg) << 8) | static_cast<uint32_t>(outb);
+        }
+    }
+    mark_dirty_rect(x, y, w, h);
+}
+
 void Framebuffer::draw_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, Color c, uint32_t line_width) {
     // Top
     fill_rect(x, y, w, line_width, c);
