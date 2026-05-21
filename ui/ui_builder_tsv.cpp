@@ -4599,6 +4599,19 @@ const char* active_dialog_id() {
     return g_pages[g_active_dialog].id;
 }
 
+// E21: introspection accessors for the cli `test ui` smoke harness.
+uint32_t page_count() { return g_page_count; }
+
+const char* page_id_at(uint32_t idx) {
+    if (idx >= g_page_count) return "";
+    return g_pages[idx].id;
+}
+
+bool page_is_dialog(uint32_t idx) {
+    if (idx >= g_page_count) return false;
+    return g_pages[idx].is_dialog;
+}
+
 void show_dialog(const char* id) {
     if (!id || !*id) return;
     int idx = find_page_index_by_id(id);

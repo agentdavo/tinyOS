@@ -187,6 +187,15 @@ void hide_dialog();
 int  active_dialog_index();
 const char* active_dialog_id();
 
+// E21: introspection for the bind-exercise smoke test in cli.cpp's
+// `test ui` subtest. Iterates every TSV-declared page (including
+// dialogs) and lets the test confirm set_page + render_ui_once
+// succeeds for each one without crashing. Catches regressions like
+// the axis_words[5] typo PR #20 fixed.
+uint32_t    page_count();
+const char* page_id_at(uint32_t idx);
+bool        page_is_dialog(uint32_t idx);
+
 }
 
 #endif // UI_BUILDER_TSV_HPP
