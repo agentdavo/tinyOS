@@ -1587,6 +1587,7 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         uart->puts("  tcp      - TCP modal + rotation-order round-trip\n");
         uart->puts("  pallet   - pallet roster + status mutation\n");
         uart->puts("  jobs     - job scheduler state-machine smoke\n");
+        uart->puts("  ui       - walk every TSV page + dialog and force a render\n");
         uart->puts("  all      - run every subtest and emit a summary\n");
         return 1;
     }
@@ -1837,6 +1838,45 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         uart->puts(buf);
         return pass ? 0 : 1;
     }
+    if (kernel::util::kstrcmp(args, "ui") == 0) {
+        // E21: bind / page-render smoke test.  Walks every TSV-declared
+        // page (regular + dialog), routes it through ui_builder::set_page
+        // (which fans dialogs into show_dialog), forces a synchronous
+        // render via render_ui_once, and confirms the active id matches
+        // what we asked for.  Catches regressions like the C-axis
+        // axis_words[5] typo PR #20 fixed — a bind-formatter crash on a
+        // single page would surface here as a non-matching active id
+        // (or kernel panic during render_ui_once).
+        const uint32_t n = ui_builder::page_count();
+        uint32_t checked = 0, mismatched = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            const char* id = ui_builder::page_id_at(i);
+            if (!id || !*id) continue;
+            const bool is_dialog = ui_builder::page_is_dialog(i);
+            if (!ui_builder::set_page(id)) {
+                ++mismatched;
+                continue;
+            }
+            kernel::ui::render_ui_once();
+            const char* active = is_dialog
+                ? ui_builder::active_dialog_id()
+                : ui_builder::active_page_id();
+            if (!active || kernel::util::kstrcmp(active, id) != 0) ++mismatched;
+            ++checked;
+        }
+        // Restore the dashboard so the test doesn't leave the operator
+        // stranded on the last iterated page / dialog.
+        ui_builder::hide_dialog();
+        ui_builder::set_page("dashboard");
+        char buf[160];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "ui test: walked %u of %u pages, %u mismatched => %s\n",
+            static_cast<unsigned>(checked), static_cast<unsigned>(n),
+            static_cast<unsigned>(mismatched),
+            mismatched == 0 ? "PASSED" : "FAILED");
+        uart->puts(buf);
+        return mismatched == 0 ? 0 : 1;
+    }
     if (kernel::util::kstrcmp(args, "all") == 0) {
         // CI-grep target. Runs every subtest and emits a consolidated
         // summary "Tests completed: <total>, <failed> failed".
@@ -1844,6 +1884,7 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
             "status", "motion", "ec", "devices",
             "chain", "mtl", "fake_sdo",
             "tcp", "pallet", "jobs",
+            "ui",
         };
         size_t failed = 0;
         for (const char* s : subtests) {
