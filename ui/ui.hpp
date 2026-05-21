@@ -91,6 +91,16 @@ public:
     void mark_dirty() { needs_redraw_ = true; }
     virtual void mark_subtree_dirty() { mark_dirty(); }
 
+    // Bind-driven dirty: called once per UI tick on every visible widget.
+    // Bound widgets override to compare the current bind value against an
+    // internal cache and call mark_dirty() only when the value changed.
+    // Default no-op for widgets with no bind state. Container overrides
+    // to descend into visible children. Phase-A foundation: replaces the
+    // prior `tick()` blanket `mark_subtree_dirty()` that forced every
+    // widget to re-render every 100 ms and defeated the present-skip
+    // optimization in splash.cpp.
+    virtual void poll_bind_dirty() {}
+
 protected:
     int32_t x_, y_;
     uint32_t width_, height_;
@@ -139,6 +149,15 @@ public:
             }
         }
     }
+
+    void poll_bind_dirty() override {
+        // Descend into visible children only — invisible pages don't need
+        // their bound widgets polled.
+        for (size_t i = 0; i < child_count_; ++i) {
+            Widget* child = children_[i];
+            if (child && child->visible()) child->poll_bind_dirty();
+        }
+    }
     
     bool on_event(const UIEvent& event) override {
         // Handle event for children (reverse order for z-order)
@@ -160,7 +179,17 @@ public:
     }
 
 protected:
-    std::array<Widget*, 32> children_;
+    // Per-container child capacity. The pages that ship today carry up to
+    // ~100 children on the offsets page (96 widgets under `offsets_root`),
+    // so 32 silently dropped 64 of them — the lower half of the offsets
+    // page rendered empty in screenshots (sampled at y=1200 showed only
+    // bg+border, no widget pixels). 128 fits every shipped page with
+    // headroom and costs an extra 768 bytes per Container instance
+    // (~75 KB total .bss against the 96 panels/containers + BuilderRoot
+    // + a handful of misc Container singletons — negligible vs the 8 MB
+    // heap and 128 MB QEMU image).
+    static constexpr size_t MAX_CHILDREN = 128;
+    std::array<Widget*, MAX_CHILDREN> children_;
     size_t child_count_;
 };
 

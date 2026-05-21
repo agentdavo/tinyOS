@@ -93,10 +93,23 @@ public:
     // Copy region
     void blit(int32_t dx, int32_t dy, const uint32_t* src, uint32_t sw, uint32_t sh, uint32_t src_stride);
     
-    // Mark dirty (for hardware sync)
-    void mark_dirty() { dirty_ = true; }
+    // Mark dirty (for hardware sync). The legacy mark_dirty() is now
+    // shorthand for the full-screen damage rect; callers that know
+    // their bounds should prefer mark_dirty_rect for the partial
+    // present_rect path.
+    void mark_dirty() { mark_dirty_rect(0, 0, FB_WIDTH, FB_HEIGHT); }
+    void mark_dirty_rect(int32_t x, int32_t y, uint32_t w, uint32_t h);
     bool is_dirty() const { return dirty_; }
-    void clear_dirty() { dirty_ = false; }
+    void clear_dirty() {
+        dirty_ = false;
+        damage_x_ = 0; damage_y_ = 0; damage_w_ = 0; damage_h_ = 0;
+    }
+    // Damage rect for the next present. Clipped to (FB_WIDTH, FB_HEIGHT).
+    // Coordinates are valid only when is_dirty() is true.
+    uint32_t damage_x() const { return damage_x_; }
+    uint32_t damage_y() const { return damage_y_; }
+    uint32_t damage_w() const { return damage_w_; }
+    uint32_t damage_h() const { return damage_h_; }
     
     // Get/Set pixel fast (inline for performance)
     inline uint32_t pixel_index(int32_t x, int32_t y) const {
@@ -115,6 +128,14 @@ public:
     uint32_t* raw_buffer() { return buffer_; }
     uint32_t* buffer_;
     bool dirty_;
+    // Damage rect for partial present. Updated by mark_dirty_rect, read by
+    // present_display_backend. When dirty_ is true but damage_w/h are 0, the
+    // present-skip path (heartbeat-only) handles it by falling back to a
+    // full present.
+    uint32_t damage_x_ = 0;
+    uint32_t damage_y_ = 0;
+    uint32_t damage_w_ = 0;
+    uint32_t damage_h_ = 0;
     
     // Simple 8x16 bitmap font (ASCII 32-126)
     static const uint8_t font_8x16[95][16];

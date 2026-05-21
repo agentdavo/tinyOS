@@ -508,7 +508,15 @@ void show_main_page(Framebuffer& fb) {
 
         ++ticks_since_present;
         if (fb.is_dirty() || ticks_since_present >= HEARTBEAT_TICKS) {
-            (void)present_display_backend();
+            // Damage-rect present: transfer only the rectangle that
+            // changed, not the full 1080 × 1920 × 4 = ~8 MB. A typical
+            // DRO update touches one ~100 × 32 px label = 12.8 KB instead
+            // of the full frame — three orders of magnitude less host
+            // emulation work on virtio-gpu. The heartbeat path
+            // (ticks_since_present == HEARTBEAT_TICKS) calls present_rect
+            // with w=h=0 so it falls back to a full present.
+            (void)present_display_backend_rect(fb.damage_x(), fb.damage_y(),
+                                               fb.damage_w(), fb.damage_h());
             fb.clear_dirty();
             ticks_since_present = 0;
         }

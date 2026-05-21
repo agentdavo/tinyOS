@@ -111,6 +111,10 @@ bool VirtioGpuDriver::present() {
     return flush();
 }
 
+bool VirtioGpuDriver::present_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    return flush_rect(x, y, w, h);
+}
+
 bool VirtioGpuDriver::is_connected() {
     return initialized_;
 }
@@ -310,6 +314,10 @@ bool VirtioGpuDriver::init(uint64_t slot_base, uint32_t* framebuffer,
 }
 
 bool VirtioGpuDriver::flush() {
+    return flush_rect(0, 0, width_, height_);
+}
+
+bool VirtioGpuDriver::flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     if (!initialized_) {
         // Log once: the UI main loop flushes ~10 Hz, so spamming this every
         // frame on platforms where the GPU didn't probe (e.g. RV64 today)
@@ -320,15 +328,28 @@ bool VirtioGpuDriver::flush() {
         }
         return false;
     }
+    // Clip the damage rect against the scanout. Negative / zero w/h is a
+    // no-op present — the caller will have nothing to display.
+    if (x >= width_ || y >= height_) return true;
+    if (w == 0 || h == 0) return true;
+    if (x + w > width_)  w = width_  - x;
+    if (y + h > height_) h = height_ - y;
+
+    // Only flush the dirty band's cache lines, not the whole framebuffer.
     if (auto* mem = mem_ops()) {
-        mem->flush_cache_range(framebuffer_, stride_bytes_ * height_);
+        const size_t row_bytes = stride_bytes_;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(framebuffer_) +
+                               static_cast<uintptr_t>(y) * row_bytes;
+        mem->flush_cache_range(reinterpret_cast<void*>(base), row_bytes * h);
     }
-    const Rect rect{0, 0, width_, height_};
+    const Rect rect{x, y, w, h};
+    const uint64_t offset = static_cast<uint64_t>(y) * stride_bytes_ +
+                            static_cast<uint64_t>(x) * 4u;
 
     auto transfer = zeroed<TransferToHost2D>();
     transfer.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
     transfer.rect = rect;
-    transfer.offset = 0;
+    transfer.offset = offset;
     transfer.resource_id = RESOURCE_ID;
     response_ = {};
     if (!submit_command(&transfer, sizeof(transfer), &response_, sizeof(response_))) return false;
@@ -341,9 +362,6 @@ bool VirtioGpuDriver::flush() {
     const bool ok = submit_command(&flush_cmd, sizeof(flush_cmd), &response_, sizeof(response_));
     ++flush_count_;
     if (!ok) gpu_log("[virtio-gpu] RESOURCE_FLUSH failed\n");
-    // Heartbeat every 16 flushes (~1.6 s at UI loop's 100 ms cadence) so a
-    // silent GPU path is diagnosable from the serial log without a CLI stat
-    // dump. Cheap enough not to clog serial even at sustained 60 Hz.
     if ((flush_count_ & 0xF) == 0) {
         char buf[64];
         kernel::util::k_snprintf(buf, sizeof(buf),

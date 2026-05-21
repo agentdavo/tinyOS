@@ -222,19 +222,55 @@ void Framebuffer::clear(Color c) {
     for (size_t i = 0; i < FB_WIDTH * FB_HEIGHT; ++i) {
         buffer_[i] = pixel;
     }
-    dirty_ = true;
+    mark_dirty_rect(0, 0, FB_WIDTH, FB_HEIGHT);
 }
 
 void Framebuffer::set_pixel(int32_t x, int32_t y, Color c) {
     if (x < 0 || x >= (int32_t)FB_WIDTH || y < 0 || y >= (int32_t)FB_HEIGHT) return;
     buffer_[pixel_index(x, y)] = (c.a << 24) | (c.r << 16) | (c.g << 8) | c.b;
-    dirty_ = true;
+    mark_dirty_rect(x, y, 1, 1);
 }
 
 Color Framebuffer::get_pixel(int32_t x, int32_t y) const {
     if (x < 0 || x >= (int32_t)FB_WIDTH || y < 0 || y >= (int32_t)FB_HEIGHT) return Color::Black();
     uint32_t p = buffer_[pixel_index(x, y)];
     return Color((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF, (p >> 24) & 0xFF);
+}
+
+void Framebuffer::mark_dirty_rect(int32_t x, int32_t y, uint32_t w, uint32_t h) {
+    // Clamp to framebuffer bounds before unioning. Caller can pass negative
+    // x/y or oversized w/h (typical for off-screen widgets); we just clip
+    // them to the visible region.
+    if (x < 0) { if ((uint32_t)(-x) >= w) return; w -= (-x); x = 0; }
+    if (y < 0) { if ((uint32_t)(-y) >= h) return; h -= (-y); y = 0; }
+    if ((uint32_t)x >= FB_WIDTH || (uint32_t)y >= FB_HEIGHT) return;
+    const uint32_t max_w = FB_WIDTH - (uint32_t)x;
+    const uint32_t max_h = FB_HEIGHT - (uint32_t)y;
+    if (w > max_w) w = max_w;
+    if (h > max_h) h = max_h;
+    if (w == 0 || h == 0) return;
+    const uint32_t ux = (uint32_t)x;
+    const uint32_t uy = (uint32_t)y;
+    if (!dirty_ || damage_w_ == 0 || damage_h_ == 0) {
+        damage_x_ = ux;
+        damage_y_ = uy;
+        damage_w_ = w;
+        damage_h_ = h;
+    } else {
+        const uint32_t x1_existing = damage_x_ + damage_w_;
+        const uint32_t y1_existing = damage_y_ + damage_h_;
+        const uint32_t x1_new      = ux + w;
+        const uint32_t y1_new      = uy + h;
+        const uint32_t union_x = ux < damage_x_ ? ux : damage_x_;
+        const uint32_t union_y = uy < damage_y_ ? uy : damage_y_;
+        const uint32_t union_x1 = x1_existing > x1_new ? x1_existing : x1_new;
+        const uint32_t union_y1 = y1_existing > y1_new ? y1_existing : y1_new;
+        damage_x_ = union_x;
+        damage_y_ = union_y;
+        damage_w_ = union_x1 - union_x;
+        damage_h_ = union_y1 - union_y;
+    }
+    dirty_ = true;
 }
 
 void Framebuffer::fill_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, Color c) {
@@ -261,7 +297,7 @@ void Framebuffer::fill_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, Color 
             row_ptr[col] = pixel;
         }
     }
-    dirty_ = true;
+    mark_dirty_rect(x, y, w, h);
 }
 
 void Framebuffer::draw_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, Color c, uint32_t line_width) {
@@ -385,16 +421,16 @@ void Framebuffer::blit(int32_t dx, int32_t dy, const uint32_t* src, uint32_t sw,
     for (uint32_t row = 0; row < sh; ++row) {
         int32_t dest_y = dy + row;
         if (dest_y < 0 || dest_y >= (int32_t)FB_HEIGHT) continue;
-        
+
         for (uint32_t col = 0; col < sw; ++col) {
             int32_t dest_x = dx + col;
             if (dest_x < 0 || dest_x >= (int32_t)FB_WIDTH) continue;
-            
+
             uint32_t src_idx = row * src_stride + col;
             buffer_[dest_y * FB_WIDTH + dest_x] = src[src_idx];
         }
     }
-    dirty_ = true;
+    mark_dirty_rect(dx, dy, sw, sh);
 }
 
 void Framebuffer::screenshot(uint32_t* out_buffer) const {
