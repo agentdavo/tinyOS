@@ -91,6 +91,16 @@ public:
     void mark_dirty() { needs_redraw_ = true; }
     virtual void mark_subtree_dirty() { mark_dirty(); }
 
+    // Bind-driven dirty: called once per UI tick on every visible widget.
+    // Bound widgets override to compare the current bind value against an
+    // internal cache and call mark_dirty() only when the value changed.
+    // Default no-op for widgets with no bind state. Container overrides
+    // to descend into visible children. Phase-A foundation: replaces the
+    // prior `tick()` blanket `mark_subtree_dirty()` that forced every
+    // widget to re-render every 100 ms and defeated the present-skip
+    // optimization in splash.cpp.
+    virtual void poll_bind_dirty() {}
+
 protected:
     int32_t x_, y_;
     uint32_t width_, height_;
@@ -137,6 +147,15 @@ public:
                 child->render(fb);
                 child->clear_redraw();
             }
+        }
+    }
+
+    void poll_bind_dirty() override {
+        // Descend into visible children only — invisible pages don't need
+        // their bound widgets polled.
+        for (size_t i = 0; i < child_count_; ++i) {
+            Widget* child = children_[i];
+            if (child && child->visible()) child->poll_bind_dirty();
         }
     }
     

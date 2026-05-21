@@ -3071,52 +3071,40 @@ public:
         }
     }
 
+    // Resolve the current bind value into `out`. Returns the pointer the
+    // caller should use as the text — either a const string from the
+    // snapshot/special-case branch (in which case `out` is unused) or
+    // `out` itself (filled by format_bind_value for the default branch).
+    // Shared between render() (drawing) and poll_bind_dirty() (change
+    // detection) so a future bind formatter shape change can't drift the
+    // two paths apart.
+    const char* compute_text(char* out, size_t out_size) const {
+        if (bind_ == BindKind::None) return spec_.text;
+        const auto snap = kernel::ui::operator_api::machine_snapshot();
+        switch (bind_) {
+            case BindKind::Mode: return mode_text(snap.mode);
+            case BindKind::Alarm:
+                return snap.mode == kernel::ui::operator_api::Mode::Alarm ? "ALARM ACTIVE" : "ALARMS CLEAR";
+            case BindKind::Prompt:
+                return snap.mode == kernel::ui::operator_api::Mode::Running ? "CYCLE RUN IN PROGRESS" : "READY FOR COMMAND";
+            case BindKind::PageName:        return active_page_title();
+            case BindKind::ProgramName:     return kernel::ui::operator_api::selected_program_name();
+            case BindKind::WorkName:        return kernel::ui::operator_api::offsets_snapshot().workset_name;
+            case BindKind::ToolName:        return kernel::ui::operator_api::offsets_snapshot().tool_name;
+            default:
+                format_bind_value(bind_, out, out_size, "");
+                return out;
+        }
+    }
+
     void render(Framebuffer& fb) override {
         if (!visible_) return;
-        const char* text = spec_.text;
         char buf[MAX_FIELD_LEN] = {};
+        const char* text = compute_text(buf, sizeof(buf));
         Color fg = fg_;
         if (active_bind_ != BindKind::None &&
             bound_numeric_value(active_bind_) == active_value_) {
             fg = Color(0xEF, 0x44, 0x44);
-        }
-        if (bind_ != BindKind::None) {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
-            switch (bind_) {
-                case BindKind::Mode: text = mode_text(snap.mode); break;
-                case BindKind::Alarm:
-                    text = snap.mode == kernel::ui::operator_api::Mode::Alarm ? "ALARM ACTIVE" : "ALARMS CLEAR";
-                    break;
-                case BindKind::Prompt:
-                    text = snap.mode == kernel::ui::operator_api::Mode::Running ? "CYCLE RUN IN PROGRESS" : "READY FOR COMMAND";
-                    break;
-                case BindKind::PageName:
-                    text = active_page_title();
-                    break;
-                case BindKind::ProgramName:
-                    text = kernel::ui::operator_api::selected_program_name();
-                    break;
-                case BindKind::WorkName:
-                    text = kernel::ui::operator_api::offsets_snapshot().workset_name;
-                    break;
-                case BindKind::ToolName:
-                    text = kernel::ui::operator_api::offsets_snapshot().tool_name;
-                    break;
-                default:
-                    // spec_.text is the placeholder shown before the bind
-                    // produces a value (e.g. "00:00:00" for an uptime, "---"
-                    // for an unbound IP). Don't pass it as prefix — every
-                    // bind formatter is "%s<value>", which would re-render
-                    // the placeholder in front of the live value and overflow
-                    // the widget. net_uptime_v (text="00:00:00",
-                    // bind=net:uptime, scale=2) produced "00:00:0000:00:00"
-                    // = 16 chars = 256 px, draw_x landing the tail at
-                    // x≥1080 — fb.fill_rect's bounds-check overflowed and
-                    // walked into unmapped MMIO at FAR=0x48000000.
-                    format_bind_value(bind_, buf, sizeof(buf), "");
-                    text = buf;
-                    break;
-            }
         }
         fb.fill_rect(x_, y_, width_, height_, bg_);
         const uint32_t scale = spec_.text_scale > 0 ? spec_.text_scale : 1u;
@@ -3133,6 +3121,26 @@ public:
         }
     }
 
+    void poll_bind_dirty() override {
+        // Static labels (no bind, no active_if) never change. The initial
+        // dirty flag set in Widget's ctor renders them once, then they
+        // stay clean for the rest of the page's lifetime.
+        if (bind_ == BindKind::None && active_bind_ == BindKind::None) return;
+        char buf[MAX_FIELD_LEN] = {};
+        const char* text = compute_text(buf, sizeof(buf));
+        const int8_t active_match = (active_bind_ != BindKind::None)
+            ? static_cast<int8_t>(bound_numeric_value(active_bind_) == active_value_ ? 1 : 0)
+            : static_cast<int8_t>(-1);
+        // Compare text + active_if state against last poll. mark_dirty()
+        // only when something actually changed.
+        if (active_match != last_active_match_ ||
+            kernel::util::kstrcmp(text, last_text_) != 0) {
+            kernel::util::safe_strcpy(last_text_, text, sizeof(last_text_));
+            last_active_match_ = active_match;
+            mark_dirty();
+        }
+    }
+
 private:
     WidgetSpec spec_;
     Color fg_;
@@ -3140,6 +3148,9 @@ private:
     BindKind bind_;
     BindKind active_bind_ = BindKind::None;
     int32_t  active_value_ = 0;
+    // Bind-change cache (see poll_bind_dirty).
+    char    last_text_[MAX_FIELD_LEN]{};
+    int8_t  last_active_match_ = -1;  // -1 = unknown, 0 = no, 1 = yes
 };
 
 class BuilderButton final : public kernel::ui::Button {
@@ -3184,6 +3195,34 @@ public:
     bool active_if_matches() const {
         if (active_bind_ == BindKind::None) return false;
         return bound_numeric_value(active_bind_) == active_value_;
+    }
+
+    void poll_bind_dirty() override {
+        // A button's visual state changes when: (a) its bound label text
+        // changes, (b) active_if flips, or (c) the active page changes
+        // (affects the "you are here" highlight on goto: targets).
+        // Compare each against the cached state and mark_dirty only on
+        // change.
+        char label_buf[MAX_FIELD_LEN] = {};
+        const char* label = spec_.text;
+        if (bind_ != BindKind::None) {
+            format_bind_value(bind_, label_buf, sizeof(label_buf), "");
+            if (label_buf[0] != '\0') label = label_buf;
+        }
+        const int8_t active_match = (active_bind_ != BindKind::None)
+            ? static_cast<int8_t>(active_if_matches() ? 1 : 0)
+            : static_cast<int8_t>(-1);
+        const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action);
+        const int8_t goto_self = (target && kernel::util::kstrncmp(target, "goto:", 5) == 0)
+            ? static_cast<int8_t>(find_page_index_by_id(target + 5) == g_active_page ? 1 : 0)
+            : static_cast<int8_t>(-1);
+        if (active_match != last_active_match_ || goto_self != last_goto_self_ ||
+            kernel::util::kstrcmp(label, last_label_) != 0) {
+            kernel::util::safe_strcpy(last_label_, label, sizeof(last_label_));
+            last_active_match_ = active_match;
+            last_goto_self_ = goto_self;
+            mark_dirty();
+        }
     }
 
     void render(Framebuffer& fb) override {
@@ -3286,6 +3325,10 @@ private:
     BindKind active_bind_ = BindKind::None;
     int32_t active_value_ = 0;
     BindKind bind_ = BindKind::None;
+    // Bind-change cache (see poll_bind_dirty).
+    char    last_label_[MAX_FIELD_LEN]{};
+    int8_t  last_active_match_ = -1;
+    int8_t  last_goto_self_ = -1;
 };
 
 class BuilderPanel final : public Panel {
@@ -3346,8 +3389,18 @@ public:
         kernel::ui::ProgressBar::render(fb);
     }
 
+    void poll_bind_dirty() override {
+        if (bind_ == BindKind::None) return;
+        const int32_t v = bound_numeric_value(bind_);
+        if (v != last_value_) {
+            last_value_ = v;
+            mark_dirty();
+        }
+    }
+
 private:
     BindKind bind_;
+    int32_t last_value_ = -2147483647 - 1;  // INT32_MIN: definitely different from first read
 };
 
 class BuilderGraph final : public kernel::ui::BarGraph {
@@ -3379,8 +3432,34 @@ public:
         kernel::ui::BarGraph::render(fb);
     }
 
+    void poll_bind_dirty() override {
+        if (bind_ == BindKind::None) return;
+        // For axis-bound bar graphs we track the snapshot's 4-axis vector;
+        // for any single-bind graph we track the numeric value.
+        if (bind_ == BindKind::AxisX || bind_ == BindKind::AxisY ||
+            bind_ == BindKind::AxisZ || bind_ == BindKind::AxisA) {
+            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            int32_t v[4] = {snap.axis_pos[0], snap.axis_pos[1], snap.axis_pos[2], snap.axis_pos[3]};
+            for (int i = 0; i < 4; ++i) {
+                if (v[i] != last_values_[i]) {
+                    for (int j = 0; j < 4; ++j) last_values_[j] = v[j];
+                    mark_dirty();
+                    return;
+                }
+            }
+        } else {
+            const int32_t v = bound_numeric_value(bind_);
+            if (v != last_values_[0]) {
+                last_values_[0] = v;
+                mark_dirty();
+            }
+        }
+    }
+
 private:
     BindKind bind_;
+    int32_t  last_values_[4] = {-2147483647 - 1, -2147483647 - 1,
+                                -2147483647 - 1, -2147483647 - 1};
 };
 
 class BuilderSlider final : public Widget {
@@ -3466,6 +3545,19 @@ public:
         return false;
     }
 
+    void poll_bind_dirty() override {
+        // Sliders being dragged manage their own dirty via update_from_x.
+        // For a settled slider with a live bind, mark dirty only when the
+        // bound value changes — feed/spindle overrides set from the CLI or
+        // a peer override slider on another page.
+        if (dragging_ || bind_ == BindKind::None) return;
+        const int32_t v = bound_numeric_value(bind_);
+        if (v != last_value_) {
+            last_value_ = v;
+            mark_dirty();
+        }
+    }
+
 private:
     void update_from_x(int32_t x) {
         float ratio = 0.0f;
@@ -3488,6 +3580,7 @@ private:
     int32_t value_;
     bool hovered_;
     bool dragging_;
+    int32_t last_value_ = -2147483647 - 1;
 };
 
 class BuilderInput final : public Widget {
@@ -3505,6 +3598,23 @@ public:
     void tick_feedback() {
         if (feedback_ticks_ > 0) {
             --feedback_ticks_;
+            mark_dirty();
+        }
+    }
+
+    void poll_bind_dirty() override {
+        // While focused, the buffer holds operator-typed text — value
+        // changes from the bind source don't apply (the operator's edit
+        // wins until commit/blur). Once unfocused, the bind value flows
+        // back in via the render() refresh. Detect changes here so the
+        // mark_dirty happens before render and we don't repaint when
+        // nothing changed.
+        if (focused_ || bind_ == BindKind::None) return;
+        char fresh[MAX_FIELD_LEN] = {};
+        format_bind_value(bind_, fresh, sizeof(fresh), "");
+        if (kernel::util::kstrcmp(fresh, buffer_) != 0) {
+            // Render() will re-format into buffer_ from the bind; we only
+            // need the dirty signal.
             mark_dirty();
         }
     }
@@ -3671,6 +3781,16 @@ public:
         camera_.pitch = 0.5f;
         camera_.dist = camera_.dual_channel_default ? 6.2f : 4.4f;
         mark_dirty();
+    }
+
+    void poll_bind_dirty() override {
+        // GLES1 widgets render live machine state every frame the page is
+        // visible — axis positions, tool position, etc. all drive the
+        // scene and they update at the motion cycle rate (250 µs).
+        // Static fallback images don't change after first paint.
+        if (kernel::util::kstrncmp(spec_.text, "gles1:", 6) == 0) {
+            mark_dirty();
+        }
     }
 
     void render(Framebuffer& fb) override {
@@ -4566,7 +4686,14 @@ void tick() {
         if (g_inputs[i]) g_inputs[i]->tick_feedback();
     }
     cnc::mdi::g_service.tick();
-    if (g_root_widget) g_root_widget->mark_subtree_dirty();
+    // Bind-driven dirty: each bound widget compares its current value
+    // against an internal cache and calls mark_dirty() only when the
+    // value changed. Container::poll_bind_dirty() descends into visible
+    // children, so invisible pages don't pay for the walk. Replaces the
+    // prior blanket mark_subtree_dirty() that forced every widget on
+    // every page to re-render every 100 ms and defeated the present-skip
+    // optimization in splash.cpp's main UI loop.
+    if (g_root_widget) g_root_widget->poll_bind_dirty();
 }
 
 } // namespace ui_builder
