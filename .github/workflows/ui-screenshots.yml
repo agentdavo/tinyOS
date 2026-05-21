@@ -55,7 +55,8 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             qemu-system-arm \
             ffmpeg \
-            python3
+            python3 \
+            python3-pil
 
       - name: Build arm64 kernel
         run: make TARGET=arm64
@@ -74,6 +75,29 @@ jobs:
         run: |
           python3 scripts/generate_ui_md.py screenshots UI.md
           head -40 UI.md
+
+      - name: Diff screenshots vs main baseline (E19)
+        # On PRs, compare each captured PNG against the committed
+        # baseline on main. Per-page pixel diff + bbox surface in the
+        # PR comment below. Skipped on push to main (the new commit IS
+        # the baseline). Tolerant: a missing baseline directory or PIL
+        # import error still lets the workflow continue.
+        if: github.event_name == 'pull_request'
+        run: |
+          # Pull main's committed screenshots/ into a temp dir without
+          # touching the working tree (the PR head already has its
+          # own screenshots/ from the capture step above).
+          mkdir -p /tmp/baseline_screenshots
+          if git show "origin/main:screenshots/" >/dev/null 2>&1; then
+              for f in $(git ls-tree -r --name-only origin/main -- screenshots/ | grep '\.png$'); do
+                  out="/tmp/baseline_screenshots/$(basename "$f")"
+                  git show "origin/main:$f" > "$out" 2>/dev/null || rm -f "$out"
+              done
+          fi
+          # Emit Markdown that the PR-comment step below picks up.
+          python3 scripts/screenshot_diff.py screenshots /tmp/baseline_screenshots \
+              > /tmp/screenshot_diff.md || true
+          cat /tmp/screenshot_diff.md
 
       - name: Upload artifacts
         # Run even when capture / regenerate failed so partial PNGs and the
@@ -134,6 +158,11 @@ jobs:
               printf -- '- 🪵 Workflow run: %s\n' "${JOB_URL}"
               if [ "$suspicious" -gt 0 ]; then
                   printf -- '- ⚠️ %s page(s) under 600 bytes — possible blank-fallback render. Pull the artifact zip to inspect.\n' "${suspicious}"
+              fi
+              # E19: per-page diff vs main baseline.
+              if [ -s /tmp/screenshot_diff.md ]; then
+                  printf '\n'
+                  cat /tmp/screenshot_diff.md
               fi
               printf '\n'
               printf '_Auto-posted by `.github/workflows/ui-screenshots.yml`. Comment updates on each push to this PR._\n'
