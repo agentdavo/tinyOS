@@ -59,6 +59,17 @@
 #   button's brighter background only when the page id matches.
 #
 # ============================================================
+# THEME (C10)
+#   Named color tokens, looked up via $name in any color/bg/border
+#   field. Identical hex values to the PALETTE block above — the
+#   tokens just give a single place to change the design system.
+#   Existing widgets keep their hand-coded #hex values; new widgets
+#   can use either form. To re-skin the UI (e.g. high-contrast),
+#   replace this one line.
+# ============================================================
+theme	page=#0A0F1A	panel=#111827	inset=#0F172A	border=#334155	border_subtle=#1F2937	section=#94A3B8	ink=#F8FAFC	muted=#94A3B8	accent=#7DD3FC	ok=#22C55E	warn=#F59E0B	fault=#EF4444	info=#0EA5E9	primary=#15803D	secondary=#B45309	neutral=#334155	destructive=#B91C1C	dro_bg=#0B1220	dro_lin=#1E40AF	dro_rot=#92400E	amber=#FBBF24	mint=#86EFAC	wcs=#7C3AED
+
+# ============================================================
 # bottom_nav -- shared 7-button bar (included by every page).
 # 7 tiles at 140 px with 10 px gaps fill 1040 px of the 1080-wide canvas.
 # Order mirrors the operator workflow:
