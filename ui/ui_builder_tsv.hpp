@@ -18,6 +18,10 @@
 //
 // Layout:
 //   panel/container ... layout=horizontal|vertical|grid
+//                       [cols=N rows=M]   (grid: override the 2×N default)
+//                       [spacing=N|gap=N] (override the 12 px inter-child gap)
+//                       [pad=N]           (override the 16 px inner padding;
+//                                          pad=0 packs children flush)
 //   child     parent=    widget=   align=left|center|right
 //
 // Events:
@@ -133,6 +137,17 @@ struct WidgetSpec {
     float max_val = 100;
     float value = 0;
     uint32_t text_scale = 1;  // Label + Button: integer pixel scale for draw_text_scaled
+
+    // B8: layout overrides for Container/Panel widgets that set layout=...
+    // 0 means "use the default" so existing TSV keeps working unchanged.
+    //   layout=grid    — cols default 2, rows derived from child count.
+    //                    Set `cols=N rows=M` to override.
+    //   layout=horizontal|vertical — `spacing=N` overrides the 12 px gap,
+    //                    `pad=N` overrides the 16 px inner padding.
+    int32_t layout_cols = 0;
+    int32_t layout_rows = 0;
+    int32_t layout_gap  = 0;
+    int32_t layout_pad  = -1;  // negative sentinel: keep the default 16
 };
 
 // Parse TSV record into WidgetSpec
