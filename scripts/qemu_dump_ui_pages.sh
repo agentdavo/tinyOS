@@ -42,7 +42,13 @@ PAGE_ORDER = (
     "pec", "geometry", "sphere", "network", "axis_status", "tool_change",
 )
 
-PAGE_RE = re.compile(r"^page\s+id=(\S+)\s+title=(.+?)\s*$")
+# Match both regular pages and A4 dialog records — `ui_page <id>` in the
+# kernel CLI now routes dialogs through show_dialog, which paints the
+# modal over whatever page is currently active (the previous capture in
+# PAGE_ORDER, naturally). Capturing dialogs as their own entries means
+# UI.md still gets a screenshot of each one and visual regressions in
+# dialog rendering are caught alongside page regressions.
+PAGE_RE = re.compile(r"^(?:page|dialog)\s+id=(\S+)\s+title=(.+?)\s*$")
 
 def load_pages(tsv_path):
     found = {}

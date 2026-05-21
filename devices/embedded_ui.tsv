@@ -1640,8 +1640,13 @@ include	page=bottom_nav
 # confirm_restart() — operator must inspect tool / WCS / spindle /
 # coolant against what is physically mounted before resuming.
 # ============================================================
-page	id=restart_confirm	title=Restart Confirm
-panel	id=rc_root	x=0	y=0	w=1080	h=1740	bg=#0A0F1A	border=#1F2937
+# Modal dialog (see A4 in ui_builder_tsv): opened via
+# `action=dialog:show:restart_confirm` from the program page, closed by
+# the CANCEL button's dialog:close action. The dim slate-900 backdrop
+# rendered by BuilderRoot keeps the operator's prior context visible
+# behind the wizard.
+dialog	id=restart_confirm	title=Restart Confirm
+panel	id=rc_root	x=60	y=160	w=960	h=1400	bg=#0A0F1A	border=#1F2937
 label	id=rc_title	parent=rc_root	x=40	y=30	w=1000	h=40	text=RESTART AT LINE -- CONFIRM	color=#F8FAFC	bg=#0A0F1A	align=center	scale=2
 label	id=rc_subtitle	parent=rc_root	x=40	y=72	w=1000	h=24	text=Verify the reconstructed state matches the physical machine before tapping CONFIRM.	color=#FCA5A5	bg=#0A0F1A	align=center	scale=1
 
@@ -1673,8 +1678,9 @@ button	id=rc_confirm	parent=rc_root	x=40	y=940	w=480	h=300	text=CONFIRM RESTART	
 button	id=rc_cancel	parent=rc_root	x=540	y=940	w=480	h=300	text=CANCEL	bg=#B91C1C	color=#FFFFFF	scale=3	focus=942
 
 action	widget=rc_confirm	event=click	target=restart:confirm
-action	widget=rc_cancel	event=click	target=restart:cancel
-include	page=bottom_nav
+action	widget=rc_cancel	event=click	target=dialog:close
+# Dialogs render above the active page; no bottom_nav include — the dialog
+# doesn't navigate, it just confirms-or-cancels.
 
 # ============================================================
 # lights_out -- per-pallet status grid + job scheduler controls.

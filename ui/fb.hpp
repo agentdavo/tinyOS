@@ -71,6 +71,13 @@ public:
     
     // Draw filled rectangle
     void fill_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, Color c);
+
+    // Alpha-blended filled rectangle. Reads each destination pixel,
+    // src-over blends with the source colour (using `c.a` as opacity),
+    // writes back. Used by the dialog backdrop to darken the page
+    // underneath without losing it visually. Identical to fill_rect when
+    // c.a == 255; no-op when c.a == 0.
+    void fill_rect_alpha(int32_t x, int32_t y, uint32_t w, uint32_t h, Color c);
     
     // Draw outline rectangle
     void draw_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, Color c, uint32_t line_width = 1);

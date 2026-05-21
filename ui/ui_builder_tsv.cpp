@@ -46,6 +46,7 @@ constexpr uint32_t MAX_LAYOUT_CHILDREN = 32;
 enum class RecordType : uint8_t {
     Unknown = 0,
     Page,
+    Dialog,    // A4: Z-layer above pages; same parse shape as Page.
     Include,
     Child,
     Action,
@@ -71,6 +72,13 @@ struct PageSpec {
     uint32_t first_widget = 0;
     uint32_t widget_count = 0;
     Widget* root = nullptr;
+    // A4: dialog Z-layer. Pages declared as `dialog id=foo` get is_dialog
+    // = true. Dialogs are hidden by default, shown via show_dialog() or
+    // `action target=dialog:show:foo`, and render *above* the active
+    // page (Container::render iterates in TSV-add order; dialogs are
+    // declared after pages so they render last). set_active_page skips
+    // dialogs so they never appear via goto: navigation.
+    bool is_dialog = false;
 };
 
 struct ChildSpec {
@@ -294,6 +302,7 @@ BuilderEvent parse_event(const char* s) {
 RecordType parse_record_type(const char* s) {
     if (!s) return RecordType::Unknown;
     if (strcmp(s, "page") == 0) return RecordType::Page;
+    if (strcmp(s, "dialog") == 0) return RecordType::Dialog;
     if (strcmp(s, "include") == 0) return RecordType::Include;
     if (strcmp(s, "child") == 0) return RecordType::Child;
     if (strcmp(s, "action") == 0) return RecordType::Action;
@@ -2498,10 +2507,19 @@ bool validate_actions(uint32_t line_no) {
 
 void set_active_page(int idx) {
     if (idx < 0 || static_cast<uint32_t>(idx) >= g_page_count) return;
+    // Dialogs are toggled through show_dialog/hide_dialog only — never via
+    // page navigation. Rejecting here prevents an accidental
+    // `goto:<dialog_id>` from teleporting the operator into a modal with
+    // no way out.
+    if (g_pages[idx].is_dialog) return;
     kernel::core::ScopedLock guard(g_state_lock);
     g_active_page = idx;
     for (uint32_t i = 0; i < g_page_count; ++i) {
         if (!g_pages[i].root) continue;
+        if (g_pages[i].is_dialog) {
+            // Dialogs keep their own visibility (managed by show_dialog).
+            continue;
+        }
         if (static_cast<int>(i) == g_active_page) g_pages[i].root->show();
         else g_pages[i].root->hide();
     }
@@ -2513,6 +2531,15 @@ void set_active_page(int idx) {
     }
     if (g_root_widget) g_root_widget->mark_subtree_dirty();
 }
+
+// A4: dialog Z-layer state. Only one dialog is active at a time; calling
+// show_dialog with one already up replaces it. g_active_dialog == -1 when
+// no dialog is showing. The state lives inside the anonymous namespace
+// for TU-locality; the corresponding API entry points
+// (show_dialog/hide_dialog/active_dialog_*) are defined at ui_builder
+// namespace scope just below this anon block so the header declarations
+// resolve unambiguously.
+static int g_active_dialog = -1;
 
 void set_focus_widget(Widget* widget) {
     if (!widget) return;
@@ -2556,6 +2583,17 @@ void run_action_target(const char* target) {
     trace_click_delivery("[ui-click] action target=%s\n", target);
     if (strncmp(target, "goto:", 5) == 0) {
         set_active_page(find_page_index_by_id(target + 5));
+        return;
+    }
+    // A4: dialog Z-layer action targets.
+    //   dialog:show:<id>  → show dialog `id` over the current page
+    //   dialog:close      → hide whichever dialog is active
+    if (strncmp(target, "dialog:show:", 12) == 0) {
+        show_dialog(target + 12);
+        return;
+    }
+    if (strcmp(target, "dialog:close") == 0) {
+        hide_dialog();
         return;
     }
     if (strncmp(target, "page:", 5) == 0) {
@@ -4275,7 +4313,67 @@ class BuilderRoot final : public Container {
 public:
     BuilderRoot() : Container(0, 0, kernel::ui::FB_WIDTH, kernel::ui::FB_HEIGHT) {}
 
+    // A4: dialog Z-layer rendering. Override the default Container fan-out
+    // so that:
+    //   - When no dialog is active, pages render as usual (Container::render).
+    //   - When a dialog is active, render any pending page redraws once
+    //     (so the backdrop blends in their final state), paint a single
+    //     translucent dim layer over the whole FB, then render the dialog.
+    //   - Subsequent ticks while the dialog is up render *only* the dialog
+    //     root. Page widgets keep their dirty flags but stay un-drawn
+    //     under the backdrop. hide_dialog mark_subtree_dirty's the whole
+    //     tree so they all redraw fresh on dialog close.
+    void render(Framebuffer& fb) override {
+        if (g_active_dialog < 0) {
+            Container::render(fb);
+            last_rendered_dialog_ = -1;
+            return;
+        }
+        if (static_cast<uint32_t>(g_active_dialog) >= g_page_count) return;
+        if (last_rendered_dialog_ != g_active_dialog) {
+            // Dialog just shown. Drain any pending page redraws first so
+            // the backdrop dims their settled state.
+            Widget* dialog_root = g_pages[g_active_dialog].root;
+            for (size_t i = 0; i < child_count_; ++i) {
+                Widget* child = children_[i];
+                if (!child || child == dialog_root) continue;
+                if (!child->visible() || !child->needs_redraw()) continue;
+                child->render(fb);
+                child->clear_redraw();
+            }
+            // Translucent slate-900 with ~75 % opacity. Tuned so the page
+            // underneath stays readable but the dialog clearly owns focus.
+            fb.fill_rect_alpha(0, 0, kernel::ui::FB_WIDTH, kernel::ui::FB_HEIGHT,
+                               Color(0x0F, 0x17, 0x2A, 0xC0));
+            // Backdrop just covered everything below the dialog — force a
+            // full redraw of the dialog body against the dimmed pixels.
+            if (dialog_root) dialog_root->mark_subtree_dirty();
+            last_rendered_dialog_ = g_active_dialog;
+        }
+        Widget* dialog_root = g_pages[g_active_dialog].root;
+        if (dialog_root && dialog_root->visible() && dialog_root->needs_redraw()) {
+            dialog_root->render(fb);
+            dialog_root->clear_redraw();
+        }
+    }
+
     bool on_event(const UIEvent& event) override {
+        // Dialog active: dispatch to the dialog root first; if it doesn't
+        // handle the event, stop (don't fall through to page widgets).
+        // Modal semantics.
+        if (g_active_dialog >= 0 && static_cast<uint32_t>(g_active_dialog) < g_page_count) {
+            Widget* dialog_root = g_pages[g_active_dialog].root;
+            if (dialog_root && dialog_root->visible()) {
+                (void)dialog_root->on_event(event);
+                // Swallow touch events that fell outside the dialog body
+                // so they can't bubble to a page button underneath.
+                if (event.type == kernel::ui::EventType::TouchDown ||
+                    event.type == kernel::ui::EventType::TouchUp ||
+                    event.type == kernel::ui::EventType::TouchMove) {
+                    return true;
+                }
+            }
+        }
         if (event.type == kernel::ui::EventType::KeyDown) {
             if (event.key.keycode == '\t' || event.key.keycode == 0x1004U) {
                 advance_focus(1);
@@ -4303,6 +4401,13 @@ public:
         }
         return Container::on_event(event);
     }
+
+private:
+    // Tracks which dialog (if any) was painted on the last render call.
+    // Mismatch with g_active_dialog signals a transition — the backdrop
+    // gets painted exactly once on the show edge and the dialog body is
+    // forced to repaint against the new dimmed pixels.
+    int last_rendered_dialog_ = -1;
 };
 
 Widget* create_widget(const WidgetSpec& spec) {
@@ -4413,6 +4518,46 @@ void reset_state() {
 }
 
 } // namespace
+
+// A4: dialog Z-layer API. Definitions live at ui_builder namespace scope
+// (matching the header declarations) so external callers — and set_page
+// below — can call them unambiguously. They still reach into the anon-
+// namespace state (g_active_dialog, g_pages, g_state_lock) via the
+// enclosing-namespace promotion that the anon block provides.
+int active_dialog_index() { return g_active_dialog; }
+
+const char* active_dialog_id() {
+    if (g_active_dialog < 0 || static_cast<uint32_t>(g_active_dialog) >= g_page_count) return "";
+    return g_pages[g_active_dialog].id;
+}
+
+void show_dialog(const char* id) {
+    if (!id || !*id) return;
+    int idx = find_page_index_by_id(id);
+    if (idx < 0 || !g_pages[idx].is_dialog) return;
+    kernel::core::ScopedLock guard(g_state_lock);
+    // Hide any other dialog that might still be shown (defensive — caller
+    // shouldn't normally stack).
+    for (uint32_t i = 0; i < g_page_count; ++i) {
+        if (g_pages[i].is_dialog && g_pages[i].root && static_cast<int>(i) != idx) {
+            g_pages[i].root->hide();
+        }
+    }
+    g_active_dialog = idx;
+    if (g_pages[idx].root) g_pages[idx].root->show();
+    if (g_root_widget) g_root_widget->mark_subtree_dirty();
+}
+
+void hide_dialog() {
+    kernel::core::ScopedLock guard(g_state_lock);
+    if (g_active_dialog >= 0 && static_cast<uint32_t>(g_active_dialog) < g_page_count) {
+        if (g_pages[g_active_dialog].root) g_pages[g_active_dialog].root->hide();
+    }
+    g_active_dialog = -1;
+    // The backdrop covered every widget below it — force a full repaint of
+    // the page that re-emerges underneath.
+    if (g_root_widget) g_root_widget->mark_subtree_dirty();
+}
 
 WidgetSpec parse_widget(const char* record, size_t len) {
     WidgetSpec spec{};
@@ -4530,7 +4675,7 @@ bool load_tsv(const char* buf, size_t len) {
             set_error(line_no, "unknown record type");
             return false;
         }
-        if (record_type == RecordType::Page) {
+        if (record_type == RecordType::Page || record_type == RecordType::Dialog) {
             if (g_page_count >= MAX_PAGES) {
                 set_error(line_no, "page limit exceeded");
                 return false;
@@ -4538,6 +4683,7 @@ bool load_tsv(const char* buf, size_t len) {
             PageSpec& page = g_pages[g_page_count];
             page.first_widget = g_widget_count;
             page.widget_count = 0;
+            page.is_dialog = (record_type == RecordType::Dialog);
             KeyValueField fields[8]{};
             const uint32_t field_count = parse_fields(line, line_len, fields, 8);
             if (const char* id = field_value(fields, field_count, "id")) {
@@ -4664,7 +4810,24 @@ bool load_tsv(const char* buf, size_t len) {
         if (g_pages[i].root) root.add_child(g_pages[i].root);
     }
 
-    if (g_page_count > 0) set_active_page(0);
+    // A4: hide every dialog root at boot. set_active_page leaves dialog
+    // visibility alone (so a runtime show_dialog isn't undone by a peer
+    // page switch), which means initial visibility must be set explicitly.
+    for (uint32_t i = 0; i < g_page_count; ++i) {
+        if (g_pages[i].is_dialog && g_pages[i].root) g_pages[i].root->hide();
+    }
+    g_active_dialog = -1;
+
+    // First regular (non-dialog) page becomes the active page. If the TSV
+    // starts with a dialog definition the loop falls through to find the
+    // first page.
+    if (g_page_count > 0) {
+        int first_page = -1;
+        for (uint32_t i = 0; i < g_page_count; ++i) {
+            if (!g_pages[i].is_dialog) { first_page = static_cast<int>(i); break; }
+        }
+        if (first_page >= 0) set_active_page(first_page);
+    }
     return g_root_widget != nullptr;
 }
 
@@ -4675,7 +4838,18 @@ Widget* root_widget() {
 bool set_page(const char* page_id) {
     const int idx = find_page_index_by_id(page_id);
     if (idx < 0) return false;
-    set_active_page(idx);
+    // CLI `ui_page <id>` accepts dialogs too — useful for screenshot
+    // capture and for kernel-side testing. Regular pages route through
+    // set_active_page; dialogs route through show_dialog so the modal
+    // semantics (backdrop, page underneath frozen) still apply.
+    if (g_pages[idx].is_dialog) {
+        show_dialog(g_pages[idx].id);
+    } else {
+        // Closing any open dialog when navigating to a regular page keeps
+        // the operator out of stuck-modal states from CLI navigation.
+        if (g_active_dialog >= 0) hide_dialog();
+        set_active_page(idx);
+    }
     return true;
 }
 
