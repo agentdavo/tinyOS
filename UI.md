@@ -176,4 +176,4 @@ downscaled by the factor noted at capture time.
 
 ---
 
-*Generated 2026-05-21 15:00:54 UTC from `devices/embedded_ui.tsv` (20 pages).*
+*Generated 2026-05-21 15:06:36 UTC from `devices/embedded_ui.tsv` (20 pages).*
