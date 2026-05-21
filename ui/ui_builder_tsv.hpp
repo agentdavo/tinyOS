@@ -38,6 +38,8 @@
 //   action=demo:cycle|demo:hold|demo:reset|demo:home|demo:jog+|demo:jog-
 //
 // Colors: #RRGGBB or name (red, green, blue, black, white, etc)
+//         or $token where token is defined by a top-level
+//         `theme name=#hex name=#hex ...` record (C10).
 // Font sizes: small=12, medium=16, large=24, xlarge=32
 //
 // Example:

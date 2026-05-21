@@ -41,12 +41,53 @@ namespace kinematic = render::kinematic;
 namespace machine = render::machine;
 
 constexpr uint32_t kTransparent = 0x00000000U;
+
+// C10: theme tokens — named color slots declared once at the top of
+// embedded_ui.tsv via a `theme key1=#hex1 key2=#hex2 ...` record.
+// Widget color fields then reference `$key` instead of hand-coding the
+// hex. Operator-facing themes (high-contrast, outdoor, dark) become a
+// single TSV swap instead of touching every widget.
+struct ThemeToken {
+    char name[32];
+    uint32_t color;
+};
+constexpr uint32_t MAX_THEME_TOKENS = 64;
+static ThemeToken g_theme_tokens[MAX_THEME_TOKENS];
+static uint32_t g_theme_token_count = 0;
+
+uint32_t lookup_theme_token(const char* name) {
+    if (!name || !*name) return kTransparent;
+    for (uint32_t i = 0; i < g_theme_token_count; ++i) {
+        if (strcmp(g_theme_tokens[i].name, name) == 0) {
+            return g_theme_tokens[i].color;
+        }
+    }
+    return kTransparent;
+}
+
+bool set_theme_token(const char* name, uint32_t color) {
+    if (!name || !*name) return false;
+    for (uint32_t i = 0; i < g_theme_token_count; ++i) {
+        if (strcmp(g_theme_tokens[i].name, name) == 0) {
+            g_theme_tokens[i].color = color;
+            return true;
+        }
+    }
+    if (g_theme_token_count >= MAX_THEME_TOKENS) return false;
+    auto& slot = g_theme_tokens[g_theme_token_count++];
+    size_t i = 0;
+    while (i + 1 < sizeof(slot.name) && name[i]) { slot.name[i] = name[i]; ++i; }
+    slot.name[i] = '\0';
+    slot.color = color;
+    return true;
+}
 constexpr uint32_t MAX_LAYOUT_CHILDREN = 32;
 
 enum class RecordType : uint8_t {
     Unknown = 0,
     Page,
     Dialog,    // A4: Z-layer above pages; same parse shape as Page.
+    Theme,     // C10: declare named color tokens for $name lookups.
     Include,
     Child,
     Action,
@@ -230,6 +271,10 @@ uint8_t simple_hex(char c) {
 
 uint32_t parse_color(const char* s) {
     if (!s || *s == '\0') return kTransparent;
+    // C10: $name → theme token lookup.
+    if (s[0] == '$' && s[1]) {
+        return lookup_theme_token(s + 1);
+    }
     if (s[0] == '#' && s[1] && s[2] && s[3] && s[4] && s[5] && s[6]) {
         const uint8_t r = static_cast<uint8_t>(simple_hex(s[1]) * 16 + simple_hex(s[2]));
         const uint8_t g = static_cast<uint8_t>(simple_hex(s[3]) * 16 + simple_hex(s[4]));
@@ -303,6 +348,7 @@ RecordType parse_record_type(const char* s) {
     if (!s) return RecordType::Unknown;
     if (strcmp(s, "page") == 0) return RecordType::Page;
     if (strcmp(s, "dialog") == 0) return RecordType::Dialog;
+    if (strcmp(s, "theme") == 0) return RecordType::Theme;
     if (strcmp(s, "include") == 0) return RecordType::Include;
     if (strcmp(s, "child") == 0) return RecordType::Child;
     if (strcmp(s, "action") == 0) return RecordType::Action;
@@ -4575,6 +4621,7 @@ void reset_state() {
     g_focusable_count = 0;
     g_focus_index = -1;
     g_input_count = 0;
+    g_theme_token_count = 0;
     BuilderImage::clear_registry();
     clear_error();
     memset(g_widgets, 0, sizeof(g_widgets));
@@ -4772,6 +4819,22 @@ bool load_tsv(const char* buf, size_t len) {
         if (record_type == RecordType::Unknown) {
             set_error(line_no, "unknown record type");
             return false;
+        }
+        if (record_type == RecordType::Theme) {
+            // C10: theme record. Every k=v pair on the line registers a
+            // named color token. Subsequent widget records can reference
+            // it as `bg=$key` / `color=$key` / `border=$key`.
+            KeyValueField fields[16]{};
+            const uint32_t field_count = parse_fields(line, line_len, fields, 16);
+            for (uint32_t i = 0; i < field_count; ++i) {
+                if (!fields[i].key[0]) continue;
+                const uint32_t color = parse_color(fields[i].value);
+                if (!set_theme_token(fields[i].key, color)) {
+                    set_error(line_no, "theme token limit exceeded");
+                    return false;
+                }
+            }
+            continue;
         }
         if (record_type == RecordType::Page || record_type == RecordType::Dialog) {
             if (g_page_count >= MAX_PAGES) {
