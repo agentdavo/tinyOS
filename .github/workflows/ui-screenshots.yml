@@ -34,6 +34,12 @@ on:
 
 permissions:
   contents: write
+  # E20: post a comment on the triggering PR with the artifact link.
+  # Needs issues:write because the comment API lives under /issues/N/comments
+  # (PRs are issues at the REST level). pull-requests:write is required for
+  # subscriber/notification routing on some GitHub plans.
+  pull-requests: write
+  issues: write
 
 jobs:
   capture:
@@ -74,6 +80,7 @@ jobs:
         # decoded kernel transcript (screenshots/kernel.log) are available
         # for diagnosis. Without this, a hung page leaves nothing to look
         # at and the next iteration is back to guessing.
+        id: upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -84,6 +91,68 @@ jobs:
             screenshots/kernel.log
             UI.md
           if-no-files-found: warn
+
+      - name: Post artifact link on PR (E20)
+        # On pull_request events, drop a one-line comment with the artifact
+        # download URL so reviewers don't have to drill into the Actions
+        # tab to find the rendered screenshots. Runs whether the capture
+        # passed or failed (a failed run is still worth signalling — the
+        # kernel.log artifact has the diagnostic trail). Skipped on cross-
+        # repo PRs because GITHUB_TOKEN can't post comments back to the
+        # base repo from a fork PR's context.
+        if: |
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_OUTCOME: ${{ job.status }}
+        run: |
+          # Embed a screenshot summary by counting rendered PNGs and
+          # noting any that came in below 600 bytes — those are the
+          # "blank fallback" we used to ship before the heap bump in #19.
+          png_count=$(find screenshots -maxdepth 1 -name '*.png' -type f 2>/dev/null | wc -l)
+          suspicious=$(find screenshots -maxdepth 1 -name '*.png' -type f -size -600c 2>/dev/null | wc -l)
+          status_icon="🟢"
+          if [ "${RUN_OUTCOME}" = "failure" ] || [ "${RUN_OUTCOME}" = "cancelled" ]; then
+              status_icon="🔴"
+          elif [ "$suspicious" -gt 0 ]; then
+              status_icon="🟡"
+          fi
+          # Build the comment body line-by-line into a temp file. A
+          # `<<EOF` heredoc would have to drop its body to column 1, which
+          # collides with the YAML block-scalar parser (the leading `-`
+          # for the bullet list looks like a YAML sequence item).
+          body_file=$(mktemp)
+          {
+              printf '%s **UI screenshots** — captured %s pages. Status: `%s`.\n' "${status_icon}" "${png_count}" "${RUN_OUTCOME}"
+              printf '\n'
+              printf -- '- 📦 Artifact: %s\n' "${ARTIFACT_URL}"
+              printf -- '- 🪵 Workflow run: %s\n' "${JOB_URL}"
+              if [ "$suspicious" -gt 0 ]; then
+                  printf -- '- ⚠️ %s page(s) under 600 bytes — possible blank-fallback render. Pull the artifact zip to inspect.\n' "${suspicious}"
+              fi
+              printf '\n'
+              printf '_Auto-posted by `.github/workflows/ui-screenshots.yml`. Comment updates on each push to this PR._\n'
+          } > "${body_file}"
+          body=$(cat "${body_file}")
+          # Find any prior comment from this workflow on this PR and
+          # update it in place so we don't pile up one comment per push.
+          marker='Auto-posted by `.github/workflows/ui-screenshots.yml`'
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              --jq ".[] | select(.body | contains(\"${marker}\")) | .id" | head -n1)
+          if [ -n "$existing" ]; then
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" \
+                  -f body="${body}"
+              echo "Updated existing comment ${existing}"
+          else
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+                  -f body="${body}"
+              echo "Posted new comment"
+          fi
 
       - name: Commit refreshed screenshots and UI.md
         # Push back on every event the workflow triggers on:
