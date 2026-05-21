@@ -3633,6 +3633,28 @@ public:
         copy_field(buffer_, sizeof(buffer_), spec.text, strlen(spec.text));
     }
 
+    // C13: preserve the operator's unsubmitted typed text across focus
+    // loss. The previous behaviour clobbered buffer_ with the bind value
+    // on every render where !focused_, so a brief tap elsewhere wiped
+    // the digits the operator had been keying in. edit_buffer_ shadows
+    // buffer_ while the operator types; on focus loss the live bind
+    // value renders again BUT edit_buffer_ stays — refocusing the
+    // widget restores the typed text and the operator can finish the
+    // commit. Successful commit (Enter) clears edit_buffer_.
+    void stash_edit() {
+        if (edit_dirty_) return;  // already stashed
+        copy_field(edit_buffer_, sizeof(edit_buffer_), buffer_, strlen(buffer_));
+        edit_dirty_ = true;
+    }
+    void restore_edit() {
+        if (!edit_dirty_) return;
+        copy_field(buffer_, sizeof(buffer_), edit_buffer_, strlen(edit_buffer_));
+    }
+    void clear_edit() {
+        edit_buffer_[0] = '\0';
+        edit_dirty_ = false;
+    }
+
     void tick_feedback() {
         if (feedback_ticks_ > 0) {
             --feedback_ticks_;
@@ -3658,19 +3680,32 @@ public:
     }
 
     void render(Framebuffer& fb) override {
+        // C13: while unfocused, the displayed text is always the live bind
+        // value — the operator can compare their pending edit (signalled
+        // by the amber border) against the current bound state. Refocusing
+        // swaps edit_buffer_ back into buffer_ via restore_edit().
         if (!focused_ && bind_ != BindKind::None) {
             format_bind_value(bind_, buffer_, sizeof(buffer_), "");
         }
         const Color bg = focused_ ? to_color(spec_.bg_color, Color::White()) : to_color(spec_.bg_color, Color(240, 240, 240));
         Color border = focused_ ? Color(38, 139, 210)
                                 : (hovered_ ? Color(96, 165, 250) : to_color(spec_.border_color, Color(128, 128, 128)));
+        // C13: pending-edit amber border tells the operator their typed
+        // text wasn't lost on focus loss — re-tap to resume editing.
+        if (!focused_ && edit_dirty_) {
+            border = Color(245, 158, 11);  // tailwind amber-500
+        }
         if (feedback_ticks_ > 0) {
             border = feedback_ok_ ? Color(34, 197, 94) : Color(239, 68, 68);
         }
         const Color fg = to_color(spec_.color, Color::Black());
         fb.fill_rect(x_, y_, width_, height_, bg);
         fb.draw_rect(x_, y_, width_, height_, border, 2);
-        fb.draw_text(x_ + 8, y_ + 12, buffer_[0] ? buffer_ : spec_.text, fg, bg);
+        // While unfocused but with a pending edit, show the LIVE bind so
+        // the operator can compare typed-vs-current. The amber border is
+        // the cue that the typed text is stashed; tapping back restores it.
+        const char* shown = buffer_[0] ? buffer_ : spec_.text;
+        fb.draw_text(x_ + 8, y_ + 12, shown, fg, bg);
         if (focused_) {
             const char* helper = helper_text_for_bind(bind_);
             if (helper && *helper) {
@@ -3684,9 +3719,20 @@ public:
 
     bool on_event(const UIEvent& event) override {
         if (event.type == kernel::ui::EventType::TouchDown) {
+            const bool was_focused = focused_;
             focused_ = contains(event.touch.x, event.touch.y);
             hovered_ = focused_;
-            if (focused_) set_focus_widget(this);
+            if (focused_) {
+                set_focus_widget(this);
+                // C13: re-focus restores any pending edit so the operator
+                // can resume the entry they were partway through.
+                restore_edit();
+            } else if (was_focused) {
+                // C13: losing focus without a commit (Enter) stashes the
+                // currently-typed buffer into edit_buffer_ so the next
+                // render's bind-refresh doesn't wipe it.
+                stash_edit();
+            }
             mark_dirty();
             return focused_;
         }
@@ -3718,6 +3764,11 @@ public:
                 if (ok && bind_ != BindKind::None) {
                     format_bind_value(bind_, buffer_, sizeof(buffer_), "");
                 }
+                // C13: a successful commit discards the pending-edit
+                // stash — the value is now live in the bind. A failed
+                // commit keeps the stash so re-focusing restores the
+                // (rejected) edit and the operator can fix it.
+                if (ok) clear_edit();
                 focused_ = false;
                 mark_dirty();
                 return true;
@@ -3768,6 +3819,9 @@ private:
     WidgetSpec spec_;
     BindKind bind_;
     char buffer_[MAX_FIELD_LEN]{};
+    // C13: stashed operator-typed text that survives focus loss.
+    char edit_buffer_[MAX_FIELD_LEN]{};
+    bool edit_dirty_ = false;
     bool focused_;
     bool hovered_ = false;
     bool feedback_ok_ = false;
