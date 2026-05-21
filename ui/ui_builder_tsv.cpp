@@ -4447,8 +4447,11 @@ void apply_layout(int parent_idx) {
     }
     if (bucket.count == 0) return;
 
-    const int32_t pad = 16;
-    const int32_t gap = 12;
+    // B8: per-container layout overrides. pad/gap default to the original
+    // 16/12 px if the TSV doesn't set them; passing `pad=0` is honoured so
+    // a container can pack flush against its bounds.
+    const int32_t pad = parent.spec.layout_pad >= 0 ? parent.spec.layout_pad : 16;
+    const int32_t gap = parent.spec.layout_gap > 0  ? parent.spec.layout_gap : 12;
     int32_t cursor_x = parent.spec.x + pad;
     int32_t cursor_y = parent.spec.y + pad + (parent.spec.type == WidgetType::Panel ? 24 : 0);
     const int32_t inner_w = parent.spec.w - pad * 2;
@@ -4480,10 +4483,21 @@ void apply_layout(int parent_idx) {
             cursor_x += child.w + gap;
         }
     } else if (parent.spec.layout == LayoutType::Grid) {
-        const int32_t cols = bucket.count > 1 ? 2 : 1;
-        const int32_t rows = static_cast<int32_t>((bucket.count + cols - 1) / cols);
+        // B8: honour `cols=N` / `rows=M` overrides. With neither set the
+        // historical default of "2 cols, rows derived" kicks in. With cols
+        // alone the row count is derived; with rows alone cols are derived;
+        // with both set the explicit grid is used (extra children spill
+        // outside the inner box, same as before).
+        int32_t cols = parent.spec.layout_cols > 0
+            ? parent.spec.layout_cols
+            : (bucket.count > 1 ? 2 : 1);
+        int32_t rows = parent.spec.layout_rows > 0
+            ? parent.spec.layout_rows
+            : static_cast<int32_t>((bucket.count + cols - 1) / cols);
+        if (cols <= 0) cols = 1;
+        if (rows <= 0) rows = 1;
         const int32_t cell_w = (inner_w - (cols - 1) * gap) / cols;
-        const int32_t cell_h = rows > 0 ? (inner_h - (rows - 1) * gap) / rows : inner_h;
+        const int32_t cell_h = (inner_h - (rows - 1) * gap) / rows;
         for (uint32_t i = 0; i < bucket.count; ++i) {
             WidgetSpec& child = g_widgets[bucket.children[i]].spec;
             const int32_t row = static_cast<int32_t>(i / cols);
@@ -4609,6 +4623,23 @@ WidgetSpec parse_widget(const char* record, size_t len) {
         }
         else if (strcmp(key_buf, "active_if") == 0) {
             copy_field(spec.active_if, sizeof(spec.active_if), val_buf, strlen(val_buf));
+        }
+        // B8: layout overrides on Container/Panel widgets.
+        else if (strcmp(key_buf, "cols") == 0) {
+            const int32_t n = simple_atoi(val_buf);
+            spec.layout_cols = n > 0 ? n : 0;
+        }
+        else if (strcmp(key_buf, "rows") == 0) {
+            const int32_t n = simple_atoi(val_buf);
+            spec.layout_rows = n > 0 ? n : 0;
+        }
+        else if (strcmp(key_buf, "spacing") == 0 || strcmp(key_buf, "gap") == 0) {
+            const int32_t n = simple_atoi(val_buf);
+            spec.layout_gap = n >= 0 ? n : 0;
+        }
+        else if (strcmp(key_buf, "pad") == 0) {
+            const int32_t n = simple_atoi(val_buf);
+            spec.layout_pad = n >= 0 ? n : -1;
         }
     }
     return spec;
