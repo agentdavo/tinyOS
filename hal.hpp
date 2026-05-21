@@ -330,6 +330,14 @@ struct DisplayOps {
     virtual ~DisplayOps() = default;
     virtual bool init(void* framebuffer, uint32_t width, uint32_t height, uint32_t stride) = 0;
     virtual bool present() = 0;
+    // Damage-rect variant: transfer + flush only the given sub-rectangle
+    // instead of the full framebuffer. Backends that can't honour a partial
+    // rect should fall back to the full-screen present. (x,y,w,h) is in
+    // framebuffer pixels; the backend clips against the resolution.
+    virtual bool present_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+        (void)x; (void)y; (void)w; (void)h;
+        return present();
+    }
     virtual bool is_connected() = 0;
     virtual void get_resolution(uint32_t& width, uint32_t& height) = 0;
 };

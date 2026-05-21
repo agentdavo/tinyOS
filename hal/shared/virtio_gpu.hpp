@@ -19,12 +19,14 @@ public:
     bool init(void* framebuffer, uint32_t width, uint32_t height,
               uint32_t stride) override;
     bool present() override;
+    bool present_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h) override;
     bool is_connected() override;
     void get_resolution(uint32_t& width, uint32_t& height) override;
 
     bool init(uint64_t slot_base, uint32_t* framebuffer, uint32_t width,
               uint32_t height, uint32_t stride_bytes);
     bool flush();
+    bool flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 
     bool initialized() const { return initialized_; }
     uint64_t base() const { return base_; }

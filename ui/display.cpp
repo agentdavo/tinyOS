@@ -22,4 +22,13 @@ bool present_display_backend() {
     return display->present();
 }
 
+bool present_display_backend_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    auto* plat = kernel::g_platform;
+    if (!plat) return false;
+    auto* display = plat->get_display_ops();
+    if (!display) return false;
+    if (w == 0 || h == 0) return display->present();
+    return display->present_rect(x, y, w, h);
+}
+
 } // namespace kernel::ui
