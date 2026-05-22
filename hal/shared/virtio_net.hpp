@@ -89,8 +89,11 @@ struct VirtqUsed {
     uint16_t avail_event;
 } __attribute__((packed));
 
-// Virtio-net packet header without VIRTIO_NET_F_MRG_RXBUF. Because this driver
-// never negotiates mergeable RX buffers, the device-visible header is 10 bytes.
+// Modern virtio-net header (12 bytes). VIRTIO_F_VERSION_1 mandates the
+// num_buffers trailer even when VIRTIO_NET_F_MRG_RXBUF isn't negotiated —
+// the field is just always-zero on TX and ignored on RX in that case.
+// Using the legacy 10-byte layout against a v1 device shifts every TX
+// frame by 2 bytes (dst MAC truncates by 2; see virtio 1.1 §5.1.6).
 struct VirtioNetHdr {
     uint8_t  flags;
     uint8_t  gso_type;
@@ -98,6 +101,7 @@ struct VirtioNetHdr {
     uint16_t gso_size;
     uint16_t csum_start;
     uint16_t csum_offset;
+    uint16_t num_buffers;
 } __attribute__((packed));
 
 class VirtioNetDriver : public kernel::hal::net::NetworkDriverOps {
