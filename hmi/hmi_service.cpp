@@ -1397,9 +1397,15 @@ void Service::thread_entry(void* arg) {
     }
     netif->register_listener(self);
     netif->register_udp_listener(self);
+    constexpr size_t POLL_BUDGET = 8;
+    bool burst = false;
     for (;;) {
         self->maybe_drive_dhcp(*nic);
-        (void)netif->poll(8);
+        const size_t rx = netif->poll(POLL_BUDGET);
+        // A full-budget drain means there's likely more in the queue —
+        // skip the yield at end-of-loop and come straight back to poll.
+        // Empties yield as before so the worker doesn't pin a core.
+        burst = (rx >= POLL_BUDGET);
         self->process_ping(*nic);
         if (self->config_.ping_selftest_enable &&
             !self->ping_selftest_started_ &&
@@ -1419,6 +1425,10 @@ void Service::thread_entry(void* arg) {
                                          static_cast<unsigned long>(self->config_.ping_selftest_timeout_ms));
                 uart->puts(line);
             }
+        }
+        if (burst) {
+            // Drain pending RX before letting another task on this core run.
+            continue;
         }
         if (kernel::g_scheduler_ptr) kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id());
         else kernel::util::cpu_relax();
