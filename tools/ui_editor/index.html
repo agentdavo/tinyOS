@@ -146,6 +146,7 @@
     <button id="btnOpen">Open</button>
     <button id="btnSave">Save</button>
     <button id="btnSaveAs">Save As</button>
+    <button id="btnPushKernel" title="B5 live preview: push current TSV to a running kernel via the host bridge (tools/ui_editor/live_preview.py)">Push to kernel</button>
     <input type="file" id="fileInput" accept=".tsv" style="display:none">
     <span class="sep"></span>
     <div id="pagetabs"></div>
@@ -1672,6 +1673,37 @@ $("#btnNew").addEventListener("click", () => {
 $("#btnOpen").addEventListener("click", openFile);
 $("#btnSave").addEventListener("click", () => saveFile());
 $("#btnSaveAs").addEventListener("click", () => saveAsFile());
+$("#btnPushKernel").addEventListener("click", () => pushToKernel());
+
+// B5: push the current TSV to a running kernel via the
+// live_preview.py host bridge. Bridge listens on
+// ws://localhost:5001/ by default; it chunks the TSV and forwards
+// to kernel:5002 via UDP. The kernel's hmi_service reassembles and
+// calls ui_builder::load_tsv. Edit-test loop drops from
+// rebuild-and-boot (~30 s) to "click + render" (~1 s).
+function pushToKernel() {
+  const text = serializeTSV(doc);
+  $("#status").textContent = (`pushing ${text.length} bytes ...`);
+  const url = localStorage.getItem("livePreviewUrl") || "ws://localhost:5001/";
+  let ws;
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    $("#status").textContent = (`live-preview bridge not reachable at ${url}: ${e.message}`);
+    return;
+  }
+  ws.onopen = () => {
+    ws.send(text);
+  };
+  ws.onmessage = (ev) => {
+    $("#status").textContent = (`live-preview: ${ev.data}`);
+    ws.close();
+  };
+  ws.onerror = () => {
+    $("#status").textContent = (`live-preview: bridge unreachable at ${url} — start with: python3 tools/ui_editor/live_preview.py --kernel-ip <ip>`);
+  };
+  ws.onclose = () => {};
+}
 $("#btnAddPage").addEventListener("click", () => {
   const id = prompt("New page id:");
   if (!id) return;

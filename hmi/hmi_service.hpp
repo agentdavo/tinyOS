@@ -100,6 +100,13 @@ private:
                     uint32_t src_ip, uint16_t src_port,
                     uint32_t dst_ip, uint16_t dst_port,
                     const uint8_t* payload, size_t payload_len) noexcept;
+    // B5: chunked TSV upload over UDP. Each datagram carries a 20-byte
+    // TsvUploadHeader followed by chunk_len bytes of TSV. Sessions are
+    // identified by a uint16 id chosen by the sender; a new id resets
+    // the receive buffer. When the last chunk lands (offset+chunk_len
+    // == total_len), ui_builder::load_tsv runs against the assembled
+    // buffer. See hmi_service.cpp for the protocol definition.
+    void handle_tsv_upload(const uint8_t* payload, size_t payload_len) noexcept;
     void handle_dhcp(kernel::hal::net::NetworkDriverOps& nic,
                      uint32_t src_ip,
                      const uint8_t* payload, size_t payload_len) noexcept;
