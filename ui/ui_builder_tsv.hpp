@@ -29,7 +29,15 @@
 //
 // Pages:
 //   page      id=     title=
-//   include   page=template_page
+//   include   page=template_page  [arg1=value1 arg2=value2 ...]   (B7)
+//
+// Include args (B7):
+//   Cloned widget fields scan for `${arg}` placeholders and substitute
+//   the matching include-arg value. Unmatched placeholders stay literal
+//   so a typo surfaces at render time instead of silently expanding to
+//   empty. Substitution runs on text/id/action/bind/parent/active_if
+//   BEFORE the per-include id prefix is applied, so `${arg}` can drive
+//   widget ids too. Up to 11 args per include after the required `page=`.
 //
 // Useful extra fields:
 //   align=left|center|right
