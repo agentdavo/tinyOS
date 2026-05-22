@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #include "netif.hpp"
+#include "tcp.hpp"
 
 #include <cstring>
 
@@ -10,6 +11,7 @@ namespace {
 
 constexpr uint16_t ETHERTYPE_IPV4 = 0x0800u;
 constexpr uint8_t  IPPROTO_UDP    = 17u;
+constexpr uint8_t  IPPROTO_TCP    = 6u;
 
 // Packed L2/L3/L4 header structs — kept locally so the netif doesn't
 // depend on hmi/* layout. Identical wire format.
@@ -166,11 +168,34 @@ void Netif::try_dispatch_udp(int if_idx, const uint8_t* data, size_t len) noexce
 
 void Netif::dispatch(int if_idx, const uint8_t* data, size_t len) noexcept {
     if (!data || len < 14) return;
-    // UDP listeners are tried first. Eth-frame listeners come after so
-    // existing catch-all consumers (HMI's handle_eth_frame) still see
-    // every frame; HMI gates its handle_udp on udp_port_claimed() to
-    // avoid double-dispatch on ports owned by a UDP listener.
+    // UDP and TCP listeners are tried first. Eth-frame listeners come
+    // after so existing catch-all consumers (HMI's handle_eth_frame)
+    // still see every frame; HMI gates its handle_udp on
+    // udp_port_claimed() to avoid double-dispatch.
     try_dispatch_udp(if_idx, data, len);
+    // TCP dispatch — parse IPv4 header inline and hand the segment to
+    // the TCP module. Frames that aren't TCP fall through.
+    if (len >= sizeof(EthernetHeader) + sizeof(IPv4Header)) {
+        const auto* eth = reinterpret_cast<const EthernetHeader*>(data);
+        if (bswap16(eth->ethertype_be) == ETHERTYPE_IPV4) {
+            const auto* ip = reinterpret_cast<const IPv4Header*>(data + sizeof(EthernetHeader));
+            const uint8_t ihl = (ip->ver_ihl & 0x0Fu) * 4u;
+            if ((ip->ver_ihl >> 4) == 4 && ihl >= sizeof(IPv4Header) &&
+                ip->proto == IPPROTO_TCP) {
+                const uint16_t flags_frag = bswap16(ip->flags_frag_be);
+                if (!((flags_frag & 0x2000u) || (flags_frag & 0x1FFFu))) {
+                    const size_t ip_total = bswap16(ip->total_len_be);
+                    if (sizeof(EthernetHeader) + ip_total <= len &&
+                        ip_total >= ihl) {
+                        tcp_dispatch(*this, eth->src,
+                                     bswap32(ip->src_ip_be), bswap32(ip->dst_ip_be),
+                                     data + sizeof(EthernetHeader) + ihl,
+                                     ip_total - ihl);
+                    }
+                }
+            }
+        }
+    }
     const uint16_t et_be = static_cast<uint16_t>((data[12] << 8) | data[13]);
     for (size_t i = 0; i < listener_count_; ++i) {
         auto* l = listeners_[i];
