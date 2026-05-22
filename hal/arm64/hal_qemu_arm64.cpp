@@ -10,6 +10,7 @@
 #include "klog.hpp"
 #include "rt_wait.hpp"
 #include "hal/shared/fdt_scan.hpp"
+#include "hal/shared/netif.hpp"
 #include <cstring>
 #include <algorithm>
 #include <new>
@@ -799,6 +800,22 @@ void PlatformQEMUVirtARM64::route_net_irq(int if_idx, uint32_t core_mask) {
     const uint32_t spi = virtio_nic_spi_ids_[if_idx];
     if (spi == 0 || core_mask == 0) return;
     irq_controller_.set_irq_affinity(spi, core_mask);
+}
+
+void PlatformQEMUVirtARM64::handle_device_irq(uint32_t core_id, uint32_t irq_id) {
+    (void)core_id;
+    // Map virtio NIC SPIs back to nic_idx. Match → ACK at the device level
+    // (drops the IRQ line so the GIC stops re-firing) and pulse the
+    // netif's rx-pending flag so the owning worker drains immediately.
+    for (size_t i = 0; i < sizeof(virtio_nic_spi_ids_) / sizeof(virtio_nic_spi_ids_[0]); ++i) {
+        if (virtio_nic_spi_ids_[i] == irq_id && virtio_nic_spi_ids_[i] != 0) {
+            virtio_nics_[i].acknowledge_irq();
+            if (auto* netif = kernel::net::netif_get(static_cast<int>(i))) {
+                netif->on_rx_irq();
+            }
+            return;
+        }
+    }
 }
 
 void PlatformQEMUVirtARM64::early_init_core(uint32_t core_id) {

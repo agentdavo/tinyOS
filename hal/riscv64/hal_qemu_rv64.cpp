@@ -31,6 +31,7 @@
 #include "rt_wait.hpp"
 #include "fdt.hpp"
 #include "hal/shared/fdt_scan.hpp"
+#include "hal/shared/netif.hpp"
 #include "../../cli.hpp"
 #include "../../devices/device_db.hpp"
 #include "../../devices/embedded.hpp"
@@ -699,6 +700,23 @@ void PlatformQEMUVirtRV64::route_net_irq(int if_idx, uint32_t core_mask) {
     uart_.puts(" hart_mask=");
     uart_.uart_put_uint64_hex(static_cast<uint64_t>(core_mask));
     uart_.puts("\n");
+}
+
+void PlatformQEMUVirtRV64::handle_device_irq(uint32_t core_id, uint32_t irq_id) {
+    (void)core_id;
+    // Map virtio NIC PLIC IRQs back to nic_idx. Same shape as arm64 —
+    // ACK at the device level (drops the IRQ line so the PLIC stops
+    // re-firing) and pulse the netif's rx-pending flag so the owning
+    // worker drains immediately.
+    for (size_t i = 0; i < sizeof(virtio_nic_irq_ids_) / sizeof(virtio_nic_irq_ids_[0]); ++i) {
+        if (virtio_nic_irq_ids_[i] == irq_id && virtio_nic_irq_ids_[i] != 0) {
+            virtio_nics_[i].acknowledge_irq();
+            if (auto* netif = kernel::net::netif_get(static_cast<int>(i))) {
+                netif->on_rx_irq();
+            }
+            return;
+        }
+    }
 }
 
 [[noreturn]] void PlatformQEMUVirtRV64::panic(const char* msg, const char* file, int line) {

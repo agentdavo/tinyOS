@@ -249,6 +249,11 @@ namespace net {
             (void)out;
             return false;
         }
+        // Called from device-IRQ context (Platform::handle_device_irq). The
+        // driver reads + ACKs the device-level interrupt status so the IRQ
+        // line de-asserts; nothing else here may block. Default no-op for
+        // drivers that don't model an MMIO interrupt status register.
+        virtual void acknowledge_irq() noexcept {}
         // Drain up to `budget` frames from the NIC RX queue, invoking `cb` for
         // each. Default no-op for ops that don't implement poll-mode RX.
         virtual size_t poll_rx(PacketReceivedCallback cb, void* context,

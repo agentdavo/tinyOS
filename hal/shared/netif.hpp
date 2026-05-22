@@ -15,6 +15,7 @@
 
 #include "../../hal.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -93,6 +94,17 @@ public:
     // L2-catch-all path in HMI to skip frames that are about to be
     // dispatched (or already were) via the UDP listener route.
     bool udp_port_claimed(uint16_t local_port) const noexcept;
+
+    // Called from device-IRQ context (Platform::handle_device_irq) when
+    // the NIC's interrupt line asserts. Sets an atomic flag; the worker
+    // thread picks it up via consume_rx_pending() and drains aggressively
+    // until poll() returns 0. Safe to call from IRQ.
+    void on_rx_irq() noexcept { rx_irq_pending_.store(true, std::memory_order_release); }
+    // Returns true if on_rx_irq() was called since the last consume; also
+    // clears the flag in one shot.
+    bool consume_rx_pending() noexcept {
+        return rx_irq_pending_.exchange(false, std::memory_order_acq_rel);
+    }
 private:
     static void rx_trampoline(int if_idx, const uint8_t* data, size_t len, void* ctx) noexcept;
     void dispatch(int if_idx, const uint8_t* data, size_t len) noexcept;
@@ -103,6 +115,7 @@ private:
     size_t listener_count_ = 0;
     UdpListener* udp_listeners_[MAX_UDP_LISTENERS]{};
     size_t udp_listener_count_ = 0;
+    std::atomic<bool> rx_irq_pending_{false};
 };
 
 constexpr size_t MAX_NETIFS = 4;
