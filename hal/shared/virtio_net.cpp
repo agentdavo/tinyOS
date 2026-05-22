@@ -128,6 +128,17 @@ bool VirtioNetDriver::init_interface(int if_idx) {
     return initialized_;
 }
 
+void VirtioNetDriver::acknowledge_irq() noexcept {
+    // Called from IRQ context. virtio-mmio levels the IRQ line until we
+    // clear the matching bit in VMMIO_INT_STATUS via VMMIO_INT_ACK; if we
+    // don't, the GIC/PLIC keeps re-firing forever. The slow-path poll
+    // also does this, but doing it here is what lets the IRQ line
+    // de-assert promptly and avoids interrupt storms on busy NICs.
+    if (!initialized_) return;
+    const uint32_t status = mmio_read(VMMIO_INT_STATUS);
+    if (status != 0) mmio_write(VMMIO_INT_ACK, status);
+}
+
 bool VirtioNetDriver::send_packet(int if_idx, const uint8_t* data, size_t len) {
     (void)if_idx;
     if (!initialized_ || !data) { stats_.tx_drops++; return false; }

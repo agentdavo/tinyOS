@@ -267,6 +267,7 @@ public:
     void early_init_platform() override;
     void early_init_core(uint32_t core_id) override;
     void route_net_irq(int if_idx, uint32_t core_mask) override;
+    void handle_device_irq(uint32_t core_id, uint32_t irq_id) override;
     [[noreturn]] void panic(const char* msg, const char* file, int line) override;
     void reboot_system() override;
     kernel::hal::UARTDriverOps* get_uart_ops() override { return &uart_driver_; }

@@ -113,6 +113,7 @@ public:
     bool init_interface(int if_idx) override;
     bool send_packet(int if_idx, const uint8_t* data, size_t len) override;
     void register_packet_receiver(kernel::hal::net::PacketReceivedCallback cb, void* context) override;
+    void acknowledge_irq() noexcept override;
     kernel::hal::net::NicStats get_stats() const override { return stats_; }
     bool get_mac(uint8_t out[6]) const override;
 

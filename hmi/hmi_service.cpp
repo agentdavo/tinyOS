@@ -1473,11 +1473,13 @@ void Service::thread_entry(void* arg) {
     bool burst = false;
     for (;;) {
         self->maybe_drive_dhcp(*nic);
+        // IRQ-driven hint: device IRQ flips netif->rx_irq_pending; we
+        // consume it here and drain harder if set. Otherwise rely on
+        // the poll's return — a full budget likely means more work,
+        // anything less drained the queue and we can yield.
+        const bool irq_pending = netif->consume_rx_pending();
         const size_t rx = netif->poll(POLL_BUDGET);
-        // A full-budget drain means there's likely more in the queue —
-        // skip the yield at end-of-loop and come straight back to poll.
-        // Empties yield as before so the worker doesn't pin a core.
-        burst = (rx >= POLL_BUDGET);
+        burst = irq_pending || (rx >= POLL_BUDGET);
         self->process_ping(*nic);
         if (self->config_.ping_selftest_enable &&
             !self->ping_selftest_started_ &&

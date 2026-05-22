@@ -210,6 +210,7 @@ public:
     // once after PLIC init.
     void discover_virtio_nets();
     void route_net_irq(int if_idx, uint32_t core_mask) override;
+    void handle_device_irq(uint32_t core_id, uint32_t irq_id) override;
     kernel::hal::PowerOps*                get_power_ops() override { return &power_ops_; }
     kernel::hal::gpio::GPIODriverOps*     get_gpio_ops() override { return nullptr; }
     kernel::hal::WatchdogOps*             get_watchdog_ops() override { return nullptr; }
