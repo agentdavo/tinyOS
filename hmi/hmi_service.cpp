@@ -76,7 +76,10 @@ void reset_tsv_rx(uint16_t new_session, uint32_t total_len) {
 constexpr uint32_t DHCP_MAGIC_COOKIE = 0x63825363u;
 constexpr uint8_t DHCP_OPT_MSG_TYPE = 53;
 constexpr uint8_t DHCP_OPT_REQ_IP = 50;
+constexpr uint8_t DHCP_OPT_LEASE_TIME = 51;
 constexpr uint8_t DHCP_OPT_SERVER_ID = 54;
+constexpr uint8_t DHCP_OPT_T1 = 58;
+constexpr uint8_t DHCP_OPT_T2 = 59;
 constexpr uint8_t DHCP_OPT_SUBNET = 1;
 constexpr uint8_t DHCP_OPT_ROUTER = 3;
 constexpr uint8_t DHCP_OPT_END = 255;
@@ -401,18 +404,21 @@ void Service::apply_static_config() noexcept {
 
 void Service::set_dhcp_enabled(bool en) noexcept {
     // Flipping off DHCP latches whatever live IP we already had into the
-    // static-config slot so the operator's "current" view doesn't blank out
-    // when they tap the toggle. Re-enabling DHCP just resets the bound
-    // flag; the worker thread's maybe_start_dhcp loop picks the request up.
+    // static-config slot so the operator's "current" view doesn't blank
+    // out when they tap the toggle. Re-enabling DHCP resets the state
+    // machine to Init so the worker's maybe_drive_dhcp picks it up.
     config_.dhcp_enable = en;
     if (!en) {
         config_.static_ip = local_ip_.load(std::memory_order_relaxed);
         config_.netmask   = netmask_.load(std::memory_order_relaxed);
         config_.gateway   = gateway_.load(std::memory_order_relaxed);
         apply_static_config();
+        dhcp_state_ = DhcpState::Init;
     } else {
         dhcp_bound_.store(false, std::memory_order_relaxed);
+        dhcp_state_ = DhcpState::Init;
         dhcp_deadline_us_ = 0;
+        dhcp_t1_us_ = dhcp_t2_us_ = dhcp_expiry_us_ = 0;
     }
 }
 
@@ -579,28 +585,97 @@ void Service::send_arp_reply(kernel::hal::net::NetworkDriverOps& nic,
     (void)nic.send_packet(nic_idx_, frame, sizeof(frame));
 }
 
-void Service::maybe_start_dhcp(kernel::hal::net::NetworkDriverOps& nic) noexcept {
-    if (!config_.dhcp_enable || dhcp_bound_.load(std::memory_order_relaxed)) return;
+void Service::maybe_drive_dhcp(kernel::hal::net::NetworkDriverOps& nic) noexcept {
+    if (!config_.dhcp_enable) return;
     const uint64_t now = now_us();
-    if (dhcp_deadline_us_ == 0) {
-        dhcp_deadline_us_ = now + static_cast<uint64_t>(config_.dhcp_timeout_ms) * 1000ULL;
-        dhcp_retry_us_ = 0;
-    } else if (dhcp_deadline_us_ == UINT64_MAX) {
-        return;
-    }
-    if (now >= dhcp_deadline_us_) {
-        if (!configured()) apply_static_config();
-        if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
-            uart->puts("[hmi] dhcp timeout, using fallback config\n");
+    auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr;
+
+    switch (dhcp_state_) {
+        case DhcpState::Init: {
+            // Begin a fresh discover cycle. Static config has not been
+            // applied yet — keep waiting for an OFFER until the initial
+            // dhcp_timeout_ms elapses (then fall back to static).
+            dhcp_deadline_us_ = now + static_cast<uint64_t>(config_.dhcp_timeout_ms) * 1000ULL;
+            dhcp_retry_us_ = 0;
+            dhcp_state_ = DhcpState::Selecting;
+            break;
         }
-        dhcp_deadline_us_ = UINT64_MAX;
-        dhcp_retry_us_ = UINT64_MAX;
-        return;
+        case DhcpState::Selecting:
+        case DhcpState::Requesting: {
+            if (dhcp_deadline_us_ == UINT64_MAX) return;  // fell back already
+            if (now >= dhcp_deadline_us_) {
+                if (!configured()) apply_static_config();
+                if (uart) uart->puts("[hmi] dhcp timeout, using fallback config\n");
+                dhcp_deadline_us_ = UINT64_MAX;
+                dhcp_retry_us_ = UINT64_MAX;
+                return;
+            }
+            if (now < dhcp_retry_us_) return;
+            if (dhcp_state_ == DhcpState::Selecting) {
+                dhcp_xid_ = 0x484D4900u ^ static_cast<uint32_t>(now);
+                send_dhcp_discover(nic);
+            } else {
+                send_dhcp_request(nic, dhcp_offer_ip_, dhcp_server_id_, DhcpRequestKind::Selecting);
+            }
+            dhcp_retry_us_ = now + 500000ULL;
+            break;
+        }
+        case DhcpState::Bound: {
+            if (dhcp_expiry_us_ != 0 && now >= dhcp_expiry_us_) {
+                if (uart) uart->puts("[hmi] dhcp lease expired\n");
+                dhcp_state_ = DhcpState::Init;
+                dhcp_bound_.store(false, std::memory_order_relaxed);
+                local_ip_.store(0, std::memory_order_relaxed);
+                return;
+            }
+            if (dhcp_t2_us_ != 0 && now >= dhcp_t2_us_) {
+                if (uart) uart->puts("[hmi] dhcp rebind (T2)\n");
+                dhcp_xid_ = 0x484D4900u ^ static_cast<uint32_t>(now);
+                send_dhcp_request(nic, dhcp_offer_ip_, dhcp_server_id_, DhcpRequestKind::Rebinding);
+                dhcp_state_ = DhcpState::Rebinding;
+                dhcp_retry_us_ = now + 4000000ULL;  // retry every 4s
+                return;
+            }
+            if (dhcp_t1_us_ != 0 && now >= dhcp_t1_us_) {
+                if (uart) uart->puts("[hmi] dhcp renew (T1)\n");
+                dhcp_xid_ = 0x484D4900u ^ static_cast<uint32_t>(now);
+                send_dhcp_request(nic, dhcp_offer_ip_, dhcp_server_id_, DhcpRequestKind::Renewing);
+                dhcp_state_ = DhcpState::Renewing;
+                dhcp_retry_us_ = now + 4000000ULL;
+                return;
+            }
+            break;
+        }
+        case DhcpState::Renewing: {
+            if (now >= dhcp_t2_us_) {
+                if (uart) uart->puts("[hmi] dhcp rebind (T2 reached during renew)\n");
+                dhcp_xid_ = 0x484D4900u ^ static_cast<uint32_t>(now);
+                send_dhcp_request(nic, dhcp_offer_ip_, dhcp_server_id_, DhcpRequestKind::Rebinding);
+                dhcp_state_ = DhcpState::Rebinding;
+                dhcp_retry_us_ = now + 4000000ULL;
+                return;
+            }
+            if (now >= dhcp_retry_us_) {
+                send_dhcp_request(nic, dhcp_offer_ip_, dhcp_server_id_, DhcpRequestKind::Renewing);
+                dhcp_retry_us_ = now + 4000000ULL;
+            }
+            break;
+        }
+        case DhcpState::Rebinding: {
+            if (now >= dhcp_expiry_us_) {
+                if (uart) uart->puts("[hmi] dhcp lease expired during rebind\n");
+                dhcp_state_ = DhcpState::Init;
+                dhcp_bound_.store(false, std::memory_order_relaxed);
+                local_ip_.store(0, std::memory_order_relaxed);
+                return;
+            }
+            if (now >= dhcp_retry_us_) {
+                send_dhcp_request(nic, dhcp_offer_ip_, dhcp_server_id_, DhcpRequestKind::Rebinding);
+                dhcp_retry_us_ = now + 4000000ULL;
+            }
+            break;
+        }
     }
-    if (now < dhcp_retry_us_) return;
-    dhcp_xid_ = 0x484D4900u ^ static_cast<uint32_t>(now);
-    send_dhcp_discover(nic);
-    dhcp_retry_us_ = now + 500000ULL;
 }
 
 void Service::send_dhcp_discover(kernel::hal::net::NetworkDriverOps& nic) noexcept {
@@ -624,30 +699,56 @@ void Service::send_dhcp_discover(kernel::hal::net::NetworkDriverOps& nic) noexce
     if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) uart->puts("[hmi] dhcp discover\n");
 }
 
-void Service::send_dhcp_request(kernel::hal::net::NetworkDriverOps& nic, uint32_t requested_ip, uint32_t server_id) noexcept {
+void Service::send_dhcp_request(kernel::hal::net::NetworkDriverOps& nic,
+                                uint32_t requested_ip, uint32_t server_id,
+                                DhcpRequestKind kind) noexcept {
     DhcpHeader dhcp{};
     dhcp.op = 1;
     dhcp.htype = 1;
     dhcp.hlen = 6;
     dhcp.xid_be = host_to_be32(dhcp_xid_);
-    dhcp.flags_be = host_to_be16(0x8000);
+    // For Selecting we haven't been assigned an IP yet → ciaddr=0 and the
+    // broadcast flag asks the server to broadcast the ACK. For Renewing /
+    // Rebinding the client already has an IP (in ciaddr) so the server
+    // can unicast the ACK back; broadcast flag stays clear.
+    if (kind == DhcpRequestKind::Selecting) {
+        dhcp.flags_be = host_to_be16(0x8000);
+        dhcp.ciaddr_be = 0;
+    } else {
+        dhcp.flags_be = 0;
+        dhcp.ciaddr_be = host_to_be32(local_ip_.load(std::memory_order_relaxed));
+    }
     for (size_t i = 0; i < 6; ++i) dhcp.chaddr[i] = mac_[i];
     dhcp.cookie_be = host_to_be32(DHCP_MAGIC_COOKIE);
     size_t o = 0;
     dhcp.options[o++] = DHCP_OPT_MSG_TYPE; dhcp.options[o++] = 1; dhcp.options[o++] = DHCP_REQUEST;
-    dhcp.options[o++] = DHCP_OPT_REQ_IP; dhcp.options[o++] = 4;
-    const uint32_t req_be = host_to_be32(requested_ip);
-    kernel::util::kmemcpy(&dhcp.options[o], &req_be, 4); o += 4;
-    dhcp.options[o++] = DHCP_OPT_SERVER_ID; dhcp.options[o++] = 4;
-    const uint32_t srv_be = host_to_be32(server_id);
-    kernel::util::kmemcpy(&dhcp.options[o], &srv_be, 4); o += 4;
+    if (kind == DhcpRequestKind::Selecting) {
+        // RFC 2131: only SELECTING carries requested-ip + server-id.
+        // Renewing/Rebinding omit both — ciaddr is authoritative.
+        dhcp.options[o++] = DHCP_OPT_REQ_IP; dhcp.options[o++] = 4;
+        const uint32_t req_be = host_to_be32(requested_ip);
+        kernel::util::kmemcpy(&dhcp.options[o], &req_be, 4); o += 4;
+        dhcp.options[o++] = DHCP_OPT_SERVER_ID; dhcp.options[o++] = 4;
+        const uint32_t srv_be = host_to_be32(server_id);
+        kernel::util::kmemcpy(&dhcp.options[o], &srv_be, 4); o += 4;
+    } else {
+        (void)requested_ip;
+        (void)server_id;
+    }
     dhcp.options[o++] = 61; dhcp.options[o++] = 7; dhcp.options[o++] = 1;
     for (size_t i = 0; i < 6; ++i) dhcp.options[o++] = mac_[i];
     dhcp.options[o++] = DHCP_OPT_END;
     uint8_t bcast[6]{0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     send_udp_packet(nic, bcast, 0u, 0xFFFFFFFFu, UDP_PORT_DHCP_CLIENT, UDP_PORT_DHCP_SERVER,
                     reinterpret_cast<const uint8_t*>(&dhcp), sizeof(dhcp));
-    if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) uart->puts("[hmi] dhcp request\n");
+    if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+        const char* kind_str = (kind == DhcpRequestKind::Selecting) ? "request" :
+                               (kind == DhcpRequestKind::Renewing)  ? "request/renew" :
+                                                                      "request/rebind";
+        char line[48];
+        kernel::util::k_snprintf(line, sizeof(line), "[hmi] dhcp %s\n", kind_str);
+        uart->puts(line);
+    }
 }
 
 bool Service::same_subnet(uint32_t a, uint32_t b) const noexcept {
@@ -824,6 +925,15 @@ void Service::handle_dhcp(kernel::hal::net::NetworkDriverOps& nic,
     uint32_t subnet = config_.netmask;
     uint32_t router = config_.gateway;
     uint32_t server_id = 0;
+    uint32_t lease_time = 0;
+    uint32_t t1 = 0;
+    uint32_t t2 = 0;
+    auto read_be32 = [&dhcp](size_t at) -> uint32_t {
+        return (static_cast<uint32_t>(dhcp->options[at]) << 24) |
+               (static_cast<uint32_t>(dhcp->options[at + 1]) << 16) |
+               (static_cast<uint32_t>(dhcp->options[at + 2]) << 8) |
+                static_cast<uint32_t>(dhcp->options[at + 3]);
+    };
     size_t o = 0;
     while (o < sizeof(dhcp->options)) {
         const uint8_t code = dhcp->options[o++];
@@ -832,29 +942,14 @@ void Service::handle_dhcp(kernel::hal::net::NetworkDriverOps& nic,
         const uint8_t len = dhcp->options[o++];
         if (o + len > sizeof(dhcp->options)) break;
         switch (code) {
-            case DHCP_OPT_MSG_TYPE:
-                if (len >= 1) msg_type = dhcp->options[o];
-                break;
-            case DHCP_OPT_SUBNET:
-                if (len == 4) subnet = (static_cast<uint32_t>(dhcp->options[o]) << 24) |
-                                       (static_cast<uint32_t>(dhcp->options[o + 1]) << 16) |
-                                       (static_cast<uint32_t>(dhcp->options[o + 2]) << 8) |
-                                       static_cast<uint32_t>(dhcp->options[o + 3]);
-                break;
-            case DHCP_OPT_ROUTER:
-                if (len >= 4) router = (static_cast<uint32_t>(dhcp->options[o]) << 24) |
-                                       (static_cast<uint32_t>(dhcp->options[o + 1]) << 16) |
-                                       (static_cast<uint32_t>(dhcp->options[o + 2]) << 8) |
-                                       static_cast<uint32_t>(dhcp->options[o + 3]);
-                break;
-            case DHCP_OPT_SERVER_ID:
-                if (len == 4) server_id = (static_cast<uint32_t>(dhcp->options[o]) << 24) |
-                                          (static_cast<uint32_t>(dhcp->options[o + 1]) << 16) |
-                                          (static_cast<uint32_t>(dhcp->options[o + 2]) << 8) |
-                                          static_cast<uint32_t>(dhcp->options[o + 3]);
-                break;
-            default:
-                break;
+            case DHCP_OPT_MSG_TYPE:   if (len >= 1) msg_type   = dhcp->options[o]; break;
+            case DHCP_OPT_SUBNET:     if (len == 4) subnet     = read_be32(o); break;
+            case DHCP_OPT_ROUTER:     if (len >= 4) router     = read_be32(o); break;
+            case DHCP_OPT_SERVER_ID:  if (len == 4) server_id  = read_be32(o); break;
+            case DHCP_OPT_LEASE_TIME: if (len == 4) lease_time = read_be32(o); break;
+            case DHCP_OPT_T1:         if (len == 4) t1         = read_be32(o); break;
+            case DHCP_OPT_T2:         if (len == 4) t2         = read_be32(o); break;
+            default: break;
         }
         o += len;
     }
@@ -863,13 +958,43 @@ void Service::handle_dhcp(kernel::hal::net::NetworkDriverOps& nic,
         dhcp_offer_ip_ = yiaddr;
         dhcp_server_id_ = server_id;
         log_ip_line("[hmi] dhcp offer ip=", yiaddr);
-        send_dhcp_request(nic, yiaddr, server_id);
+        dhcp_state_ = DhcpState::Requesting;
+        send_dhcp_request(nic, yiaddr, server_id, DhcpRequestKind::Selecting);
     } else if (msg_type == DHCP_ACK && yiaddr != 0) {
         local_ip_.store(yiaddr, std::memory_order_relaxed);
         netmask_.store(subnet, std::memory_order_relaxed);
         gateway_.store(router, std::memory_order_relaxed);
+        dhcp_offer_ip_ = yiaddr;
+        if (server_id) dhcp_server_id_ = server_id;
+        // RFC 2131 defaults: T1 = lease/2, T2 = lease * 7/8.
+        if (lease_time == 0) lease_time = 0xFFFFFFFFu;  // server gave none → treat as infinite
+        if (t1 == 0) t1 = lease_time / 2;
+        if (t2 == 0) t2 = lease_time - (lease_time / 8);  // ≈ 7/8
+        dhcp_lease_seconds_ = lease_time;
+        const uint64_t now = now_us();
+        const uint64_t never = UINT64_MAX;
+        dhcp_t1_us_     = (lease_time == 0xFFFFFFFFu) ? never : now + static_cast<uint64_t>(t1) * 1000000ULL;
+        dhcp_t2_us_     = (lease_time == 0xFFFFFFFFu) ? never : now + static_cast<uint64_t>(t2) * 1000000ULL;
+        dhcp_expiry_us_ = (lease_time == 0xFFFFFFFFu) ? never : now + static_cast<uint64_t>(lease_time) * 1000000ULL;
+        dhcp_state_ = DhcpState::Bound;
         dhcp_bound_.store(true, std::memory_order_relaxed);
-        log_ip_line("[hmi] dhcp lease ip=", yiaddr);
+        if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+            char ip_buf[16];
+            char line[160];
+            kernel::util::uint32_to_ipv4_str(yiaddr, std::span<char>(ip_buf, sizeof(ip_buf)));
+            if (lease_time == 0xFFFFFFFFu) {
+                kernel::util::k_snprintf(line, sizeof(line),
+                    "[hmi] dhcp lease ip=%s (infinite)\n", ip_buf);
+            } else {
+                kernel::util::k_snprintf(line, sizeof(line),
+                    "[hmi] dhcp lease ip=%s lease=%lus t1=%lus t2=%lus\n",
+                    ip_buf,
+                    static_cast<unsigned long>(lease_time),
+                    static_cast<unsigned long>(t1),
+                    static_cast<unsigned long>(t2));
+            }
+            uart->puts(line);
+        }
     }
 }
 
@@ -1274,7 +1399,7 @@ void Service::thread_entry(void* arg) {
     }
     netif->register_listener(self);
     for (;;) {
-        self->maybe_start_dhcp(*nic);
+        self->maybe_drive_dhcp(*nic);
         (void)netif->poll(8);
         self->process_ping(*nic);
         if (self->config_.ping_selftest_enable &&
