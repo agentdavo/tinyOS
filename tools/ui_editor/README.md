@@ -34,8 +34,19 @@ No build step, no CDN fetches at runtime. Everything ships under
 - Inspector with grouped `bind=` and `action=` dropdowns; unknown values
   go red.
 - Include-other-page chips; included pages render dimmed behind the
-  current page.
+  current page. Click a chip to edit the include + its `${arg}` values
+  inline. Chips go red when the target page expects args the include
+  doesn't provide.
 - Actions table for per-page `action widget= event= target=` records.
+  `event=` is a dropdown of `click` / `long_press` (D15).
+- Page tab badges: a `modal` chip marks pages declared with the
+  `dialog` record type (A4). Click the **D** / **P** affordance on a
+  tab to flip between regular page and dialog. Only dialog pages
+  appear in the `action target=dialog:show:<id>` picker.
+- Theme editor (top toolbar): edit the `theme name=#hex` palette
+  used by `$name` color tokens in widget fields. Add / remove tokens
+  with live colour-swatch preview; the inspector's color pickers
+  resolve `$name` references via this palette.
 - Undo / redo (`Ctrl+Z` / `Ctrl+Y`), auto-save to `localStorage`.
 
 ## Bind catalogue
@@ -276,6 +287,13 @@ the bottom_nav. No TSV change needed; it's automatic.
   widget record itself.
 - `font=small|medium|large|xlarge` is stored as text; canvas uses
   `scale` for glyph size, matching the kernel's 8 x 16 font semantics.
+- Dialog pages render in the editor canvas the same as regular pages
+  (no z-overlay preview). The `modal` badge on the page tab and the
+  scoped `dialog:show:` action picker are the cues; the kernel does
+  the actual modal compositing at runtime.
+- Theme tokens: alpha channel of `#RRGGBBAA` values is preserved by the
+  parser/serializer but the colour picker UI is RGB-only — open the
+  hex value in the theme editor to see/change alpha by hand.
 
 ## Round-trip
 
