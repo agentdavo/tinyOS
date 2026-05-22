@@ -113,6 +113,12 @@ for (const r of [
   checkKinematic("machines/kinematic_millturn.tsv"),
   checkKinematic("machines/kinematic_mx850.tsv"),
   checkPods("devices/embedded_toolpods.tsv"),
+  // The lights-out scheduler reads these via the same line-based
+  // parser as toolpods, so the editor reuses parsePodsTSV /
+  // serializePodsTSV for both. Round-trip must be byte-identical so
+  // edits land in git without churn.
+  checkPods("devices/embedded_pallets.tsv"),
+  checkPods("devices/embedded_jobs.tsv"),
   check22ColScale(),
   checkForwardKinematics(),
 ]) {

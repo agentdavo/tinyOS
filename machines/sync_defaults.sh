@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Regenerate the DEFAULT_KINEMATIC_TSV / DEFAULT_PODS_TSV / DEFAULT_OBJS
-# blocks inside index.html from files in this flat machines/ directory
-# and the kernel's devices/ defaults. Run after any TSV / mesh change so
+# Regenerate the DEFAULT_KINEMATIC_TSV / DEFAULT_PODS_TSV /
+# DEFAULT_PALLETS_TSV / DEFAULT_JOBS_TSV / DEFAULT_OBJS blocks inside
+# index.html from files in this flat machines/ directory and the
+# kernel's devices/ defaults. Run after any TSV / mesh change so
 # File -> New opens with the current canonical machine.
 #
 # Since the editor, the kinematic TSVs, and the STL/OBJ files all live as
@@ -30,6 +31,8 @@ pick() {
 
 KIN_SRC=$(pick "kinematic_mill3.tsv")
 PODS_SRC=$(pick "embedded_toolpods.tsv")
+PALLETS_SRC=$(pick "embedded_pallets.tsv")
+JOBS_SRC=$(pick "embedded_jobs.tsv")
 OBJ_DEMO_SRC=$(pick "demo_box.obj")
 STL_DEMO_SRC=$(pick "demo_part.stl")
 
@@ -37,6 +40,8 @@ STL_DEMO_SRC=$(pick "demo_part.stl")
 
 KIN=$(read_file "$KIN_SRC")
 PODS=$([[ -n "$PODS_SRC" ]] && read_file "$PODS_SRC" || echo "")
+PALLETS=$([[ -n "$PALLETS_SRC" ]] && read_file "$PALLETS_SRC" || echo "")
+JOBS=$([[ -n "$JOBS_SRC" ]] && read_file "$JOBS_SRC" || echo "")
 OBJ_DEMO=$([[ -n "$OBJ_DEMO_SRC" ]] && read_file "$OBJ_DEMO_SRC" || echo "")
 STL_DEMO=$([[ -n "$STL_DEMO_SRC" ]] && read_file "$STL_DEMO_SRC" || echo "")
 
@@ -48,6 +53,8 @@ with open(path, 'r') as f:
 
 kin = """$KIN"""
 pods = """$PODS"""
+pallets = """$PALLETS"""
+jobs = """$JOBS"""
 obj_demo = """$OBJ_DEMO"""
 stl_demo = """$STL_DEMO"""
 
@@ -55,6 +62,8 @@ block = (
     "// ---- BEGIN SYNCED DEFAULTS (regenerate via machines/sync_defaults.sh) ----\n"
     "const DEFAULT_KINEMATIC_TSV = \`" + kin + "\`;\n"
     "const DEFAULT_PODS_TSV = \`" + pods + "\`;\n"
+    "const DEFAULT_PALLETS_TSV = \`" + pallets + "\`;\n"
+    "const DEFAULT_JOBS_TSV = \`" + jobs + "\`;\n"
     "const DEFAULT_OBJS = {\n"
     "  \"demo_box.obj\": \`" + obj_demo + "\`,\n"
     "  \"demo_part.stl\": \`" + stl_demo + "\`,\n"
