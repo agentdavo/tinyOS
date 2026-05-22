@@ -116,6 +116,44 @@ private:
     UdpListener* udp_listeners_[MAX_UDP_LISTENERS]{};
     size_t udp_listener_count_ = 0;
     std::atomic<bool> rx_irq_pending_{false};
+
+    // --- IPv4 fragment reassembly --------------------------------------
+    //
+    // SLIRP / hostfwd reassemble before delivery, so QEMU testing usually
+    // doesn't exercise this path; it matters on real hardware behind a
+    // router that fragments outbound UDP > MTU.
+    //
+    // 4 slots = 4 simultaneous in-flight datagrams from distinct
+    // (src,dst,ident,proto) tuples. 8 KB max per datagram matches our
+    // TX cap in udp_sendto. Per-slot 128-byte bitmap of 8-byte chunks
+    // proves contiguity without trusting in-order fragment arrival.
+    static constexpr size_t REASM_SLOTS = 4;
+    static constexpr size_t REASM_BUF_BYTES = 8192;
+    static constexpr size_t REASM_BITMAP_WORDS = REASM_BUF_BYTES / 8 / 32;  // 32
+    static constexpr uint64_t REASM_TTL_US = 10000000ULL;  // 10 s
+    struct ReasmSlot {
+        bool     in_use = false;
+        uint32_t src_ip = 0;
+        uint32_t dst_ip = 0;
+        uint16_t ident = 0;
+        uint8_t  proto = 0;
+        size_t   total_len = 0;   // 0 = unknown until MF=0 fragment arrives
+        uint64_t expires_us = 0;
+        uint32_t bitmap[REASM_BITMAP_WORDS]{};
+        uint8_t  buf[REASM_BUF_BYTES]{};
+    };
+    ReasmSlot reasm_[REASM_SLOTS]{};
+    // Find or allocate a slot matching (src,dst,ident,proto). nullptr if
+    // the table is full of unexpired entries. Called from RX dispatch.
+    ReasmSlot* reasm_find_or_alloc(uint32_t src_ip, uint32_t dst_ip,
+                                   uint16_t ident, uint8_t proto,
+                                   uint64_t now_us) noexcept;
+    void reasm_release(ReasmSlot& slot) noexcept;
+    void reasm_age(uint64_t now_us) noexcept;
+    // Returns true and fills (out_buf,out_len) if `slot` is complete. The
+    // caller should redispatch the assembled L4 payload, then release the
+    // slot.
+    bool reasm_take(ReasmSlot& slot, const uint8_t*& out_buf, size_t& out_len) noexcept;
 };
 
 constexpr size_t MAX_NETIFS = 4;
