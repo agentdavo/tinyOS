@@ -2,6 +2,7 @@
 #pragma once
 
 #include "core.hpp"
+#include "hal/shared/netif.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -23,9 +24,20 @@ struct Config {
     uint32_t ping_selftest_timeout_ms = 3000;
 };
 
-class Service {
+class Service : public kernel::net::EthListener {
 public:
     static constexpr uint16_t ETHERTYPE = 0x88B5;
+    // EthListener: catch-all so we keep receiving every frame type the
+    // HMI service handles (raw 0x88B5, ARP 0x0806, IPv4 0x0800). When
+    // additional services come online they should register filtered
+    // listeners on the same Netif so they don't widen this surface.
+    uint16_t ethertype() const noexcept override { return kernel::net::ETHERTYPE_ANY; }
+    void on_eth_frame(int if_idx,
+                      kernel::hal::net::NetworkDriverOps& nic,
+                      const uint8_t* data, size_t len) noexcept override {
+        (void)if_idx;
+        handle_eth_frame(nic, data, len);
+    }
     enum class PingResult : uint8_t {
         Ok = 0,
         Busy,
@@ -79,12 +91,6 @@ public:
     static void thread_entry(void* arg);
 
 private:
-    struct Context {
-        Service* self;
-        kernel::hal::net::NetworkDriverOps* nic;
-    };
-
-    static void rx_trampoline(int if_idx, const uint8_t* data, size_t len, void* ctx) noexcept;
     void handle_eth_frame(kernel::hal::net::NetworkDriverOps& nic,
                           const uint8_t* data, size_t len) noexcept;
     void handle_raw_hmi(kernel::hal::net::NetworkDriverOps& nic,

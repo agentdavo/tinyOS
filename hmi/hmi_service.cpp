@@ -423,12 +423,6 @@ void Service::set_static_config(uint32_t ip, uint32_t netmask, uint32_t gateway)
     if (!config_.dhcp_enable) apply_static_config();
 }
 
-void Service::rx_trampoline(int, const uint8_t* data, size_t len, void* ctx) noexcept {
-    auto* c = static_cast<Context*>(ctx);
-    if (!c || !c->self || !c->nic) return;
-    c->self->handle_eth_frame(*c->nic, data, len);
-}
-
 void Service::send_raw_response(kernel::hal::net::NetworkDriverOps& nic,
                                 const uint8_t* dst_mac,
                                 uint8_t opcode, uint8_t status,
@@ -1273,10 +1267,15 @@ void Service::thread_entry(void* arg) {
             log_ip_line("[hmi] selftest target=", self->config_.ping_selftest_target);
         }
     }
-    Context ctx{self, nic};
+    auto* netif = kernel::net::netif_bind(static_cast<int>(self->nic_idx_), nic);
+    if (!netif) {
+        if (uart) uart->puts("[hmi] netif bind FAILED — nic_idx out of range\n");
+        return;
+    }
+    netif->register_listener(self);
     for (;;) {
         self->maybe_start_dhcp(*nic);
-        (void)nic->poll_rx(&rx_trampoline, &ctx, 8);
+        (void)netif->poll(8);
         self->process_ping(*nic);
         if (self->config_.ping_selftest_enable &&
             !self->ping_selftest_started_ &&

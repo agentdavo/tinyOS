@@ -70,7 +70,7 @@ ifeq ($(TARGET),arm64)
     HAL_CPP    = $(HAL_DIR)/hal_qemu_arm64.cpp hal/shared/virtio_net.cpp \
                  hal/shared/virtio_gpu.cpp hal/shared/virtio_blk.cpp \
                  hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp hal/shared/sdcard.cpp \
-                 hal/shared/virtio_input.cpp
+                 hal/shared/virtio_input.cpp hal/shared/netif.cpp
     LINKER     = $(HAL_DIR)/linker.ld
     # Disable libgcc outline-atomics. Not needed now LSE is mandated by
     # -march, and its discovery ctor reads a nonexistent aux vector.
@@ -119,7 +119,7 @@ ifeq ($(TARGET),riscv64)
                  hal/shared/virtio_blk.cpp \
                  hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp \
                  hal/shared/sdcard.cpp \
-                 hal/shared/virtio_input.cpp
+                 hal/shared/virtio_input.cpp hal/shared/netif.cpp
     LINKER     = $(HAL_DIR)/linker.ld
     # -fno-pic/-fno-pie stops the compiler from emitting GOT-indirect
     # address-of-symbol sequences. On a freestanding kernel nothing
