@@ -2456,7 +2456,72 @@ bool remap_action_for_include(const char* source_page_id, const char* current_pa
     return true;
 }
 
+// Forward decl for the 5-arg form below; the legacy wrapper just calls it
+// with no template args.
+bool include_page_into_current(const char* source_id, int current_page,
+                               uint32_t line_no,
+                               const KeyValueField* args, uint32_t arg_count);
+
 bool include_page_into_current(const char* source_id, int current_page, uint32_t line_no) {
+    return include_page_into_current(source_id, current_page, line_no, nullptr, 0);
+}
+
+// B7: template arg substitution. Scans `buf` for `${name}` placeholders
+// and replaces each with the corresponding value from `args`. Unmatched
+// placeholders are kept as literals so a typo is visible at render time
+// instead of silently expanding to empty. Substitution is in-place via a
+// stack scratch buffer — buffers up to MAX_FIELD_LEN are handled.
+void substitute_template_args(char* buf, size_t buf_size,
+                              const KeyValueField* args, uint32_t arg_count) {
+    if (!buf || buf_size == 0 || arg_count == 0) return;
+    // Fast path — no placeholders. Freestanding libc has no strstr, so
+    // walk the buffer manually.
+    bool has_placeholder = false;
+    for (size_t i = 0; buf[i]; ++i) {
+        if (buf[i] == '$' && buf[i + 1] == '{') { has_placeholder = true; break; }
+    }
+    if (!has_placeholder) return;
+    char tmp[MAX_FIELD_LEN];
+    size_t out = 0;
+    const size_t in_len = strlen(buf);
+    for (size_t i = 0; i < in_len && out + 1 < sizeof(tmp);) {
+        if (buf[i] == '$' && i + 1 < in_len && buf[i + 1] == '{') {
+            size_t end = i + 2;
+            while (end < in_len && buf[end] != '}') ++end;
+            if (end < in_len && buf[end] == '}') {
+                const size_t name_len = end - (i + 2);
+                if (name_len > 0 && name_len < 32) {
+                    char name[32];
+                    memcpy(name, &buf[i + 2], name_len);
+                    name[name_len] = '\0';
+                    const char* val = nullptr;
+                    for (uint32_t k = 0; k < arg_count; ++k) {
+                        if (strcmp(args[k].key, name) == 0) {
+                            val = args[k].value;
+                            break;
+                        }
+                    }
+                    if (val) {
+                        const size_t vlen = strlen(val);
+                        const size_t copy = (out + vlen + 1 < sizeof(tmp)) ? vlen : sizeof(tmp) - out - 1;
+                        memcpy(&tmp[out], val, copy);
+                        out += copy;
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        tmp[out++] = buf[i++];
+    }
+    tmp[out] = '\0';
+    const size_t copy = (out < buf_size) ? out : buf_size - 1;
+    memcpy(buf, tmp, copy);
+    buf[copy] = '\0';
+}
+
+bool include_page_into_current(const char* source_id, int current_page, uint32_t line_no,
+                               const KeyValueField* args, uint32_t arg_count) {
     if (!source_id || !*source_id) {
         set_error(line_no, "include record requires page");
         return false;
@@ -2475,6 +2540,18 @@ bool include_page_into_current(const char* source_id, int current_page, uint32_t
     const uint32_t end = start + g_pages[source_page].widget_count;
     for (uint32_t i = start; i < end; ++i) {
         WidgetSpec cloned = g_widgets[i].spec;
+        // B7: apply ${arg} substitution to every text-bearing field
+        // BEFORE id-prefix remapping so an arg can drive the suffix half
+        // of a widget id (e.g. include page=wcs_row arg=G54 with id=$arg
+        // → current-page-prefix + "G54").
+        if (arg_count > 0) {
+            substitute_template_args(cloned.text,      sizeof(cloned.text),      args, arg_count);
+            substitute_template_args(cloned.id,        sizeof(cloned.id),        args, arg_count);
+            substitute_template_args(cloned.action,    sizeof(cloned.action),    args, arg_count);
+            substitute_template_args(cloned.bind,      sizeof(cloned.bind),      args, arg_count);
+            substitute_template_args(cloned.parent_id, sizeof(cloned.parent_id), args, arg_count);
+            substitute_template_args(cloned.active_if, sizeof(cloned.active_if), args, arg_count);
+        }
         if (cloned.id[0] != '\0') {
             char remapped[MAX_FIELD_LEN] = {};
             format_prefixed_id(remapped, sizeof(remapped), current_page_id, cloned.id);
@@ -4865,9 +4942,14 @@ bool load_tsv(const char* buf, size_t len) {
             continue;
         }
         if (record_type == RecordType::Include) {
-            KeyValueField fields[4]{};
-            const uint32_t field_count = parse_fields(line, line_len, fields, 4);
-            if (!include_page_into_current(field_value(fields, field_count, "page"), current_page, line_no)) {
+            // B7: bump the field count to 12 so an include can carry up to
+            // 11 ${arg} bindings alongside the required `page=...`. Any
+            // unused slot stays zero-initialised and gets skipped by
+            // substitute_template_args.
+            KeyValueField fields[12]{};
+            const uint32_t field_count = parse_fields(line, line_len, fields, 12);
+            if (!include_page_into_current(field_value(fields, field_count, "page"),
+                                           current_page, line_no, fields, field_count)) {
                 return false;
             }
             continue;
