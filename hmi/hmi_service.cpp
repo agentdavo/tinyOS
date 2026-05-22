@@ -666,6 +666,48 @@ uint32_t Service::next_hop_for(uint32_t dst_ip) const noexcept {
     return (gw != 0 && !same_subnet(local_ip_.load(std::memory_order_relaxed), dst_ip)) ? gw : dst_ip;
 }
 
+Service::ArpEntry* Service::arp_find(uint32_t ip) noexcept {
+    if (ip == 0) return nullptr;
+    for (auto& e : arp_table_) {
+        if (e.ip == ip) return &e;
+    }
+    return nullptr;
+}
+
+Service::ArpEntry* Service::arp_lookup_valid(uint32_t ip, uint64_t now) noexcept {
+    auto* e = arp_find(ip);
+    if (!e || e->valid_until_us <= now) return nullptr;
+    e->last_used_us = now;
+    return e;
+}
+
+Service::ArpEntry* Service::arp_insert(uint32_t ip, const uint8_t* mac, uint64_t now) noexcept {
+    if (ip == 0 || !mac) return nullptr;
+    // Hit existing slot for this IP first; otherwise empty slot; otherwise LRU.
+    ArpEntry* slot = arp_find(ip);
+    if (!slot) {
+        for (auto& e : arp_table_) {
+            if (e.ip == 0) { slot = &e; break; }
+        }
+    }
+    if (!slot) {
+        slot = &arp_table_[0];
+        for (auto& e : arp_table_) {
+            if (e.last_used_us < slot->last_used_us) slot = &e;
+        }
+    }
+    slot->ip = ip;
+    for (size_t i = 0; i < 6; ++i) slot->mac[i] = mac[i];
+    slot->valid_until_us = now + 5000000ULL;  // 5 s lifetime
+    slot->last_used_us = now;
+    slot->retry_us = 0;
+    return slot;
+}
+
+void Service::arp_reset_all() noexcept {
+    for (auto& e : arp_table_) e = ArpEntry{};
+}
+
 void Service::handle_icmp(uint32_t src_ip,
                           const uint8_t* payload, size_t payload_len) noexcept {
     if (!payload || payload_len < sizeof(IcmpEchoHeader)) return;
@@ -721,12 +763,12 @@ void Service::process_ping(kernel::hal::net::NetworkDriverOps& nic) noexcept {
     }
 
     const uint32_t next_hop = next_hop_for(dst_ip);
-    if (arp_ip_ != next_hop || arp_valid_until_us_ <= now) {
-        if (now >= arp_retry_us_) {
-            // Only log on the first attempt per hop. Retries every 250ms
-            // used to spam the log with identical "ping route" + "arp
-            // who-has" pairs while waiting for a reply.
-            const bool first_attempt = (arp_ip_ != next_hop);
+    ArpEntry* arp = arp_lookup_valid(next_hop, now);
+    if (!arp) {
+        ArpEntry* pending = arp_find(next_hop);
+        const bool first_attempt = (pending == nullptr);
+        const uint64_t retry_due = pending ? pending->retry_us : 0;
+        if (now >= retry_due) {
             if (first_attempt) {
                 if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
                     char dst_buf[16];
@@ -739,8 +781,13 @@ void Service::process_ping(kernel::hal::net::NetworkDriverOps& nic) noexcept {
                 }
             }
             send_arp_request(nic, next_hop, first_attempt);
-            arp_retry_us_ = now + 250000ULL;
-            arp_ip_ = next_hop;
+            // Track the pending request so concurrent flows don't all blast
+            // ARP requests at the same dst. Re-issue at 250 ms cadence.
+            if (!pending) {
+                pending = arp_insert(next_hop, mac_, now);  // placeholder MAC, expires immediately
+                if (pending) pending->valid_until_us = 0;
+            }
+            if (pending) pending->retry_us = now + 250000ULL;
         }
         ping_state_.store(PING_STATE_REQUESTED, std::memory_order_release);
         return;
@@ -767,7 +814,7 @@ void Service::process_ping(kernel::hal::net::NetworkDriverOps& nic) noexcept {
                                  ip_buf, static_cast<unsigned>(ping_seq_));
         uart->puts(line);
     }
-    send_ipv4_packet(nic, arp_mac_, local_ip_.load(std::memory_order_relaxed), dst_ip,
+    send_ipv4_packet(nic, arp->mac, local_ip_.load(std::memory_order_relaxed), dst_ip,
                      packet, sizeof(IcmpEchoHeader) + sizeof(probe), IPPROTO_ICMP);
     ping_sent_at_us_ = now;
     ping_state_.store(PING_STATE_INFLIGHT, std::memory_order_release);
@@ -1156,19 +1203,18 @@ void Service::handle_eth_frame(kernel::hal::net::NetworkDriverOps& nic,
             const uint32_t spa = be32_to_host(arp->spa_be);
             const uint32_t tpa = be32_to_host(arp->tpa_be);
             if (oper == 2 && tpa == local_ip_.load(std::memory_order_relaxed)) {
-                arp_ip_ = spa;
-                for (size_t i = 0; i < 6; ++i) arp_mac_[i] = arp->sha[i];
-                arp_valid_until_us_ = now_us() + 5000000ULL;
-                if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+                ArpEntry* learned = arp_insert(spa, arp->sha, now_us());
+                if (learned && (kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr)) {
+                    auto* uart = kernel::g_platform->get_uart_ops();
                     char ip_buf[16];
                     char line[128];
                     kernel::util::uint32_to_ipv4_str(spa, std::span<char>(ip_buf, sizeof(ip_buf)));
                     kernel::util::k_snprintf(line, sizeof(line),
                                              "[hmi] arp learned ip=%s mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
                                              ip_buf,
-                                             static_cast<unsigned>(arp_mac_[0]), static_cast<unsigned>(arp_mac_[1]),
-                                             static_cast<unsigned>(arp_mac_[2]), static_cast<unsigned>(arp_mac_[3]),
-                                             static_cast<unsigned>(arp_mac_[4]), static_cast<unsigned>(arp_mac_[5]));
+                                             static_cast<unsigned>(learned->mac[0]), static_cast<unsigned>(learned->mac[1]),
+                                             static_cast<unsigned>(learned->mac[2]), static_cast<unsigned>(learned->mac[3]),
+                                             static_cast<unsigned>(learned->mac[4]), static_cast<unsigned>(learned->mac[5]));
                     uart->puts(line);
                 }
             }
@@ -1202,9 +1248,7 @@ void Service::thread_entry(void* arg) {
     self->netmask_.store(0, std::memory_order_relaxed);
     self->gateway_.store(0, std::memory_order_relaxed);
     self->apply_static_config();
-    self->arp_ip_ = 0;
-    self->arp_valid_until_us_ = 0;
-    self->arp_retry_us_ = 0;
+    self->arp_reset_all();
     self->ping_state_.store(PING_STATE_IDLE, std::memory_order_relaxed);
     self->ping_selftest_due_us_ = now_us() + static_cast<uint64_t>(self->config_.ping_selftest_delay_ms) * 1000ULL;
     self->ping_selftest_started_ = false;

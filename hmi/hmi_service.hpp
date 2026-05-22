@@ -156,10 +156,21 @@ private:
     uint32_t dhcp_offer_ip_ = 0;
     uint64_t dhcp_deadline_us_ = 0;
     uint64_t dhcp_retry_us_ = 0;
-    uint8_t arp_mac_[6]{};
-    uint32_t arp_ip_ = 0;
-    uint64_t arp_valid_until_us_ = 0;
-    uint64_t arp_retry_us_ = 0;
+    // Multi-entry ARP cache. 8 slots is plenty for a /24 with a handful
+    // of peers; linear scan is fine at this size. Empty slot = ip==0.
+    struct ArpEntry {
+        uint32_t ip;             // 0 = empty
+        uint8_t  mac[6];
+        uint64_t valid_until_us; // entry expires past this
+        uint64_t last_used_us;   // LRU eviction key
+        uint64_t retry_us;       // earliest next ARP request for this dst
+    };
+    static constexpr size_t ARP_TABLE_SIZE = 8;
+    ArpEntry arp_table_[ARP_TABLE_SIZE]{};
+    ArpEntry* arp_find(uint32_t ip) noexcept;
+    ArpEntry* arp_lookup_valid(uint32_t ip, uint64_t now) noexcept;
+    ArpEntry* arp_insert(uint32_t ip, const uint8_t* mac, uint64_t now) noexcept;
+    void arp_reset_all() noexcept;
     std::atomic<uint32_t> ping_request_ip_{0};
     std::atomic<uint32_t> ping_timeout_ms_{0};
     std::atomic<uint32_t> ping_rtt_ms_{0};
