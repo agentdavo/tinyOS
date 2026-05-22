@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """
-B5 live-preview host bridge.
+Live-preview host bridge (legacy / fallback path).
 
-Sits between the browser-based UI editor (tools/ui_editor/index.html) and
-the kernel's UDP TSV-upload listener (hmi_service:5002). Editor connects
-via WebSocket, sends the current TSV as a single text frame; the bridge
-chunks it into UDP datagrams keyed by a session id and pushes them at
-the kernel. The kernel reassembles, calls ui_builder::load_tsv, repaints.
+The kernel now runs a WebSocket server itself (PR #48), so the editor
+connects to ws://<kernel>:5001/ directly in the default config. This
+bridge is no longer required for normal use.
 
-Why a bridge instead of WS direct from browser?
-  Browsers can't open raw UDP sockets, and the kernel only has UDP today
-  (no TCP, no HTTP, no WebSocket). The bridge bridges those gaps without
-  any new kernel network surface beyond the UDP listener that's already
-  in place.
+Keep it for two cases:
+  * The kernel is reachable only via a UDP path (e.g. a flat L2 segment
+    where TCP is filtered).
+  * You're debugging the chunked-UDP TSV upload protocol itself.
 
-Usage:
+How it worked:
+  Editor connects via WebSocket; bridge chunks the text frame into
+  1400-byte UDP datagrams keyed by a session id and pushes them at the
+  kernel's UDP listener on port 5002. The kernel reassembles + calls
+  ui_builder::load_tsv.
+
+Usage (only when you actually need the bridge):
   python3 tools/ui_editor/live_preview.py --kernel-ip 10.0.2.15
-  python3 tools/ui_editor/live_preview.py --kernel-ip 10.0.2.15 --port 5001
+  # then in the editor:
+  #   localStorage.setItem("livePreviewUrl", "ws://localhost:5001/")
+  # so the editor talks to this bridge rather than the kernel directly.
 
-  In the editor: click the new "Push to kernel" button. It connects to
-  ws://localhost:5001/ and streams the current TSV. The bridge prints
-  per-upload telemetry; the kernel logs `[hmi] tsv-upload session=...
-  complete ... load_tsv` on the serial console once the upload lands.
-
-Dependencies: stdlib only (websockets package not required — uses a
-minimal hand-rolled WS handshake that doesn't need pip install).
+Dependencies: stdlib only.
 """
 
 import argparse
