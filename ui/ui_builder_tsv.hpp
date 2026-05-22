@@ -208,6 +208,15 @@ void hide_dialog();
 int  active_dialog_index();
 const char* active_dialog_id();
 
+// C11: text-scale boost. Adds a constant N (≥ 0) to every widget's
+// `text_scale` at render time. 0 (default) keeps the legacy rendering.
+// 1 bumps every label/button glyph up one step (8x16 → 16x32 → ...).
+// Operators with poor vision toggle via the `ui_scale` CLI verb.
+// Overflow risk acknowledged: widgets clip when their text outgrows the
+// declared bounds. Trade-off documented inline.
+uint32_t text_scale_boost();
+void     set_text_scale_boost(uint32_t boost);
+
 // E21: introspection for the bind-exercise smoke test in cli.cpp's
 // `test ui` subtest. Iterates every TSV-declared page (including
 // dialogs) and lets the test confirm set_page + render_ui_once

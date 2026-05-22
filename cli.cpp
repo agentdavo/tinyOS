@@ -1432,6 +1432,36 @@ static int cmd_ui_page(const char* args, kernel::hal::UARTDriverOps* uart) {
     return 0;
 }
 
+static int cmd_ui_scale(const char* args, kernel::hal::UARTDriverOps* uart) {
+    if (!uart) return 1;
+    // C11: text-scale boost CLI verb. Operator-facing accessibility
+    // toggle — `ui_scale 0` for default, `ui_scale 1` to up every glyph
+    // one step, `ui_scale 2` for two steps. No-arg prints the current
+    // value. The boost is stored in ui_builder; render uses it via
+    // effective_text_scale().
+    if (!args || !*args) {
+        char buf[64];
+        kernel::util::k_snprintf(buf, sizeof(buf), "ui_scale: %u\n",
+                                 static_cast<unsigned>(ui_builder::text_scale_boost()));
+        uart->puts(buf);
+        return 0;
+    }
+    int32_t parsed = 0;
+    const char* p = args;
+    while (*p == ' ' || *p == '\t') ++p;
+    while (*p >= '0' && *p <= '9') { parsed = parsed * 10 + (*p - '0'); ++p; }
+    if (parsed < 0 || parsed > 2) {
+        uart->puts("ui_scale: expected 0, 1, or 2 (clamped at 2)\n");
+        return 1;
+    }
+    ui_builder::set_text_scale_boost(static_cast<uint32_t>(parsed));
+    kernel::ui::render_ui_once();
+    char buf[64];
+    kernel::util::k_snprintf(buf, sizeof(buf), "ui_scale: now %d\n", parsed);
+    uart->puts(buf);
+    return 0;
+}
+
 static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
     (void)uart;
     uint32_t scale = 6;
@@ -5252,6 +5282,7 @@ CLI::CLI() {
     register_command("toolpod_select", cmd_toolpod_select, "toolpod_select <pod> <station> — move/select a physical pod station");
     register_command("toolpod_assign", cmd_toolpod_assign, "toolpod_assign <pod> <station> <virtual_tool> — remap virtual tool onto a physical station");
     register_command("ui_page", cmd_ui_page, "ui_page <id> — switch the active TSV UI page");
+    register_command("ui_scale", cmd_ui_scale, "ui_scale [0|1|2] — global text-scale boost for accessibility");
     register_command("ui_dump", cmd_ui_dump, "ui_dump [scale] — dump the current framebuffer as a downscaled PPM stream");
     register_command("klog", cmd_klog, "Dump the in-RAM kernel log ring (recent ~8 KB of UART output)");
     register_command("save_cfg", cmd_save_cfg, "Dump current operator-set state as replayable CLI commands");
