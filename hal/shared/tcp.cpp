@@ -9,6 +9,7 @@
 // inline without further locking.
 
 #include "tcp.hpp"
+#include "../../miniOS.hpp"
 
 #include <cstring>
 
@@ -92,17 +93,24 @@ uint16_t tcp_checksum(uint32_t src_ip, uint32_t dst_ip,
     return static_cast<uint16_t>(~sum);
 }
 
-// One global bind table — every (netif, listener) pair lives here.
-// Bindings are stable until tcp_unbind. The connection lives alongside
-// the binding; we serve a single connection per listener at a time.
+// Two-table layout: `Binding` is (netif, listener, port). `ConnSlot`
+// holds an active TCP connection that references its binding. SYNs
+// allocate a fresh ConnSlot keyed by the 4-tuple. Closing a connection
+// just frees the slot.
 struct Binding {
     Netif*         netif = nullptr;
     TcpListener*   listener = nullptr;
-    TcpConnection  conn{};
+};
+
+struct ConnSlot {
+    bool          in_use = false;
+    Binding*      binding = nullptr;
+    TcpConnection conn{};
 };
 
 constexpr size_t MAX_BINDINGS = MAX_TCP_LISTENERS * MAX_NETIFS;
-Binding g_bindings[MAX_BINDINGS];
+Binding  g_bindings[MAX_BINDINGS];
+ConnSlot g_conns[MAX_TCP_CONNS];
 
 Binding* find_binding(Netif& netif, uint16_t local_port) noexcept {
     for (auto& b : g_bindings) {
@@ -125,21 +133,50 @@ Binding* alloc_binding() noexcept {
     return nullptr;
 }
 
-bool send_segment(TcpConnection& conn,
-                  uint16_t flags,
-                  const uint8_t* payload, size_t payload_len) noexcept {
+ConnSlot* find_conn(Netif& netif, uint32_t peer_ip, uint16_t peer_port,
+                    uint16_t local_port) noexcept {
+    for (auto& s : g_conns) {
+        if (!s.in_use || !s.binding || s.binding->netif != &netif) continue;
+        if (s.conn.peer_ip == peer_ip && s.conn.peer_port == peer_port &&
+            s.conn.local_port == local_port) return &s;
+    }
+    return nullptr;
+}
+
+ConnSlot* alloc_conn() noexcept {
+    for (auto& s : g_conns) {
+        if (!s.in_use) return &s;
+    }
+    return nullptr;
+}
+
+ConnSlot* slot_for_conn(const TcpConnection* c) noexcept {
+    for (auto& s : g_conns) {
+        if (s.in_use && &s.conn == c) return &s;
+    }
+    return nullptr;
+}
+
+uint64_t now_us_or_zero() noexcept {
+    if (kernel::g_platform && kernel::g_platform->get_timer_ops()) {
+        return kernel::g_platform->get_timer_ops()->get_system_time_us();
+    }
+    return 0;
+}
+
+bool send_segment_at(TcpConnection& conn,
+                     uint32_t seq,
+                     uint16_t flags,
+                     const uint8_t* payload, size_t payload_len) noexcept {
     constexpr size_t FRAME_CAP = 2048;
     constexpr size_t HDRS = sizeof(EthernetHeader) + sizeof(IPv4Header) + sizeof(TcpHeader);
     if (payload_len > FRAME_CAP - HDRS) return false;
-    auto* netif = netif_get(-1);  // sentinel — replaced below
-    (void)netif;
-    // We don't have a pointer to Netif here. Look it up from listener's
-    // binding. Linear scan over MAX_BINDINGS is fine (≤ 16 entries).
-    Netif* nif = nullptr;
-    for (auto& b : g_bindings) {
-        if (&b.conn == &conn) { nif = b.netif; break; }
-    }
-    if (!nif || !nif->nic()) return false;
+    // The netif owning this conn lives on the binding referenced by
+    // the ConnSlot. Linear scan is fine at MAX_TCP_CONNS=16.
+    ConnSlot* slot = slot_for_conn(&conn);
+    if (!slot || !slot->binding || !slot->binding->netif) return false;
+    auto* nif = slot->binding->netif;
+    if (!nif->nic()) return false;
     auto* nic = nif->nic();
 
     static uint8_t frame[FRAME_CAP];
@@ -177,7 +214,7 @@ bool send_segment(TcpConnection& conn,
     auto* tcp = reinterpret_cast<TcpHeader*>(frame + sizeof(EthernetHeader) + sizeof(IPv4Header));
     tcp->src_port_be = bswap16(conn.local_port);
     tcp->dst_port_be = bswap16(conn.peer_port);
-    tcp->seq_be      = bswap32(conn.snd_nxt);
+    tcp->seq_be      = bswap32(seq);
     tcp->ack_be      = bswap32(conn.rcv_nxt);
     tcp->off_flags_be = bswap16(static_cast<uint16_t>((5u << 12) | (flags & 0x3FFu)));  // 5 32-bit words = 20 bytes
     tcp->window_be   = bswap16(conn.rcv_wnd);
@@ -192,15 +229,16 @@ bool send_segment(TcpConnection& conn,
     return nic->send_packet(nif->if_idx(), frame, HDRS + payload_len);
 }
 
-void reset_to_listen(Binding& b) noexcept {
-    b.conn.state = TcpState::Listen;
-    b.conn.peer_ip = 0;
-    b.conn.peer_port = 0;
-    std::memset(b.conn.peer_mac, 0, 6);
-    b.conn.snd_nxt = INITIAL_SEQ;
-    b.conn.snd_una = INITIAL_SEQ;
-    b.conn.rcv_nxt = 0;
-    b.conn.rcv_wnd = TcpConnection::RX_BUF_BYTES;
+bool send_segment(TcpConnection& conn,
+                  uint16_t flags,
+                  const uint8_t* payload, size_t payload_len) noexcept {
+    return send_segment_at(conn, conn.snd_nxt, flags, payload, payload_len);
+}
+
+void release_conn(ConnSlot& slot) noexcept {
+    slot.in_use = false;
+    slot.binding = nullptr;
+    slot.conn = TcpConnection{};
 }
 
 } // namespace
@@ -208,17 +246,38 @@ void reset_to_listen(Binding& b) noexcept {
 bool TcpConnection::send(const uint8_t* data, size_t len) noexcept {
     if (state != TcpState::Established) return false;
     if (len == 0) return true;
-    if (!send_segment(*this, TCP_FLAG_ACK | TCP_FLAG_PSH, data, len)) return false;
+    if (retx_active) return false;  // single-segment in-flight cap
+    if (len > RETX_BUF_BYTES) return false;
+    const uint16_t flags = TCP_FLAG_ACK | TCP_FLAG_PSH;
+    if (!send_segment(*this, flags, data, len)) return false;
+    retx_active   = true;
+    retx_seq      = snd_nxt;
+    retx_len      = static_cast<uint16_t>(len);
+    retx_flags    = flags;
+    retx_sent_us  = now_us_or_zero();
+    retx_rto_us   = RTO_INITIAL_US;
+    retx_retries  = 0;
+    if (data) std::memcpy(retx_buf, data, len);
     snd_nxt += static_cast<uint32_t>(len);
-    snd_una = snd_nxt;  // pretend it was ACKed — no retransmit machinery
     return true;
 }
 
 void TcpConnection::close() noexcept {
     if (state == TcpState::Established || state == TcpState::CloseWait) {
         send_segment(*this, TCP_FLAG_ACK | TCP_FLAG_FIN, nullptr, 0);
+        // FIN consumes one sequence number — track it as an unACKed
+        // virtual byte so retransmit covers the FIN if dropped.
+        if (!retx_active) {
+            retx_active   = true;
+            retx_seq      = snd_nxt;
+            retx_len      = 1;
+            retx_flags    = TCP_FLAG_ACK | TCP_FLAG_FIN;
+            retx_sent_us  = now_us_or_zero();
+            retx_rto_us   = RTO_INITIAL_US;
+            retx_retries  = 0;
+        }
         snd_nxt += 1;
-        state = (state == TcpState::Established) ? TcpState::LastAck : TcpState::LastAck;
+        state = TcpState::LastAck;
     }
 }
 
@@ -230,13 +289,17 @@ bool tcp_bind(Netif& netif, TcpListener* l) noexcept {
     if (!b) return false;
     b->netif = &netif;
     b->listener = l;
-    b->conn.listener = l;
-    b->conn.local_port = l->local_port();
-    reset_to_listen(*b);
     return true;
 }
 
 void tcp_unbind(Netif& netif, TcpListener* l) noexcept {
+    // Tear down all live conns on this listener first.
+    for (auto& s : g_conns) {
+        if (s.in_use && s.binding && s.binding->netif == &netif &&
+            s.binding->listener == l) {
+            release_conn(s);
+        }
+    }
     if (auto* b = find_binding_for_listener(netif, l); b) {
         *b = Binding{};
     }
@@ -244,6 +307,35 @@ void tcp_unbind(Netif& netif, TcpListener* l) noexcept {
 
 bool tcp_port_claimed(Netif& netif, uint16_t local_port) noexcept {
     return find_binding(netif, local_port) != nullptr;
+}
+
+void tcp_tick(uint64_t now_us) noexcept {
+    for (auto& s : g_conns) {
+        if (!s.in_use || !s.conn.retx_active) continue;
+        auto& c = s.conn;
+        if (now_us < c.retx_sent_us + c.retx_rto_us) continue;
+        if (c.retx_retries >= TcpConnection::MAX_RETRIES) {
+            // Give up — peer is gone. Send RST and release the slot
+            // (the listener already saw on_open; no clean shutdown).
+            send_segment(c, TCP_FLAG_RST, nullptr, 0);
+            release_conn(s);
+            continue;
+        }
+        // Re-send the same segment at the ORIGINAL seq (snd_nxt has
+        // advanced past it). SYN/FIN are control segments (phantom seq
+        // byte, no payload); data carries retx_buf.
+        if (c.retx_flags & (TCP_FLAG_SYN | TCP_FLAG_FIN)) {
+            send_segment_at(c, c.retx_seq, c.retx_flags, nullptr, 0);
+        } else {
+            send_segment_at(c, c.retx_seq, c.retx_flags, c.retx_buf, c.retx_len);
+        }
+        c.retx_sent_us = now_us;
+        c.retx_retries += 1;
+        c.retx_rto_us *= 2;
+        if (c.retx_rto_us > TcpConnection::RTO_MAX_US) {
+            c.retx_rto_us = TcpConnection::RTO_MAX_US;
+        }
+    }
 }
 
 bool tcp_dispatch(Netif& netif,
@@ -263,101 +355,127 @@ bool tcp_dispatch(Netif& netif,
     const uint8_t* payload = tcp_segment + data_off;
     const size_t payload_len = tcp_len - data_off;
 
-    Binding* b = find_binding(netif, dst_port);
-    if (!b) {
-        // Unbound port — send RST so the peer doesn't sit on a half-open
-        // connection. We need ephemeral conn state to build the reply.
-        TcpConnection tmp;
-        tmp.local_ip = dst_ip; tmp.peer_ip = src_ip;
-        tmp.local_port = dst_port; tmp.peer_port = src_port;
-        for (size_t i = 0; i < 6; ++i) tmp.peer_mac[i] = src_mac[i];
-        tmp.snd_nxt = (flags & TCP_FLAG_ACK) ? ack : 0;
-        tmp.rcv_nxt = seq + ((flags & (TCP_FLAG_SYN | TCP_FLAG_FIN)) ? 1u : 0u) + payload_len;
-        send_segment(tmp, TCP_FLAG_RST | TCP_FLAG_ACK, nullptr, 0);
+    // Existing connection? Match by 4-tuple.
+    ConnSlot* slot = find_conn(netif, src_ip, src_port, dst_port);
+
+    if (!slot) {
+        // No conn for this tuple. Must be a SYN to LISTEN or stray
+        // segment to nowhere — the latter gets RST.
+        Binding* b = find_binding(netif, dst_port);
+        if (!b || !(flags & TCP_FLAG_SYN)) {
+            // Send RST (ephemeral conn state for the reply).
+            TcpConnection tmp;
+            tmp.local_ip = dst_ip; tmp.peer_ip = src_ip;
+            tmp.local_port = dst_port; tmp.peer_port = src_port;
+            for (size_t i = 0; i < 6; ++i) tmp.peer_mac[i] = src_mac[i];
+            tmp.snd_nxt = (flags & TCP_FLAG_ACK) ? ack : 0;
+            tmp.rcv_nxt = seq + ((flags & (TCP_FLAG_SYN | TCP_FLAG_FIN)) ? 1u : 0u) + payload_len;
+            // send_segment needs slot_for_conn → but tmp isn't in g_conns.
+            // Inline a one-shot RST builder instead: temporarily install
+            // tmp into a free ConnSlot, send, release.
+            ConnSlot* tmp_slot = alloc_conn();
+            if (tmp_slot) {
+                tmp_slot->in_use = true;
+                tmp_slot->binding = b;  // may be nullptr for unbound-port RST
+                tmp_slot->conn = tmp;
+                send_segment(tmp_slot->conn, TCP_FLAG_RST | TCP_FLAG_ACK, nullptr, 0);
+                release_conn(*tmp_slot);
+            }
+            return true;
+        }
+        // SYN → new connection.
+        ConnSlot* ns = alloc_conn();
+        if (!ns) return true;  // table full; drop
+        ns->in_use  = true;
+        ns->binding = b;
+        ns->conn = TcpConnection{};
+        ns->conn.listener   = b->listener;
+        ns->conn.local_ip   = dst_ip;
+        ns->conn.local_port = dst_port;
+        ns->conn.peer_ip    = src_ip;
+        ns->conn.peer_port  = src_port;
+        for (size_t i = 0; i < 6; ++i) ns->conn.peer_mac[i] = src_mac[i];
+        ns->conn.rcv_nxt = seq + 1u;
+        ns->conn.snd_nxt = INITIAL_SEQ;
+        ns->conn.snd_una = INITIAL_SEQ;
+        ns->conn.state   = TcpState::SynReceived;
+        // Retransmit-track our SYN+ACK in case the third-party ACK is lost.
+        send_segment(ns->conn, TCP_FLAG_SYN | TCP_FLAG_ACK, nullptr, 0);
+        ns->conn.retx_active  = true;
+        ns->conn.retx_seq     = ns->conn.snd_nxt;
+        ns->conn.retx_len     = 1;  // SYN consumes 1 seq
+        ns->conn.retx_flags   = TCP_FLAG_SYN | TCP_FLAG_ACK;
+        ns->conn.retx_sent_us = now_us_or_zero();
+        ns->conn.retx_rto_us  = TcpConnection::RTO_INITIAL_US;
+        ns->conn.snd_nxt     += 1u;
         return true;
     }
-    TcpConnection& conn = b->conn;
+    TcpConnection& conn = slot->conn;
 
-    // RST always tears down.
     if (flags & TCP_FLAG_RST) {
-        reset_to_listen(*b);
+        release_conn(*slot);
         return true;
+    }
+
+    // ACK-driven retx clearing — applies to any state.
+    if ((flags & TCP_FLAG_ACK) && conn.retx_active) {
+        // ack is the next expected seq from peer. If it's past
+        // retx_seq + retx_len, our segment is acknowledged.
+        const uint32_t covered_end = conn.retx_seq + conn.retx_len;
+        // Wrap-safe comparison (treat as 32-bit modulo).
+        if (static_cast<int32_t>(ack - covered_end) >= 0) {
+            conn.retx_active = false;
+            conn.snd_una = ack;
+        }
     }
 
     switch (conn.state) {
-        case TcpState::Listen: {
-            if (!(flags & TCP_FLAG_SYN)) return true;  // ignore non-SYN
-            conn.local_ip   = dst_ip;
-            conn.peer_ip    = src_ip;
-            conn.peer_port  = src_port;
-            for (size_t i = 0; i < 6; ++i) conn.peer_mac[i] = src_mac[i];
-            conn.rcv_nxt    = seq + 1u;
-            conn.snd_nxt    = INITIAL_SEQ;
-            conn.snd_una    = INITIAL_SEQ;
-            send_segment(conn, TCP_FLAG_SYN | TCP_FLAG_ACK, nullptr, 0);
-            conn.snd_nxt   += 1u;  // SYN consumes a sequence number
-            conn.state      = TcpState::SynReceived;
-            return true;
-        }
         case TcpState::SynReceived: {
             if (!(flags & TCP_FLAG_ACK)) return true;
             if (ack != conn.snd_nxt) {
-                // Peer ACKed something other than our SYN — bail.
                 send_segment(conn, TCP_FLAG_RST, nullptr, 0);
-                reset_to_listen(*b);
+                release_conn(*slot);
                 return true;
             }
-            conn.snd_una = ack;
-            conn.state   = TcpState::Established;
-            b->listener->on_open(conn);
-            // Some clients send data piggybacked on the handshake ACK.
+            conn.state = TcpState::Established;
+            slot->binding->listener->on_open(conn);
             if (payload_len > 0 && seq == conn.rcv_nxt) {
-                b->listener->on_data(conn, payload, payload_len);
+                slot->binding->listener->on_data(conn, payload, payload_len);
                 conn.rcv_nxt += static_cast<uint32_t>(payload_len);
                 send_segment(conn, TCP_FLAG_ACK, nullptr, 0);
             }
             return true;
         }
         case TcpState::Established: {
-            if (flags & TCP_FLAG_ACK) {
-                conn.snd_una = ack;
-            }
             if (payload_len > 0) {
                 if (seq != conn.rcv_nxt) {
-                    // Out-of-order — drop. Re-ACK what we have so the
-                    // peer retransmits.
                     send_segment(conn, TCP_FLAG_ACK, nullptr, 0);
                     return true;
                 }
-                b->listener->on_data(conn, payload, payload_len);
+                slot->binding->listener->on_data(conn, payload, payload_len);
                 conn.rcv_nxt += static_cast<uint32_t>(payload_len);
                 send_segment(conn, TCP_FLAG_ACK, nullptr, 0);
             }
             if (flags & TCP_FLAG_FIN) {
                 conn.rcv_nxt += 1u;
                 send_segment(conn, TCP_FLAG_ACK, nullptr, 0);
-                b->listener->on_close(conn);
-                conn.state = TcpState::CloseWait;
-                // If the listener didn't call conn.close() in on_close,
-                // do it now — for a server we typically have nothing
-                // more to say.
-                if (conn.state == TcpState::CloseWait) {
-                    conn.close();  // → LastAck
+                slot->binding->listener->on_close(conn);
+                if (conn.state == TcpState::Established) {
+                    conn.state = TcpState::CloseWait;
+                    conn.close();  // → LastAck (sends FIN, sets retx)
                 }
             }
             return true;
         }
-        case TcpState::CloseWait: {
-            // Peer already FINed, we're waiting for app to FIN back.
-            // Drop unexpected data; let app drive via conn.close().
+        case TcpState::CloseWait:
             return true;
-        }
         case TcpState::LastAck: {
             if ((flags & TCP_FLAG_ACK) && ack == conn.snd_nxt) {
-                reset_to_listen(*b);
+                release_conn(*slot);
             }
             return true;
         }
+        case TcpState::Listen:
         case TcpState::Closed:
         default:
             return true;
