@@ -1432,6 +1432,53 @@ static int cmd_ui_page(const char* args, kernel::hal::UARTDriverOps* uart) {
     return 0;
 }
 
+static int cmd_ui_reload(const char* args, kernel::hal::UARTDriverOps* uart) {
+    if (!uart) return 1;
+    // B5 (minimum-viable form): re-read the UI TSV from VFS and feed it
+    // to ui_builder::load_tsv. Operators on the SD-card workflow drop a
+    // fresh embedded_ui.tsv at the canonical path and trigger reload
+    // from the CLI; the kernel rebuilds the widget tree without a
+    // restart. Cuts the edit-test cycle from rebuild-and-boot (~30 s)
+    // to "save + ui_reload" (~1 s).
+    //
+    // The full Phase B5 "live preview WebSocket" path will eventually
+    // wrap this with a network trigger from the editor, but the actual
+    // value is the reload itself — not the transport. CLI now,
+    // WebSocket later when the network surface needs it.
+    const char* path = (args && *args) ? args : "system/ui/embedded_ui.tsv";
+    while (*path == ' ' || *path == '\t') ++path;
+    const char* data = nullptr; size_t len = 0;
+    if (!kernel::vfs::lookup(path, data, len) || !data || len == 0) {
+        uart->puts("ui_reload: VFS lookup failed for ");
+        uart->puts(path);
+        uart->puts("\n");
+        return 1;
+    }
+    char info[160];
+    kernel::util::k_snprintf(info, sizeof(info),
+        "ui_reload: source %s len=%lu\n",
+        path, static_cast<unsigned long>(len));
+    uart->puts(info);
+    const bool ok = ui_builder::load_tsv(data, len);
+    if (!ok) {
+        kernel::util::k_snprintf(info, sizeof(info),
+            "ui_reload: parse FAILED at line %u: %s\n",
+            static_cast<unsigned>(ui_builder::last_error_line()),
+            ui_builder::last_error());
+        uart->puts(info);
+        return 1;
+    }
+    // Force a synchronous render so the operator sees the result
+    // immediately rather than 100 ms later.
+    kernel::ui::render_ui_once();
+    kernel::util::k_snprintf(info, sizeof(info),
+        "ui_reload: OK active=%s pages=%u\n",
+        ui_builder::active_page_id(),
+        static_cast<unsigned>(ui_builder::page_count()));
+    uart->puts(info);
+    return 0;
+}
+
 static int cmd_ui_scale(const char* args, kernel::hal::UARTDriverOps* uart) {
     if (!uart) return 1;
     // C11: text-scale boost CLI verb. Operator-facing accessibility
@@ -5283,6 +5330,7 @@ CLI::CLI() {
     register_command("toolpod_assign", cmd_toolpod_assign, "toolpod_assign <pod> <station> <virtual_tool> — remap virtual tool onto a physical station");
     register_command("ui_page", cmd_ui_page, "ui_page <id> — switch the active TSV UI page");
     register_command("ui_scale", cmd_ui_scale, "ui_scale [0|1|2] — global text-scale boost for accessibility");
+    register_command("ui_reload", cmd_ui_reload, "ui_reload [vfs-path] — re-read the TSV and rebuild the widget tree");
     register_command("ui_dump", cmd_ui_dump, "ui_dump [scale] — dump the current framebuffer as a downscaled PPM stream");
     register_command("klog", cmd_klog, "Dump the in-RAM kernel log ring (recent ~8 KB of UART output)");
     register_command("save_cfg", cmd_save_cfg, "Dump current operator-set state as replayable CLI commands");
