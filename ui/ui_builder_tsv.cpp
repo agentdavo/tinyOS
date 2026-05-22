@@ -517,6 +517,15 @@ enum class BindKind : uint16_t {
     RestartCoolant,    // reconstructed coolant flags rendered as text
     Channel0BarrierMs, // Channel 0 barrier-timeout countdown in ms
     Channel1BarrierMs, // Channel 1 barrier-timeout countdown in ms
+    // C14: per-channel HMI bindings. Mill-turn (two channels) wants
+    // side-by-side feed / spindle / state readouts on the same page;
+    // the existing `feed` and `spindle` binds aggregate across the
+    // machine. These four expose channel-N's overrides directly via
+    // motion::g_motion.channel(N).overrides.
+    Channel0FeedPermille,
+    Channel1FeedPermille,
+    Channel0SpindlePermille,
+    Channel1SpindlePermille,
     Alarm0Id, Alarm0Severity, Alarm0Axis, Alarm0Message, Alarm0Time,
     Alarm1Id, Alarm1Severity, Alarm1Axis, Alarm1Message, Alarm1Time,
     Alarm2Id, Alarm2Severity, Alarm2Axis, Alarm2Message, Alarm2Time,
@@ -637,6 +646,10 @@ BindKind parse_bind(const char* s) {
     if (strcmp(s, "restart:coolant") == 0) return BindKind::RestartCoolant;
     if (strcmp(s, "channel:0:barrier_ms") == 0) return BindKind::Channel0BarrierMs;
     if (strcmp(s, "channel:1:barrier_ms") == 0) return BindKind::Channel1BarrierMs;
+    if (strcmp(s, "channel:0:feed") == 0)       return BindKind::Channel0FeedPermille;
+    if (strcmp(s, "channel:1:feed") == 0)       return BindKind::Channel1FeedPermille;
+    if (strcmp(s, "channel:0:spindle") == 0)    return BindKind::Channel0SpindlePermille;
+    if (strcmp(s, "channel:1:spindle") == 0)    return BindKind::Channel1SpindlePermille;
     if (strcmp(s, "axis:x") == 0) return BindKind::AxisX;
     if (strcmp(s, "axis:y") == 0) return BindKind::AxisY;
     if (strcmp(s, "axis:z") == 0) return BindKind::AxisZ;
@@ -1503,6 +1516,21 @@ int32_t bound_numeric_value(BindKind bind) {
         }
         case BindKind::SchedulerJobCount:
             return static_cast<int32_t>(cnc::jobs::g_runtime.job_count());
+        // C14: per-channel override readouts. Returns the permille
+        // multiplier currently active on the channel (1000 = 100 %).
+        // Out-of-range channel indices return 0.
+        case BindKind::Channel0FeedPermille:
+        case BindKind::Channel1FeedPermille: {
+            const size_t ch = (bind == BindKind::Channel0FeedPermille) ? 0u : 1u;
+            if (ch >= ::motion::g_motion.channel_count()) return 0;
+            return static_cast<int32_t>(::motion::g_motion.channel(ch).overrides.feed_permille);
+        }
+        case BindKind::Channel0SpindlePermille:
+        case BindKind::Channel1SpindlePermille: {
+            const size_t ch = (bind == BindKind::Channel0SpindlePermille) ? 0u : 1u;
+            if (ch >= ::motion::g_motion.channel_count()) return 0;
+            return static_cast<int32_t>(::motion::g_motion.channel(ch).overrides.spindle_permille);
+        }
         default: return 0;
     }
 }
