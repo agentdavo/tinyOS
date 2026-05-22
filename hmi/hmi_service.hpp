@@ -24,9 +24,10 @@ struct Config {
     uint32_t ping_selftest_timeout_ms = 3000;
 };
 
-class Service : public kernel::net::EthListener {
+class Service : public kernel::net::EthListener, public kernel::net::UdpListener {
 public:
     static constexpr uint16_t ETHERTYPE = 0x88B5;
+    static constexpr uint16_t UDP_PORT_TSV_UPLOAD = 5002;
     // EthListener: catch-all so we keep receiving every frame type the
     // HMI service handles (raw 0x88B5, ARP 0x0806, IPv4 0x0800). When
     // additional services come online they should register filtered
@@ -37,6 +38,21 @@ public:
                       const uint8_t* data, size_t len) noexcept override {
         (void)if_idx;
         handle_eth_frame(nic, data, len);
+    }
+    // UdpListener for the TSV-upload port. Frames used to travel via
+    // eth-catch-all → handle_ipv4 → handle_udp → handle_tsv_upload;
+    // now they come in directly. handle_udp skips this port via
+    // Netif::udp_port_claimed so the dispatch happens once.
+    uint16_t local_port() const noexcept override { return UDP_PORT_TSV_UPLOAD; }
+    void on_udp(int if_idx,
+                kernel::hal::net::NetworkDriverOps& nic,
+                const uint8_t* eth_src,
+                uint32_t src_ip, uint16_t src_port,
+                uint32_t dst_ip, uint16_t dst_port,
+                const uint8_t* payload, size_t payload_len) noexcept override {
+        (void)if_idx; (void)nic; (void)eth_src;
+        (void)src_ip; (void)src_port; (void)dst_ip; (void)dst_port;
+        handle_tsv_upload(payload, payload_len);
     }
     enum class PingResult : uint8_t {
         Ok = 0,
