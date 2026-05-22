@@ -5,6 +5,7 @@
 #include "config/tsv.hpp"
 #include "ethercat/master.hpp"
 #include "hal/shared/tcp.hpp"
+#include "hal/shared/websocket.hpp"
 #include "kernel/main.hpp"
 #include "machine/machine_registry.hpp"
 #include "miniOS.hpp"
@@ -1399,10 +1400,7 @@ void Service::thread_entry(void* arg) {
     netif->register_listener(self);
     netif->register_udp_listener(self);
 
-    // Demo TCP listener on port 5003 — echoes every byte back. First
-    // real consumer of the TCP layer; useful as a smoke test for
-    // future WS / HTTP work. Lives here for now; future PR will move
-    // it behind a configurable role.
+    // TCP echo on port 5003 (smoke test for the TCP layer).
     struct TcpEcho : public kernel::net::TcpListener {
         uint16_t local_port() const noexcept override { return 5003; }
         void on_open(kernel::net::TcpConnection&) noexcept override {
@@ -1422,6 +1420,54 @@ void Service::thread_entry(void* arg) {
     };
     static TcpEcho tcp_echo;
     kernel::net::tcp_bind(*netif, &tcp_echo);
+
+    // WebSocket live-preview server on port 5001. Replaces the Python
+    // bridge in tools/ui_editor/live_preview.py — the editor's
+    // "Push to kernel" button connects directly to the kernel. Each
+    // text frame is the full TSV; we run ui_builder::load_tsv on it
+    // and ack with a short status line.
+    struct WsTsvHandler : public kernel::net::WebSocketHandler {
+        void on_ws_open(kernel::net::WebSocketConnection&) noexcept override {
+            if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+                uart->puts("[ws] live-preview client connected\n");
+            }
+        }
+        void on_ws_text(kernel::net::WebSocketConnection& wsc,
+                        const uint8_t* payload, size_t len) noexcept override {
+            char log[96];
+            kernel::util::k_snprintf(log, sizeof(log),
+                "[ws] tsv frame %lu bytes -> load_tsv\n",
+                static_cast<unsigned long>(len));
+            if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+                uart->puts(log);
+            }
+            const bool ok = ui_builder::load_tsv(reinterpret_cast<const char*>(payload), len);
+            if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+                char line[96];
+                kernel::util::k_snprintf(line, sizeof(line),
+                    "[ws] load_tsv %s active=%s\n",
+                    ok ? "OK" : "FAIL",
+                    ui_builder::active_page_id() ? ui_builder::active_page_id() : "none");
+                uart->puts(line);
+            }
+            char ack[64];
+            kernel::util::k_snprintf(ack, sizeof(ack),
+                "%s bytes=%lu\n",
+                ok ? "OK" : "FAIL",
+                static_cast<unsigned long>(len));
+            wsc.send_text(ack, kernel::util::kstrlen(ack));
+            if (ok) kernel::ui::render_ui_once();
+        }
+        void on_ws_close(kernel::net::WebSocketConnection&) noexcept override {
+            if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+                uart->puts("[ws] live-preview client closed\n");
+            }
+        }
+    };
+    static WsTsvHandler ws_handler;
+    static kernel::net::WebSocketServer ws_server(
+        5001, &ws_handler, g_tsv_rx_buf, sizeof(g_tsv_rx_buf));
+    kernel::net::tcp_bind(*netif, &ws_server);
 
     constexpr size_t POLL_BUDGET = 8;
     bool burst = false;
