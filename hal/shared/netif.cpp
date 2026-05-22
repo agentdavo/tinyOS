@@ -2,6 +2,7 @@
 
 #include "netif.hpp"
 #include "tcp.hpp"
+#include "../../miniOS.hpp"
 
 #include <cstring>
 
@@ -134,13 +135,60 @@ void Netif::try_dispatch_udp(int if_idx, const uint8_t* data, size_t len) noexce
     const uint8_t ihl = (ip->ver_ihl & 0x0Fu) * 4u;
     if ((ip->ver_ihl >> 4) != 4 || ihl < sizeof(IPv4Header)) return;
     if (ip->proto != IPPROTO_UDP) return;
-    // Drop IPv4 fragments — RX reassembly isn't implemented yet. The
-    // MF flag (bit 13) or a non-zero fragment offset (bits 0–12) means
-    // this is mid-datagram. Hosts behind QEMU's SLIRP / hostfwd never
-    // see fragments because Linux / SLIRP reassemble for us, so this
-    // matters only on real hardware with a misconfigured peer.
     const uint16_t flags_frag = bswap16(ip->flags_frag_be);
-    if ((flags_frag & 0x2000u) || (flags_frag & 0x1FFFu)) return;
+    const bool more_frags = (flags_frag & 0x2000u) != 0;
+    const uint16_t frag_off_units = flags_frag & 0x1FFFu;
+    if (more_frags || frag_off_units != 0) {
+        // Fragmented datagram. Collect into a reassembly slot; on
+        // completion, build a synthetic single-fragment frame and
+        // re-enter try_dispatch_udp.
+        const size_t ip_total = bswap16(ip->total_len_be);
+        if (sizeof(EthernetHeader) + ip_total > len) return;
+        const size_t l4_off = ihl;
+        if (ip_total < l4_off) return;
+        const size_t frag_payload_len = ip_total - l4_off;
+        const size_t frag_byte_off = static_cast<size_t>(frag_off_units) * 8u;
+        if (frag_byte_off + frag_payload_len > REASM_BUF_BYTES) return;
+        const uint64_t now = (kernel::g_platform && kernel::g_platform->get_timer_ops())
+            ? kernel::g_platform->get_timer_ops()->get_system_time_us() : 0;
+        ReasmSlot* slot = reasm_find_or_alloc(
+            bswap32(ip->src_ip_be), bswap32(ip->dst_ip_be),
+            bswap16(ip->ident_be), ip->proto, now);
+        if (!slot) return;  // table full of fresher entries
+        const uint8_t* frag_payload = data + sizeof(EthernetHeader) + ihl;
+        std::memcpy(slot->buf + frag_byte_off, frag_payload, frag_payload_len);
+        const size_t first_chunk = frag_byte_off / 8u;
+        const size_t chunk_count = (frag_payload_len + 7u) / 8u;
+        for (size_t i = 0; i < chunk_count; ++i) {
+            const size_t bit = first_chunk + i;
+            slot->bitmap[bit / 32] |= (1u << (bit % 32));
+        }
+        if (!more_frags) slot->total_len = frag_byte_off + frag_payload_len;
+        const uint8_t* asm_buf = nullptr;
+        size_t asm_len = 0;
+        if (!reasm_take(*slot, asm_buf, asm_len)) return;
+        // Reassembled. Build a synthetic frame in-place: copy the
+        // original Ethernet header + IPv4 header (with frag flags
+        // cleared, total_len reset), then the assembled L4 payload.
+        static uint8_t synth[REASM_BUF_BYTES + sizeof(EthernetHeader) + sizeof(IPv4Header) + 16];
+        const size_t synth_ip_total = ihl + asm_len;
+        if (sizeof(EthernetHeader) + synth_ip_total > sizeof(synth)) {
+            reasm_release(*slot);
+            return;
+        }
+        std::memcpy(synth, data, sizeof(EthernetHeader) + ihl);
+        auto* synth_ip = reinterpret_cast<IPv4Header*>(synth + sizeof(EthernetHeader));
+        synth_ip->flags_frag_be = 0;
+        synth_ip->total_len_be  = bswap16(static_cast<uint16_t>(synth_ip_total));
+        synth_ip->hdr_checksum_be = 0;
+        synth_ip->hdr_checksum_be = bswap16(ip_checksum(
+            reinterpret_cast<const uint8_t*>(synth_ip), sizeof(IPv4Header)));
+        std::memcpy(synth + sizeof(EthernetHeader) + ihl, asm_buf, asm_len);
+        reasm_release(*slot);
+        // Recurse once with the reassembled frame.
+        try_dispatch_udp(if_idx, synth, sizeof(EthernetHeader) + synth_ip_total);
+        return;
+    }
     const size_t ip_total = bswap16(ip->total_len_be);
     if (sizeof(EthernetHeader) + ip_total > len) return;
     if (ip_total < ihl + sizeof(UdpHeader)) return;
@@ -208,7 +256,55 @@ void Netif::dispatch(int if_idx, const uint8_t* data, size_t len) noexcept {
 
 size_t Netif::poll(size_t budget) noexcept {
     if (!nic_) return 0;
+    const uint64_t now = (kernel::g_platform && kernel::g_platform->get_timer_ops())
+        ? kernel::g_platform->get_timer_ops()->get_system_time_us() : 0;
+    reasm_age(now);
     return nic_->poll_rx(&rx_trampoline, this, budget);
+}
+
+Netif::ReasmSlot* Netif::reasm_find_or_alloc(uint32_t src_ip, uint32_t dst_ip,
+                                             uint16_t ident, uint8_t proto,
+                                             uint64_t now_us) noexcept {
+    for (auto& s : reasm_) {
+        if (s.in_use && s.src_ip == src_ip && s.dst_ip == dst_ip &&
+            s.ident == ident && s.proto == proto) {
+            return &s;
+        }
+    }
+    // No matching slot; allocate the first idle one (or expired).
+    for (auto& s : reasm_) {
+        if (!s.in_use) {
+            s = ReasmSlot{};
+            s.in_use = true;
+            s.src_ip = src_ip; s.dst_ip = dst_ip;
+            s.ident = ident; s.proto = proto;
+            s.expires_us = now_us + REASM_TTL_US;
+            return &s;
+        }
+    }
+    return nullptr;
+}
+
+void Netif::reasm_release(ReasmSlot& slot) noexcept {
+    slot.in_use = false;
+}
+
+void Netif::reasm_age(uint64_t now_us) noexcept {
+    for (auto& s : reasm_) {
+        if (s.in_use && s.expires_us <= now_us) s.in_use = false;
+    }
+}
+
+bool Netif::reasm_take(ReasmSlot& slot, const uint8_t*& out_buf, size_t& out_len) noexcept {
+    if (!slot.in_use || slot.total_len == 0) return false;
+    // Confirm every 8-byte chunk up to total_len is present.
+    const size_t chunks = (slot.total_len + 7u) / 8u;
+    for (size_t i = 0; i < chunks; ++i) {
+        if (!(slot.bitmap[i / 32] & (1u << (i % 32)))) return false;
+    }
+    out_buf = slot.buf;
+    out_len = slot.total_len;
+    return true;
 }
 
 Netif* netif_bind(int if_idx, kernel::hal::net::NetworkDriverOps* nic) noexcept {
