@@ -193,7 +193,7 @@ button	id=cyc_start	parent=dash_root	x=780	y=170	w=260	h=160	text=START	bg=#1580
 button	id=cyc_hold	parent=dash_root	x=780	y=350	w=260	h=130	text=HOLD	bg=#B45309	color=#FFFFFF	scale=2	focus=30
 button	id=cyc_reset	parent=dash_root	x=780	y=500	w=260	h=110	text=RESET	bg=#334155	color=#F8FAFC	scale=2	focus=40
 button	id=cyc_home	parent=dash_root	x=780	y=630	w=260	h=110	text=HOME	bg=#0F766E	color=#FFFFFF	scale=2	focus=50
-button	id=cyc_estop	parent=dash_root	x=780	y=760	w=260	h=250	text=E-STOP	bg=#B91C1C	color=#FFFFFF	border=#FCA5A5	scale=3	focus=60
+button	id=cyc_estop	parent=dash_root	x=780	y=760	w=260	h=250	text=E-STOP	bg=#B91C1C	color=#FFFFFF	border=#FCA5A5	scale=3	hold=1500	focus=60
 
 # --- program info (panel y=1050, h=210) ---
 panel	id=dash_prog	parent=dash_root	x=20	y=1050	w=1040	h=210	bg=#111827	border=#334155
@@ -1701,7 +1701,7 @@ label	id=rc_caution_v	parent=rc_root	x=40	y=750	w=1000	h=80	text=Verify the spin
 
 panel	id=rc_ctl_panel	parent=rc_root	x=20	y=880	w=1040	h=400	bg=#111827	border=#334155
 label	id=rc_ctl_title	parent=rc_root	x=40	y=894	w=400	h=28	text=DECISION	color=#94A3B8	bg=#111827	scale=2
-button	id=rc_confirm	parent=rc_root	x=40	y=940	w=480	h=300	text=CONFIRM RESTART	bg=#15803D	color=#FFFFFF	scale=3	focus=940
+button	id=rc_confirm	parent=rc_root	x=40	y=940	w=480	h=300	text=CONFIRM RESTART	bg=#15803D	color=#FFFFFF	scale=3	hold=1500	focus=940
 button	id=rc_cancel	parent=rc_root	x=540	y=940	w=480	h=300	text=CANCEL	bg=#B91C1C	color=#FFFFFF	scale=3	focus=942
 
 action	widget=rc_confirm	event=click	target=restart:confirm
