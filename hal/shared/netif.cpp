@@ -259,6 +259,7 @@ size_t Netif::poll(size_t budget) noexcept {
     const uint64_t now = (kernel::g_platform && kernel::g_platform->get_timer_ops())
         ? kernel::g_platform->get_timer_ops()->get_system_time_us() : 0;
     reasm_age(now);
+    tcp_tick(now);
     return nic_->poll_rx(&rx_trampoline, this, budget);
 }
 
