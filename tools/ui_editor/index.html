@@ -147,6 +147,7 @@
     <button id="btnSave">Save</button>
     <button id="btnSaveAs">Save As</button>
     <button id="btnPushKernel" title="Live preview: push current TSV to a running kernel over WebSocket. Defaults to ws://localhost:5001/ which talks to the kernel's WebSocket server directly. Override via the 'livePreviewUrl' localStorage key (e.g. ws://10.0.0.20:5001/) when the kernel is on another host. The Python bridge in tools/ui_editor/live_preview.py is still supported as a fallback if direct WS isn't reachable.">Push to kernel</button>
+    <button id="btnThemes" title="Edit theme tokens (named colors referenced via $name in color fields).">Themes</button>
     <input type="file" id="fileInput" accept=".tsv" style="display:none">
     <span class="sep"></span>
     <div id="pagetabs"></div>
@@ -201,6 +202,33 @@
     </div>
   </div>
 </div>
+
+<dialog id="themeDialog" style="border:1px solid #444;background:#1e1e1e;color:#ddd;padding:0;border-radius:6px;min-width:360px;max-width:520px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #333;">
+    <strong>Theme tokens</strong>
+    <button id="themeClose" style="background:transparent;color:#ddd;border:none;font-size:18px;cursor:pointer;">x</button>
+  </div>
+  <div style="padding:10px 14px;font-size:11px;color:#aaa;line-height:1.4;">
+    Named colors referenced from widget color fields as <code>$name</code>.
+    Kernel resolves at render time (ui_builder_tsv.cpp C10). Unknown
+    <code>$name</code> = transparent.
+  </div>
+  <table id="themeTable" style="width:100%;border-collapse:collapse;font-size:13px;">
+    <thead>
+      <tr style="background:#262626;text-align:left;">
+        <th style="padding:6px 14px;font-weight:normal;color:#aaa;">name</th>
+        <th style="padding:6px 14px;font-weight:normal;color:#aaa;">value</th>
+        <th style="padding:6px 14px;width:32px;"></th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  <div style="padding:10px 14px;border-top:1px solid #333;display:flex;gap:8px;">
+    <input type="text" id="themeNewName" placeholder="token name" style="flex:1;padding:4px 6px;background:#262626;border:1px solid #444;color:#ddd;border-radius:3px;">
+    <input type="color" id="themeNewColor" value="#888888" style="width:48px;padding:0;border:1px solid #444;background:#262626;">
+    <button id="themeAdd">Add</button>
+  </div>
+</dialog>
 
 <script>
 /* =========================================================================
@@ -385,13 +413,13 @@ function actionIsValid(target, doc) {
   if (target.startsWith("homing:axis:")) return true;
   if (target.startsWith("probe:wizard:select:")) return true;
   if (target.startsWith("cal:pec:axis:")) return true;
-  // A4 dialog:show:<id> — id must match a declared page (which the
-  // kernel treats as a dialog if it was declared with `dialog id=` rather
-  // than `page id=`). The editor doesn't yet distinguish the two in
-  // storage, so we accept any defined id.
+  // A4 dialog:show:<id> — id must match a page declared with the
+  // `dialog` record type (isDialog=true in editor storage). Pointing
+  // dialog:show at a regular page works on the kernel but won't get
+  // the modal Z-layer rendering, so we flag it as invalid here.
   if (target.startsWith("dialog:show:")) {
     const id = target.slice("dialog:show:".length);
-    return doc.pages.some(p => p.id === id);
+    return doc.pages.some(p => p.id === id && p.isDialog);
   }
   for (const list of Object.values(ACTION_GROUPS))
     if (list.includes(target)) return true;
@@ -416,7 +444,10 @@ const FIELD_ORDER = ["id","parent","x","y","w","h","text","bg","color","border",
 function parseTSV(text) {
   text = text.replace(/\r\n/g, "\n");
   const lines = text.split("\n");
-  const doc = { pages: [], fileName: null };
+  // themes is a doc-level flat name→#hex map. Parser merges every
+  // `theme` record seen in the file. Serializer emits a single
+  // consolidated `theme` record at the top of the output.
+  const doc = { pages: [], themes: {}, fileName: null };
   let curPage = null;
   let pendingRaw = [];
 
@@ -438,11 +469,26 @@ function parseTSV(text) {
       order.push(key);
     }
     fields.__order = order;
-    if (kind === "page") {
+    // Both `page` and `dialog` start a new page boundary. The kernel
+    // (ui_builder_tsv.cpp parse_page) renders dialog pages as a modal
+    // overlay above the active page; the editor mirrors that with an
+    // isDialog flag, and the serializer emits `dialog\t...` instead of
+    // `page\t...` for those.
+    if (kind === "page" || kind === "dialog") {
       curPage = { id: fields.id || "page" + doc.pages.length,
                   title: fields.title || "",
+                  isDialog: kind === "dialog",
                   records: [], raw: pendingRaw };
       doc.pages.push(curPage);
+      pendingRaw = [];
+    } else if (kind === "theme") {
+      // Top-level theme tokens merge into doc.themes. Each record is
+      // `theme\tname1=#hex1\tname2=#hex2...`. Multiple `theme` lines
+      // accumulate; the serializer always re-emits a single line.
+      for (const k of order) {
+        const v = fields[k];
+        if (v) doc.themes[k] = v;
+      }
       pendingRaw = [];
     } else {
       if (!curPage) {
@@ -538,9 +584,16 @@ function serializeTSV(doc) {
     out.push(parts.join("\t"));
   };
 
+  // Emit doc-level theme record(s) at the top. Empty themes dict -> no
+  // record. Tokens emit in alphabetical order so diffs are stable.
+  if (doc.themes && Object.keys(doc.themes).length) {
+    const themeFields = { __order: Object.keys(doc.themes).sort() };
+    for (const k of themeFields.__order) themeFields[k] = doc.themes[k];
+    emitRec("theme", themeFields);
+  }
   for (const p of doc.pages) {
     emitRaw(p.raw);
-    emitRec("page", { id: p.id, title: p.title });
+    emitRec(p.isDialog ? "dialog" : "page", { id: p.id, title: p.title });
     for (const r of p.records) {
       emitRaw(r.raw);
       emitRec(r.kind, r.fields);
@@ -1084,7 +1137,14 @@ function pageById(id) { return doc.pages.find(p => p.id === id); }
 
 function resolveColor(c, fallback) {
   if (!c) return fallback;
-  if (c.startsWith("#")) return c;
+  // $name = theme token (C10). Resolve via doc.themes. Strip alpha for
+  // the swatch preview; kernel renderer keeps it.
+  if (c.startsWith("$") && doc && doc.themes) {
+    const v = doc.themes[c.slice(1)];
+    if (v) return v.length === 9 ? v.slice(0, 7) : v;
+    return fallback;
+  }
+  if (c.startsWith("#")) return c.length === 9 ? c.slice(0, 7) : c;
   return NAMED_COLORS[c] || fallback;
 }
 
@@ -1315,15 +1375,14 @@ function renderInspector() {
 
   addRow("bind", mkSelect("bind", null, BIND_GROUPS, (v) => ALL_BINDS.has(v)));
 
-  // action: include goto:<page> and dialog:show:<page> options. The
-  // kernel doesn't distinguish "regular page" from "dialog" at the
-  // editor's storage layer — dialogs are pages declared with the
-  // `dialog` record type. We expose dialog:show for every page id so
-  // designers can wire alarms / confirm panels without hand-editing.
+  // action: include goto:<page> and dialog:show:<page> options.
+  // goto:<id> is offered for every page; dialog:show:<id> is only
+  // offered for pages declared with isDialog=true (kernel renders
+  // those as the modal Z-layer above the active page).
   const actionGroups = { ...ACTION_GROUPS };
   actionGroups.Goto = doc.pages.map(pg => "goto:" + pg.id);
   actionGroups.Dialog = ["dialog:close",
-                        ...doc.pages.map(pg => "dialog:show:" + pg.id)];
+                        ...doc.pages.filter(pg => pg.isDialog).map(pg => "dialog:show:" + pg.id)];
   addRow("action", mkSelect("action", null, actionGroups, (v) => actionIsValid(v, doc)));
 
   addRow("focus", mkInput("focus", "number"));
@@ -1517,6 +1576,13 @@ function renderPageTabs() {
     const t = document.createElement("div");
     t.className = "pagetab" + (i === activePageIdx ? " active" : "");
     t.textContent = p.id;
+    if (p.isDialog) {
+      const badge = document.createElement("span");
+      badge.textContent = "  modal";
+      badge.title = "Dialog page — rendered on top of the active page via dialog:show:" + p.id;
+      badge.style.cssText = "font-size:10px;opacity:.7;margin-left:4px;padding:1px 4px;border:1px solid #6cf;border-radius:3px;color:#6cf";
+      t.appendChild(badge);
+    }
     t.addEventListener("click", () => { activePageIdx = i; selectedIdx = -1; renderAll(); });
     const rename = document.createElement("span");
     rename.className = "close"; rename.textContent = " E";
@@ -1528,6 +1594,19 @@ function renderPageTabs() {
       pushUndo();
       p.id = nv; renderAll(); saveLocal();
     });
+    // Toggle dialog ↔ page record type. Only the record kind changes;
+    // widgets / actions / includes on the page stay put.
+    const modal = document.createElement("span");
+    modal.className = "close"; modal.textContent = p.isDialog ? " P" : " D";
+    modal.title = p.isDialog
+      ? "Convert to regular page (currently a dialog)"
+      : "Convert to dialog (rendered as a modal overlay)";
+    modal.addEventListener("click", (e) => {
+      e.stopPropagation();
+      pushUndo();
+      p.isDialog = !p.isDialog;
+      renderAll(); saveLocal();
+    });
     const del = document.createElement("span");
     del.className = "close"; del.textContent = " x";
     del.addEventListener("click", (e) => {
@@ -1535,25 +1614,137 @@ function renderPageTabs() {
       if (!confirm("Delete page '" + p.id + "'?")) return;
       pushUndo();
       doc.pages.splice(i, 1);
-      if (!doc.pages.length) doc.pages.push({ id: "main", title: "", records: [], raw: [] });
+      if (!doc.pages.length) doc.pages.push({ id: "main", title: "", isDialog: false, records: [], raw: [] });
       activePageIdx = Math.min(activePageIdx, doc.pages.length - 1);
       selectedIdx = -1; renderAll(); saveLocal();
     });
-    t.appendChild(rename); t.appendChild(del);
+    t.appendChild(rename); t.appendChild(modal); t.appendChild(del);
     bar.appendChild(t);
   });
+}
+
+function renderThemeDialog() {
+  const body = $("#themeTable tbody");
+  body.innerHTML = "";
+  if (!doc.themes) doc.themes = {};
+  for (const name of Object.keys(doc.themes).sort()) {
+    const value = doc.themes[name];
+    const tr = document.createElement("tr");
+    tr.style.borderTop = "1px solid #2a2a2a";
+    const tdName = document.createElement("td");
+    tdName.style.padding = "6px 14px";
+    tdName.textContent = "$" + name;
+    const tdVal = document.createElement("td");
+    tdVal.style.padding = "6px 14px";
+    const swatch = document.createElement("span");
+    swatch.style.cssText = "display:inline-block;width:18px;height:14px;border:1px solid #444;vertical-align:middle;margin-right:6px;";
+    swatch.style.background = value;
+    const inp = document.createElement("input");
+    inp.type = "color";
+    // The kernel accepts #RRGGBB or #RRGGBBAA. <input type=color> only
+    // shows the RGB part; we strip alpha for the picker and re-apply
+    // it on save so designers can still see/preserve alpha values that
+    // came from the file.
+    const alpha = (value && value.length === 9) ? value.slice(7) : "";
+    inp.value = (value || "#000000").slice(0, 7);
+    inp.style.cssText = "padding:0;width:32px;height:18px;border:none;background:transparent;vertical-align:middle;";
+    inp.addEventListener("input", () => {
+      pushUndo();
+      doc.themes[name] = inp.value + alpha;
+      swatch.style.background = doc.themes[name];
+      renderCanvas(); renderInspector(); saveLocal();
+    });
+    const code = document.createElement("code");
+    code.style.cssText = "font-size:11px;color:#aaa;margin-left:8px;";
+    code.textContent = value;
+    inp.addEventListener("input", () => { code.textContent = doc.themes[name]; });
+    tdVal.appendChild(swatch);
+    tdVal.appendChild(inp);
+    tdVal.appendChild(code);
+    const tdDel = document.createElement("td");
+    tdDel.style.padding = "6px 14px";
+    const del = document.createElement("button");
+    del.textContent = "x";
+    del.title = "Remove this theme token";
+    del.style.cssText = "background:transparent;color:#888;border:none;cursor:pointer;font-size:14px;";
+    del.addEventListener("click", () => {
+      if (!confirm("Remove theme token $" + name + "?")) return;
+      pushUndo();
+      delete doc.themes[name];
+      renderThemeDialog(); renderCanvas(); renderInspector(); saveLocal();
+    });
+    tdDel.appendChild(del);
+    tr.appendChild(tdName); tr.appendChild(tdVal); tr.appendChild(tdDel);
+    body.appendChild(tr);
+  }
+  if (!Object.keys(doc.themes).length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 3;
+    td.style.cssText = "padding:14px;text-align:center;color:#888;font-size:12px;";
+    td.textContent = "No theme tokens. Add one below.";
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
+}
+
+// Scan widget fields on a page for ${arg} placeholders (B7
+// substitution). Returns the set of placeholder names referenced.
+// Used to flag include records that omit args their target page
+// expects.
+function collectIncludeArgs(page) {
+  const names = new Set();
+  const re = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+  for (const r of page.records) {
+    if (!WIDGET_TYPES.includes(r.kind)) continue;
+    for (const k of Object.keys(r.fields)) {
+      if (k.startsWith("__")) continue;
+      const v = r.fields[k];
+      if (typeof v !== "string") continue;
+      let m;
+      re.lastIndex = 0;
+      while ((m = re.exec(v)) !== null) names.add(m[1]);
+    }
+  }
+  return names;
 }
 
 function renderIncludes() {
   const box = $("#includes");
   box.innerHTML = "";
-  for (const inc of includesOnPage(activePage())) {
+  const cur = activePage();
+  for (const inc of includesOnPage(cur)) {
     const c = document.createElement("span");
     c.className = "chip";
+    c.style.cursor = "pointer";
+    c.title = "Click to edit include + arguments";
     c.textContent = inc.fields.page || "?";
+    // Flag includes whose target page expects ${args} the include
+    // doesn't provide. Skips kernel-side validation we don't have
+    // (typo'd ${name} → empty string at render time).
+    const target = doc.pages.find(p => p.id === inc.fields.page);
+    if (target) {
+      const expected = collectIncludeArgs(target);
+      const provided = new Set(Object.keys(inc.fields).filter(k => k !== "page" && !k.startsWith("__")));
+      const missing = [...expected].filter(n => !provided.has(n));
+      if (missing.length) {
+        c.classList.add("invalid");
+        c.title = "Missing args expected by " + target.id + ": " + missing.join(", ");
+      }
+    } else if (inc.fields.page) {
+      c.classList.add("invalid");
+      c.title = "Unknown page '" + inc.fields.page + "'";
+    }
+    c.addEventListener("click", (ev) => {
+      // Only the chip body opens the editor; the X handler stops
+      // propagation below.
+      if (ev.target.classList.contains("x")) return;
+      openIncludeEditor(inc);
+    });
     const x = document.createElement("span");
     x.className = "x"; x.textContent = "x";
-    x.addEventListener("click", () => {
+    x.addEventListener("click", (ev) => {
+      ev.stopPropagation();
       pushUndo();
       const p = activePage();
       const i = p.records.indexOf(inc);
@@ -1563,6 +1754,35 @@ function renderIncludes() {
     c.appendChild(x);
     box.appendChild(c);
   }
+}
+
+// Tiny inline include editor — prompts (one per arg) keep this from
+// needing more modal HTML. Designers with many args will probably
+// hand-edit the TSV anyway; this exists so a simple include+1-or-2-
+// args can be wired without leaving the editor.
+function openIncludeEditor(inc) {
+  const opts = doc.pages.map(p => p.id).filter(id => id !== activePage().id);
+  const pg = prompt("Include page id (" + opts.join(", ") + "):", inc.fields.page || opts[0] || "");
+  if (pg === null) return;
+  pushUndo();
+  inc.fields.page = pg;
+  const target = doc.pages.find(p => p.id === pg);
+  if (target) {
+    const expected = [...collectIncludeArgs(target)];
+    if (expected.length) {
+      const list = expected.join(", ");
+      if (confirm("Target page '" + pg + "' expects args: " + list + ".\nOK to set their values now (Cancel to skip)?")) {
+        for (const name of expected) {
+          const cur = inc.fields[name] || "";
+          const v = prompt("Arg '" + name + "':", cur);
+          if (v === null) continue;
+          if (v === "") delete inc.fields[name];
+          else inc.fields[name] = v;
+        }
+      }
+    }
+  }
+  renderAll(); saveLocal();
 }
 
 function renderAll() {
@@ -1815,8 +2035,12 @@ function pushToKernel() {
 $("#btnAddPage").addEventListener("click", () => {
   const id = prompt("New page id:");
   if (!id) return;
+  // Crude but no-dependency: a yes/no for dialog mode. Default is no
+  // (regular page); designers who want a modal overlay flip the badge
+  // toggle on the page tab afterward.
+  const asDialog = confirm("Make this page a dialog (modal overlay)?\nOK = dialog, Cancel = regular page.");
   pushUndo();
-  doc.pages.push({ id, title: id, records: [], raw: [""] });
+  doc.pages.push({ id, title: id, isDialog: asDialog, records: [], raw: [""] });
   activePageIdx = doc.pages.length - 1;
   selectedIdx = -1;
   renderAll(); saveLocal();
@@ -1824,16 +2048,40 @@ $("#btnAddPage").addEventListener("click", () => {
 $("#btnAddInclude").addEventListener("click", () => {
   const opts = doc.pages.map(p => p.id).filter(id => id !== activePage().id);
   if (!opts.length) { alert("No other pages to include."); return; }
-  const pg = prompt("Include page id (" + opts.join(", ") + "):", opts[0]);
-  if (!pg) return;
   pushUndo();
-  activePage().records.push({ kind: "include", fields: { page: pg }, raw: [] });
-  renderAll(); saveLocal();
+  const inc = { kind: "include", fields: { page: opts[0] }, raw: [] };
+  activePage().records.push(inc);
+  // openIncludeEditor will prompt for the page (default = opts[0]) and
+  // any args the target page expects. Designers can click the chip
+  // afterward to revisit.
+  openIncludeEditor(inc);
 });
 $("#btnAddAction").addEventListener("click", () => {
   pushUndo();
   activePage().records.push({ kind: "action", fields: { widget: "", event: "click", target: "" }, raw: [] });
   renderAll(); saveLocal();
+});
+
+// Theme editor wiring. The dialog reads/writes doc.themes directly;
+// renderThemeDialog repaints its body after each mutation.
+$("#btnThemes").addEventListener("click", () => {
+  renderThemeDialog();
+  $("#themeDialog").showModal();
+});
+$("#themeClose").addEventListener("click", () => $("#themeDialog").close());
+$("#themeAdd").addEventListener("click", () => {
+  const name = $("#themeNewName").value.trim();
+  if (!name) return;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    alert("Token name must be a C-style identifier (letters, digits, _).");
+    return;
+  }
+  if (!doc.themes) doc.themes = {};
+  if (doc.themes[name] && !confirm("Replace existing $" + name + "?")) return;
+  pushUndo();
+  doc.themes[name] = $("#themeNewColor").value;
+  $("#themeNewName").value = "";
+  renderThemeDialog(); renderCanvas(); renderInspector(); saveLocal();
 });
 $("#zoom").addEventListener("input", (e) => {
   zoom = +e.target.value / 100;
