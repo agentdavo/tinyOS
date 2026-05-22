@@ -4,6 +4,7 @@
 
 #include "config/tsv.hpp"
 #include "ethercat/master.hpp"
+#include "fs/vfs.hpp"
 #include "hal/shared/tcp.hpp"
 #include "hal/shared/websocket.hpp"
 #include "kernel/main.hpp"
@@ -318,6 +319,26 @@ void log_ip_line(const char* prefix, uint32_t ip) {
     kernel::util::uint32_to_ipv4_str(ip, std::span<char>(ip_buf, sizeof(ip_buf)));
     kernel::util::k_snprintf(line, sizeof(line), "%s%s\n", prefix, ip_buf);
     if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) uart->puts(line);
+}
+
+// Persist a successfully-loaded TSV to the VFS so it survives reboot.
+// vfs::write_blob tries the FAT32 backend first; on failure it falls
+// back to an in-RAM shadow that lasts the kernel session. Either way
+// subsequent vfs::lookup("system/ui/embedded_ui.tsv", ...) returns
+// the new content, and on reboot mount_sd() re-registers it from FAT.
+void persist_uploaded_tsv(const uint8_t* buf, size_t len) noexcept {
+    bool persistent = false;
+    const bool ok = kernel::vfs::write_blob(
+        "system/ui/embedded_ui.tsv", buf, len, &persistent);
+    if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+        char line[96];
+        kernel::util::k_snprintf(line, sizeof(line),
+            "[hmi] tsv persist %s storage=%s bytes=%lu\n",
+            ok ? "OK" : "FAIL",
+            persistent ? "fat32" : "ram-shadow",
+            static_cast<unsigned long>(len));
+        uart->puts(line);
+    }
 }
 
 } // namespace
@@ -1178,6 +1199,7 @@ void Service::handle_tsv_upload(const uint8_t* payload, size_t payload_len) noex
             }
             uart->puts(buf);
         }
+        if (ok) persist_uploaded_tsv(g_tsv_rx_buf, static_cast<size_t>(total_len));
         kernel::ui::render_ui_once();
         // Invalidate the session so the next upload restarts cleanly.
         g_tsv_rx_session_valid = false;
@@ -1456,7 +1478,10 @@ void Service::thread_entry(void* arg) {
                 ok ? "OK" : "FAIL",
                 static_cast<unsigned long>(len));
             wsc.send_text(ack, kernel::util::kstrlen(ack));
-            if (ok) kernel::ui::render_ui_once();
+            if (ok) {
+                persist_uploaded_tsv(payload, len);
+                kernel::ui::render_ui_once();
+            }
         }
         void on_ws_close(kernel::net::WebSocketConnection&) noexcept override {
             if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
