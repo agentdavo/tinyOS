@@ -7,6 +7,7 @@
 #include "kernel/main.hpp"
 #include "machine/machine_registry.hpp"
 #include "miniOS.hpp"
+#include "ui/splash.hpp"
 #include "ui/ui_builder_tsv.hpp"
 #include "util.hpp"
 
@@ -22,6 +23,56 @@ constexpr uint16_t UDP_PORT_DHCP_SERVER = 67;
 constexpr uint16_t UDP_PORT_DHCP_CLIENT = 68;
 constexpr uint8_t IPPROTO_UDP = 17;
 constexpr uint8_t IPPROTO_ICMP = 1;
+
+// B5: live preview — TSV-upload UDP listener. Editor / host bridge sends
+// chunked TSV via UDP to this port; kernel reassembles into a static
+// buffer and calls ui_builder::load_tsv on the last chunk.
+constexpr uint16_t UDP_PORT_TSV_UPLOAD = 5002;
+// 16-byte chunk header (all little-endian to match the rest of the HMI
+// protocol). Layout:
+//   bytes 0-3  : magic 'T','S','V','U'
+//   bytes 4-5  : session_id (uint16) — random; new value resets state
+//   bytes 6-9  : offset (uint32) — byte offset in the TSV
+//   bytes 10-11: chunk_len (uint16) — payload byte count in this packet
+//   bytes 12-15: total_len (uint32) — full TSV size; last chunk has
+//                offset + chunk_len == total_len
+// Payload follows the 16-byte header; max sensible UDP payload over
+// Ethernet without fragmentation is ~1456 bytes (1500 MTU - 20 IP - 8
+// UDP - 16 header).
+constexpr uint32_t TSV_UPLOAD_MAGIC = 0x55565354u;  // 'TSVU' (LE) → 'U','S','V','T'
+struct TsvUploadHeader {
+    uint32_t magic_le;
+    uint16_t session_le;
+    uint16_t reserved_le;
+    uint32_t offset_le;
+    uint16_t chunk_len_le;
+    uint16_t reserved2_le;
+    uint32_t total_len_le;
+} __attribute__((packed));
+static_assert(sizeof(TsvUploadHeader) == 20, "TsvUploadHeader layout");
+
+// Receive buffer for the in-progress TSV upload. 256 KB headroom against
+// the current ~156 KB embedded TSV. Lives at TU scope so it doesn't
+// thunderbolt the bump-heap and so reset_tsv_rx can wipe state when a
+// new session ID arrives.
+constexpr size_t TSV_RX_BUF_BYTES = 256 * 1024;
+alignas(8) uint8_t g_tsv_rx_buf[TSV_RX_BUF_BYTES];
+uint16_t g_tsv_rx_session = 0;
+bool     g_tsv_rx_session_valid = false;
+uint32_t g_tsv_rx_total_len = 0;
+uint32_t g_tsv_rx_max_offset = 0;   // highest (offset+chunk_len) seen
+uint64_t g_tsv_rx_last_packet_us = 0;
+
+void reset_tsv_rx(uint16_t new_session, uint32_t total_len) {
+    g_tsv_rx_session = new_session;
+    g_tsv_rx_session_valid = true;
+    g_tsv_rx_total_len = total_len;
+    g_tsv_rx_max_offset = 0;
+    // We don't zero the whole buffer — chunks just overwrite their
+    // ranges. The buffer's content past the new total_len is stale
+    // from a prior session but never read by load_tsv (which honours
+    // the passed length).
+}
 constexpr uint32_t DHCP_MAGIC_COOKIE = 0x63825363u;
 constexpr uint8_t DHCP_OPT_MSG_TYPE = 53;
 constexpr uint8_t DHCP_OPT_REQ_IP = 50;
@@ -164,6 +215,8 @@ uint32_t be32_to_host(uint32_t v) { return bswap32(v); }
 
 uint32_t host_to_le32(uint32_t v) { return v; }
 uint16_t host_to_le16(uint16_t v) { return v; }
+uint32_t le32_to_host(uint32_t v) { return v; }
+uint16_t le16_to_host(uint16_t v) { return v; }
 
 uint16_t checksum16(const uint8_t* data, size_t len) {
     uint32_t sum = 0;
@@ -886,6 +939,87 @@ void Service::handle_raw_hmi(kernel::hal::net::NetworkDriverOps& nic,
     send_raw_response(nic, src_mac, hdr->opcode, static_cast<uint8_t>(StatusCode::Unsupported), nullptr, 0);
 }
 
+void Service::handle_tsv_upload(const uint8_t* payload, size_t payload_len) noexcept {
+    if (!payload || payload_len < sizeof(TsvUploadHeader)) return;
+    const auto* hdr = reinterpret_cast<const TsvUploadHeader*>(payload);
+    if (le32_to_host(hdr->magic_le) != TSV_UPLOAD_MAGIC) return;
+
+    const uint16_t session   = le16_to_host(hdr->session_le);
+    const uint32_t offset    = le32_to_host(hdr->offset_le);
+    const uint16_t chunk_len = le16_to_host(hdr->chunk_len_le);
+    const uint32_t total_len = le32_to_host(hdr->total_len_le);
+
+    // Refuse garbage early.
+    if (total_len == 0 || total_len > TSV_RX_BUF_BYTES) return;
+    if (chunk_len == 0) return;
+    if (static_cast<size_t>(sizeof(TsvUploadHeader)) + chunk_len > payload_len) return;
+    if (static_cast<size_t>(offset) + chunk_len > total_len) return;
+
+    auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr;
+
+    // New session id (or first packet ever) — reset state.
+    if (!g_tsv_rx_session_valid || session != g_tsv_rx_session ||
+        total_len != g_tsv_rx_total_len) {
+        reset_tsv_rx(session, total_len);
+        if (uart) {
+            char buf[160];
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "[hmi] tsv-upload session=%u total=%u start\n",
+                static_cast<unsigned>(session),
+                static_cast<unsigned>(total_len));
+            uart->puts(buf);
+        }
+    }
+
+    // Copy the chunk into the reassembly buffer.
+    const uint8_t* chunk_data = payload + sizeof(TsvUploadHeader);
+    for (uint16_t i = 0; i < chunk_len; ++i) {
+        g_tsv_rx_buf[offset + i] = chunk_data[i];
+    }
+    const uint32_t reached = offset + chunk_len;
+    if (reached > g_tsv_rx_max_offset) g_tsv_rx_max_offset = reached;
+
+    g_tsv_rx_last_packet_us = now_us();
+
+    // Last chunk: kick off load_tsv. We require the highest contiguous
+    // offset to match total_len — otherwise there's a hole, and we
+    // refuse to commit a partial buffer.
+    const bool is_last = (offset + chunk_len == total_len);
+    if (is_last && g_tsv_rx_max_offset == total_len) {
+        if (uart) {
+            char buf[160];
+            kernel::util::k_snprintf(buf, sizeof(buf),
+                "[hmi] tsv-upload session=%u complete %u bytes -> load_tsv\n",
+                static_cast<unsigned>(session),
+                static_cast<unsigned>(total_len));
+            uart->puts(buf);
+        }
+        // Hand off to the UI builder. load_tsv runs reset_state
+        // internally and rebuilds the widget tree end-to-end.
+        const bool ok = ui_builder::load_tsv(
+            reinterpret_cast<const char*>(g_tsv_rx_buf),
+            static_cast<size_t>(total_len));
+        if (uart) {
+            char buf[200];
+            if (ok) {
+                kernel::util::k_snprintf(buf, sizeof(buf),
+                    "[hmi] tsv-upload load OK; active=%s pages=%u\n",
+                    ui_builder::active_page_id(),
+                    static_cast<unsigned>(ui_builder::page_count()));
+            } else {
+                kernel::util::k_snprintf(buf, sizeof(buf),
+                    "[hmi] tsv-upload load FAILED line=%u err=%s\n",
+                    static_cast<unsigned>(ui_builder::last_error_line()),
+                    ui_builder::last_error());
+            }
+            uart->puts(buf);
+        }
+        kernel::ui::render_ui_once();
+        // Invalidate the session so the next upload restarts cleanly.
+        g_tsv_rx_session_valid = false;
+    }
+}
+
 void Service::handle_udp(kernel::hal::net::NetworkDriverOps& nic,
                          const uint8_t* eth_src,
                          uint32_t src_ip, uint16_t src_port,
@@ -893,6 +1027,10 @@ void Service::handle_udp(kernel::hal::net::NetworkDriverOps& nic,
                          const uint8_t* payload, size_t payload_len) noexcept {
     if (dst_port == UDP_PORT_DHCP_CLIENT) {
         handle_dhcp(nic, src_ip, payload, payload_len);
+        return;
+    }
+    if (dst_port == UDP_PORT_TSV_UPLOAD) {
+        handle_tsv_upload(payload, payload_len);
         return;
     }
     if (dst_port != udp_port_ || !configured()) return;
