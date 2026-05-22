@@ -3401,6 +3401,13 @@ public:
             bg = bright_bg_;
             highlight_border = true;
         }
+        // D18: amber overlay while a hold-to-confirm button is held.
+        // Tells the operator "keep holding" — release before
+        // spec_.hold_ms cancels the action.
+        if (hold_start_ns_ != 0) {
+            bg = Color(245, 158, 11);  // tailwind amber-500
+            highlight_border = true;
+        }
         set_colors(bg, bg, Color(bg.r / 2, bg.g / 2, bg.b / 2), fg_);
 
         // Buttons may bind their label to a string snapshot field (e.g. the
@@ -3457,6 +3464,22 @@ public:
     bool on_event(const UIEvent& event) override {
         if (event.type == kernel::ui::EventType::TouchDown && contains(event.touch.x, event.touch.y)) {
             set_focus_widget(this);
+            // D18: start the hold timer (any button — only matters if
+            // spec_.hold_ms > 0). Use the platform timer if available;
+            // boot-time touches before the timer is up are treated as
+            // instant taps (hold_ms 0).
+            if (auto* timer = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr) {
+                hold_start_ns_ = timer->get_system_time_ns();
+            } else {
+                hold_start_ns_ = 0;
+            }
+            mark_dirty();
+        }
+        if (event.type == kernel::ui::EventType::TouchMove && hold_start_ns_ != 0 &&
+            !contains(event.touch.x, event.touch.y)) {
+            // Slid off the button mid-hold — cancel.
+            hold_start_ns_ = 0;
+            mark_dirty();
         }
         const bool handled = kernel::ui::Button::on_event(event);
         if (handled && event.type == kernel::ui::EventType::TouchUp && contains(event.touch.x, event.touch.y)) {
@@ -3464,11 +3487,35 @@ public:
                                  spec_.id, nullptr,
                                  static_cast<long>(event.touch.x),
                                  static_cast<long>(event.touch.y));
-            if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
-                run_action_target(target);
+            // D18: suppress the action if the operator released before
+            // the configured hold_ms elapsed. zero hold_ms keeps the
+            // single-tap behaviour unchanged.
+            bool fire = true;
+            if (spec_.hold_ms > 0 && hold_start_ns_ != 0) {
+                if (auto* timer = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr) {
+                    const uint64_t now = timer->get_system_time_ns();
+                    const uint64_t elapsed_ns = now - hold_start_ns_;
+                    const uint64_t need_ns = static_cast<uint64_t>(spec_.hold_ms) * 1'000'000ULL;
+                    if (elapsed_ns < need_ns) fire = false;
+                } else {
+                    fire = false;  // can't time — fail safe (no fire)
+                }
             }
+            hold_start_ns_ = 0;
+            mark_dirty();
+            if (fire) {
+                if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
+                    run_action_target(target);
+                }
+            }
+        } else if (event.type == kernel::ui::EventType::TouchUp) {
+            // Release outside the button cancels the hold visualisation.
+            if (hold_start_ns_ != 0) { hold_start_ns_ = 0; mark_dirty(); }
         } else if (event.type == kernel::ui::EventType::KeyDown && is_focused(this) &&
                    (event.key.keycode == '\r' || event.key.keycode == ' ')) {
+            // Keyboard "click" — bypass the hold-to-confirm gate. Operators
+            // using physical keys/joypad shouldn't need to hold; the
+            // touch-screen friction was the concern. Documented behaviour.
             if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
                 run_action_target(target);
             }
@@ -3490,6 +3537,10 @@ private:
     char    last_label_[MAX_FIELD_LEN]{};
     int8_t  last_active_match_ = -1;
     int8_t  last_goto_self_ = -1;
+    // D18: hold-to-confirm timer. 0 means "not currently held". Set on
+    // TouchDown inside the button, cleared on TouchUp / TouchMove-off /
+    // boot. Compared against spec_.hold_ms at release.
+    uint64_t hold_start_ns_ = 0;
 };
 
 class BuilderPanel final : public Panel {
@@ -4814,6 +4865,12 @@ WidgetSpec parse_widget(const char* record, size_t len) {
         }
         else if (strcmp(key_buf, "active_if") == 0) {
             copy_field(spec.active_if, sizeof(spec.active_if), val_buf, strlen(val_buf));
+        }
+        else if (strcmp(key_buf, "hold") == 0) {
+            // D18: hold-to-confirm. Non-zero hold_ms makes the button
+            // require a sustained touch >= N ms before lifting.
+            const int32_t n = simple_atoi(val_buf);
+            spec.hold_ms = n > 0 ? n : 0;
         }
         // B8: layout overrides on Container/Panel widgets.
         else if (strcmp(key_buf, "cols") == 0) {

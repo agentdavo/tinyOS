@@ -161,6 +161,14 @@ struct WidgetSpec {
     int32_t layout_rows = 0;
     int32_t layout_gap  = 0;
     int32_t layout_pad  = -1;  // negative sentinel: keep the default 16
+
+    // D18: hold-to-confirm. 0 = single-tap fires the action (default,
+    // unchanged). Non-zero = the operator must keep the touch on the
+    // button for >= hold_ms milliseconds before lifting; a release
+    // before then suppresses the action. Used for destructive verbs
+    // (E-STOP / ABORT / restart). The button paints an amber overlay
+    // while held to signal "keep holding".
+    int32_t hold_ms = 0;
 };
 
 // Parse TSV record into WidgetSpec
