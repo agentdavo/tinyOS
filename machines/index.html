@@ -181,6 +181,18 @@
         <button id="btnAddStation">+ station</button>
         <button id="btnDelPod" class="bad">delete</button>
       </div>
+      <h4 style="margin-top:14px" title="Pallet roster — lights-out scheduler scans this in cnc::jobs::Runtime order, picks a pallet, runs its program. Edits round-trip to devices/embedded_pallets.tsv.">Pallets</h4>
+      <ul id="palletlist"></ul>
+      <div style="display:flex; gap:4px; margin-top:6px">
+        <button id="btnAddPallet">+ pallet</button>
+        <button id="btnDelPallet" class="bad">delete</button>
+      </div>
+      <h4 style="margin-top:14px" title="Job queue — scheduler walks these in priority order (lower=sooner). Each references a pallet id from the roster above. Edits round-trip to devices/embedded_jobs.tsv.">Jobs</h4>
+      <ul id="joblist"></ul>
+      <div style="display:flex; gap:4px; margin-top:6px">
+        <button id="btnAddJob">+ job</button>
+        <button id="btnDelJob" class="bad">delete</button>
+      </div>
       <h4 style="margin-top:14px">Help</h4>
       <div style="color:var(--muted); font-size:11px; line-height:1.4">
         Drag-drop tree rows to reparent.<br>
@@ -675,11 +687,18 @@ const LS_KEY = "miniOS.machineEditor.doc.v1";
 const state = {
   chain: null,
   pods: null,
+  // Pallet roster + job queue for the lights-out scheduler. Same
+  // line-based key=value TSV shape as pods, so the pods parser /
+  // serializer round-trip them without modification.
+  pallets: null,
+  jobs: null,
   chainFileName: "kinematic.tsv",
   podsFileName: "embedded_toolpods.tsv",
+  palletsFileName: "embedded_pallets.tsv",
+  jobsFileName: "embedded_jobs.tsv",
   chainHandle: null,
   podsHandle: null,
-  selection: null,   // {kind:"axis",idx} | {kind:"pod",idx} | {kind:"station",pod,st}
+  selection: null,   // {kind:"axis"|"podrec"|"palletrec"|"jobrec", idx}
   objCache: {},      // name -> { text, parsed: THREE.Group|null, bytes }
   undoStack: [],
   redoStack: [],
@@ -705,11 +724,15 @@ function doRedo() {
   renderAll();
 }
 function snapshot() {
-  return JSON.stringify({ chain: state.chain, pods: state.pods });
+  return JSON.stringify({
+    chain: state.chain, pods: state.pods,
+    pallets: state.pallets, jobs: state.jobs,
+  });
 }
 function restore(s) {
   const o = JSON.parse(s);
   state.chain = o.chain; state.pods = o.pods;
+  state.pallets = o.pallets || null; state.jobs = o.jobs || null;
   state.selection = null;
 }
 
@@ -724,7 +747,9 @@ function saveLocal() {
     }
     localStorage.setItem(LS_KEY, JSON.stringify({
       chain: state.chain, pods: state.pods,
+      pallets: state.pallets, jobs: state.jobs,
       chainFileName: state.chainFileName, podsFileName: state.podsFileName,
+      palletsFileName: state.palletsFileName, jobsFileName: state.jobsFileName,
       smoothShading: !!state.smoothShading,
       objs,
     }));
@@ -737,8 +762,12 @@ function loadLocal() {
     const o = JSON.parse(s);
     state.chain = o.chain;
     state.pods = o.pods;
+    state.pallets = o.pallets || null;
+    state.jobs = o.jobs || null;
     state.chainFileName = o.chainFileName || state.chainFileName;
     state.podsFileName = o.podsFileName || state.podsFileName;
+    state.palletsFileName = o.palletsFileName || state.palletsFileName;
+    state.jobsFileName = o.jobsFileName || state.jobsFileName;
     state.smoothShading = !!o.smoothShading;
     if (o.objs) {
       for (const [k, text] of Object.entries(o.objs)) {
@@ -749,7 +778,7 @@ function loadLocal() {
   } catch (e) { return false; }
 }
 
-// ---- BEGIN SYNCED DEFAULTS (regenerate via tools/machine_editor/sync_defaults.sh) ----
+// ---- BEGIN SYNCED DEFAULTS (regenerate via machines/sync_defaults.sh) ----
 const DEFAULT_KINEMATIC_TSV = `# Kinematic chain configuration for 3-axis mill visualization.
 # Extended to 15 columns (trailing obj_file) — kernel parser accepts both
 # 14 and 15. Leaving obj_file empty falls back to the mesh= slot lookup
@@ -777,39 +806,80 @@ pod	id=drill_rack	title=Drill Rack	axis=Y	motion=linear	clamp_required=0	x=220	y
 station	pod=drill_rack	index=0	position=0	physical_tool=11	virtual_tool=11	x=0	y=0	z=0	a=0	name=drill_6mm
 station	pod=drill_rack	index=1	position=5000	physical_tool=12	virtual_tool=12	x=0	y=50	z=0	a=0	name=drill_10mm
 station	pod=drill_rack	index=2	position=10000	physical_tool=13	virtual_tool=15	x=0	y=100	z=0	a=0	name=tap_m8`;
+const DEFAULT_PALLETS_TSV = `# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Pallet roster for lights-out CNC. Each row defines one platform on
+# the swap table. station=N is the physical station index a robot's
+# pick/place macro looks up; wcs=0..5 maps to G54..G59 so the swap
+# macro can flip the active work offset before re-arming the program.
+#
+# Format:
+#   pallet	id=...	fixture=...	program=...	station=N	wcs=N	target=N	status=...
+#
+# Notes:
+#   - Empty \`program\` leaves the pallet in Empty status (won't be picked
+#     by the scheduler). Setting a program promotes the default to Loaded.
+#   - target=0 means run forever (the scheduler keeps re-running the
+#     same program until status flips). target>0 caps total cycles for
+#     that pallet — useful when one fixture holds N parts.
+
+pallet	id=P01	fixture=vise_a	program=demo_face.ngc	station=0	wcs=0	target=4	status=loaded
+pallet	id=P02	fixture=vise_b	program=demo_pocket.ngc	station=1	wcs=1	target=4	status=loaded
+pallet	id=P03	fixture=plate	program=	station=2	wcs=2	target=0	status=empty
+pallet	id=P04	fixture=plate	program=	station=3	wcs=3	target=0	status=empty`;
+const DEFAULT_JOBS_TSV = `# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Lights-out job queue. The scheduler thread (cnc::jobs::Runtime) walks
+# this in priority order and runs each job's program on channel 0
+# until repeat-count is reached or the job faults.
+#
+# Format:
+#   job	id=...	pallet=...	program=...	wcs=N	repeat=N	priority=N
+#
+# Notes:
+#   - \`pallet\` references an id from devices/embedded_pallets.tsv. The
+#     scheduler promotes the pallet to Cutting on start and to Done on
+#     completion.
+#   - \`wcs\` overrides the pallet's default WCS when ≥ 0; -1 means use
+#     the pallet's wcs (or the program's modal G54..G59 if neither is
+#     set).
+#   - \`repeat=0\` runs forever — the scheduler re-arms the same program
+#     on the same pallet after each Complete.
+#   - \`priority\`: lower runs sooner (POSIX nice convention). Default 100.
+
+job	id=J001	pallet=P01	program=demo_face.ngc	wcs=0	repeat=4	priority=10
+job	id=J002	pallet=P02	program=demo_pocket.ngc	wcs=1	repeat=4	priority=20`;
 const DEFAULT_OBJS = {
-  "demo_box.obj": `# miniOS demo box — end-to-end machine-editor -> OBJ registry -> ObjImporter
-# -> MachineModel::per_axis -> GLES1 render pipeline sanity check.
-# Dimensions 1.8 x 0.4 x 1.3 centered at origin (slightly different from the
-# programmatic MachineModel::base cube so you can tell which path is drawing).
-
-v -0.9 -0.2 -0.65
-v  0.9 -0.2 -0.65
-v  0.9  0.2 -0.65
-v -0.9  0.2 -0.65
-v -0.9 -0.2  0.65
-v  0.9 -0.2  0.65
-v  0.9  0.2  0.65
-v -0.9  0.2  0.65
-
-# -Z face
-f 1 2 3
-f 1 3 4
-# +Z face
-f 5 7 6
-f 5 8 7
-# -Y face
-f 1 6 2
-f 1 5 6
-# +Y face
-f 4 3 7
-f 4 7 8
-# -X face
-f 1 8 5
-f 1 4 8
-# +X face
-f 2 6 7
-f 2 7 3`,
+  "demo_box.obj": `# demo_box.obj — embedded default for system/machine/demo_box.obj.
+#
+# Consumed at boot by fs/vfs.cpp (register_embedded_defaults), looked
+# up by render/obj_registry.cpp when the mill3 kinematic TSV
+# (machines/kinematic_mill3.tsv) resolves the base body's
+# obj_file=demo_box.obj.
+#
+# Geometry: 1-unit cube centered on the origin (matches the unit
+# convention used by the companion demo_part.stl tetrahedron).
+o demo_box
+v -0.5 -0.5 -0.5
+v -0.5 -0.5  0.5
+v -0.5  0.5 -0.5
+v -0.5  0.5  0.5
+v  0.5 -0.5 -0.5
+v  0.5 -0.5  0.5
+v  0.5  0.5 -0.5
+v  0.5  0.5  0.5
+vn -1.0  0.0  0.0
+vn  1.0  0.0  0.0
+vn  0.0 -1.0  0.0
+vn  0.0  1.0  0.0
+vn  0.0  0.0 -1.0
+vn  0.0  0.0  1.0
+f 1//1 2//1 4//1 3//1
+f 5//2 7//2 8//2 6//2
+f 1//3 5//3 6//3 2//3
+f 3//4 4//4 8//4 7//4
+f 1//5 3//5 7//5 5//5
+f 2//6 6//6 8//6 4//6`,
   "demo_part.stl": `solid miniOS_demo_tetra
   facet normal 0.0 -1.0 0.0
     outer loop
@@ -854,12 +924,24 @@ function newDoc() {
   try {
     state.chain = parseKinematicTSV(DEFAULT_KINEMATIC_TSV);
     state.pods = parsePodsTSV(DEFAULT_PODS_TSV);
+    // Pallets + jobs share the line-based parser. Empty defaults mean
+    // an empty pallets-only setup (no lights-out queue) and the editor
+    // shows empty lists; designers add records via the +pallet/+job
+    // buttons.
+    state.pallets = DEFAULT_PALLETS_TSV
+      ? parsePodsTSV(DEFAULT_PALLETS_TSV)
+      : { leadingRaw: [], records: [], trailingRaw: [] };
+    state.jobs = DEFAULT_JOBS_TSV
+      ? parsePodsTSV(DEFAULT_JOBS_TSV)
+      : { leadingRaw: [], records: [], trailingRaw: [] };
     state.objCache = {};
     for (const [name, text] of Object.entries(DEFAULT_OBJS)) {
       state.objCache[name] = { text, parsed: null, bytes: new Blob([text]).size };
     }
     state.chainFileName = "kinematic_mill3.tsv";
     state.podsFileName = "embedded_toolpods.tsv";
+    state.palletsFileName = "embedded_pallets.tsv";
+    state.jobsFileName = "embedded_jobs.tsv";
   } catch (e) {
     // If the inlined defaults are corrupt for any reason, fall back to
     // the empty Mill3Axis template rather than leaving the editor blank.
@@ -869,6 +951,8 @@ function newDoc() {
       "# Physical tool pods and virtual tool assignments.",
       "",
     ], records: [], trailingRaw: [] };
+    state.pallets = { leadingRaw: [], records: [], trailingRaw: [] };
+    state.jobs = { leadingRaw: [], records: [], trailingRaw: [] };
   }
   state.selection = null;
   state.undoStack = []; state.redoStack = [];
@@ -1504,6 +1588,51 @@ function renderTree() {
       pods.appendChild(li);
     }
   }
+
+  // Pallet roster.
+  const palletList = document.getElementById("palletlist");
+  palletList.innerHTML = "";
+  if (state.pallets) {
+    for (let i = 0; i < state.pallets.records.length; ++i) {
+      const r = state.pallets.records[i];
+      if (r.kind !== "pallet") continue;
+      const li = document.createElement("li");
+      const prog = r.fields.program || "(empty)";
+      li.textContent = `${r.fields.id || "?"}  -  ${prog}`;
+      if (state.selection && state.selection.kind === "palletrec" && state.selection.idx === i)
+        li.classList.add("sel");
+      li.addEventListener("click", () => selectPalletRec(i));
+      palletList.appendChild(li);
+    }
+  }
+
+  // Job queue.
+  const jobList = document.getElementById("joblist");
+  jobList.innerHTML = "";
+  if (state.jobs) {
+    const palletIds = new Set();
+    if (state.pallets) {
+      for (const r of state.pallets.records) {
+        if (r.kind === "pallet" && r.fields.id) palletIds.add(r.fields.id);
+      }
+    }
+    for (let i = 0; i < state.jobs.records.length; ++i) {
+      const r = state.jobs.records[i];
+      if (r.kind !== "job") continue;
+      const li = document.createElement("li");
+      const pri = r.fields.priority || "100";
+      const pal = r.fields.pallet || "?";
+      li.textContent = `[${pri}] ${r.fields.id || "?"}  ->  ${pal}`;
+      if (pal !== "?" && !palletIds.has(pal)) {
+        li.style.color = "var(--bad)";
+        li.title = "Pallet '" + pal + "' not in the roster";
+      }
+      if (state.selection && state.selection.kind === "jobrec" && state.selection.idx === i)
+        li.classList.add("sel");
+      li.addEventListener("click", () => selectJobRec(i));
+      jobList.appendChild(li);
+    }
+  }
 }
 
 function reparentAxis(fromIdx, targetIdx, mode) {
@@ -1536,6 +1665,8 @@ function reparentAxis(fromIdx, targetIdx, mode) {
 
 function selectAxis(i) { state.selection = { kind: "axis", idx: i }; renderAll(); }
 function selectPodRec(i) { state.selection = { kind: "podrec", idx: i }; renderAll(); }
+function selectPalletRec(i) { state.selection = { kind: "palletrec", idx: i }; renderAll(); }
+function selectJobRec(i) { state.selection = { kind: "jobrec", idx: i }; renderAll(); }
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
@@ -1553,6 +1684,8 @@ function renderInspector() {
   }
   if (state.selection.kind === "axis") { renderAxisInspector(p); return; }
   if (state.selection.kind === "podrec") { renderPodRecInspector(p); return; }
+  if (state.selection.kind === "palletrec") { renderPalletRecInspector(p); return; }
+  if (state.selection.kind === "jobrec") { renderJobRecInspector(p); return; }
 }
 
 function addRow(p, label, node, cls) {
@@ -1822,6 +1955,120 @@ function renderPodRecInspector(p) {
   p.appendChild(del);
 }
 
+// Shared helper for the line-based key=value records (pallets / jobs).
+// Mirrors renderPodRecInspector but lets the caller pin the field set
+// (the kernel reads a fixed schema; extra keys are silently ignored
+// at runtime). Validators flag obviously-wrong values inline.
+function renderKeyValueRecInspector(p, doc, idx, kindLabel, fields, validators) {
+  const r = doc.records[idx];
+  if (!r) return;
+  const note = document.createElement("div");
+  note.style.cssText = "color:var(--muted); font-size:11px; margin-bottom:6px";
+  note.textContent = "Record kind: " + r.kind + "  (" + kindLabel + ")";
+  p.appendChild(note);
+  for (const k of fields) {
+    const input = mkInput(
+      () => r.fields[k] ?? "",
+      (v) => {
+        pushUndo();
+        r.fields[k] = v;
+        if (!r.fields.__order || !r.fields.__order.includes(k)) {
+          if (!Array.isArray(r.fields.__order)) r.fields.__order = [];
+          r.fields.__order.push(k);
+        }
+        // Re-render the list so the row text reflects new id/program/etc.
+        renderAll();
+      });
+    if (validators && validators[k]) {
+      const msg = validators[k](r.fields[k] ?? "", r.fields);
+      if (msg) input.title = msg, input.classList.add("bad-text");
+    }
+    addRow(p, k, input);
+  }
+  const del = document.createElement("button");
+  del.textContent = "Delete record"; del.className = "bad"; del.style.marginTop = "8px";
+  del.addEventListener("click", () => {
+    pushUndo();
+    doc.records.splice(idx, 1);
+    state.selection = null;
+    saveLocal(); renderAll();
+  });
+  p.appendChild(del);
+}
+
+function renderPalletRecInspector(p) {
+  const idx = state.selection.idx;
+  // Pallet schema mirrors machine/pallet.cpp:97-137. wcs is -1 (auto)
+  // or 0..5 (G54..G59). target=0 = run forever. status is optional;
+  // the kernel default is "loaded" when program is set, "empty" when
+  // it isn't.
+  const STATUS = new Set(["empty","loaded","cutting","done","fault"]);
+  renderKeyValueRecInspector(
+    p, state.pallets, idx, "lights-out scheduler roster",
+    ["id","fixture","program","station","wcs","target","status"],
+    {
+      wcs: (v) => {
+        if (!v) return null;
+        const n = +v;
+        if (!Number.isInteger(n) || n < -1 || n > 5) return "wcs must be -1..5 (G54..G59)";
+        return null;
+      },
+      status: (v) => {
+        if (!v) return null;
+        return STATUS.has(v) ? null : "status must be one of: " + [...STATUS].join(", ");
+      },
+      station: (v) => {
+        if (!v) return null;
+        const n = +v;
+        return Number.isInteger(n) && n >= 0 ? null : "station must be a non-negative integer";
+      },
+      target: (v) => {
+        if (!v) return null;
+        const n = +v;
+        return Number.isInteger(n) && n >= 0 ? null : "target must be a non-negative integer (0 = run forever)";
+      },
+    });
+}
+
+function renderJobRecInspector(p) {
+  const idx = state.selection.idx;
+  // Job schema mirrors cnc/jobs.cpp:72-105. wcs=-1 = inherit from
+  // pallet (or program modal). repeat=0 = forever. priority is the
+  // POSIX-style "lower runs sooner"; default 100.
+  const palletIds = new Set();
+  if (state.pallets) {
+    for (const r of state.pallets.records) {
+      if (r.kind === "pallet" && r.fields.id) palletIds.add(r.fields.id);
+    }
+  }
+  renderKeyValueRecInspector(
+    p, state.jobs, idx, "lights-out scheduler queue",
+    ["id","pallet","program","wcs","repeat","priority"],
+    {
+      pallet: (v) => {
+        if (!v) return null;
+        return palletIds.has(v) ? null : "no pallet with id '" + v + "' in the roster";
+      },
+      wcs: (v) => {
+        if (!v) return null;
+        const n = +v;
+        if (!Number.isInteger(n) || n < -1 || n > 5) return "wcs must be -1..5 (G54..G59)";
+        return null;
+      },
+      repeat: (v) => {
+        if (!v) return null;
+        const n = +v;
+        return Number.isInteger(n) && n >= 0 ? null : "repeat must be a non-negative integer (0 = forever)";
+      },
+      priority: (v) => {
+        if (!v) return null;
+        const n = +v;
+        return Number.isInteger(n) && n >= 0 && n <= 255
+          ? null : "priority must be 0..255 (lower runs sooner; default 100)";
+      },
+    });
+}
+
 /* =========================================================================
  *  DRO panel: sliders + live world-space readout per axis.
  * ========================================================================= */
@@ -1988,6 +2235,13 @@ async function openPods() {
 async function saveAll() {
   const kin = serializeKinematicTSV(state.chain);
   const pods = state.pods ? serializePodsTSV(state.pods) : null;
+  // Pallets / jobs share the line-based serializer with pods. We only
+  // emit them when their record list is non-empty (an empty doc would
+  // overwrite the kernel's defaults with a blank file).
+  const palletsHasRecords = state.pallets && state.pallets.records.some(r => r.kind === "pallet");
+  const jobsHasRecords = state.jobs && state.jobs.records.some(r => r.kind === "job");
+  const pallets = palletsHasRecords ? serializePodsTSV(state.pallets) : null;
+  const jobs = jobsHasRecords ? serializePodsTSV(state.jobs) : null;
   if (state.chainHandle) {
     const w = await state.chainHandle.createWritable();
     await w.write(kin); await w.close();
@@ -2002,6 +2256,8 @@ async function saveAll() {
       downloadBlob(pods, state.podsFileName || "embedded_toolpods.tsv");
     }
   }
+  if (pallets !== null) downloadBlob(pallets, state.palletsFileName || "embedded_pallets.tsv");
+  if (jobs    !== null) downloadBlob(jobs,    state.jobsFileName    || "embedded_jobs.tsv");
   setStatus("Saved.");
 }
 
@@ -2035,6 +2291,14 @@ async function exportBundle() {
   const zip = new JSZip();
   zip.file(state.chainFileName || "kinematic.tsv", serializeKinematicTSV(state.chain));
   if (state.pods) zip.file(state.podsFileName || "embedded_toolpods.tsv", serializePodsTSV(state.pods));
+  const palletsHasRecords = state.pallets && state.pallets.records.some(r => r.kind === "pallet");
+  const jobsHasRecords    = state.jobs    && state.jobs.records.some(r => r.kind === "job");
+  if (palletsHasRecords) {
+    zip.file(state.palletsFileName || "embedded_pallets.tsv", serializePodsTSV(state.pallets));
+  }
+  if (jobsHasRecords) {
+    zip.file(state.jobsFileName || "embedded_jobs.tsv", serializePodsTSV(state.jobs));
+  }
   const objs = {};
   for (const a of state.chain.axes) {
     if (a.obj_file && state.objCache[a.obj_file]) {
@@ -2048,7 +2312,11 @@ async function exportBundle() {
     generated_at: new Date().toISOString(),
     chain_file: state.chainFileName || "kinematic.tsv",
     pods_file: state.pods ? (state.podsFileName || "embedded_toolpods.tsv") : null,
+    pallets_file: palletsHasRecords ? (state.palletsFileName || "embedded_pallets.tsv") : null,
+    jobs_file:    jobsHasRecords    ? (state.jobsFileName    || "embedded_jobs.tsv")    : null,
     axes: state.chain.axes.length,
+    pallet_count: palletsHasRecords ? state.pallets.records.filter(r => r.kind === "pallet").length : 0,
+    job_count:    jobsHasRecords    ? state.jobs.records.filter(r => r.kind === "job").length       : 0,
     objs,
   };
   zip.file("manifest.json", JSON.stringify(manifest, null, 2));
@@ -2259,6 +2527,10 @@ function bindUI() {
   document.getElementById("btnAddPod").addEventListener("click", addPod);
   document.getElementById("btnAddStation").addEventListener("click", addStation);
   document.getElementById("btnDelPod").addEventListener("click", deletePodRec);
+  document.getElementById("btnAddPallet").addEventListener("click", addPallet);
+  document.getElementById("btnDelPallet").addEventListener("click", deletePalletRec);
+  document.getElementById("btnAddJob").addEventListener("click", addJob);
+  document.getElementById("btnDelJob").addEventListener("click", deleteJobRec);
 
   // Pivot pick: when a body's "Pick Pivot" button arms pick mode, the next
   // canvas click raycasts against that body's mesh group only and writes
@@ -2304,6 +2576,8 @@ function bindUI() {
     if (e.key === "Delete" || e.key === "Backspace") {
       if (state.selection && state.selection.kind === "axis") deleteAxis();
       else if (state.selection && state.selection.kind === "podrec") deletePodRec();
+      else if (state.selection && state.selection.kind === "palletrec") deletePalletRec();
+      else if (state.selection && state.selection.kind === "jobrec") deleteJobRec();
       e.preventDefault();
     } else if (e.ctrlKey && e.key === "s") { saveAll(); e.preventDefault(); }
     else if (e.ctrlKey && e.key === "z") { doUndo(); e.preventDefault(); }
@@ -2550,6 +2824,72 @@ function deletePodRec() {
   if (!state.selection || state.selection.kind !== "podrec") return;
   pushUndo();
   state.pods.records.splice(state.selection.idx, 1);
+  state.selection = null;
+  saveLocal(); renderAll();
+}
+
+function addPallet() {
+  pushUndo();
+  state.pallets = state.pallets || { leadingRaw: [], records: [], trailingRaw: [] };
+  // Generate a P01-style id that doesn't collide with anything in the roster.
+  const existing = new Set(state.pallets.records
+    .filter(r => r.kind === "pallet").map(r => r.fields.id));
+  let n = state.pallets.records.filter(r => r.kind === "pallet").length + 1;
+  let id;
+  do { id = "P" + String(n++).padStart(2, "0"); } while (existing.has(id));
+  state.pallets.records.push({
+    kind: "pallet",
+    fields: {
+      id, fixture: "", program: "",
+      station: String(state.pallets.records.filter(r => r.kind === "pallet").length),
+      wcs: "-1", target: "0", status: "empty",
+      __order: ["id","fixture","program","station","wcs","target","status"],
+    },
+    raw: [""],
+  });
+  state.selection = { kind: "palletrec", idx: state.pallets.records.length - 1 };
+  saveLocal(); renderAll();
+}
+function deletePalletRec() {
+  if (!state.selection || state.selection.kind !== "palletrec") return;
+  pushUndo();
+  state.pallets.records.splice(state.selection.idx, 1);
+  state.selection = null;
+  saveLocal(); renderAll();
+}
+
+function addJob() {
+  pushUndo();
+  state.jobs = state.jobs || { leadingRaw: [], records: [], trailingRaw: [] };
+  // Default the new job's pallet to the first pallet in the roster
+  // (if any) — keeps the validator green out of the box.
+  let palletId = "";
+  if (state.pallets) {
+    for (const r of state.pallets.records) {
+      if (r.kind === "pallet" && r.fields.id) { palletId = r.fields.id; break; }
+    }
+  }
+  const existing = new Set(state.jobs.records
+    .filter(r => r.kind === "job").map(r => r.fields.id));
+  let n = state.jobs.records.filter(r => r.kind === "job").length + 1;
+  let id;
+  do { id = "J" + String(n++).padStart(2, "0"); } while (existing.has(id));
+  state.jobs.records.push({
+    kind: "job",
+    fields: {
+      id, pallet: palletId, program: "",
+      wcs: "-1", repeat: "1", priority: "100",
+      __order: ["id","pallet","program","wcs","repeat","priority"],
+    },
+    raw: [""],
+  });
+  state.selection = { kind: "jobrec", idx: state.jobs.records.length - 1 };
+  saveLocal(); renderAll();
+}
+function deleteJobRec() {
+  if (!state.selection || state.selection.kind !== "jobrec") return;
+  pushUndo();
+  state.jobs.records.splice(state.selection.idx, 1);
   state.selection = null;
   saveLocal(); renderAll();
 }

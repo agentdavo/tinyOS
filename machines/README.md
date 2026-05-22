@@ -10,6 +10,8 @@ Kernel consumers:
 - `machines/*.STL` / `*.obj` — resolved by `render::obj::lookup` via the VFS
   path `system/machine/<name>`.
 - `devices/embedded_toolpods.tsv` — parsed by `machine::toolpods::Service`
+- `devices/embedded_pallets.tsv` — parsed by `machine::pallet::Service` (lights-out roster)
+- `devices/embedded_jobs.tsv` — parsed by `cnc::jobs::Runtime` (scheduler queue)
 
 Three paths get the meshes into the kernel, in priority order:
 1. **SD card** (`sdcard.img` built by `scripts/mkimg.sh`) — preferred for
@@ -150,12 +152,47 @@ Line-based, tab-separated, `key=value` fields. Two record kinds:
 
 ```
 pod     id=.. title=.. axis=.. motion=linear|rotary clamp_required=0|1
+        [x=.. y=.. z=..]
 station pod=.. index=.. position=.. physical_tool=.. virtual_tool=..
         x=.. y=.. z=.. a=.. name=..
 ```
 
 Field order is preserved on save (per-record `__order` array). Comments and
 blank lines stick with the following record.
+
+## Pallets TSV schema (lights-out roster)
+
+Same line-based format. One record kind:
+
+```
+pallet  id=.. fixture=.. program=.. station=N wcs=N target=N status=..
+```
+
+- `wcs`: -1 (auto) or 0..5 (G54..G59).
+- `target`: cycle cap. 0 = run forever.
+- `status`: optional. One of `empty / loaded / cutting / done / fault`.
+  Kernel defaults to `loaded` if `program=` is set, `empty` otherwise.
+
+The editor's Pallets panel surfaces all fields with inline validators
+(wcs range, station non-negative, status enum). Edits round-trip to
+`devices/embedded_pallets.tsv` byte-identically.
+
+## Jobs TSV schema (scheduler queue)
+
+```
+job  id=.. pallet=.. program=.. wcs=N repeat=N priority=N
+```
+
+- `pallet`: must reference an `id` from the Pallets roster. Editor
+  paints the job row red if the reference is unresolved.
+- `wcs`: -1 (inherit pallet / program modal) or 0..5.
+- `repeat`: 0 = forever, otherwise cycle count.
+- `priority`: 0..255, lower runs sooner. Default 100 (POSIX nice).
+
+Scheduler walks the queue in priority order; pallet status flips
+(`loaded` → `cutting` → `done`) drive UI feedback via the
+`scheduler:*` / `pallet:N:*` binds and the `jobs:{run,pause,resume,
+skip,abort}` action verbs.
 
 ## Features
 
@@ -197,9 +234,13 @@ node tools/machine_editor/roundtrip_test.js
 Expected output:
 
 ```
-[ok] devices/kinematic_mill3.tsv
-[ok] devices/kinematic_millturn.tsv
+[ok] machines/kinematic_mill3.tsv
+[ok] machines/kinematic_millturn.tsv
+[ok] machines/kinematic_mx850.tsv
 [ok] devices/embedded_toolpods.tsv
+[ok] devices/embedded_pallets.tsv
+[ok] devices/embedded_jobs.tsv
+[ok] 22-col mesh_scale round-trip
 [ok] forward kinematics: Z@100 -> (0.000, 0.000, 100.000)
 ```
 
