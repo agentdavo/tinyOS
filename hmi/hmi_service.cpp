@@ -4,6 +4,7 @@
 
 #include "config/tsv.hpp"
 #include "ethercat/master.hpp"
+#include "hal/shared/tcp.hpp"
 #include "kernel/main.hpp"
 #include "machine/machine_registry.hpp"
 #include "miniOS.hpp"
@@ -1397,6 +1398,31 @@ void Service::thread_entry(void* arg) {
     }
     netif->register_listener(self);
     netif->register_udp_listener(self);
+
+    // Demo TCP listener on port 5003 — echoes every byte back. First
+    // real consumer of the TCP layer; useful as a smoke test for
+    // future WS / HTTP work. Lives here for now; future PR will move
+    // it behind a configurable role.
+    struct TcpEcho : public kernel::net::TcpListener {
+        uint16_t local_port() const noexcept override { return 5003; }
+        void on_open(kernel::net::TcpConnection&) noexcept override {
+            if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+                uart->puts("[tcp] echo open\n");
+            }
+        }
+        void on_data(kernel::net::TcpConnection& conn,
+                     const uint8_t* data, size_t len) noexcept override {
+            (void)conn.send(data, len);
+        }
+        void on_close(kernel::net::TcpConnection&) noexcept override {
+            if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+                uart->puts("[tcp] echo close\n");
+            }
+        }
+    };
+    static TcpEcho tcp_echo;
+    kernel::net::tcp_bind(*netif, &tcp_echo);
+
     constexpr size_t POLL_BUDGET = 8;
     bool burst = false;
     for (;;) {
