@@ -140,9 +140,28 @@ private:
     void send_arp_reply(kernel::hal::net::NetworkDriverOps& nic,
                         const uint8_t* dst_mac, uint32_t dst_ip) noexcept;
     void process_ping(kernel::hal::net::NetworkDriverOps& nic) noexcept;
-    void maybe_start_dhcp(kernel::hal::net::NetworkDriverOps& nic) noexcept;
+    // RFC 2131 client state. `Init` covers both the pre-discover state
+    // and the post-expiry fall-through; `Selecting` waits for an OFFER;
+    // `Requesting` waits for an ACK to the initial REQUEST; `Bound` is
+    // the steady state; `Renewing` (T1→T2) and `Rebinding` (T2→expiry)
+    // re-acquire the lease. We always broadcast the REQUEST in
+    // Renewing/Rebinding — spec says unicast is preferred for renewing
+    // but every server I've tested accepts broadcast, and it avoids
+    // needing an ARP entry for the DHCP server.
+    enum class DhcpState : uint8_t {
+        Init,
+        Selecting,
+        Requesting,
+        Bound,
+        Renewing,
+        Rebinding,
+    };
+    enum class DhcpRequestKind : uint8_t { Selecting, Renewing, Rebinding };
+    void maybe_drive_dhcp(kernel::hal::net::NetworkDriverOps& nic) noexcept;
     void send_dhcp_discover(kernel::hal::net::NetworkDriverOps& nic) noexcept;
-    void send_dhcp_request(kernel::hal::net::NetworkDriverOps& nic, uint32_t requested_ip, uint32_t server_id) noexcept;
+    void send_dhcp_request(kernel::hal::net::NetworkDriverOps& nic,
+                           uint32_t requested_ip, uint32_t server_id,
+                           DhcpRequestKind kind) noexcept;
     void apply_static_config() noexcept;
     bool begin_ping(uint32_t dst_ip, uint32_t timeout_ms) noexcept;
     bool configured() const noexcept { return local_ip_.load(std::memory_order_relaxed) != 0; }
@@ -162,6 +181,11 @@ private:
     uint32_t dhcp_offer_ip_ = 0;
     uint64_t dhcp_deadline_us_ = 0;
     uint64_t dhcp_retry_us_ = 0;
+    DhcpState dhcp_state_ = DhcpState::Init;
+    uint64_t dhcp_t1_us_ = 0;
+    uint64_t dhcp_t2_us_ = 0;
+    uint64_t dhcp_expiry_us_ = 0;
+    uint32_t dhcp_lease_seconds_ = 0;
     // Multi-entry ARP cache. 8 slots is plenty for a /24 with a handful
     // of peers; linear scan is fine at this size. Empty slot = ip==0.
     struct ArpEntry {
