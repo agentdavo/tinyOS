@@ -27,7 +27,9 @@ constexpr uint8_t IPPROTO_ICMP = 1;
 // B5: live preview — TSV-upload UDP listener. Editor / host bridge sends
 // chunked TSV via UDP to this port; kernel reassembles into a static
 // buffer and calls ui_builder::load_tsv on the last chunk.
-constexpr uint16_t UDP_PORT_TSV_UPLOAD = 5002;
+// UDP_PORT_TSV_UPLOAD is the public Service::UDP_PORT_TSV_UPLOAD; aliased
+// here so the file's existing references compile unchanged.
+constexpr uint16_t UDP_PORT_TSV_UPLOAD = Service::UDP_PORT_TSV_UPLOAD;
 // 16-byte chunk header (all little-endian to match the rest of the HMI
 // protocol). Layout:
 //   bytes 0-3  : magic 'T','S','V','U'
@@ -502,19 +504,13 @@ void Service::send_udp_packet(kernel::hal::net::NetworkDriverOps& nic,
                               uint16_t src_port, uint16_t dst_port,
                               const uint8_t* payload, size_t payload_len,
                               uint8_t protocol) noexcept {
-    uint8_t packet[512]{};
-    const size_t total = sizeof(UdpHeader) + payload_len;
-    if (total > sizeof(packet) || protocol != IPPROTO_UDP) return;
-    auto* udp = reinterpret_cast<UdpHeader*>(packet);
-    udp->src_port_be = host_to_be16(src_port);
-    udp->dst_port_be = host_to_be16(dst_port);
-    udp->length_be = host_to_be16(static_cast<uint16_t>(sizeof(UdpHeader) + payload_len));
-    udp->checksum_be = 0; // IPv4 permits zero UDP checksum
-
-    if (payload_len && payload) {
-        kernel::util::kmemcpy(packet + sizeof(UdpHeader), payload, payload_len);
-    }
-    send_ipv4_packet(nic, dst_mac, src_ip, dst_ip, packet, total, protocol);
+    (void)nic;
+    if (protocol != IPPROTO_UDP) return;
+    auto* netif = kernel::net::netif_get(nic_idx_);
+    if (!netif) return;
+    (void)kernel::net::udp_sendto(*netif, dst_mac, mac_,
+                                  src_ip, dst_ip, src_port, dst_port,
+                                  payload, payload_len);
 }
 
 void Service::send_arp_request(kernel::hal::net::NetworkDriverOps& nic,
@@ -1191,12 +1187,14 @@ void Service::handle_udp(kernel::hal::net::NetworkDriverOps& nic,
                          uint32_t src_ip, uint16_t src_port,
                          uint32_t, uint16_t dst_port,
                          const uint8_t* payload, size_t payload_len) noexcept {
-    if (dst_port == UDP_PORT_DHCP_CLIENT) {
-        handle_dhcp(nic, src_ip, payload, payload_len);
+    // Skip ports owned by a registered UdpListener — those are
+    // dispatched ahead of the eth-catch-all path inside Netif so we'd
+    // double-deliver if we processed them here too.
+    if (auto* nif = kernel::net::netif_get(nic_idx_); nif && nif->udp_port_claimed(dst_port)) {
         return;
     }
-    if (dst_port == UDP_PORT_TSV_UPLOAD) {
-        handle_tsv_upload(payload, payload_len);
+    if (dst_port == UDP_PORT_DHCP_CLIENT) {
+        handle_dhcp(nic, src_ip, payload, payload_len);
         return;
     }
     if (dst_port != udp_port_ || !configured()) return;
@@ -1398,6 +1396,7 @@ void Service::thread_entry(void* arg) {
         return;
     }
     netif->register_listener(self);
+    netif->register_udp_listener(self);
     for (;;) {
         self->maybe_drive_dhcp(*nic);
         (void)netif->poll(8);
