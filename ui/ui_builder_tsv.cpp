@@ -99,6 +99,12 @@ enum class BuilderEvent : uint8_t {
     Click,
     Change,
     Timer,
+    // D15: long-press gesture. BuilderButton emits this instead of
+    // Click when the operator holds for ≥ 500 ms before release (and
+    // less than spec_.hold_ms — otherwise D18's hold-to-confirm fires
+    // the normal Click). TSV records target via
+    // `action widget=X event=long_press target=...`.
+    LongPress,
 };
 
 struct ActionSpec {
@@ -341,6 +347,7 @@ BuilderEvent parse_event(const char* s) {
     if (strcmp(s, "click") == 0) return BuilderEvent::Click;
     if (strcmp(s, "change") == 0) return BuilderEvent::Change;
     if (strcmp(s, "timer") == 0) return BuilderEvent::Timer;
+    if (strcmp(s, "long_press") == 0) return BuilderEvent::LongPress;
     return BuilderEvent::None;
 }
 
@@ -3388,10 +3395,19 @@ public:
 
     void poll_bind_dirty() override {
         // A button's visual state changes when: (a) its bound label text
-        // changes, (b) active_if flips, or (c) the active page changes
-        // (affects the "you are here" highlight on goto: targets).
-        // Compare each against the cached state and mark_dirty only on
-        // change.
+        // changes, (b) active_if flips, (c) the active page changes
+        // (affects the "you are here" highlight on goto: targets), or
+        // (d) C12's post-click flash expires.
+        // (d): if a flash deadline is set and now passes it, drop it
+        //      and mark dirty so the bg paints back to normal.
+        if (flash_deadline_ns_ != 0) {
+            if (auto* timer = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr) {
+                if (timer->get_system_time_ns() >= flash_deadline_ns_) {
+                    flash_deadline_ns_ = 0;
+                    mark_dirty();
+                }
+            }
+        }
         char label_buf[MAX_FIELD_LEN] = {};
         const char* label = spec_.text;
         if (bind_ != BindKind::None) {
@@ -3435,6 +3451,13 @@ public:
         if (hold_start_ns_ != 0) {
             bg = Color(245, 158, 11);  // tailwind amber-500
             highlight_border = true;
+        }
+        // C12: post-click flash. After a successful click, brighten
+        // the bg for 200 ms so the operator sees the tap registered
+        // even on pages whose work runs offload (and the bound state
+        // wouldn't otherwise refresh visibly until the next tick).
+        else if (flash_deadline_ns_ != 0) {
+            bg = bright_bg_;
         }
         set_colors(bg, bg, Color(bg.r / 2, bg.g / 2, bg.b / 2), fg_);
 
@@ -3519,22 +3542,33 @@ public:
             // the configured hold_ms elapsed. zero hold_ms keeps the
             // single-tap behaviour unchanged.
             bool fire = true;
-            if (spec_.hold_ms > 0 && hold_start_ns_ != 0) {
-                if (auto* timer = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr) {
-                    const uint64_t now = timer->get_system_time_ns();
-                    const uint64_t elapsed_ns = now - hold_start_ns_;
-                    const uint64_t need_ns = static_cast<uint64_t>(spec_.hold_ms) * 1'000'000ULL;
-                    if (elapsed_ns < need_ns) fire = false;
-                } else {
-                    fire = false;  // can't time — fail safe (no fire)
-                }
+            uint64_t elapsed_ns = 0;
+            auto* timer = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
+            if (hold_start_ns_ != 0 && timer) {
+                elapsed_ns = timer->get_system_time_ns() - hold_start_ns_;
+            }
+            if (spec_.hold_ms > 0) {
+                const uint64_t need_ns = static_cast<uint64_t>(spec_.hold_ms) * 1'000'000ULL;
+                if (elapsed_ns < need_ns) fire = false;
             }
             hold_start_ns_ = 0;
             mark_dirty();
             if (fire) {
-                if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
-                    run_action_target(target);
+                // C12: 200 ms post-click flash.
+                if (timer) flash_deadline_ns_ = timer->get_system_time_ns() + 200'000'000ULL;
+                // D15: long-press routes to event=long_press when the hold
+                // lasted ≥ 500 ms but didn't trip the D18 hold_ms gate.
+                // Fires INSTEAD of (not in addition to) the click. Falls
+                // back to Click when no long_press action is registered.
+                const bool long_pressed = elapsed_ns >= 500'000'000ULL && spec_.hold_ms == 0;
+                const char* target = nullptr;
+                if (long_pressed) {
+                    target = action_target_for_widget(spec_.id, BuilderEvent::LongPress, spec_.action);
                 }
+                if (!target) {
+                    target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action);
+                }
+                if (target) run_action_target(target);
             }
         } else if (event.type == kernel::ui::EventType::TouchUp) {
             // Release outside the button cancels the hold visualisation.
@@ -3569,6 +3603,10 @@ private:
     // TouchDown inside the button, cleared on TouchUp / TouchMove-off /
     // boot. Compared against spec_.hold_ms at release.
     uint64_t hold_start_ns_ = 0;
+    // C12: post-click flash deadline (ns since boot). When non-zero the
+    // button renders with bright_bg_; poll_bind_dirty clears the field
+    // and marks dirty once the deadline passes.
+    uint64_t flash_deadline_ns_ = 0;
 };
 
 class BuilderPanel final : public Panel {
