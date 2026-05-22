@@ -2699,6 +2699,20 @@ void set_active_page(int idx) {
 // resolve unambiguously.
 static int g_active_dialog = -1;
 
+// C11: global text-scale boost. Added to each widget's spec_.text_scale
+// at render time. Default 0 = unchanged. Operators with bifocals toggle
+// via the `ui_scale` CLI verb. Overflow risk acknowledged: at boost=1
+// every scale=1 label renders as scale=2 (16x32 glyphs) and may clip
+// the widget's declared bounds. Readability over pixel-perfect layout.
+// Plain int — read by the UI render thread, written by the cli thread.
+// AArch64 single-copy-atomicity covers a 4-byte aligned load/store.
+static uint32_t g_text_scale_boost = 0;
+
+uint32_t effective_text_scale(uint32_t spec_scale) {
+    const uint32_t base = spec_scale > 0 ? spec_scale : 1u;
+    return base + g_text_scale_boost;
+}
+
 void set_focus_widget(Widget* widget) {
     if (!widget) return;
     for (uint32_t i = 0; i < g_focusable_count; ++i) {
@@ -3303,7 +3317,7 @@ public:
             fg = Color(0xEF, 0x44, 0x44);
         }
         fb.fill_rect(x_, y_, width_, height_, bg_);
-        const uint32_t scale = spec_.text_scale > 0 ? spec_.text_scale : 1u;
+        const uint32_t scale = effective_text_scale(spec_.text_scale);
         int32_t draw_x = x_;
         if (spec_.align != Align::Left) {
             const int32_t text_w = static_cast<int32_t>(strlen(text) * 8U * scale);
@@ -3473,7 +3487,7 @@ public:
         // If the spec asked for scaled label text, bypass the base Button
         // renderer's draw_text call by painting the box ourselves and then
         // drawing label with draw_text_scaled.
-        const uint32_t scale = spec_.text_scale > 0 ? spec_.text_scale : 1u;
+        const uint32_t scale = effective_text_scale(spec_.text_scale);
         if (scale > 1) {
             fb.fill_rect(x_, y_, width_, height_, bg);
             fb.draw_rect(x_, y_, width_, height_, fg_, 3);
@@ -4838,6 +4852,17 @@ int active_dialog_index() { return g_active_dialog; }
 const char* active_dialog_id() {
     if (g_active_dialog < 0 || static_cast<uint32_t>(g_active_dialog) >= g_page_count) return "";
     return g_pages[g_active_dialog].id;
+}
+
+// C11: text-scale boost accessors.
+uint32_t text_scale_boost() { return g_text_scale_boost; }
+void set_text_scale_boost(uint32_t boost) {
+    // Clamp to a sensible upper bound. scale=3 already renders 24x48 px
+    // glyphs; +2 boost would push every widget's text past most page
+    // panel widths. The CLI verb refuses higher values but a stray
+    // caller still gets clamped here as a backstop.
+    g_text_scale_boost = boost > 2 ? 2 : boost;
+    if (g_root_widget) g_root_widget->mark_subtree_dirty();
 }
 
 // E21: introspection accessors for the cli `test ui` smoke harness.
