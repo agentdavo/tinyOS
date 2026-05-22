@@ -81,7 +81,7 @@ with open(os.path.join(OUT_DIR, "pages.tsv"), "w", encoding="utf-8") as f:
     for pid, title in PAGES:
         f.write(f"{pid}\t{title}\n")
 
-SCALE = 6
+SCALE = int(os.environ.get("UI_DUMP_SCALE", "1"))
 PROMPT = b"miniOS> "
 BEGIN_RE = re.compile(rb"UI_DUMP_BEGIN\s+(\d+)\s+(\d+)\s+(\d+)\n")
 
@@ -286,7 +286,12 @@ try:
 
         proc.stdin.write(f"ui_dump {SCALE}\r".encode("ascii"))
         proc.stdin.flush()
-        payload, tail = read_dump(fd, 30.0)
+        # SCALE=1 (native FB capture) writes 1080*1920*3 = 6.2 MB per page
+        # via direct uart->putc; measured ~25 s per page on QEMU TCG.
+        # SCALE=6 (downsampled) measured ~2 s. Pick a timeout that
+        # accommodates the largest realistic frame size.
+        const_timeout = 60.0 if SCALE <= 1 else 30.0
+        payload, tail = read_dump(fd, const_timeout)
 
         ppm_path = os.path.join(OUT_DIR, f"{page}.ppm")
         png_path = os.path.join(OUT_DIR, f"{page}.png")
