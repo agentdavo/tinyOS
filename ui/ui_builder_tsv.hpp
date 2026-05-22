@@ -67,11 +67,14 @@ namespace ui_builder {
 
 // embedded_ui.tsv has ~953 widgets / ~169 actions raw, and 20 pages each
 // `include page=bottom_nav` — include_page_into_current clones bottom_nav's
-// 8 widgets and 7 actions into every including page, adding ~160 widgets
-// and ~140 actions. Working set is ~1113 widgets / ~309 actions; the prior
-// 256 / 128 caps aborted load_tsv mid-`machine_view` so no Widget* was
-// ever created and CI screenshots all rendered to a blank framebuffer.
-constexpr uint32_t MAX_WIDGETS = 1280;
+// widgets and actions into every including page. As bottom_nav grew to
+// host the D17 status strip (10 labels: alarms/mode/wcs/program/page),
+// the working set climbed from ~1113 to ~1313 widgets and overran the
+// previous MAX_WIDGETS=1280 cap — load_tsv aborted halfway through and
+// every page rendered the blank-fallback. Bump to 1536 for headroom;
+// add ~140 KB to .bss against the 128 MB image. The next time
+// bottom_nav grows another row, raise here.
+constexpr uint32_t MAX_WIDGETS = 1536;
 constexpr uint32_t MAX_PAGES = 32;
 constexpr uint32_t MAX_ACTIONS = 384;
 constexpr uint32_t MAX_CHILD_LINKS = 256;

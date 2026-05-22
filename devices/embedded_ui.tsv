@@ -82,6 +82,22 @@ theme	page=#0A0F1A	panel=#111827	inset=#0F172A	border=#334155	border_subtle=#1F2
 # ============================================================
 page	id=bottom_nav	title=NavBar
 panel	id=nav_root	x=0	y=1740	w=1080	h=180	bg=#0F172A	border=#1F2937
+# D17: page-spanning status strip at the top of every nav bar. Sits in the
+# 20 px band between the nav panel border and the row of nav buttons.
+# Operators get alarms/mode/WCS/program visible from any page without
+# having to switch back to the dashboard. Labels are scale=1 (8x16) —
+# the strip is intentionally narrow so the seven nav buttons keep their
+# 140 px hit boxes.
+label	id=nav_st_alarms_lbl	parent=nav_root	x=20	y=1740	w=80	h=18	text=ALARMS	color=#94A3B8	bg=#0F172A	scale=1
+label	id=nav_st_alarms_v	parent=nav_root	x=104	y=1740	w=60	h=18	text=0	color=#86EFAC	bg=#0F172A	bind=alarm:active_count	align=center	scale=1
+label	id=nav_st_mode_lbl	parent=nav_root	x=180	y=1740	w=60	h=18	text=MODE	color=#94A3B8	bg=#0F172A	scale=1
+label	id=nav_st_mode_v	parent=nav_root	x=244	y=1740	w=160	h=18	text=READY	color=#BAE6FD	bg=#0F172A	bind=mode	scale=1
+label	id=nav_st_wcs_lbl	parent=nav_root	x=420	y=1740	w=40	h=18	text=WCS	color=#94A3B8	bg=#0F172A	scale=1
+label	id=nav_st_wcs_v	parent=nav_root	x=464	y=1740	w=80	h=18	text=G54	color=#DDD6FE	bg=#0F172A	bind=wcs	scale=1
+label	id=nav_st_prog_lbl	parent=nav_root	x=560	y=1740	w=80	h=18	text=PROGRAM	color=#94A3B8	bg=#0F172A	scale=1
+label	id=nav_st_prog_v	parent=nav_root	x=644	y=1740	w=240	h=18	text=---	color=#F8FAFC	bg=#0F172A	bind=program_name	scale=1
+label	id=nav_st_page_lbl	parent=nav_root	x=900	y=1740	w=60	h=18	text=PAGE	color=#94A3B8	bg=#0F172A	scale=1
+label	id=nav_st_page_v	parent=nav_root	x=964	y=1740	w=116	h=18	text=---	color=#FBBF24	bg=#0F172A	bind=page_name	scale=1
 button	id=nav_dashboard	parent=nav_root	x=20	y=1760	w=140	h=140	text=HOME	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=900
 button	id=nav_jog	parent=nav_root	x=170	y=1760	w=140	h=140	text=JOG	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=910
 button	id=nav_mdi	parent=nav_root	x=320	y=1760	w=140	h=140	text=MDI	bg=#1E293B	color=#F8FAFC	border=#475569	scale=2	focus=920
