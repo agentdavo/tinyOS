@@ -208,8 +208,8 @@
  * ========================================================================= */
 const BIND_GROUPS = {
   Machine: ["mode","alarm","prompt","units","wcs","cycle_progress","torque",
-            "feed","spindle","spindle_rpm","spindle_load","block_current",
-            "block_next","runtime","parts","page","page_name",
+            "feed","spindle","spindle_rpm","spindle_load","spindle_override",
+            "block_current","block_next","runtime","parts","page","page_name",
             "selected_axis","jog_increment","operator_mode"],
   DRO: ["axis:x","axis:y","axis:z","axis:a",
         "axis:x:cmd","axis:y:cmd","axis:z:cmd","axis:a:cmd",
@@ -227,6 +227,8 @@ const BIND_GROUPS = {
             "program:5:name","program:5:size","program:5:selected","program:5:loaded",
             "program:6:name","program:6:size","program:6:selected","program:6:loaded",
             "program:7:name","program:7:size","program:7:selected","program:7:loaded"],
+  Restart: ["restart:pending","restart:line","restart:tool","restart:wcs",
+            "restart:feed","restart:spindle","restart:coolant"],
   Homing: ["homing:axis","homing:method","homing:state","homing:message",
            "homing:fast","homing:slow"],
   Offsets: ["work_name","work_offset:x","work_offset:y","work_offset:z","work_offset:a",
@@ -257,7 +259,17 @@ const BIND_GROUPS = {
           "probe:wizard:result_valid"],
   MDI: ["mdi:input","mdi:last","mdi:status","mdi:message","mdi:depth"],
   EtherCAT: ["ec:state","ec:fault","ec:slaves","ec:miss","ec:trips",
-             "ec:p99","ec:max","ec:period","ec:cycles","ec:tx","ec:rx"],
+             "ec:p99","ec:max","ec:period","ec:cycles","ec:tx","ec:rx",
+             "ec:dc_fault","ec:dc_drift_max","ec:dc_drift_last",
+             "ec:dc_samples","ec:dc_trips"],
+  Channel: ["channel:0:feed","channel:1:feed",
+            "channel:0:spindle","channel:1:spindle",
+            "channel:0:barrier_ms","channel:1:barrier_ms"],
+  Scheduler: ["scheduler:state","scheduler:active","scheduler:jobcount",
+              "pallet:0:id","pallet:0:status","pallet:0:program","pallet:0:cycles",
+              "pallet:1:id","pallet:1:status","pallet:1:program","pallet:1:cycles",
+              "pallet:2:id","pallet:2:status","pallet:2:program","pallet:2:cycles",
+              "pallet:3:id","pallet:3:status","pallet:3:program","pallet:3:cycles"],
   Alarms: ["alarm:active_count","alarm:history_count",
            "alarm:0:id","alarm:0:sev","alarm:0:axis","alarm:0:msg","alarm:0:time",
            "alarm:1:id","alarm:1:sev","alarm:1:axis","alarm:1:msg","alarm:1:time",
@@ -290,6 +302,8 @@ const BIND_GROUPS = {
                "tc:current_pod","tc:current_st","tc:current_lbl",
                "tc:target_pod","tc:target_st","tc:target_lbl",
                "tc:step","tc:total"],
+  Diagnostic: ["lookahead:0","lookahead:1","lookahead:max",
+               "klog:tail","tcp:status"],
 };
 const ALL_BINDS = new Set(Object.values(BIND_GROUPS).flat());
 
@@ -343,6 +357,17 @@ const ACTION_GROUPS = {
            "alarm:clear_history"],
   View: ["view:toolpath:toggle","view:toolpods:toggle","view:reset",
          "view:zoom:in","view:zoom:out"],
+  // A4 — dialog Z-layer. dialog:show:<id> opens the dialog page on top
+  // of the current page; dialog:close hides whichever dialog is active.
+  Dialog: ["dialog:close"],
+  // Phase B — lights-out scheduler / job queue. Mirrors the CLI verbs
+  // (job_run / job_pause / etc.).
+  Scheduler: ["jobs:run","jobs:pause","jobs:resume","jobs:skip","jobs:abort"],
+  // Restart wizard transport — confirm commits the staged restart row
+  // (line / tool / wcs / feed / spindle / coolant) to the active
+  // program; cancel discards it. The staged values themselves are
+  // committed via the commit:restart:line input target above.
+  Restart: ["restart:confirm","restart:cancel"],
 };
 function actionIsValid(target, doc) {
   if (!target) return true;
@@ -360,6 +385,14 @@ function actionIsValid(target, doc) {
   if (target.startsWith("homing:axis:")) return true;
   if (target.startsWith("probe:wizard:select:")) return true;
   if (target.startsWith("cal:pec:axis:")) return true;
+  // A4 dialog:show:<id> — id must match a declared page (which the
+  // kernel treats as a dialog if it was declared with `dialog id=` rather
+  // than `page id=`). The editor doesn't yet distinguish the two in
+  // storage, so we accept any defined id.
+  if (target.startsWith("dialog:show:")) {
+    const id = target.slice("dialog:show:".length);
+    return doc.pages.some(p => p.id === id);
+  }
   for (const list of Object.values(ACTION_GROUPS))
     if (list.includes(target)) return true;
   return false;
@@ -1282,9 +1315,15 @@ function renderInspector() {
 
   addRow("bind", mkSelect("bind", null, BIND_GROUPS, (v) => ALL_BINDS.has(v)));
 
-  // action: include goto:<page> options
+  // action: include goto:<page> and dialog:show:<page> options. The
+  // kernel doesn't distinguish "regular page" from "dialog" at the
+  // editor's storage layer — dialogs are pages declared with the
+  // `dialog` record type. We expose dialog:show for every page id so
+  // designers can wire alarms / confirm panels without hand-editing.
   const actionGroups = { ...ACTION_GROUPS };
   actionGroups.Goto = doc.pages.map(pg => "goto:" + pg.id);
+  actionGroups.Dialog = ["dialog:close",
+                        ...doc.pages.map(pg => "dialog:show:" + pg.id)];
   addRow("action", mkSelect("action", null, actionGroups, (v) => actionIsValid(v, doc)));
 
   addRow("focus", mkInput("focus", "number"));
@@ -1341,6 +1380,32 @@ function renderInspector() {
       saveLocal();
     });
     addRow("layout", sel);
+
+    // B8 layout overrides — only meaningful for grid (cols/rows) or any
+    // multi-child layout (spacing/pad). Stored as opaque strings; kernel
+    // parses with simple_atoi so an empty value = use the default.
+    addRow("cols", mkInput("cols", "number", {
+      min: 1, title: "B8: grid layout column count (number of children per row). Defaults to ceil(sqrt(N))."
+    }));
+    addRow("rows", mkInput("rows", "number", {
+      min: 1, title: "B8: grid layout row count. Defaults to ceil(N / cols)."
+    }));
+    addRow("spacing", mkInput("spacing", "number", {
+      min: 0, title: "B8: inter-child gap in pixels. Default 12 px. Alias: gap=."
+    }));
+    addRow("pad", mkInput("pad", "number", {
+      title: "B8: container inner padding in pixels. Default 16 px; -1 = use default."
+    }));
+  }
+
+  // D18: hold-to-confirm on buttons. The button must be held continuously
+  // for `hold_ms` before the action fires (E-STOP / ABORT safety pattern).
+  // 0 / unset = instant click. The kernel paints a red "keep holding"
+  // overlay while the timer counts up.
+  if (rec.kind === "button") {
+    addRow("hold", mkInput("hold", "number", {
+      min: 0, title: "D18 hold-to-confirm: ms the user must keep the button pressed before the action fires. 0 or empty = instant tap."
+    }));
   }
 
   const alignSel = document.createElement("select");
@@ -1377,6 +1442,13 @@ function renderInspector() {
   renderActionsPanel();
 }
 
+// D15 action events. `click` is the default tap event; `long_press`
+// fires when the user holds the button for >= 500 ms without releasing
+// (separate from D18's `hold=<ms>` attribute which gates the click
+// itself). Any other text is preserved verbatim but flagged invalid
+// so designers notice typos.
+const ACTION_EVENTS = ["click", "long_press"];
+
 function renderActionsPanel() {
   const body = $("#actionstable tbody");
   body.innerHTML = "";
@@ -1386,17 +1458,41 @@ function renderActionsPanel() {
     const tr = document.createElement("tr");
     for (const key of ["widget","event","target"]) {
       const td = document.createElement("td");
-      const inp = document.createElement("input");
-      inp.type = "text";
-      inp.value = r.fields[key] || "";
-      inp.style.width = "100%";
-      inp.addEventListener("input", () => {
-        pushUndo();
-        r.fields[key] = inp.value;
-        saveLocal();
-      });
-      if (key === "target" && r.fields.target && !actionIsValid(r.fields.target, doc)) {
-        inp.classList.add("invalid");
+      let inp;
+      if (key === "event") {
+        inp = document.createElement("select");
+        for (const v of ACTION_EVENTS) {
+          const o = document.createElement("option");
+          o.value = v; o.textContent = v;
+          inp.appendChild(o);
+        }
+        const cur = r.fields[key] || "click";
+        if (!ACTION_EVENTS.includes(cur)) {
+          const o = document.createElement("option");
+          o.value = cur; o.textContent = cur + " (custom)";
+          inp.appendChild(o);
+          inp.classList.add("invalid");
+        }
+        inp.value = cur;
+        inp.style.width = "100%";
+        inp.addEventListener("change", () => {
+          pushUndo();
+          r.fields[key] = inp.value;
+          saveLocal();
+        });
+      } else {
+        inp = document.createElement("input");
+        inp.type = "text";
+        inp.value = r.fields[key] || "";
+        inp.style.width = "100%";
+        inp.addEventListener("input", () => {
+          pushUndo();
+          r.fields[key] = inp.value;
+          saveLocal();
+        });
+        if (key === "target" && r.fields.target && !actionIsValid(r.fields.target, doc)) {
+          inp.classList.add("invalid");
+        }
       }
       td.appendChild(inp);
       tr.appendChild(td);

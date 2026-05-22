@@ -43,9 +43,9 @@ No build step, no CDN fetches at runtime. Everything ships under
 Grouped exactly as in the inspector:
 
 - **Machine** mode, alarm, prompt, units, wcs, cycle_progress, torque,
-  feed, spindle, spindle_rpm, spindle_load, block_current, block_next,
-  runtime, parts, page, page_name, selected_axis, jog_increment,
-  operator_mode (0=AUTO, 1=MDI, 2=JOG, 3=SETUP)
+  feed, spindle, spindle_rpm, spindle_load, spindle_override,
+  block_current, block_next, runtime, parts, page, page_name,
+  selected_axis, jog_increment, operator_mode (0=AUTO, 1=MDI, 2=JOG, 3=SETUP)
 - **DRO** axis:{x,y,z,a}, axis:{x,y,z,a}:{cmd,act,dtg,homed,near_limit}
   (`near_limit` is 1 when the axis sits within 10% of either soft limit;
   pair with `active_if=axis:x:near_limit:1` on a label to colour the
@@ -85,7 +85,27 @@ Grouped exactly as in the inspector:
   otherwise; `points` is the count of measured stars in the volumetric
   fit (sphere_compute_errors needs >= 7 to succeed).
 - **MDI** mdi:{input,last,status,message,depth}
-- **EtherCAT** ec:{state,fault,slaves,miss,trips,p99,max,period,cycles,tx,rx}
+- **EtherCAT** ec:{state,fault,slaves,miss,trips,p99,max,period,cycles,tx,rx,
+  dc_fault,dc_drift_max,dc_drift_last,dc_samples,dc_trips}. The `dc_*`
+  group surfaces the EtherCAT distributed-clock drift sentinel: `dc_fault`
+  cycles OK/DRIFT/LOST, the two drift values are in ns, `dc_samples` is
+  the rolling window size, `dc_trips` counts how many times the master
+  has tripped on excessive drift.
+- **Channel overrides** channel:{0,1}:{feed,spindle,barrier_ms}. `feed` /
+  `spindle` are permille (1000 = 100%); `barrier_ms` is the dual-channel
+  sync barrier wait time in ms (0 = no barrier).
+- **Restart wizard** restart:{pending,line,tool,wcs,feed,spindle,coolant}.
+  `pending` is the staged restart state (1 = an entry exists); the others
+  are the staged values that `commit:restart:line` applies when fired.
+- **Lights-out scheduler** scheduler:{state,active,jobcount} and
+  pallet:0..3:{id,status,program,cycles}. `state` cycles
+  IDLE / RUNNING / PAUSED / FAULT; `active` is the index of the running
+  job (or -1); `jobcount` is the queue depth. Pallet rows show the
+  4-slot pallet rotation with cycle counters.
+- **Diagnostic** lookahead:{0,1,max}, klog:tail, tcp:status. The
+  lookahead values are the per-channel block-buffer depth; `klog:tail`
+  is the most-recent kernel-log line (single-line, truncated to fit a
+  label); `tcp:status` reports the TCP listener / connection table state.
 - **View** view_toolpath, view_toolpods (machine_view page overlay flags)
 - **Network** net:{nic,ip,gateway,mac,dhcp,link,pending_ip,pending_gateway,
   pending_ping,ping_target,ping_result,ping_rtt,rx_requests,tx_responses,
@@ -180,6 +200,18 @@ Grouped exactly as in the inspector:
 - `view:{reset,zoom:in,zoom:out}` — camera primitives on machine_view
 - `alarm:ack:N` (N=0..3) — acknowledge active alarm in row N
 - `alarm:clear_history` — wipe the alarm history queue
+- `dialog:show:<page_id>` / `dialog:close` (A4) — show / hide a page
+  declared with the `dialog` record type. Dialog pages render on top of
+  the active page in a modal-ish Z-layer; `close` hides whichever one
+  is active. The editor exposes one `dialog:show:<id>` per defined page
+  in the action picker — pick the page that is meant to behave modally.
+- `jobs:{run,pause,resume,skip,abort}` — lights-out scheduler transport
+  (mirrors the CLI `job_*` verbs). All gated by master deadline-fault.
+- `restart:{confirm,cancel}` — restart-wizard transport. `confirm`
+  commits the staged restart row (line / tool / wcs / feed / spindle /
+  coolant) to the active program; `cancel` discards it. The staged
+  values themselves are loaded via the `commit:restart:line` input
+  target.
 
 ## Attributes
 
@@ -194,6 +226,21 @@ Grouped exactly as in the inspector:
   Example: `active_if=wcs:0` highlights when G54 is active;
   `active_if=selected_axis:2` highlights when Z is the jog axis.
   The inspector exposes this as a bind-picker + integer value pair.
+- `hold=<ms>` (D18) — buttons only. The user must keep the button pressed
+  continuously for `<ms>` milliseconds before the action fires; release
+  before that cancels. The kernel paints a red "keep holding" overlay
+  while the timer counts up. Used on destructive actions (E-STOP, ABORT,
+  clear-fault). 0 or unset = instant tap.
+- `cols=<n>`, `rows=<n>`, `spacing=<px>` (alias `gap=`), `pad=<px>` (B8) —
+  panel / container layout overrides. With layout=grid, `cols` × `rows`
+  defines the cell matrix (defaults to ceil(sqrt(child_count))). `spacing`
+  is the inter-child gap; `pad` is the container's inner padding. -1 in
+  any of these means "use the kernel default" (12 spacing, 16 pad).
+- `event=<name>` (D15) — on action records. `click` is the default tap;
+  `long_press` fires when the user holds the button >= 500 ms without
+  releasing. Distinct from `hold=` — `hold=` gates the click itself,
+  while `long_press` is a second action wired to the same widget that
+  fires only on a long hold.
 
 ## URL params
 
