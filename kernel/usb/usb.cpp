@@ -2,6 +2,7 @@
 
 #include "usb.hpp"
 #include "miniOS.hpp"
+#include "core.hpp"
 #include "util.hpp"
 
 namespace kernel::usb {
@@ -10,10 +11,15 @@ namespace {
 kernel::hal::USBHostControllerOps* g_usb_ops = nullptr;
 kernel::hal::usb::ControllerInfo g_info{};
 bool g_initialized = false;
+// Guards the g_usb_ops/g_info/g_initialized triple. The boot probe and a CLI
+// `usb` dump can touch these from different threads; without this the
+// check-then-set in ensure_initialized double-inits and g_info is torn.
+kernel::core::Spinlock g_usb_lock;
 
 void ensure_initialized() noexcept {
+    kernel::core::ScopedLock lock(g_usb_lock);
     if (g_initialized || !kernel::g_platform) return;
-    auto* volatile stable_ops = g_usb_ops ? g_usb_ops : kernel::g_platform->get_usb_ops();
+    auto* stable_ops = g_usb_ops ? g_usb_ops : kernel::g_platform->get_usb_ops();
     auto* ops = stable_ops;
     if (!ops) return;
     g_usb_ops = ops;
@@ -48,7 +54,8 @@ const char* port_speed_name(kernel::hal::usb::PortSpeed speed) noexcept {
 } // namespace
 
 bool init(kernel::hal::USBHostControllerOps* ops) noexcept {
-    auto* volatile stable_ops = ops;
+    kernel::core::ScopedLock lock(g_usb_lock);
+    auto* stable_ops = ops;
     g_usb_ops = ops;
     g_info = {};
     g_initialized = false;
@@ -66,10 +73,10 @@ bool initialized() noexcept {
 }
 
 kernel::hal::usb::ControllerInfo controller_info() noexcept {
-    ensure_initialized();
-    auto* volatile stable_ops = g_usb_ops;
-    if (stable_ops) g_info = stable_ops->get_info();
-    return g_info;
+    ensure_initialized();   // locks/unlocks internally
+    kernel::core::ScopedLock lock(g_usb_lock);
+    if (g_usb_ops) g_info = g_usb_ops->get_info();
+    return g_info;          // copy returned to caller
 }
 
 bool port_status(uint32_t one_based_port, kernel::hal::usb::PortStatus& out) noexcept {

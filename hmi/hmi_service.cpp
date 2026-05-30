@@ -385,6 +385,12 @@ bool Service::ping_ipv4_async(uint32_t dst_ip, uint32_t timeout_ms) noexcept {
     return begin_ping(dst_ip, timeout_ms);
 }
 
+// THREAD CONTRACT: this is the BLOCKING ping — it spins (yielding) until the
+// HMI worker thread drives the ICMP state machine and RX poll to completion.
+// It MUST therefore be called from a DIFFERENT thread than the HMI worker
+// (today: the CLI thread). Calling it from the worker itself would deadlock —
+// the loop driving process_ping()/poll never runs. Use ping_ipv4_async() from
+// the worker / operator_api path.
 Service::PingResult Service::ping_ipv4(uint32_t dst_ip, uint32_t timeout_ms, uint32_t& rtt_ms) noexcept {
     if (dst_ip == 0) return PingResult::BadAddress;
     if (!begin_ping(dst_ip, timeout_ms)) return PingResult::Busy;
