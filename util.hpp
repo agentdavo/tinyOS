@@ -36,6 +36,7 @@ static inline void cpu_relax() noexcept {
 // This makes them visible to C++ code in the global namespace.
 extern "C" {
     void* memcpy(void* dest, const void* src, size_t count);
+    void* memmove(void* dest, const void* src, size_t count);
     void* memset(void* dest, int ch, size_t count);
     int memcmp(const void* ptr1, const void* ptr2, size_t count);
     size_t strlen(const char* str);

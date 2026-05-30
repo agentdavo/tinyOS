@@ -26,6 +26,26 @@ void* __memcpy_chk(void* dest_ptr, const void* src_ptr, size_t count, size_t /*d
     return memcpy(dest_ptr, src_ptr, count);
 }
 
+// Overlap-safe copy. The compiler is free to lower an overlapping struct/array
+// assignment to a memmove call; without this stub that either fails to link or
+// (worse) silently resolves to the forward-only memcpy and corrupts on
+// overlap. Copy backward when the regions overlap with dest above src.
+void* memmove(void* dest_ptr, const void* src_ptr, size_t count) {
+    auto* dest = static_cast<unsigned char*>(dest_ptr);
+    const auto* src = static_cast<const unsigned char*>(src_ptr);
+    if (dest == src || count == 0) return dest_ptr;
+    if (dest < src) {
+        for (size_t i = 0; i < count; ++i) dest[i] = src[i];
+    } else {
+        for (size_t i = count; i != 0; --i) dest[i - 1] = src[i - 1];
+    }
+    return dest_ptr;
+}
+
+void* __memmove_chk(void* dest_ptr, const void* src_ptr, size_t count, size_t /*dest_len*/) {
+    return memmove(dest_ptr, src_ptr, count);
+}
+
 void* memset(void* dest_ptr, int ch_int, size_t count) {
     auto* dest = static_cast<unsigned char*>(dest_ptr);
     unsigned char ch = static_cast<unsigned char>(ch_int);

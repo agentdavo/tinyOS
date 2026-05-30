@@ -45,7 +45,18 @@ static size_t simple_kernel_heap_ptr = 0;
 // Assuming for now that static constructors using new/delete run after g_simple_heap_lock's constructor.
 static kernel::core::Spinlock g_simple_heap_lock; 
 
+// Best-effort emergency safe-stop hook. Strong definition lives in the motion
+// subsystem (motion.cpp), which drops every axis to a commanded stop + brake
+// engage and trips the EtherCAT masters to QuickStop. Weak here so the kernel
+// still links if motion is configured out; the weak no-op just falls through
+// to the halt. Declared C-linkage so the motion side can provide it plainly.
+extern "C" void minios_emergency_safe_stop() __attribute__((weak));
+extern "C" void minios_emergency_safe_stop() {}
+
 [[noreturn]] static void heap_panic_oom() {
+    // Drive a safe stop BEFORE halting — an OOM on a machine controller must
+    // not leave motors energised under an uncontrolled (now-frozen) kernel.
+    minios_emergency_safe_stop();
     if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
         kernel::g_platform->get_uart_ops()->puts("PANIC: operator new - Out Of Memory!\n");
     }
@@ -132,22 +143,49 @@ extern "C" {
         (void)func; (void)arg; (void)dso_handle; return 0; 
     }
     
-    static kernel::core::Spinlock g_cxa_guard_lock; 
-    
+    static kernel::core::Spinlock g_cxa_guard_lock;
+
+    // Itanium C++ ABI guard for function-local statics. The old implementation
+    // dropped the lock before returning 1, so two cores hitting the same
+    // uninitialised static both saw byte0==0 and both ran the constructor —
+    // a double-construction race on SMP. Use byte0 as the "initialised" flag
+    // (what the compiler tests inline) and byte1 as an "in progress" claim so
+    // exactly one core runs the ctor while the others spin until it finishes.
+    // The ctor runs *outside* the lock (between acquire returning 1 and
+    // release), so the critical sections stay short.
     int __cxa_guard_acquire(uint64_t* guard_object) {
-        kernel::core::ScopedLock lock(g_cxa_guard_lock);
-        if (*reinterpret_cast<volatile uint8_t*>(guard_object) == 0) { 
-            return 1; 
+        volatile uint8_t* gb = reinterpret_cast<volatile uint8_t*>(guard_object);
+        for (;;) {
+            {
+                kernel::core::ScopedLock lock(g_cxa_guard_lock);
+                if (gb[0]) return 0;          // already initialised
+                if (gb[1] == 0) {             // claim the initialisation
+                    gb[1] = 1;
+                    return 1;
+                }
+            }
+            // Another core is mid-initialisation. Spin until it commits
+            // (byte0 set) or aborts (byte1 cleared), then re-evaluate.
+            for (;;) {
+                kernel::core::ScopedLock lock(g_cxa_guard_lock);
+                if (gb[0]) return 0;          // peer finished
+                if (gb[1] == 0) break;        // peer aborted; retry the claim
+            }
         }
-        return 0; 
     }
 
     void __cxa_guard_release(uint64_t* guard_object) {
         kernel::core::ScopedLock lock(g_cxa_guard_lock);
-        *reinterpret_cast<volatile uint8_t*>(guard_object) = 1; 
+        volatile uint8_t* gb = reinterpret_cast<volatile uint8_t*>(guard_object);
+        gb[0] = 1;   // mark initialised (the flag the compiler checks)
+        gb[1] = 0;   // clear the in-progress claim
     }
 
-    void __cxa_guard_abort(uint64_t* guard_object) { (void)guard_object; }
+    void __cxa_guard_abort(uint64_t* guard_object) {
+        kernel::core::ScopedLock lock(g_cxa_guard_lock);
+        volatile uint8_t* gb = reinterpret_cast<volatile uint8_t*>(guard_object);
+        gb[1] = 0;   // clear the claim so a retry can re-attempt init
+    }
     
     [[noreturn]] void _Unwind_Resume() { 
         if (kernel::g_platform && kernel::g_platform->get_uart_ops()) {
