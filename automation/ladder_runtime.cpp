@@ -148,11 +148,23 @@ bool Runtime::load_tsv(const char* buf, size_t len) noexcept {
         const auto type = parse_type(field_value(rest, "type", scratch_a, sizeof(scratch_a)));
         rung.type = type;
         rung.compare = parse_compare(field_value(rest, "compare", scratch_b, sizeof(scratch_b)));
-        kernel::util::k_snprintf(rung.id, sizeof(rung.id), "%s", field_value(rest, "id", scratch_c, sizeof(scratch_c)));
-        kernel::util::k_snprintf(rung.lhs, sizeof(rung.lhs), "%s", field_value(rest, "lhs", scratch_a, sizeof(scratch_a)));
+        // Guard the optional fields: a missing field returns nullptr and
+        // k_snprintf("%s", nullptr) prints the literal "(null)", which would
+        // then drive a registry symbol literally named "(null)". Default to "".
+        {
+            const char* id_v = field_value(rest, "id", scratch_c, sizeof(scratch_c));
+            kernel::util::k_snprintf(rung.id, sizeof(rung.id), "%s", id_v ? id_v : "");
+        }
+        {
+            const char* lhs_v = field_value(rest, "lhs", scratch_a, sizeof(scratch_a));
+            kernel::util::k_snprintf(rung.lhs, sizeof(rung.lhs), "%s", lhs_v ? lhs_v : "");
+        }
         kernel::util::k_snprintf(rung.rhs_symbol, sizeof(rung.rhs_symbol), "%s",
                                  field_value(rest, "rhs_symbol", scratch_b, sizeof(scratch_b)) ? field_value(rest, "rhs_symbol", scratch_b, sizeof(scratch_b)) : "");
-        kernel::util::k_snprintf(rung.out, sizeof(rung.out), "%s", field_value(rest, "out", scratch_c, sizeof(scratch_c)));
+        {
+            const char* out_v = field_value(rest, "out", scratch_c, sizeof(scratch_c));
+            kernel::util::k_snprintf(rung.out, sizeof(rung.out), "%s", out_v ? out_v : "");
+        }
         rung.rhs_value = parse_value(type, field_value(rest, "rhs", scratch_a, sizeof(scratch_a)));
         rung.true_value = parse_value(type, field_value(rest, "true", scratch_b, sizeof(scratch_b)));
         rung.false_value = parse_value(type, field_value(rest, "false", scratch_c, sizeof(scratch_c)));

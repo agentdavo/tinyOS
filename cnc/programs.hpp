@@ -43,7 +43,11 @@ public:
     Store();
 
     size_t count() const noexcept { return count_; }
-    const ProgramEntry& program(size_t idx) const noexcept { return programs_[idx]; }
+    // Precondition: idx < count(). Defensively clamp to the array bound so a
+    // stale/out-of-range index can't read past programs_[] (returns slot 0).
+    const ProgramEntry& program(size_t idx) const noexcept {
+        return programs_[idx < programs_.size() ? idx : 0];
+    }
     size_t selected(size_t channel = 0) const noexcept;
     size_t loaded(size_t channel = 0) const noexcept;
     const ProgramEntry* selected_program(size_t channel = 0) const noexcept;
@@ -71,6 +75,8 @@ public:
 private:
     bool add_seed(const char* name, const char* text) noexcept;
     bool parse_preview(ProgramEntry& entry) noexcept;
+    // Unlocked search for callers that already hold lock_ (e.g. write_program).
+    bool find_by_name_locked(const char* name, size_t& out_idx) const noexcept;
 
     std::array<ProgramEntry, MAX_PROGRAMS> programs_{};
     size_t count_ = 0;

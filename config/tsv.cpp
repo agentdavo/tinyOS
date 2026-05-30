@@ -31,6 +31,9 @@ bool parse_int(std::string_view s, uint64_t& out) noexcept {
         else if (base == 16 && c >= 'A' && c <= 'F') d = 10 + (c - 'A');
         else return false;
         if (d >= static_cast<uint64_t>(base)) return false;
+        // Reject overflow rather than wrap — a wrapped acc could otherwise
+        // sneak past get_u32's `> 0xFFFFFFFF` range check as a small value.
+        if (acc > (UINT64_MAX - d) / static_cast<uint64_t>(base)) return false;
         acc = acc * base + d;
     }
     out = acc;
@@ -84,7 +87,12 @@ bool parse(const char* buf, size_t len, RecordCallback cb, void* ctx) noexcept {
                 std::string_view tok(&buf[ts], te - ts);
                 if (first) { rec.type = tok; first = false; }
                 else {
-                    if (rec.num_fields >= MAX_FIELDS) return false;
+                    // A line with more than MAX_FIELDS fields used to abort the
+                    // ENTIRE file (return false), silently dropping every
+                    // record after one overlong line. Stop adding fields for
+                    // this record but still dispatch what we parsed and move on
+                    // to the next line.
+                    if (rec.num_fields >= MAX_FIELDS) break;
                     // Split on first '='.
                     size_t eq_pos = 0;
                     while (eq_pos < tok.size() && tok[eq_pos] != '=') ++eq_pos;
