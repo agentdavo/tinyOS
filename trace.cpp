@@ -30,29 +30,33 @@ bool TraceManager::record_event(const kernel::core::TCB* tcb, EventType type,
     // or if more complex, it should have its own kernel::core::Spinlock member.
     // For now, let's use the simpler approach from your previous code.
 
-    size_t idx = buffer_idx_.fetch_add(1, std::memory_order_relaxed);
-    // Simple wrap-around for ring buffer behavior
-    idx %= MAX_TRACE_EVENTS; 
+    // Lock the slot write so concurrent cores don't tear the multi-field
+    // TraceEvent. ISR-safe in case a trace is ever recorded from ISR context.
+    kernel::core::ScopedISRLock guard(lock_);
 
-    // buffer_[idx] = TraceEvent { ... } // This direct assignment can be problematic if TraceEvent has non-trivial members
-    // Corrected approach:
+    size_t idx = buffer_idx_.fetch_add(1, std::memory_order_relaxed);
+    idx %= MAX_TRACE_EVENTS;   // ring-buffer wrap
+
     TraceEvent& current_event = buffer_[idx];
     current_event.timestamp_us = kernel::g_platform->get_timer_ops()->get_system_time_us();
     current_event.type = type;
     current_event.tcb = tcb;
-
-    // Copy name safely if name is std::array<char, KERNEL_MAX_NAME_LENGTH> in TraceEvent
-    // If TraceEvent.name is std::string_view, this is fine:
-    current_event.name = name_sv; 
-    // If TraceEvent.name is char array like in my proposed trace.hpp:
-    // kernel::util::safe_strcpy(current_event.name_copy.data(), name_sv.data(), current_event.name_copy.size());
-    
+    // Copy the name into owned storage — never hold a view into the caller's
+    // buffer (it may be a temporary gone by dump time). Use the view length,
+    // not strlen: a string_view isn't guaranteed NUL-terminated.
+    size_t nlen = name_sv.length();
+    if (nlen > sizeof(current_event.name) - 1) nlen = sizeof(current_event.name) - 1;
+    if (nlen > 0 && name_sv.data()) {
+        kernel::util::kmemcpy(current_event.name, name_sv.data(), nlen);
+    }
+    current_event.name[nlen] = '\0';
     current_event.value = value;
     return true;
 }
 
 void TraceManager::dump_trace(kernel::hal::UARTDriverOps* uart_ops) const {
     if (!uart_ops) return;
+    kernel::core::ScopedISRLock guard(lock_);   // consistent with record_event
 
     size_t current_buffer_idx = buffer_idx_.load(std::memory_order_relaxed);
     size_t count = kernel::util::min(current_buffer_idx, MAX_TRACE_EVENTS); // Number of valid entries if not wrapping
@@ -84,7 +88,7 @@ void TraceManager::dump_trace(kernel::hal::UARTDriverOps* uart_ops) const {
         
         // Check if the event looks initialized (e.g., timestamp is not 0, if that's a valid check)
         // Or if TraceEvent has a 'valid' flag. For now, print if name/tcb suggests it's used.
-        if (event.tcb == nullptr && event.name.empty() && event.timestamp_us == 0 && i >= current_buffer_idx && current_buffer_idx < MAX_TRACE_EVENTS) {
+        if (event.tcb == nullptr && event.name[0] == '\0' && event.timestamp_us == 0 && i >= current_buffer_idx && current_buffer_idx < MAX_TRACE_EVENTS) {
             // Likely an uninitialized entry if buffer hasn't filled yet.
             continue;
         }
@@ -108,15 +112,10 @@ void TraceManager::dump_trace(kernel::hal::UARTDriverOps* uart_ops) const {
         if (event.tcb && event.tcb->name[0]) {
             kernel::util::kstrcat(line_buf, ", Thread=", sizeof(line_buf));
             kernel::util::kstrcat(line_buf, event.tcb->name, sizeof(line_buf));
-        } else if (!event.name.empty()) {
-            // string_view might not be null terminated for kstrcat
-            // Create a temporary null-terminated string for name if needed, or ensure kstrcat handles non-null-terminated view
-            char name_temp_buf[kernel::core::MAX_NAME_LENGTH + 1];
-            size_t name_len = kernel::util::min(event.name.length(), kernel::core::MAX_NAME_LENGTH);
-            kernel::util::kmemcpy(name_temp_buf, event.name.data(), name_len);
-            name_temp_buf[name_len] = '\0';
+        } else if (event.name[0] != '\0') {
+            // name is now an owned, NUL-terminated buffer — append directly.
             kernel::util::kstrcat(line_buf, ", Name=", sizeof(line_buf));
-            kernel::util::kstrcat(line_buf, name_temp_buf, sizeof(line_buf));
+            kernel::util::kstrcat(line_buf, event.name, sizeof(line_buf));
         }
 
         if (event.value != 0 || event.type == EventType::CUSTOM) { 
@@ -132,7 +131,7 @@ void TraceManager::dump_trace(kernel::hal::UARTDriverOps* uart_ops) const {
 }
 
 void TraceManager::clear_trace() noexcept {
-    // Assuming single-producer for buffer_idx modification or that it's locked externally if multi-producer clear
+    kernel::core::ScopedISRLock guard(lock_);
     buffer_idx_.store(0, std::memory_order_relaxed);
     // For safety, clear the buffer content if needed, though new writes will overwrite.
     // This depends on how 'empty' entries are detected in dump_trace.
