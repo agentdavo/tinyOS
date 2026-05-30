@@ -19,6 +19,7 @@
 #define HAL_SHARED_VIRTIO_BLK_HPP
 
 #include "virtio_net.hpp"  // shared virtio-mmio register layout + VirtqDesc/Avail/Used
+#include "core.hpp"        // kernel::core::Spinlock / ScopedLock
 
 #include <array>
 #include <atomic>
@@ -95,6 +96,12 @@ private:
     uint64_t base_ = 0;
     uint64_t capacity_ = 0;
     bool     initialized_ = false;
+
+    // Serialises read_sectors/write_sectors. The driver has exactly one
+    // descriptor chain and one header/status scratch, so two callers (e.g.
+    // boot mount vs a CLI-triggered reload) would otherwise stomp each
+    // other's in-flight request and corrupt the queue.
+    kernel::core::Spinlock io_lock_;
 
     uint32_t mmio_read(uint32_t off) const;
     void     mmio_write(uint32_t off, uint32_t val);
