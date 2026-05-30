@@ -30,6 +30,9 @@ inline void put_u32_le(uint8_t* p, uint32_t v) noexcept {
     p[2] = static_cast<uint8_t>(v >> 16);
     p[3] = static_cast<uint8_t>(v >> 24);
 }
+inline void put_u64_le(uint8_t* p, uint64_t v) noexcept {
+    for (int i = 0; i < 8; ++i) p[i] = static_cast<uint8_t>(v >> (8 * i));
+}
 inline uint16_t get_u16_le(const uint8_t* p) noexcept {
     return static_cast<uint16_t>(p[0] | (static_cast<uint16_t>(p[1]) << 8));
 }

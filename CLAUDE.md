@@ -75,7 +75,7 @@ That script talks to the CLI over serial, issues `ui_page <id>` and `ui_dump <sc
 
 The Makefile supports two targets and both build + boot to the UI + CLI + HMI services:
 
-- **`TARGET=arm64`** (default) — QEMU virt arm64. `-cpu max`, PL011 UART, GICv3, PSCI HVC SMP bring-up, virtio-mmio at `0x0A000000`/stride `0x200`/32 slots.
+- **`TARGET=arm64`** (default) — QEMU virt arm64. `-cpu max`, PL011 UART, GICv2 (MMIO distributor/CPU-interface driver + `ITARGETSR` affinity — not GICv3 system-register), PSCI HVC SMP bring-up, virtio-mmio at `0x0A000000`/stride `0x200`/32 slots.
 - **`TARGET=riscv64`** — QEMU virt rv64 in M-mode (`-bios none`). NS16550 UART, PLIC+CLINT, spin-table SMP bring-up (hart 0 writes each secondary's entry address into `g_secondary_entry[]`, kicks via MSIP), virtio-mmio at `0x10001000`/stride `0x1000`/8 slots. Also mounts FAT32 via virtio-blk when `sdcard.img` is attached.
 
 Both arches link the same `core.cpp` / `cli.cpp` / `ui/` / `ethercat/` / `motion/` / shared virtio drivers / FAT32. The only legitimate divergence is below the HAL boundary — see "Arch parity contract" below.

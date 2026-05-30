@@ -1120,9 +1120,13 @@ size_t Master::configure_dc_sync0(uint16_t station_addr,
                                   uint32_t shift_time_ns) noexcept {
     // ESC register offsets (ETG.1000, 6.7). All little-endian.
     constexpr uint16_t REG_DC_SYNC_ACT      = 0x0980; // u16 AssignActivate
+    // Start Time Cyclic Operation / next SYNC0 pulse — a 64-bit absolute DC
+    // system time (ETG.1000). The previous code wrote only the low 32 bits to
+    // 0x09A4, so the slave compared the full 64-bit DC clock against a value
+    // whose high dword was stale and SYNC0 either never fired or fired at once.
+    constexpr uint16_t REG_DC_SYNC0_START   = 0x0990; // u64 ns (absolute start)
     constexpr uint16_t REG_DC_SYNC0_CYCLE   = 0x09A0; // u32 ns
-    constexpr uint16_t REG_DC_SYNC0_START   = 0x09A4; // u32 ns (shift offset)
-    constexpr uint16_t REG_DC_SYNC1_CYCLE   = 0x09A8; // u32 ns (0 = disable)
+    constexpr uint16_t REG_DC_SYNC1_CYCLE   = 0x09A4; // u32 ns (0 = disable)
 
     auto write_fpwr = [&](uint16_t reg, const uint8_t* data, uint16_t len) -> bool {
         FrameBuilder fb(tx_scratch_.data(), tx_scratch_.size(),
@@ -1152,8 +1156,9 @@ size_t Master::configure_dc_sync0(uint16_t station_addr,
     }
     const uint64_t cycle = sync0_cycle_time_ns ? sync0_cycle_time_ns : 1u;
     const uint64_t start = ((dc_now / cycle) + 1u) * cycle + shift_time_ns;
-    put_u32_le(buf4, static_cast<uint32_t>(start & 0xFFFFFFFFu));
-    if (write_fpwr(REG_DC_SYNC0_START, buf4, 4)) ++sent;
+    uint8_t buf8[8] = {};
+    put_u64_le(buf8, start);   // full 64-bit absolute start time
+    if (write_fpwr(REG_DC_SYNC0_START, buf8, 8)) ++sent;
 
     // SYNC1 disabled — cycle time 0.
     put_u32_le(buf4, 0);
@@ -1637,6 +1642,11 @@ void Master::thread_entry(void* arg) {
 
 void Master::dump_status(kernel::hal::UARTDriverOps* uart) const {
     if (!uart) return;
+    // Snapshot the slave count once, clamped to the array bound. The cyclic
+    // thread can grow slave_count_ during discovery; iterating the live value
+    // could otherwise walk into a half-initialised or out-of-range slot.
+    size_t n_slaves = slave_count_;
+    if (n_slaves > MAX_SLAVES) n_slaves = MAX_SLAVES;
     const char* sname =
         state_ == State::Init   ? "INIT"   :
         state_ == State::PreOp  ? "PRE-OP" :
@@ -1665,7 +1675,7 @@ void Master::dump_status(kernel::hal::UARTDriverOps* uart) const {
         (unsigned)stats_.esm_timeouts.load(std::memory_order_relaxed),
         allow_safeop_.load(std::memory_order_acquire) ? "open" : "closed");
     uart->puts(buf);
-    for (size_t i = 0; i < slave_count_; ++i) {
+    for (size_t i = 0; i < n_slaves; ++i) {
         const auto& s = slaves_[i];
         if (s.identity_mismatch) {
             kernel::util::k_snprintf(buf, sizeof(buf),
@@ -1681,7 +1691,7 @@ void Master::dump_status(kernel::hal::UARTDriverOps* uart) const {
 
     // CiA-402 per-slave status — one line per slave so the operator can see
     // that the drive FSA has tracked the master's requested target_state.
-    for (size_t i = 0; i < slave_count_; ++i) {
+    for (size_t i = 0; i < n_slaves; ++i) {
         const auto& s = slaves_[i];
         const auto& d = s.drive;
         kernel::util::k_snprintf(buf, sizeof(buf),
@@ -1706,7 +1716,9 @@ void Master::dump_slaves(kernel::hal::UARTDriverOps* uart) const {
         return;
     }
     char buf[128];
-    for (size_t i = 0; i < slave_count_; ++i) {
+    size_t n_slaves = slave_count_;            // snapshot, clamp to array bound
+    if (n_slaves > MAX_SLAVES) n_slaves = MAX_SLAVES;
+    for (size_t i = 0; i < n_slaves; ++i) {
         const auto& s = slaves_[i];
         kernel::util::k_snprintf(buf, sizeof(buf),
             "  ec%d[%u] addr=0x%04x vid=0x%08x pid=0x%08x state=%s\n",

@@ -749,9 +749,13 @@ void trace_event(const char* event_str, uintptr_t arg1, uintptr_t arg2) {
     entry_ptr->arg1 = arg1; entry_ptr->arg2 = arg2;
 }
 
-void dump_trace_buffer(hal::UARTDriverOps* uart_ops) { 
+void dump_trace_buffer(hal::UARTDriverOps* uart_ops) {
     if (!uart_ops) return;
-    core::ScopedLock lock(g_trace_lock); 
+    // ScopedISRLock (not ScopedLock): trace_event acquires this same lock from
+    // ISR context with IRQs masked. If the dump held it with IRQs enabled and a
+    // timer IRQ on this core then called trace_event, the non-recursive
+    // spinlock would self-deadlock. Masking IRQs for the dump closes that.
+    core::ScopedISRLock lock(g_trace_lock);
     uart_ops->puts("\n--- Legacy Global Trace Buffer ---\n");
     size_t num_valid_entries = 0;
     for(const auto& entry : core::g_trace_buffer) if(entry.event_str != nullptr) num_valid_entries++;
