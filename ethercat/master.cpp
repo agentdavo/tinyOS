@@ -1243,14 +1243,13 @@ void Master::service_esc_read() noexcept {
     send_frame(tx_scratch_.data(), fb.finalize());
 }
 
-bool Master::read_esc_register(uint16_t station_addr, uint16_t reg,
-                               uint8_t* out, uint8_t len,
-                               uint32_t timeout_us) noexcept {
-    if (!out || len == 0 || len > sizeof(esc_read_buf_)) return false;
+bool Master::begin_esc_read(uint16_t station_addr, uint16_t reg,
+                            uint8_t len, uint32_t timeout_us) noexcept {
+    if (len == 0 || len > sizeof(esc_read_buf_)) return false;
     bool expected = false;
     if (!esc_read_busy_.compare_exchange_strong(expected, true,
                                                 std::memory_order_acq_rel)) {
-        return false;
+        return false;  // a read is already in flight
     }
     esc_read_station_ = station_addr;
     esc_read_reg_ = reg;
@@ -1258,20 +1257,38 @@ bool Master::read_esc_register(uint16_t station_addr, uint16_t reg,
     std::memset(esc_read_buf_, 0, sizeof(esc_read_buf_));
     esc_read_deadline_us_ = now_us() + timeout_us;
     esc_read_state_.store(EscReadState::Pending, std::memory_order_release);
+    return true;
+}
 
+int Master::poll_esc_read(uint8_t* out, uint8_t len) noexcept {
+    const auto s = esc_read_state_.load(std::memory_order_acquire);
+    if (s == EscReadState::Done) {
+        if (out && len <= sizeof(esc_read_buf_)) std::memcpy(out, esc_read_buf_, len);
+        esc_read_state_.store(EscReadState::Idle, std::memory_order_release);
+        esc_read_busy_.store(false, std::memory_order_release);
+        return 1;
+    }
+    if (s == EscReadState::Error) {
+        esc_read_state_.store(EscReadState::Idle, std::memory_order_release);
+        esc_read_busy_.store(false, std::memory_order_release);
+        return -1;
+    }
+    return 0;  // still pending
+}
+
+bool Master::read_esc_register(uint16_t station_addr, uint16_t reg,
+                               uint8_t* out, uint8_t len,
+                               uint32_t timeout_us) noexcept {
+    // Blocking wrapper for callers NOT on the cyclic thread (bus-config /
+    // homing). MUST NOT be used from run_loop: the RX that flips the read to
+    // Done is drained by run_loop itself, so spinning here would deadlock the
+    // cycle. The cyclic DC-drift sampler uses begin/poll across cycles instead.
+    if (!out) return false;
+    if (!begin_esc_read(station_addr, reg, len, timeout_us)) return false;
     for (;;) {
-        const auto s = esc_read_state_.load(std::memory_order_acquire);
-        if (s == EscReadState::Done) {
-            std::memcpy(out, esc_read_buf_, len);
-            esc_read_state_.store(EscReadState::Idle, std::memory_order_release);
-            esc_read_busy_.store(false, std::memory_order_release);
-            return true;
-        }
-        if (s == EscReadState::Error) {
-            esc_read_state_.store(EscReadState::Idle, std::memory_order_release);
-            esc_read_busy_.store(false, std::memory_order_release);
-            return false;
-        }
+        const int r = poll_esc_read(out, len);
+        if (r == 1) return true;
+        if (r == -1) return false;
         if (kernel::g_scheduler_ptr) kernel::g_scheduler_ptr->yield(0);
     }
 }
@@ -1309,37 +1326,53 @@ void Master::service_dc_drift() noexcept {
     // samples for the SAME slave is the signal we monitor.
     constexpr uint16_t REG_DC_SYNC0_TIME = 0x0920;
 
-    // Don't re-sample faster than the configured cadence. A blocking
-    // ESC read costs up to 100 ms wall-clock in the worst case (timeout
-    // arg below), so we want this to be rare relative to the cycle.
     if (slave_count_ == 0 || dc_sync_fault_.load(std::memory_order_relaxed)) return;
-    const uint64_t now = now_us();
-    if (now - last_dc_sample_us_ < dc_drift_check_period_us_) return;
-    last_dc_sample_us_ = now;
 
-    // Pick the next DC-enabled slave round-robin. Caps the per-cycle cost
-    // at one ESC read regardless of how many slaves are on the bus.
-    const size_t start = dc_round_robin_idx_;
-    size_t picked = MAX_SLAVES;
-    for (size_t step = 0; step < slave_count_; ++step) {
-        const size_t idx = (start + step) % slave_count_;
-        if (slaves_[idx].dc_enabled && slaves_[idx].present) {
-            picked = idx;
-            dc_round_robin_idx_ = (idx + 1) % slave_count_;
-            break;
-        }
-    }
-    if (picked == MAX_SLAVES) return;
-
-    auto& s = slaves_[picked];
-
-    // 10 ms timeout: well under the 100 ms cadence so a stuck slave
-    // can't stall the next sample, and well over the median ESC FPRD
-    // round-trip (single-digit µs on a quiet bus).
+    // Phase 2 — a sample is already in flight: poll the async ESC read. This
+    // MUST be non-blocking; service_dc_drift runs on the 250 µs cyclic thread
+    // and the RX that completes the read is drained later in the SAME run_loop
+    // iteration, so a blocking spin here would deadlock the cycle (the old bug).
     uint8_t raw[8] = {};
-    if (!read_esc_register(s.station_addr, REG_DC_SYNC0_TIME, raw, sizeof(raw), 10000)) {
+    if (dc_sample_in_flight_) {
+        const int r = poll_esc_read(raw, sizeof(raw));
+        if (r == 0) return;             // still pending — try again next cycle
+        dc_sample_in_flight_ = false;
+        if (r < 0) return;              // error/timeout — drop this sample
+        if (dc_sample_idx_ >= slave_count_) return;
+        // fall through to process `raw` for slaves_[dc_sample_idx_]
+    } else {
+        // Phase 1 — no sample in flight. Rate-limit, pick a slave, and arm a
+        // non-blocking ESC read; the result is consumed on a later cycle.
+        const uint64_t now = now_us();
+        if (now - last_dc_sample_us_ < dc_drift_check_period_us_) return;
+
+        const size_t start = dc_round_robin_idx_;
+        size_t picked = MAX_SLAVES;
+        for (size_t step = 0; step < slave_count_; ++step) {
+            const size_t idx = (start + step) % slave_count_;
+            if (slaves_[idx].dc_enabled && slaves_[idx].present) {
+                picked = idx;
+                dc_round_robin_idx_ = (idx + 1) % slave_count_;
+                break;
+            }
+        }
+        if (picked == MAX_SLAVES) return;
+
+        // 10 ms timeout: well under the 100 ms cadence so a stuck slave can't
+        // stall the next sample. begin_esc_read fails if another reader (e.g.
+        // bus-config) holds the single ESC-read slot — just retry next cycle.
+        if (!begin_esc_read(slaves_[picked].station_addr, REG_DC_SYNC0_TIME,
+                            sizeof(raw), 10000)) {
+            return;
+        }
+        last_dc_sample_us_   = now;
+        dc_sample_idx_       = picked;
+        dc_sample_in_flight_ = true;
         return;
     }
+
+    auto& s = slaves_[dc_sample_idx_];
+
     uint64_t slave_ns = 0;
     for (uint8_t i = 0; i < sizeof(raw); ++i) {
         slave_ns |= static_cast<uint64_t>(raw[i]) << (8u * i);

@@ -498,6 +498,21 @@ private:
     uint8_t  esc_read_buf_[8]{};
     uint64_t esc_read_deadline_us_ = 0;
 
+    // Non-blocking ESC-read primitives. begin_esc_read claims the single
+    // in-flight slot (CAS) and arms a Pending request without spinning;
+    // poll_esc_read returns 1=done (copies out), -1=error/timeout, 0=pending.
+    // read_esc_register is the blocking wrapper (begin + spin-poll) for
+    // callers NOT on the 250us cyclic thread (e.g. bus-config). The cyclic
+    // DC-drift sampler uses begin/poll across cycles instead so it never
+    // blocks the cycle waiting on its own RX drain.
+    [[nodiscard]] bool begin_esc_read(uint16_t station, uint16_t reg,
+                                      uint8_t len, uint32_t timeout_us) noexcept;
+    int poll_esc_read(uint8_t* out, uint8_t len) noexcept;
+
+    // service_dc_drift's cross-cycle state for its non-blocking ESC read.
+    bool   dc_sample_in_flight_ = false;
+    size_t dc_sample_idx_       = 0;
+
     [[nodiscard]] bool read_esc_register(uint16_t station_addr,
                                          uint16_t reg,
                                          uint8_t* out, uint8_t len,
