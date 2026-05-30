@@ -114,10 +114,20 @@ public:
             uint32_t bus_end = 0xff;
         };
 
+        // The struct block must lie within the blob; reject a header whose
+        // offsets/sizes point outside totalsize so the walk below can trust
+        // struct_end/strings.
+        if (hdr_.totalsize == 0 ||
+            static_cast<uint64_t>(hdr_.off_dt_struct) + hdr_.size_dt_struct > hdr_.totalsize ||
+            static_cast<uint64_t>(hdr_.off_dt_strings) + hdr_.size_dt_strings > hdr_.totalsize) {
+            return false;
+        }
+
         NodeState stack[16]{};
         int depth = -1;
         const uint8_t* cur = struct_base;
-        while (cur < struct_end) {
+        // Each token is a big-endian u32; require a full token to remain.
+        while (cur + 4 <= struct_end) {
             const uint32_t tok = load_be32(cur);
             cur += 4;
             if (tok == FDT_NOP) continue;
@@ -125,7 +135,9 @@ public:
             if (tok == FDT_BEGIN_NODE) {
                 const char* name = reinterpret_cast<const char*>(cur);
                 const size_t nlen = cstr_len(name, struct_end);
-                cur += align4(nlen + 1);
+                const size_t adv = align4(nlen + 1);
+                if (adv > static_cast<size_t>(struct_end - cur)) return false;
+                cur += adv;
                 if (depth + 1 >= static_cast<int>(sizeof(stack) / sizeof(stack[0]))) return false;
                 ++depth;
                 stack[depth] = {};
@@ -146,11 +158,17 @@ public:
             }
             if (tok != FDT_PROP || depth < 0) return false;
 
+            // FDT_PROP header is two u32s (len, nameoff); require both present.
+            if (cur + 8 > struct_end) return false;
             const uint32_t plen = load_be32(cur);
             cur += 4;
             const uint32_t nameoff = load_be32(cur);
             cur += 4;
             const uint8_t* data = cur;
+            // The property payload (padded to 4) must fit in the struct block,
+            // and the name offset must lie inside the strings block.
+            if (static_cast<uint64_t>(align4(plen)) > static_cast<uint64_t>(struct_end - cur)) return false;
+            if (nameoff >= hdr_.size_dt_strings) return false;
             cur += align4(plen);
             const char* prop = strings + nameoff;
 

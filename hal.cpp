@@ -19,6 +19,14 @@ extern "C" {
 namespace kernel {
 namespace hal {
 
+// Arch-parity guard: cpu_arm64.S reserves g_irq_in_progress as
+// `.skip 8 * MAX_CORES_ASM` with MAX_CORES_ASM hardcoded to 4. If the C-side
+// MAX_CORES grows past that, the IRQ entry/exit asm would index past the
+// reserved BSS. Keep them locked together at compile time.
+static_assert(kernel::core::MAX_CORES <= 4,
+              "cpu_arm64.S reserves g_irq_in_progress for 4 cores (MAX_CORES_ASM); "
+              "bump MAX_CORES_ASM in cpu_arm64.S if MAX_CORES grows");
+
 // Defined in the platform-specific HAL translation unit.
 extern Platform& get_platform_instance();
 Platform* get_platform() { return &get_platform_instance(); }

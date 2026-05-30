@@ -62,6 +62,11 @@ static_assert(sizeof(TsvUploadHeader) == 20, "TsvUploadHeader layout");
 // new session ID arrives.
 constexpr size_t TSV_RX_BUF_BYTES = 256 * 1024;
 alignas(8) uint8_t g_tsv_rx_buf[TSV_RX_BUF_BYTES];
+// Separate reassembly buffer for the WebSocket live-preview server. It used
+// to alias g_tsv_rx_buf, so an in-progress multi-chunk UDP TSV upload and an
+// incoming WS frame — both stateful reassemblers driven by the same HMI
+// worker — corrupted each other's partial data. Give the WS path its own.
+alignas(8) uint8_t g_ws_rx_buf[TSV_RX_BUF_BYTES];
 uint16_t g_tsv_rx_session = 0;
 bool     g_tsv_rx_session_valid = false;
 uint32_t g_tsv_rx_total_len = 0;
@@ -380,6 +385,12 @@ bool Service::ping_ipv4_async(uint32_t dst_ip, uint32_t timeout_ms) noexcept {
     return begin_ping(dst_ip, timeout_ms);
 }
 
+// THREAD CONTRACT: this is the BLOCKING ping — it spins (yielding) until the
+// HMI worker thread drives the ICMP state machine and RX poll to completion.
+// It MUST therefore be called from a DIFFERENT thread than the HMI worker
+// (today: the CLI thread). Calling it from the worker itself would deadlock —
+// the loop driving process_ping()/poll never runs. Use ping_ipv4_async() from
+// the worker / operator_api path.
 Service::PingResult Service::ping_ipv4(uint32_t dst_ip, uint32_t timeout_ms, uint32_t& rtt_ms) noexcept {
     if (dst_ip == 0) return PingResult::BadAddress;
     if (!begin_ping(dst_ip, timeout_ms)) return PingResult::Busy;
@@ -1491,7 +1502,7 @@ void Service::thread_entry(void* arg) {
     };
     static WsTsvHandler ws_handler;
     static kernel::net::WebSocketServer ws_server(
-        5001, &ws_handler, g_tsv_rx_buf, sizeof(g_tsv_rx_buf));
+        5001, &ws_handler, g_ws_rx_buf, sizeof(g_ws_rx_buf));
     kernel::net::tcp_bind(*netif, &ws_server);
 
     constexpr size_t POLL_BUDGET = 8;

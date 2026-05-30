@@ -58,6 +58,11 @@ struct Volume {
     uint32_t root_cluster = 0;
     uint64_t fat_start_lba = 0;
     uint64_t data_start_lba = 0;
+    // Number of data clusters in the volume (derived at mount from the FAT32
+    // total-sector count). Valid data cluster numbers are [2, total_clusters+2).
+    // Used to reject out-of-range cluster numbers from a corrupt FAT/dir entry
+    // before they turn into an arbitrary cluster_to_lba() block access.
+    uint32_t total_clusters = 0;
     bool mounted = false;
 };
 

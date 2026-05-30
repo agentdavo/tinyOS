@@ -269,6 +269,10 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
                  field_count > 19 ? simple_atof(fields[19]) : 0.0f,
                  field_count > 20 ? simple_atof(fields[20]) : 0.0f,
                  field_count > 21 ? simple_atof(fields[21]) : 1.0f);
+        // Clamp the channel to the supported range so a junk TSV value can't
+        // inflate num_channels past MAX_CHANNELS (downstream code indexes by
+        // channel and would otherwise trust a bogus count).
+        if (axis.channel >= MAX_CHANNELS) axis.channel = MAX_CHANNELS - 1;
         if (axis.channel + 1 > chain.num_channels) chain.num_channels = static_cast<uint8_t>(axis.channel + 1);
         ++chain.axis_count;
     }

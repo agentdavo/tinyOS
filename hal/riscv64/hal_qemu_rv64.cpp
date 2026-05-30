@@ -441,13 +441,17 @@ void TimerDriver::ack_core_timer_interrupt(uint32_t core_id) {
 
 uint64_t TimerDriver::get_system_time_us() {
     if (timer_freq_hz_ == 0) return 0;
-    return (read_mtime() * 1'000'000ULL) / timer_freq_hz_;
+    // 128-bit intermediate: `mtime * 1e6` overflows uint64 after ~21 days at
+    // 10 MHz. mul_div_u64 keeps it exact for any uptime.
+    return kernel::util::mul_div_u64(read_mtime(), 1'000'000ULL, timer_freq_hz_);
 }
 
 uint64_t TimerDriver::get_system_time_ns() {
     if (timer_freq_hz_ == 0) return 0;
-    // 10 MHz -> ticks * 100 = ns (exact, no overflow for centuries).
-    return (read_mtime() * 1'000'000'000ULL) / timer_freq_hz_;
+    // 10 MHz mtime: a plain `mtime * 1e9` overflows uint64 after only ~30 min
+    // of uptime (the old "no overflow for centuries" comment was wrong). The
+    // 128-bit intermediate in mul_div_u64 is exact for the full tick range.
+    return kernel::util::mul_div_u64(read_mtime(), 1'000'000'000ULL, timer_freq_hz_);
 }
 
 void TimerDriver::hardware_timer_irq_fired(uint32_t core_id) {

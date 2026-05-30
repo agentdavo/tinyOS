@@ -298,7 +298,13 @@ void Netif::reasm_age(uint64_t now_us) noexcept {
 
 bool Netif::reasm_take(ReasmSlot& slot, const uint8_t*& out_buf, size_t& out_len) noexcept {
     if (!slot.in_use || slot.total_len == 0) return false;
-    // Confirm every 8-byte chunk up to total_len is present.
+    // total_len is derived from a wire-supplied fragment offset/length. It is
+    // bounds-checked against REASM_BUF_BYTES on the write path, but defend the
+    // bitmap walk here too so a corrupt value can never index past the bitmap.
+    if (slot.total_len > REASM_BUF_BYTES) return false;
+    // Confirm every 8-byte chunk up to total_len is present — this is what
+    // stops a crafted MF=0 fragment from declaring completion without the
+    // intervening bytes actually having been delivered.
     const size_t chunks = (slot.total_len + 7u) / 8u;
     for (size_t i = 0; i < chunks; ++i) {
         if (!(slot.bitmap[i / 32] & (1u << (i % 32)))) return false;

@@ -671,6 +671,27 @@ void log_and_route_net_roles() {
 #endif
 }
 
+// Wrap a CreateThreadFn call so a failed creation (thread table full) is
+// loud on the wire instead of silently dropping a service. Returns the
+// create result so callers can branch if they care.
+static bool checked_create(CreateThreadFn create_thread, void (*fn)(void*), void* arg,
+                           int prio, int affinity, const char* name,
+                           bool is_idle, uint64_t deadline_us) {
+    const bool ok = create_thread(fn, arg, prio, affinity, name, is_idle, deadline_us);
+    if (!ok) {
+        char buf[96];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+                                 "[boot] FAILED to create thread: %s (table full?)\n",
+                                 name ? name : "(unnamed)");
+        if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+            uart->puts(buf);
+        } else {
+            early_uart_puts(buf);
+        }
+    }
+    return ok;
+}
+
 void create_boot_services(CreateThreadFn create_thread) {
     machine::placement::Config placement{};
     machine::placement::g_service.snapshot(placement);
@@ -684,8 +705,8 @@ void create_boot_services(CreateThreadFn create_thread) {
         // (oldest last_scheduled_us wins) rotates these into the same fair
         // pool. Setting 0 here would make them last-resort under EDF and
         // they'd never win against UI/HMI on their own core.
-        (void)create_thread(&cli::CLI::thread_entry, nullptr, 3, cli_core, "cli", false, 1000);
-        (void)create_thread(&cli::io::uart_io_entry, uart, 3, uart_io_core, "uart_io", false, 1000);
+        (void)checked_create(create_thread, &cli::CLI::thread_entry, nullptr, 3, cli_core, "cli", false, 1000);
+        (void)checked_create(create_thread, &cli::io::uart_io_entry, uart, 3, uart_io_core, "uart_io", false, 1000);
     }
 
     log_timestamped("cli...");
@@ -723,24 +744,24 @@ void create_runtime_services(CreateThreadFn create_thread) {
     const uint8_t ec_b_nic = placement.ec_b_nic;
 #endif
 
-    (void)create_thread(&motion::Kernel::thread_entry, nullptr, 15, motion_core, "motion", false, 250);
-    (void)create_thread(&cnc::interp::Runtime::thread_entry, nullptr, 6, gcode_core, "gcode", false, 1000);
-    (void)create_thread(&macros::Runtime::thread_entry, nullptr, 6, macro_core, "macro", false, 1000);
-    (void)create_thread(&ladder::Runtime::thread_entry, nullptr, 7, ladder_core, "ladder", false, 1000);
-    (void)create_thread(&probe::Runtime::thread_entry, nullptr, 6, probe_core, "probe", false, 1000);
+    (void)checked_create(create_thread, &motion::Kernel::thread_entry, nullptr, 15, motion_core, "motion", false, 250);
+    (void)checked_create(create_thread, &cnc::interp::Runtime::thread_entry, nullptr, 6, gcode_core, "gcode", false, 1000);
+    (void)checked_create(create_thread, &macros::Runtime::thread_entry, nullptr, 6, macro_core, "macro", false, 1000);
+    (void)checked_create(create_thread, &ladder::Runtime::thread_entry, nullptr, 7, ladder_core, "ladder", false, 1000);
+    (void)checked_create(create_thread, &probe::Runtime::thread_entry, nullptr, 6, probe_core, "probe", false, 1000);
     // Job scheduler — low priority, decision-making only. Same core as
     // the macro runtime (cooperative; no real-time requirements). The
     // thread polls per-channel interpreter state every 250 ms.
-    (void)create_thread(&cnc::jobs::Runtime::thread_entry, nullptr, 5, macro_core, "jobs", false, 1000);
+    (void)checked_create(create_thread, &cnc::jobs::Runtime::thread_entry, nullptr, 5, macro_core, "jobs", false, 1000);
     if (num_nets > hmi_nic) {
         hmi::g_service.configure(hmi_nic);
         log_timestamped("hmi: eth0 service...");
-        (void)create_thread(&hmi::Service::thread_entry, &hmi::g_service, 8, hmi_core, "hmi", false, 1000);
+        (void)checked_create(create_thread, &hmi::Service::thread_entry, &hmi::g_service, 8, hmi_core, "hmi", false, 1000);
     }
     if (num_nets > ec_a_nic) {
         ethercat::g_master_a.set_nic_index(static_cast<int>(ec_a_nic));
-        (void)create_thread(&ethercat::Master::thread_entry, &ethercat::g_master_a, 15, ec_a_core, "ec_a", false, 250);
-        (void)create_thread(&ethercat::bus_config_entry, &ethercat::g_master_a, 3, bus_config_core, "bus_cfg_a", false, 0);
+        (void)checked_create(create_thread, &ethercat::Master::thread_entry, &ethercat::g_master_a, 15, ec_a_core, "ec_a", false, 250);
+        (void)checked_create(create_thread, &ethercat::bus_config_entry, &ethercat::g_master_a, 3, bus_config_core, "bus_cfg_a", false, 0);
     }
     if (num_nets > (
 #if MINIOS_FAKE_SLAVE
@@ -751,12 +772,12 @@ void create_runtime_services(CreateThreadFn create_thread) {
         )) {
 #if MINIOS_FAKE_SLAVE
         ethercat::g_fake_slave.set_nic_idx(static_cast<int>(fake_slave_nic));
-        (void)create_thread(&ethercat::FakeSlave::thread_entry, &ethercat::g_fake_slave, 15, fake_slave_core, "fake_slave", false, 125);
+        (void)checked_create(create_thread, &ethercat::FakeSlave::thread_entry, &ethercat::g_fake_slave, 15, fake_slave_core, "fake_slave", false, 125);
 #else
         const int ec_b_core = static_cast<int>(machine::placement::g_service.sanitize_core(placement.ec_b_core, num_cores));
         ethercat::g_master_b.set_nic_index(static_cast<int>(ec_b_nic));
-        (void)create_thread(&ethercat::Master::thread_entry, &ethercat::g_master_b, 15, ec_b_core, "ec_b", false, 250);
-        (void)create_thread(&ethercat::bus_config_entry, &ethercat::g_master_b, 3, bus_config_core, "bus_cfg_b", false, 0);
+        (void)checked_create(create_thread, &ethercat::Master::thread_entry, &ethercat::g_master_b, 15, ec_b_core, "ec_b", false, 250);
+        (void)checked_create(create_thread, &ethercat::bus_config_entry, &ethercat::g_master_b, 3, bus_config_core, "bus_cfg_b", false, 0);
 #endif
     }
 }

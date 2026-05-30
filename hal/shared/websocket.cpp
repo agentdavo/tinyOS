@@ -269,6 +269,23 @@ bool WebSocketServer::process_handshake(TcpConnection& conn) noexcept {
 void WebSocketServer::process_frames(TcpConnection& conn,
                                      const uint8_t* data, size_t len) noexcept {
     size_t i = 0;
+    // Single gate for entering the Payload stage. Previously the
+    // frame_len_ > payload_cap_ bound and the payload_filled_ reset lived
+    // ONLY in the Mask case, so an unmasked frame (which jumps straight from
+    // Header/ExtLen to Payload) skipped both — an attacker-controlled 64-bit
+    // length then drove an out-of-bounds write into payload_buf_, and
+    // payload_filled_ started from the previous frame's stale offset. Routing
+    // every transition through this gate closes that hole. Returns false (and
+    // closes the connection) if the frame is too big for the assembly buffer.
+    auto enter_payload = [&]() -> bool {
+        if (frame_len_ > payload_cap_) {
+            close_with_status(conn, 1009);   // Message Too Big
+            return false;
+        }
+        payload_filled_ = 0;
+        frame_stage_ = FrameStage::Payload;
+        return true;
+    };
     while (i < len) {
         switch (frame_stage_) {
             case FrameStage::Header: {
@@ -280,7 +297,8 @@ void WebSocketServer::process_frames(TcpConnection& conn,
                 const uint8_t llen = hdr_buf_[1] & 0x7F;
                 if (llen < 126) {
                     frame_len_ = llen;
-                    frame_stage_ = frame_masked_ ? FrameStage::Mask : FrameStage::Payload;
+                    if (frame_masked_) frame_stage_ = FrameStage::Mask;
+                    else if (!enter_payload()) return;
                 } else if (llen == 126) {
                     frame_stage_ = FrameStage::ExtLen2;
                 } else {
@@ -292,7 +310,8 @@ void WebSocketServer::process_frames(TcpConnection& conn,
                 while (hdr_len_ < 4 && i < len) hdr_buf_[hdr_len_++] = data[i++];
                 if (hdr_len_ < 4) return;
                 frame_len_ = (static_cast<uint64_t>(hdr_buf_[2]) << 8) | hdr_buf_[3];
-                frame_stage_ = frame_masked_ ? FrameStage::Mask : FrameStage::Payload;
+                if (frame_masked_) frame_stage_ = FrameStage::Mask;
+                else if (!enter_payload()) return;
                 break;
             }
             case FrameStage::ExtLen8: {
@@ -300,7 +319,8 @@ void WebSocketServer::process_frames(TcpConnection& conn,
                 if (hdr_len_ < 10) return;
                 frame_len_ = 0;
                 for (int s = 0; s < 8; ++s) frame_len_ = (frame_len_ << 8) | hdr_buf_[2 + s];
-                frame_stage_ = frame_masked_ ? FrameStage::Mask : FrameStage::Payload;
+                if (frame_masked_) frame_stage_ = FrameStage::Mask;
+                else if (!enter_payload()) return;
                 break;
             }
             case FrameStage::Mask: {
@@ -309,14 +329,7 @@ void WebSocketServer::process_frames(TcpConnection& conn,
                 while (hdr_len_ < mask_off + 4 && i < len) hdr_buf_[hdr_len_++] = data[i++];
                 if (hdr_len_ < mask_off + 4) return;
                 for (int k = 0; k < 4; ++k) frame_mask_[k] = hdr_buf_[mask_off + k];
-                frame_stage_ = FrameStage::Payload;
-                if (frame_len_ > payload_cap_) {
-                    // Too big for our assembly buffer — close with
-                    // "Message Too Big" (status 1009).
-                    close_with_status(conn, 1009);
-                    return;
-                }
-                payload_filled_ = 0;
+                if (!enter_payload()) return;
                 break;
             }
             case FrameStage::Payload: {

@@ -71,10 +71,26 @@ uint64_t cluster_to_lba(const Volume& v, uint32_t cluster) {
     return v.data_start_lba + static_cast<uint64_t>(cluster - 2) * v.sectors_per_cluster;
 }
 
+// True if `cluster` is a real, in-range data cluster. A corrupt FAT or
+// directory entry can hold a cluster number that passes the bare
+// "2 <= c < 0x0FFFFFF8" sentinel test but points past the end of the
+// volume; without this check cluster_to_lba() would synthesise an
+// out-of-range LBA and the read/write would hit arbitrary sectors.
+// total_clusters==0 means a pre-this-fix volume (or mount didn't populate
+// it) — fall back to the sentinel-only test so behaviour is unchanged.
+inline bool cluster_valid(const Volume& v, uint32_t cluster) {
+    if (cluster < 2 || cluster >= 0x0FFFFFF8u) return false;
+    if (v.total_clusters == 0) return true;
+    return cluster < v.total_clusters + 2u;
+}
+
 // Read the FAT entry for `cluster`, return the next cluster index (or one
 // of the EOF sentinels — anything >= 0x0FFFFFF8).
 uint32_t fat_next_cluster(Volume& v, uint32_t cluster, uint8_t* fat_sector_buf,
                           uint64_t& cached_lba) {
+    // Reject an out-of-range current cluster up front: its FAT entry would
+    // live outside the FAT region. Return EOF so callers terminate the walk.
+    if (!cluster_valid(v, cluster)) return 0x0FFFFFFF;
     const uint64_t entry_byte = static_cast<uint64_t>(cluster) * 4;
     const uint64_t lba = v.fat_start_lba + entry_byte / v.bytes_per_sector;
     const uint32_t off = static_cast<uint32_t>(entry_byte % v.bytes_per_sector);
@@ -150,7 +166,11 @@ bool walk_directory(Volume& v, uint32_t dir_cluster, DirCb cb, void* user) {
     char lfn_accum[LFN_MAX_ENTRIES * LFN_CHARS_PER + 1] = {};
     size_t lfn_pos = 0;
 
-    while (cluster >= 2 && cluster < 0x0FFFFFF8) {
+    // Bound the chain walk so a corrupt/cyclic directory FAT chain can't spin
+    // forever. A directory can't legitimately exceed the volume's data
+    // clusters; cap at that (or a sane ceiling when total_clusters is unknown).
+    uint32_t chain_guard = (v.total_clusters ? v.total_clusters : (1u << 20)) + 1u;
+    while (cluster_valid(v, cluster) && chain_guard-- > 0) {
         const uint64_t first_lba = cluster_to_lba(v, cluster);
         for (uint32_t s = 0; s < v.sectors_per_cluster; ++s) {
             if (!v.read(first_lba + s, 1, dir_sector, v.user)) return false;
@@ -332,7 +352,15 @@ struct WalkState {
     const char* prefix;
     size_t prefix_len;
     bool prefix_satisfied;  // true once we've descended into the prefix
+    uint32_t depth;         // current recursion depth (cycle/overflow guard)
 };
+
+// Cap directory recursion depth. A corrupt FS whose subdirectory entry points
+// back at an ancestor cluster would otherwise recurse without bound — each
+// level burns ~1 KB+ of thread stack (two SECTOR_SIZE buffers + lfn_accum),
+// so an unbounded descent overflows the fixed thread stack and faults. Real
+// FAT trees are nowhere near this deep.
+static constexpr uint32_t MAX_WALK_DEPTH = 32;
 
 bool recurse_walk(Volume& v, uint32_t dir_cluster, WalkState& ws);
 
@@ -372,7 +400,11 @@ bool walk_entry_cb(const char* name, uint8_t attr, uint32_t cluster, uint32_t si
 }
 
 bool recurse_walk(Volume& v, uint32_t dir_cluster, WalkState& ws) {
-    return walk_directory(v, dir_cluster, &walk_entry_cb, &ws);
+    if (ws.depth >= MAX_WALK_DEPTH) return true;  // stop descending, keep walking peers
+    ++ws.depth;
+    const bool cont = walk_directory(v, dir_cluster, &walk_entry_cb, &ws);
+    --ws.depth;
+    return cont;
 }
 
 // --- write-side helpers ---------------------------------------------------
@@ -525,7 +557,8 @@ bool root_scan_for_slot(Volume& v, const uint8_t target_name[11], RootSlot& slot
     alignas(8) uint8_t fat_sec[SECTOR_SIZE];
     uint64_t fat_cached = 0xFFFFFFFFFFFFFFFFULL;
     uint32_t cluster = v.root_cluster;
-    while (cluster >= 2 && cluster < 0x0FFFFFF8) {
+    uint32_t chain_guard = (v.total_clusters ? v.total_clusters : (1u << 20)) + 1u;
+    while (cluster_valid(v, cluster) && chain_guard-- > 0) {
         const uint64_t base = cluster_to_lba(v, cluster);
         for (uint32_t s = 0; s < v.sectors_per_cluster; ++s) {
             const uint64_t lba = base + s;
@@ -652,6 +685,9 @@ bool mount(Volume& vol, SectorReader read, SectorWriter write, void* user) {
 
     if (vol.bytes_per_sector != SECTOR_SIZE) return false;
     if (vol.sectors_per_cluster == 0) return false;
+    // sectors_per_cluster must be a power of two per the FAT spec — guards the
+    // cluster<->LBA arithmetic and rejects a garbage BPB up front.
+    if ((vol.sectors_per_cluster & (vol.sectors_per_cluster - 1)) != 0) return false;
     if (vol.num_fats == 0) return false;
     if (vol.fat_size_sectors == 0) return false;
     if (vol.root_cluster < 2) return false;
@@ -659,6 +695,20 @@ bool mount(Volume& vol, SectorReader read, SectorWriter write, void* user) {
     vol.fat_start_lba = vol.reserved_sectors;
     vol.data_start_lba = static_cast<uint64_t>(vol.reserved_sectors) +
                          static_cast<uint64_t>(vol.num_fats) * vol.fat_size_sectors;
+
+    // Derive the data-cluster count so every cluster number can be validated
+    // against the real volume size (cluster_valid). FAT32 keeps the total
+    // sector count in BPB_TotSec32 (offset 32); BPB_TotSec16 (offset 19) is
+    // zero on FAT32 but honour it as a fallback for odd images.
+    uint32_t total_sectors = read_le32(&boot[32]);
+    if (total_sectors == 0) total_sectors = read_le16(&boot[19]);
+    if (total_sectors > vol.data_start_lba) {
+        const uint64_t data_sectors = total_sectors - vol.data_start_lba;
+        vol.total_clusters = static_cast<uint32_t>(data_sectors / vol.sectors_per_cluster);
+    } else {
+        vol.total_clusters = 0;  // unknown — cluster_valid falls back to sentinels
+    }
+
     vol.mounted = true;
     return true;
 }
@@ -702,8 +752,11 @@ bool read_file(Volume& vol, const char* path, void* buf, size_t buf_size,
     size_t written = 0;
     uint32_t remaining = size;
     uint32_t cur = cluster;
+    // Guard against a corrupt/cyclic FAT chain: a real file occupies at most
+    // ceil(size/cluster_bytes) clusters, so cap the walk a little above that.
+    uint32_t chain_guard = (cluster_bytes ? (size / cluster_bytes) : 0u) + 4u;
 
-    while (remaining > 0 && cur >= 2 && cur < 0x0FFFFFF8) {
+    while (remaining > 0 && cluster_valid(vol, cur) && chain_guard-- > 0) {
         const uint64_t lba = cluster_to_lba(vol, cur);
         if (!vol.read(lba, vol.sectors_per_cluster, cluster_buf, vol.user)) return false;
         const uint32_t take = remaining < cluster_bytes ? remaining : cluster_bytes;

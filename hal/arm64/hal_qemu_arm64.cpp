@@ -305,14 +305,17 @@ bool TimerDriver::remove_software_timer(kernel::hal::timer::SoftwareTimer* timer
 }
 uint64_t TimerDriver::get_system_time_us() {
     if (timer_freq_hz_ == 0) return 0;
-    return (read_sysreg_cntpct() * 1000000ULL) / timer_freq_hz_;
+    // 128-bit intermediate: a plain `ticks * 1e6` overflows uint64 after
+    // ~3.4 days at 62.5 MHz. mul_div_u64 keeps it exact for any uptime.
+    return kernel::util::mul_div_u64(read_sysreg_cntpct(), 1000000ULL, timer_freq_hz_);
 }
 uint64_t TimerDriver::get_system_time_ns() {
     if (timer_freq_hz_ == 0) return 0;
-    // ARM generic timer is 62.5 MHz on QEMU virt → ticks * 16 = ns. The
-    // general form below covers any freq without overflow (ticks fits in 64b
-    // for centuries; × 1e9 before divide only narrows when freq ≥ 1 GHz).
-    return (read_sysreg_cntpct() * 1000000000ULL) / timer_freq_hz_;
+    // ARM generic timer is 62.5 MHz on QEMU virt. A plain `ticks * 1e9`
+    // overflows uint64 after only ~295 s of uptime, silently wrapping every
+    // ns-based deadline. The 128-bit intermediate in mul_div_u64 is exact for
+    // the full 64-bit tick range.
+    return kernel::util::mul_div_u64(read_sysreg_cntpct(), 1000000000ULL, timer_freq_hz_);
 }
 void TimerDriver::hardware_timer_irq_fired(uint32_t core_id) { 
     (void)core_id;

@@ -117,6 +117,16 @@ public:
         }
         const int tip_depth = 1 + segment_count;
 
+        // Reject a header whose struct/strings blocks fall outside totalsize
+        // before walking — this parser runs on every cold boot against the
+        // DTB QEMU hands us in a1, so a corrupt/truncated blob must not walk
+        // off the end of memory.
+        if (hdr_.totalsize == 0 ||
+            static_cast<uint64_t>(hdr_.off_dt_struct) + hdr_.size_dt_struct > hdr_.totalsize ||
+            static_cast<uint64_t>(hdr_.off_dt_strings) + hdr_.size_dt_strings > hdr_.totalsize) {
+            return false;
+        }
+
         const uint8_t* struct_base = base_ + hdr_.off_dt_struct;
         const uint8_t* struct_end  = struct_base + hdr_.size_dt_struct;
         const char*    strings_base= reinterpret_cast<const char*>(
@@ -135,7 +145,7 @@ public:
         // successfully match a segment while descending.
         std::string_view remaining = node_path;
 
-        while (cur < struct_end) {
+        while (cur + 4 <= struct_end) {
             uint32_t tok = load_be32(cur); cur += 4;
             if (tok == FDT_NOP) continue;
             if (tok == FDT_END) break;
@@ -143,7 +153,9 @@ public:
             if (tok == FDT_BEGIN_NODE) {
                 const char* name = reinterpret_cast<const char*>(cur);
                 size_t nlen = cstr_len(name, struct_end);
-                cur += align4(nlen + 1);
+                const size_t adv = align4(nlen + 1);
+                if (adv > static_cast<size_t>(struct_end - cur)) return false;
+                cur += adv;
                 node_depth++;
 
                 if (node_depth == 1) {
@@ -173,9 +185,11 @@ public:
                 continue;
             }
             if (tok == FDT_PROP) {
+                if (cur + 8 > struct_end) return false;   // need len + nameoff
                 uint32_t plen    = load_be32(cur); cur += 4;
                 uint32_t nameoff = load_be32(cur); cur += 4;
                 const uint8_t* data = cur;
+                if (static_cast<uint64_t>(align4(plen)) > static_cast<uint64_t>(struct_end - cur)) return false;
                 cur += align4(plen);
 
                 // Property belongs to the currently-open node (at

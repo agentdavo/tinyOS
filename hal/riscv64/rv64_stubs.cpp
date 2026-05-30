@@ -37,6 +37,13 @@ namespace hal::qemu_virt_rv64 {
 extern "C" volatile uint64_t g_irq_in_progress[MAX_HARTS];
 } // namespace hal::qemu_virt_rv64
 
+// Arch-parity guard: cpu_rv64.S indexes g_irq_in_progress[] by (hartid * 8)
+// for every hart the scheduler runs. If MAX_HARTS ever drops below MAX_CORES
+// the trap handler would index past the array, so pin the relationship at
+// compile time rather than discover it as a memory stomp at boot.
+static_assert(hal::qemu_virt_rv64::MAX_HARTS >= kernel::core::MAX_CORES,
+              "g_irq_in_progress[] must cover every core the rv64 trap asm indexes");
+
 extern "C" void cpu_context_switch_impl(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb) {
     uint64_t hart;
     asm volatile("csrr %0, mhartid" : "=r"(hart));

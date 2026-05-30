@@ -48,7 +48,11 @@ struct TraceEvent {
     uint64_t timestamp_us;
     EventType type;
     const kernel::core::TCB* tcb;
-    std::string_view name;
+    // Owned copy of the event name. Was a std::string_view, which stored a
+    // non-owning pointer into the caller's buffer — dump_trace dereferenced it
+    // long after the caller's string had gone, reading stale/freed memory for
+    // any caller that passed a temporary. Copy into fixed storage instead.
+    char name[kernel::core::MAX_NAME_LENGTH + 1];
     uint64_t value;
 };
 
@@ -72,6 +76,11 @@ private:
     std::atomic<bool> enabled_;
     std::array<TraceEvent, MAX_TRACE_EVENTS> buffer_;
     std::atomic<size_t> buffer_idx_{0};
+    // Guards the buffer slot write / dump / clear. record_event can run on any
+    // core (and from create_thread under the scheduler lock), so without this
+    // two cores tore the multi-field TraceEvent. mutable so dump_trace (const)
+    // can lock. ScopedISRLock keeps it safe even if recorded from ISR context.
+    mutable kernel::core::Spinlock lock_;
 };
 
 extern TraceManager g_trace_manager;

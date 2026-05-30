@@ -33,10 +33,21 @@ inline float clampf(float v, float lo, float hi) noexcept {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// Range-reduce to [-pi, pi]. Loop is bounded in practice (callers pass radians,
-// not absurd magnitudes), and the freestanding kernel can't fall back to fmod.
+// Range-reduce to [-pi, pi]. The old plain-subtraction loop spun effectively
+// forever for a large finite magnitude (e.g. a degenerate arc yielding 1e30
+// radians) — millions of iterations on the motion/interpreter thread. Reduce
+// in one shot via the nearest multiple of 2*pi, then tidy the float residual
+// with a bounded loop. NaN returns 0 (the comparisons below would otherwise
+// short-circuit but we make it explicit). Absurd magnitudes that can't form an
+// exact quotient degenerate to 0 rather than hang.
 inline float wrap_pi(float radians) noexcept {
-    while (radians >  kPi) radians -= kTwoPi;
+    if (!(radians == radians)) return 0.0f;                 // NaN
+    if (radians >= -kPi && radians <= kPi) return radians;  // common fast path
+    const float q = radians / kTwoPi;
+    if (q > 9.0e8f || q < -9.0e8f) return 0.0f;             // too large to reduce
+    const long long n = static_cast<long long>(q < 0.0f ? q - 0.5f : q + 0.5f);
+    radians -= kTwoPi * static_cast<float>(n);
+    while (radians >  kPi) radians -= kTwoPi;               // residual only
     while (radians < -kPi) radians += kTwoPi;
     return radians;
 }
@@ -66,12 +77,18 @@ inline void sincos_approx(float x, float& s, float& c) noexcept {
     c = 1.0f - x2 / 2.0f + x4 / 24.0f;
 }
 
-// Newton-Raphson sqrt seeded from 1.0 — converges in 6 iterations for any
-// realistic input the kernel sees (counts squared, geometry distances).
+// Newton-Raphson sqrt. The old seed of max(v,1) does NOT converge in a fixed
+// 6 iterations for large arguments (e.g. squared count distances ~1e18 feeding
+// feedrate/path-length math) — the result could be off by orders of magnitude.
+// Seed via IEEE-754 exponent halving so the relative error of the guess is
+// bounded regardless of magnitude; 4 Newton steps then nail it across the whole
+// float range. NaN/negative return 0.
 inline float sqrt_approx(float v) noexcept {
-    if (v <= 0.0f) return 0.0f;
-    float x = v > 1.0f ? v : 1.0f;
-    for (int i = 0; i < 6; ++i) x = 0.5f * (x + v / x);
+    if (!(v > 0.0f)) return 0.0f;   // also catches NaN (NaN > 0 is false)
+    union { float f; uint32_t u; } val{v};
+    val.u = 0x1FBD1DF5U + (val.u >> 1);   // fast sqrt seed (~3.4% max rel error)
+    float x = val.f;
+    for (int i = 0; i < 4; ++i) x = 0.5f * (x + v / x);
     return x;
 }
 

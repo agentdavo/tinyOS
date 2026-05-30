@@ -160,6 +160,7 @@ bool symbol_numeric_value(const char* name, float& out) {
 Runtime g_runtime;
 
 bool Runtime::load_tsv(const char* buf, size_t len) noexcept {
+    kernel::core::ScopedLock lock(lock_);
     if (!buf || len == 0) return false;
     macro_count_ = 0;
     step_count_ = 0;
@@ -243,6 +244,7 @@ bool Runtime::load_tsv(const char* buf, size_t len) noexcept {
 }
 
 bool Runtime::select(size_t idx) noexcept {
+    kernel::core::ScopedLock lock(lock_);
     if (idx >= macro_count_) return false;
     selected_ = idx;
     return true;
@@ -420,6 +422,7 @@ bool Runtime::apply_step(size_t channel, const Step& step) noexcept {
 }
 
 bool Runtime::start(size_t channel, size_t idx) noexcept {
+    kernel::core::ScopedLock lock(lock_);
     if (channel >= MAX_CHANNELS || idx >= macro_count_) return false;
     auto& st = channels_[channel];
     st = ChannelState{};
@@ -444,6 +447,7 @@ bool Runtime::start_mcode(size_t channel, uint16_t mcode) noexcept {
 }
 
 bool Runtime::stop(size_t channel) noexcept {
+    kernel::core::ScopedLock lock(lock_);
     if (channel >= MAX_CHANNELS) return false;
     channels_[channel].active = false;
     channels_[channel].fault = false;
@@ -527,6 +531,7 @@ bool Runtime::tick_channel(size_t channel) noexcept {
 }
 
 void Runtime::tick() noexcept {
+    kernel::core::ScopedLock lock(lock_);
     machine::g_registry.sync_from_runtime();
     bool any_active = false;
     for (size_t channel = 0; channel < MAX_CHANNELS; ++channel) {

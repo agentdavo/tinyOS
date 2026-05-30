@@ -101,6 +101,9 @@ bool VirtioBlkDriver::init(uint64_t slot_base) {
 bool VirtioBlkDriver::read_sectors(uint64_t lba, uint32_t count, void* buf) {
     if (!initialized_ || !buf) return false;
     if (count == 0 || count > MAX_SECTORS_PER_REQ) return false;
+    // One shared descriptor chain + header/status scratch: serialise so a
+    // second caller can't stomp an in-flight request.
+    kernel::core::ScopedLock lock(io_lock_);
 
     // Compose a 3-descriptor chain: [header(RO)] -> [data(WO)] -> [status(WO)].
     // A single data descriptor is enough up to 32 KB per the virtio spec,
@@ -157,7 +160,14 @@ bool VirtioBlkDriver::read_sectors(uint64_t lba, uint32_t count, void* buf) {
         if (cur == want) break;
         kernel::util::cpu_relax();
     }
-    if (__atomic_load_n(&q_.used.idx, __ATOMIC_ACQUIRE) != want) return false;
+    if (__atomic_load_n(&q_.used.idx, __ATOMIC_ACQUIRE) != want) {
+        // Device timed out / didn't complete. Resync last_used to whatever the
+        // device's used.idx is now, otherwise the next request computes
+        // want = last_used+1 against an already-advanced ring and wedges all
+        // future I/O on this queue.
+        q_.last_used = __atomic_load_n(&q_.used.idx, __ATOMIC_ACQUIRE);
+        return false;
+    }
     q_.last_used = want;
 
     // Drain INT status so edge-triggered GICs don't keep replaying the IRQ.
@@ -175,6 +185,7 @@ bool VirtioBlkDriver::read_sectors(uint64_t lba, uint32_t count, void* buf) {
 bool VirtioBlkDriver::write_sectors(uint64_t lba, uint32_t count, const void* buf) {
     if (!initialized_ || !buf) return false;
     if (count == 0 || count > MAX_SECTORS_PER_REQ) return false;
+    kernel::core::ScopedLock lock(io_lock_);  // serialise the shared descriptor chain
 
     // Mirror of read_sectors, but VIRTIO_BLK_T_OUT and the data descriptor
     // is device-read (no VIRTQ_DESC_F_WRITE), so the device pulls payload
@@ -232,7 +243,14 @@ bool VirtioBlkDriver::write_sectors(uint64_t lba, uint32_t count, const void* bu
         if (cur == want) break;
         kernel::util::cpu_relax();
     }
-    if (__atomic_load_n(&q_.used.idx, __ATOMIC_ACQUIRE) != want) return false;
+    if (__atomic_load_n(&q_.used.idx, __ATOMIC_ACQUIRE) != want) {
+        // Device timed out / didn't complete. Resync last_used to whatever the
+        // device's used.idx is now, otherwise the next request computes
+        // want = last_used+1 against an already-advanced ring and wedges all
+        // future I/O on this queue.
+        q_.last_used = __atomic_load_n(&q_.used.idx, __ATOMIC_ACQUIRE);
+        return false;
+    }
     q_.last_used = want;
 
     const uint32_t isr = mmio_read(VMMIO_INT_STATUS);

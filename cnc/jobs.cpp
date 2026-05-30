@@ -189,8 +189,19 @@ size_t Runtime::active_job() const noexcept {
 
 size_t Runtime::enqueue(const Job& tmpl) noexcept {
     kernel::core::ScopedLock lock(lock_);
-    if (job_count_ >= MAX_JOBS) return SIZE_MAX;
-    const size_t idx = job_count_++;
+    size_t idx;
+    if (job_count_ < MAX_JOBS) {
+        idx = job_count_++;
+    } else {
+        // Table full by high-water mark — reclaim a slot freed by remove()
+        // (which zeroes used but never lowers job_count_). Without this the
+        // queue stays "full" forever after MAX_JOBS add/remove cycles.
+        idx = MAX_JOBS;
+        for (size_t i = 0; i < job_count_; ++i) {
+            if (!jobs_[i].used) { idx = i; break; }
+        }
+        if (idx == MAX_JOBS) return SIZE_MAX;
+    }
     jobs_[idx] = tmpl;
     jobs_[idx].used = true;
     if (jobs_[idx].state == JobState::Done ||

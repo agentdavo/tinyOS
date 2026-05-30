@@ -311,6 +311,11 @@ struct Axis {
     ChainEntry chain[CHAIN_DEPTH]{};
     uint8_t    chain_head            = 0;
     uint8_t    chain_count           = 0;
+    // Guards the chain ring + target latch. queue_move runs on the
+    // interpreter/CLI thread while step_trajectory pops on the RT motion
+    // thread; without this the two race on chain_head/chain_count and can
+    // drop or double-execute a motion block. Critical sections are tiny.
+    kernel::core::Spinlock chain_lock;
     // Block id of the trajectory currently being executed (the active
     // target). 0 = no block tagged. Updated at each chain pop.
     uint16_t   active_block_id       = 0;
@@ -380,6 +385,10 @@ struct Axis {
     // Kept in-Axis rather than in the homing engine because the trigger
     // is a drive-side event (bit 8) and the push is a drive-side write.
     bool      sw_limits_pending         = false;
+    // True once arm_post_homing_limits has configured a valid envelope.
+    // queue_move enforces [neg, pos] only when this is set, so pre-homing
+    // moves (where neg==pos==0) aren't spuriously clamped to the origin.
+    bool      sw_limits_active          = false;
     int32_t   sw_limit_neg_counts       = 0;
     int32_t   sw_limit_pos_counts       = 0;
 
@@ -484,7 +493,13 @@ struct Axis {
             }
             const int32_t counts_per_tooth = static_cast<int32_t>(counts_per_rev / teeth_per_revolution);
             if (counts_per_tooth == 0) return follower_base;
-            const int32_t tooth = (spindle_pos / counts_per_tooth) % teeth_per_revolution;
+            // C truncates toward zero, so a negative spindle position yields a
+            // negative tooth index and the follower jumps the wrong way. Take a
+            // floored, non-negative modulo so the index is always in
+            // [0, teeth_per_revolution).
+            const int32_t teeth = static_cast<int32_t>(teeth_per_revolution);
+            int32_t tooth = (spindle_pos / counts_per_tooth) % teeth;
+            if (tooth < 0) tooth += teeth;
             const int32_t tooth_pos = tooth * counts_per_tooth + index_offset_counts;
             return follower_base + tooth_pos;
         }
@@ -577,6 +592,9 @@ struct MotionStats {
     std::atomic<uint64_t> homings_started{0};
     std::atomic<uint64_t> homings_done{0};
     std::atomic<uint64_t> connection_losses{0};
+    // Count of move targets clamped to a soft travel limit. A non-zero value
+    // means a program/MDI/jog commanded past the configured envelope.
+    std::atomic<uint64_t> soft_limit_clamps{0};
 };
 
 // -----------------------------------------------------------------------------

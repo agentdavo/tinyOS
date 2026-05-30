@@ -99,7 +99,7 @@ bool E1000Driver::send_packet(int, const uint8_t* data, size_t len) {
     std::memcpy(tx_buffers_[idx], data, len);
 
     tx_ring_[idx].buffer_addr = reinterpret_cast<uint64_t>(tx_buffers_[idx]);
-    tx_ring_[idx].length = static_cast<uint32_t>(len);
+    tx_ring_[idx].length = static_cast<uint16_t>(len);
     tx_ring_[idx].cmd = CMD_EOP | CMD_IFCS | CMD_RS;
     tx_ring_[idx].status = 0;
 
@@ -211,6 +211,15 @@ void E1000Driver::init_tx_ring() {
     write_reg(E1000_TDLEN, NUM_TX_DESC * sizeof(TxDesc));
     write_reg(E1000_TDH, 0);
     write_reg(E1000_TDT, 0);
+
+    // Seed every TX descriptor as "done" (DD set) so the driver-owns-when-DD
+    // check in send_packet lets the first packet through. Without this, DD is
+    // 0 after the memset, send_packet bails, and TX deadlocks forever (the
+    // device only sets DD after a transmit that never gets submitted).
+    for (uint32_t i = 0; i < NUM_TX_DESC; ++i) {
+        tx_ring_[i].status = TX_STA_DD;
+    }
+    e1000_dmb();
 
     tx_head_ = 0;
     tx_tail_ = 0;

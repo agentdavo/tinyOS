@@ -181,7 +181,7 @@ bool Store::select(size_t channel, size_t idx) noexcept {
     return true;
 }
 
-bool Store::find_by_name(const char* name, size_t& out_idx) const noexcept {
+bool Store::find_by_name_locked(const char* name, size_t& out_idx) const noexcept {
     if (!name) return false;
     for (size_t i = 0; i < count_; ++i) {
         if (kernel::util::kstrcmp(programs_[i].name, name) == 0) {
@@ -192,11 +192,20 @@ bool Store::find_by_name(const char* name, size_t& out_idx) const noexcept {
     return false;
 }
 
+bool Store::find_by_name(const char* name, size_t& out_idx) const noexcept {
+    // Public entry: lock so a concurrent write_program/scan_filesystem can't
+    // change count_ or rewrite a name[] mid-scan (callers run on the jobs/MDI/
+    // CLI threads). write_program already holds the lock and uses the _locked
+    // variant directly to avoid re-entering the non-recursive spinlock.
+    kernel::core::ScopedLock lock(lock_);
+    return find_by_name_locked(name, out_idx);
+}
+
 bool Store::write_program(const char* name, const char* text) noexcept {
     if (!name || !text) return false;
     kernel::core::ScopedLock lock(lock_);
     size_t idx = 0;
-    if (!find_by_name(name, idx)) {
+    if (!find_by_name_locked(name, idx)) {   // already holding lock_
         if (count_ >= MAX_PROGRAMS) return false;
         idx = count_++;
     }
