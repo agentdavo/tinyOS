@@ -57,7 +57,8 @@ void JitterTracker::sample(uint64_t now_ns) noexcept {
     }
 
     // Hard overrun: interval ≥ 2 × period → we slipped a whole cycle.
-    if (interval >= period_ns_ * 2) {
+    // Compare as interval/2 ≥ period to avoid overflowing period_ns_ * 2.
+    if (interval / 2 >= period_ns_) {
         overruns_.fetch_add(1, std::memory_order_relaxed);
     }
 }

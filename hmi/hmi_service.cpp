@@ -62,6 +62,11 @@ static_assert(sizeof(TsvUploadHeader) == 20, "TsvUploadHeader layout");
 // new session ID arrives.
 constexpr size_t TSV_RX_BUF_BYTES = 256 * 1024;
 alignas(8) uint8_t g_tsv_rx_buf[TSV_RX_BUF_BYTES];
+// Separate reassembly buffer for the WebSocket live-preview server. It used
+// to alias g_tsv_rx_buf, so an in-progress multi-chunk UDP TSV upload and an
+// incoming WS frame — both stateful reassemblers driven by the same HMI
+// worker — corrupted each other's partial data. Give the WS path its own.
+alignas(8) uint8_t g_ws_rx_buf[TSV_RX_BUF_BYTES];
 uint16_t g_tsv_rx_session = 0;
 bool     g_tsv_rx_session_valid = false;
 uint32_t g_tsv_rx_total_len = 0;
@@ -1491,7 +1496,7 @@ void Service::thread_entry(void* arg) {
     };
     static WsTsvHandler ws_handler;
     static kernel::net::WebSocketServer ws_server(
-        5001, &ws_handler, g_tsv_rx_buf, sizeof(g_tsv_rx_buf));
+        5001, &ws_handler, g_ws_rx_buf, sizeof(g_ws_rx_buf));
     kernel::net::tcp_bind(*netif, &ws_server);
 
     constexpr size_t POLL_BUDGET = 8;
