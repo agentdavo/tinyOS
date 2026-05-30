@@ -26,7 +26,13 @@ namespace kernel {
 namespace core {
 
 // Global constants
-constexpr size_t MAX_THREADS = 16;
+// A full non-fake-slave boot creates ~18 threads (4 idle + cli/uart_io/ui +
+// motion/gcode/macro/ladder/probe/jobs/hmi + ec_a/bus_cfg_a/ec_b/bus_cfg_b),
+// which silently overran the old budget of 16 — create_thread returned
+// nullptr and the last services (the second EtherCAT master) never started.
+// 32 covers the full service set plus headroom for CLI-spawned threads.
+// Cost: g_task_stacks grows to 32 * DEFAULT_STACK_SIZE = 512 KB of .bss.
+constexpr size_t MAX_THREADS = 32;
 constexpr size_t MAX_NAME_LENGTH = 32;
 constexpr size_t MAX_CORES = 4;
 constexpr size_t MAX_PRIORITY_LEVELS = 16;
