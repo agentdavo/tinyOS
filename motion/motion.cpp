@@ -154,7 +154,12 @@ uint16_t DriveStateMachine::next_control_word(uint16_t status, Mode mode) const 
     if ((cw & enable_mask) == enable_mask &&
         cur != DriveState::SwitchedOn &&
         cur != DriveState::OperationEnabled) {
-        __builtin_trap();
+        // Refuse the illegal one-shot enable rather than trapping the whole
+        // kernel on the motor-control hot path. Stripping ENABLE_OPERATION
+        // keeps the drive in a safe, non-operational state (it can still
+        // progress the normal handshake on a later cycle); a __builtin_trap
+        // here would crash every axis on one drive's unexpected statusword.
+        cw &= static_cast<uint16_t>(~CB::ENABLE_OPERATION);
     }
 
     return CB::sanitize(cw, mode);
@@ -463,6 +468,8 @@ void Axis::step_trajectory(uint32_t dt_us) noexcept {
         // is now whatever the chain entry stored. Direction mismatch
         // falls through to a clean Holding stop and keeps the chain
         // queued for the next move_to / re-arm.
+        // Lock against queue_move (interpreter/CLI thread) mutating the ring.
+        kernel::core::ScopedLock lock(chain_lock);
         if (chain_count > 0) {
             const ChainEntry& head = chain[chain_head];
             if (head.valid) {
@@ -531,6 +538,9 @@ int32_t Axis::compute_spindle_gear_position(int32_t leader_actual_pos,
                                              int32_t k_num,
                                              int32_t k_den) const noexcept {
     if (k_den == 0) return follower_base;
+    // Guard the CPR divisor — a drive whose counts_per_rev was never set
+    // (defaults to 0) would otherwise integer-divide by zero and trap.
+    if (leader_counts_per_rev == 0) return follower_base;
 
     // Convert leader position to revolutions
     const int64_t leader_revs = leader_actual_pos / leader_counts_per_rev;
@@ -582,6 +592,26 @@ void Kernel::queue_move(size_t i, int32_t position,
     a.mode    = Mode::CSP;
     a.enabled = true;
     if (vmax_for_block <= 0) vmax_for_block = a.vmax_cps;
+    // Software travel-limit enforcement. Without this the only thing stopping
+    // an out-of-range target (a G-code/MDI/jog typo like X9999999) was the
+    // physical limit switch — the axis would slam into the hard stop. Clamp
+    // the commanded target into the configured envelope and count the event so
+    // the operator sees it. Only active once arm_post_homing_limits set a sane
+    // range (so pre-homing moves aren't pinned to the origin).
+    if (a.sw_limits_active) {
+        if (position < a.sw_limit_neg_counts) {
+            position = a.sw_limit_neg_counts;
+            stats_.soft_limit_clamps.fetch_add(1, std::memory_order_relaxed);
+        } else if (position > a.sw_limit_pos_counts) {
+            position = a.sw_limit_pos_counts;
+            stats_.soft_limit_clamps.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    // Lock the chain ring + target latch against the RT thread's
+    // step_trajectory pop. Without this the interpreter thread and the
+    // motion thread race on chain_head/chain_count and can drop or
+    // double-execute a block.
+    kernel::core::ScopedLock lock(a.chain_lock);
     // Mid-flight: push into the chain ring (caller has already verified
     // there's room via axis_chain_room — overflow drops the OLDEST
     // pending entry rather than the freshest, so a runaway interpreter
@@ -1217,6 +1247,8 @@ bool Kernel::arm_post_homing_limits(size_t axis_idx,
     a.sw_limit_neg_counts = neg_limit;
     a.sw_limit_pos_counts = pos_limit;
     a.sw_limits_pending   = true;
+    // Only treat the envelope as enforceable if it's a sane, non-empty range.
+    a.sw_limits_active    = (neg_limit < pos_limit);
     return true;
 }
 
@@ -2659,6 +2691,21 @@ void Kernel::cycle_safety(uint64_t now_us) noexcept {
     // held costs only one log line on the first edge.
     const bool estop = get_named_signal_bool_or("estop", false);
     if (estop) {
+        // Deterministic LOCAL stop first: latch every axis into FaultReaction
+        // and engage its brake in THIS pass. Previously e-stop only tripped
+        // the EtherCAT masters and relied on observing is_deadline_faulted()
+        // a cycle later — a 250 µs latency plus a single point of failure (if
+        // the master path is wedged, motors stay live). Stopping locally makes
+        // the reaction immediate and independent of the master.
+        for (size_t ai = 0; ai < MAX_AXES; ++ai) {
+            Axis& a = axes_[ai];
+            if (!a.fault_latched) {
+                a.fault_latched = true;
+                stats_.faults.fetch_add(1, std::memory_order_relaxed);
+            }
+            a.request_stop(StopAction::FaultReaction, now_us);
+        }
+        // Then trip both masters (idempotent — one log line on the first edge).
         ethercat::g_master_a.trip_fault("hardware estop");
         ethercat::g_master_b.trip_fault("hardware estop");
         // Don't return — limit/door checks still want to update their
@@ -2767,3 +2814,17 @@ void Kernel::dump_mpg(kernel::hal::UARTDriverOps* uart) const {
 }
 
 } // namespace motion
+
+// Strong definition of the emergency safe-stop hook declared weak in
+// cpp_runtime_stubs.cpp. Called from heap_panic_oom() (and any other
+// last-ditch path) to bring motion to a safe state before the kernel halts:
+// request a fault-reaction stop on every axis and trip both EtherCAT masters.
+// Kept dependency-light and idempotent so it's safe to call from a failing
+// allocator context.
+extern "C" void minios_emergency_safe_stop() {
+    for (size_t ai = 0; ai < motion::MAX_AXES; ++ai) {
+        motion::g_motion.request_stop(ai, motion::StopAction::FaultReaction);
+    }
+    ethercat::g_master_a.trip_fault("emergency safe stop");
+    ethercat::g_master_b.trip_fault("emergency safe stop");
+}

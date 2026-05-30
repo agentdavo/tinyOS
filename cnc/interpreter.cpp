@@ -471,13 +471,18 @@ static uint32_t feed_cps_for_state(const Runtime::ChannelState& state,
 static uint32_t combined_path_counts(const int32_t start[motion::MAX_AXES],
                                      const int32_t targets[motion::MAX_AXES],
                                      uint64_t axis_mask) noexcept {
-    uint64_t sum_sq = 0;
+    // Accumulate the squared deltas in 128-bit. A single full-range axis
+    // delta (~4.3e9 counts) squared is ~1.8e19, which overflows the int64
+    // multiply (signed UB) the old code used; summing several axes overflows
+    // uint64 too. unsigned __int128 holds it exactly for any axis count.
+    unsigned __int128 sum_sq = 0;
     for (size_t i = 0; i < motion::MAX_AXES; ++i) {
         if ((axis_mask & (1ull << i)) == 0) continue;
         const int64_t d = static_cast<int64_t>(targets[i]) - start[i];
-        sum_sq += static_cast<uint64_t>(d * d);
+        const uint64_t ad = d < 0 ? static_cast<uint64_t>(-d) : static_cast<uint64_t>(d);
+        sum_sq += static_cast<unsigned __int128>(ad) * ad;
     }
-    return static_cast<uint32_t>(sqrt_approx(static_cast<float>(sum_sq)));
+    return static_cast<uint32_t>(sqrt_approx(static_cast<float>(static_cast<double>(sum_sq))));
 }
 
 static int axis_offset_slot(char word) {
@@ -870,11 +875,14 @@ static bool execute_axes(Runtime::ChannelState& state,
                 const int64_t dx = static_cast<int64_t>(tip_targets[0]) - state.tool_tip_pos[0];
                 const int64_t dy = static_cast<int64_t>(tip_targets[1]) - state.tool_tip_pos[1];
                 const int64_t dz = static_cast<int64_t>(tip_targets[2]) - state.tool_tip_pos[2];
-                const uint64_t sum_sq =
-                    static_cast<uint64_t>(dx * dx) +
-                    static_cast<uint64_t>(dy * dy) +
-                    static_cast<uint64_t>(dz * dz);
-                path_counts = static_cast<uint32_t>(sqrt_approx(static_cast<float>(sum_sq)));
+                // 128-bit accumulate — see combined_path_counts: each squared
+                // delta can exceed int64/uint64 range at full travel.
+                auto sq = [](int64_t v) -> unsigned __int128 {
+                    const uint64_t a = v < 0 ? static_cast<uint64_t>(-v) : static_cast<uint64_t>(v);
+                    return static_cast<unsigned __int128>(a) * a;
+                };
+                const unsigned __int128 sum_sq = sq(dx) + sq(dy) + sq(dz);
+                path_counts = static_cast<uint32_t>(sqrt_approx(static_cast<float>(static_cast<double>(sum_sq))));
             } else {
                 path_counts = combined_path_counts(state.targets, targets, axis_mask);
             }
