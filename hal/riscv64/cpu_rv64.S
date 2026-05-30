@@ -486,9 +486,24 @@ cpu_context_switch_rv64:
     sd      s11, (TCB_REGS_OFF + 26*8)(a0)
     /* Resume pc = ra (the call site of cpu_context_switch_rv64). */
     sd      ra,  (TCB_PC_OFF)(a0)
-    /* Save the pre-disable mstatus, but make sure MPIE=1 so when this
-     * thread is restored later via mret, MIE comes back on. */
-    ori     t1, t1, 0x80                /* set MPIE bit */
+    /* Save the pre-disable mstatus, fixing up the fields mret will consume:
+     *   MPIE (bit 7)      = 1  -> MIE comes back on when this thread resumes.
+     *   MPP  (bits 11-12) = M  -> mret stays in M-mode.
+     *
+     * MPP must be forced because RISC-V hardware *clears* mstatus.MPP to the
+     * least-privileged supported mode (User here) as a side-effect of the
+     * mret that first entered this thread. So while the thread runs in
+     * M-mode, the MPP *field* in the live mstatus reads U. If we saved that
+     * verbatim, the next mret restoring this TCB would drop to U-mode and the
+     * very next instruction fetch of kernel text would fault (mcause=1,
+     * tval=0) — observed at both mret sites (trap_entry and here). The trap
+     * save path doesn't need this fixup: a trap from M-mode sets MPP=M in
+     * hardware, so its captured mstatus already has MPP=M.
+     *
+     * MPP is only ever M (0b11) or U (0b00) in this kernel (no S-mode), so
+     * OR-ing in 0x1800 reliably forces it to M. */
+    li      t5, 0x1880                  /* MPIE | (MPP=M) */
+    or      t1, t1, t5
     sd      t1,  (TCB_MSTATUS_OFF)(a0)
 
 .L_ctx_restore:
