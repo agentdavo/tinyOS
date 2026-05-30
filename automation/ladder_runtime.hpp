@@ -2,6 +2,7 @@
 #pragma once
 
 #include "machine/machine_registry.hpp"
+#include "core.hpp"   // kernel::core::Spinlock
 
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +47,9 @@ private:
 
     Rung rungs_[MAX_RUNGS]{};
     size_t rung_count_ = 0;
+    // Guards the RT tick thread (tick) against load_tsv rewriting rungs_/
+    // rung_count_ from the CLI/boot thread.
+    mutable kernel::core::Spinlock lock_;
 };
 
 extern Runtime g_runtime;

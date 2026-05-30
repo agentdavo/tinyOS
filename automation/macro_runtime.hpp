@@ -2,6 +2,7 @@
 #pragma once
 
 #include "machine/machine_registry.hpp"
+#include "core.hpp"   // kernel::core::Spinlock
 
 #include <cstddef>
 #include <cstdint>
@@ -117,6 +118,12 @@ private:
     size_t step_count_ = 0;
     size_t selected_ = 0;
     ChannelState channels_[MAX_CHANNELS]{};
+    // Guards the runtime against its RT tick thread (tick) racing the CLI/
+    // operator threads (start/stop/select/load_tsv). The delegating wrappers
+    // start_by_id/start_mcode intentionally do NOT lock — they call start(),
+    // which does, so locking here too would self-deadlock the non-recursive
+    // spinlock. Matches the pattern cnc::jobs::Runtime already uses.
+    mutable kernel::core::Spinlock lock_;
 };
 
 extern Runtime g_runtime;

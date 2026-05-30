@@ -129,6 +129,7 @@ Runtime g_runtime;
 
 bool Runtime::load_tsv(const char* buf, size_t len) noexcept {
     if (!buf || len == 0) return false;
+    kernel::core::ScopedLock lock(lock_);
     rung_count_ = 0;
     const char* p = buf;
     const char* end = buf + len;
@@ -216,6 +217,7 @@ void Runtime::drive_output(const Rung& rung, bool state) noexcept {
 }
 
 void Runtime::tick() noexcept {
+    kernel::core::ScopedLock lock(lock_);
     machine::g_registry.sync_from_runtime();
     for (size_t i = 0; i < rung_count_; ++i) {
         drive_output(rungs_[i], evaluate(rungs_[i]));

@@ -156,6 +156,7 @@ bool Runtime::move_settled(const Vec3& target, int32_t tolerance) const noexcept
 }
 
 bool Runtime::start_reference_sphere() noexcept {
+    kernel::core::ScopedLock lock(lock_);
     if (active_) return false;
     reset_state();
     if (!load_config()) {
@@ -238,6 +239,7 @@ void Runtime::advance_stage() noexcept {
 }
 
 void Runtime::tick() noexcept {
+    kernel::core::ScopedLock lock(lock_);
     if (!active_) {
         publish_status();
         return;

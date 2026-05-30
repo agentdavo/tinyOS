@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #pragma once
 
+#include "core.hpp"   // kernel::core::Spinlock
+
 #include <cstddef>
 #include <cstdint>
 
@@ -68,6 +70,9 @@ private:
     int64_t sum_y_[kPointCount]{};
     int64_t sum_z_[kPointCount]{};
     char message_[96]{};
+    // Guards the RT tick thread against start_reference_sphere() called from
+    // the CLI/macro/operator threads (which calls reset_state mid-flight).
+    mutable kernel::core::Spinlock lock_;
 };
 
 extern Runtime g_runtime;
