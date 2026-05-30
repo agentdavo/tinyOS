@@ -86,7 +86,17 @@ bool probe_device(const HostBridge& host, DeviceAddress addr, DeviceInfo& out) {
             ? ((static_cast<uint64_t>(sized_hi) << 32) | static_cast<uint64_t>(sized_lo & ~0xfu))
             : static_cast<uint64_t>(sized_lo & ~0xfu);
         if (mask != 0) {
-            out.bar0_size = (~mask) + 1u;
+            const uint64_t size = (~mask) + 1u;
+            // A well-formed BAR mask is a contiguous run of low zero bits, so
+            // the decoded size is a power of two. A buggy/hostile device can
+            // return a scattered mask whose "size" isn't — downstream code
+            // aligns the MMIO base with (size-1) as a mask and would compute a
+            // bogus base, then read/write arbitrary physical memory. Only
+            // accept a power-of-two size; otherwise leave bar0_size 0 so the
+            // caller treats the BAR as unsized and skips it.
+            if ((size & (size - 1)) == 0) {
+                out.bar0_size = size;
+            }
         }
     }
     return true;

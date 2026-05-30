@@ -484,7 +484,15 @@ bool submit_enable_slot(ControllerState& state, uint8_t* slot_id_out) {
     uint8_t cc = 0;
     uint8_t slot = 0;
     if (!submit_command(state, TRB_TYPE_ENABLE_SLOT_CMD, 0, 0, 0, &cc, &slot)) return false;
-    if (slot == 0) return false;
+    // slot is a device-reported id; validate it before it indexes dcbaa[] and
+    // the doorbell array. Reject 0 (invalid), anything above the controller's
+    // advertised max_slots, or >= the dcbaa capacity — otherwise a bad
+    // completion event would write a device-context pointer the hardware then
+    // dereferences out of bounds.
+    if (slot == 0 || slot > state.max_slots ||
+        slot >= ControllerState::DCBAA_ENTRIES) {
+        return false;
+    }
     state.slot_id = slot;
     if (slot_id_out) *slot_id_out = slot;
     return true;
