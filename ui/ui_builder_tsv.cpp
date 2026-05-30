@@ -4100,6 +4100,13 @@ public:
                  spec.w > 0 ? static_cast<uint32_t>(spec.w) : 160U,
                  spec.h > 0 ? static_cast<uint32_t>(spec.h) : 120U),
           spec_(spec) {
+        // Clamp the widget's render size to the framebuffer. This keeps the
+        // depth-buffer allocation (width_*height_) bounded and the depth/pixel
+        // strides consistent everywhere downstream — a TSV-supplied 60000x60000
+        // image otherwise tried to allocate gigabytes and could index a stride
+        // far past the framebuffer.
+        if (width_  > kernel::ui::FB_WIDTH)  set_size(kernel::ui::FB_WIDTH,  height_);
+        if (height_ > kernel::ui::FB_HEIGHT) set_size(width_, kernel::ui::FB_HEIGHT);
         // Register for view:reset action targeting. Tiny static fan-out;
         // the builder resets g_gles1_widgets[] on every TSV reload via
         // reset_state, so no lifetime concern.
@@ -4276,7 +4283,14 @@ private:
     // FB-sized (8 MiB) depth allocation. Lazy alloc so widgets that never
     // render 3D don't pay anything; the buffer is reused across redraws.
     float* ensure_depth_buffer() const {
-        const size_t needed = static_cast<size_t>(width_) * static_cast<size_t>(height_);
+        // Bound the request to the framebuffer area. A widget can't draw more
+        // than the whole screen anyway, and an unclamped width_*height_ from a
+        // malformed TSV (e.g. 60000x60000) would try to allocate gigabytes from
+        // the bump heap and OOM-halt the kernel.
+        constexpr size_t kMaxArea =
+            static_cast<size_t>(kernel::ui::FB_WIDTH) * kernel::ui::FB_HEIGHT;
+        size_t needed = static_cast<size_t>(width_) * static_cast<size_t>(height_);
+        if (needed > kMaxArea) needed = kMaxArea;
         if (needed == 0) return nullptr;
         if (depth_buffer_ && depth_capacity_ >= needed) return depth_buffer_;
         if (depth_buffer_) {
@@ -4291,11 +4305,28 @@ private:
 
     gles1::FramebufferView bind_view(Framebuffer& fb) const {
         gles1::FramebufferView v{};
-        v.pixels = fb.data() + static_cast<uint32_t>(y_) * kernel::ui::FB_WIDTH + static_cast<uint32_t>(x_);
-        v.width = width_;
-        v.height = height_;
+        // Clamp the view rectangle to the framebuffer. The gles1 renderer only
+        // clips against v.width/v.height, not the real FB, so a widget whose
+        // TSV-sourced x/y/w/h reach past the framebuffer (or a negative origin
+        // that wraps when cast to unsigned) would write hundreds of KB outside
+        // g_framebuffer_pixels. A fully off-screen or negative-origin widget
+        // collapses to an empty view so nothing is drawn.
+        if (x_ < 0 || y_ < 0 ||
+            x_ >= static_cast<int32_t>(kernel::ui::FB_WIDTH) ||
+            y_ >= static_cast<int32_t>(kernel::ui::FB_HEIGHT)) {
+            return v;  // pixels=null, width=height=0
+        }
+        const uint32_t ox = static_cast<uint32_t>(x_);
+        const uint32_t oy = static_cast<uint32_t>(y_);
+        const uint32_t max_w = kernel::ui::FB_WIDTH  - ox;
+        const uint32_t max_h = kernel::ui::FB_HEIGHT - oy;
+        v.pixels = fb.data() + oy * kernel::ui::FB_WIDTH + ox;
+        v.width  = width_  < max_w ? width_  : max_w;
+        v.height = height_ < max_h ? height_ : max_h;
         v.stride_pixels = kernel::ui::FB_WIDTH;
         v.depth = ensure_depth_buffer();
+        // Depth buffer is sized width_*height_ with row stride width_; v.width
+        // is <= width_ after clamping so depth indexing stays in bounds.
         v.depth_stride_pixels = width_;
         return v;
     }
