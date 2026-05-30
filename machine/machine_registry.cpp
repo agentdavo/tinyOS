@@ -616,6 +616,12 @@ void Registry::update_signal_inputs_locked() noexcept {
         size_t idx = 0;
         if (!find_locked(binding.name, idx)) continue;
         const bool has_slot = binding.master != 0xFF && binding.slave != 0xFF;
+        // bound_slave returns null for an out-of-range master (>1) or slave
+        // (>= MAX_SLAVES) even when both differ from 0xFF, so the EcXxxWord/
+        // Position/etc. cases below MUST null-check this rather than trust
+        // has_slot — a signal TSV with master=2 would otherwise null-deref.
+        const ethercat::SlaveInfo* bs =
+            has_slot ? bound_slave(binding.master, binding.slave) : nullptr;
         SymbolValue value{};
         bool handled = true;
         switch (binding.source) {
@@ -675,35 +681,35 @@ void Registry::update_signal_inputs_locked() noexcept {
                 handled = has_slot && read_pin_binding(binding.master, binding.slave, binding.pin, false, value);
                 break;
             case SignalSource::EcStatusWord:
-                if (has_slot) value = int_value(bound_slave(binding.master, binding.slave)->drive.statusword);
+                if (bs) value = int_value(bs->drive.statusword);
                 else handled = false;
                 break;
             case SignalSource::EcControlWord:
-                if (has_slot) value = int_value(bound_slave(binding.master, binding.slave)->drive.controlword);
+                if (bs) value = int_value(bs->drive.controlword);
                 else handled = false;
                 break;
             case SignalSource::EcPositionActual:
-                if (has_slot) value = int_value(bound_slave(binding.master, binding.slave)->drive.actual_position);
+                if (bs) value = int_value(bs->drive.actual_position);
                 else handled = false;
                 break;
             case SignalSource::EcVelocityActual:
-                if (has_slot) value = int_value(bound_slave(binding.master, binding.slave)->drive.actual_velocity);
+                if (bs) value = int_value(bs->drive.actual_velocity);
                 else handled = false;
                 break;
             case SignalSource::EcErrorCode:
-                if (has_slot) value = int_value(bound_slave(binding.master, binding.slave)->drive.error_code);
+                if (bs) value = int_value(bs->drive.error_code);
                 else handled = false;
                 break;
             case SignalSource::EcDriveMode:
-                if (has_slot) value = int_value(static_cast<int32_t>(bound_slave(binding.master, binding.slave)->drive.mode_op_display));
+                if (bs) value = int_value(static_cast<int32_t>(bs->drive.mode_op_display));
                 else handled = false;
                 break;
             case SignalSource::EcDigitalInputs:
-                if (has_slot) value = int_value(static_cast<int32_t>(bound_slave(binding.master, binding.slave)->drive.digital_inputs));
+                if (bs) value = int_value(static_cast<int32_t>(bs->drive.digital_inputs));
                 else handled = false;
                 break;
             case SignalSource::EcDigitalOutputs:
-                if (has_slot) value = int_value(static_cast<int32_t>(bound_slave(binding.master, binding.slave)->drive.digital_outputs));
+                if (bs) value = int_value(static_cast<int32_t>(bs->drive.digital_outputs));
                 else handled = false;
                 break;
             case SignalSource::EcDo:

@@ -197,8 +197,8 @@ bool Service::load_tsv(const char* buf, size_t len) noexcept {
 }
 
 bool Service::select_station(size_t pod_idx, size_t station_idx) noexcept {
-    if (pod_idx >= count_) return false;
     kernel::core::ScopedLock lock(lock_);
+    if (pod_idx >= count_) return false;   // range-check under the lock (count_ is mutated by load_tsv)
     auto& pod = pods_[pod_idx];
     if (station_idx >= pod.station_count) return false;
     pod.active_station = station_idx;
@@ -218,8 +218,8 @@ bool Service::select_station(const char* pod_id, size_t station_idx) noexcept {
 }
 
 bool Service::assign_virtual_tool(size_t pod_idx, size_t station_idx, uint16_t virtual_tool) noexcept {
-    if (pod_idx >= count_) return false;
     kernel::core::ScopedLock lock(lock_);
+    if (pod_idx >= count_) return false;   // range-check under the lock
     auto& pod = pods_[pod_idx];
     if (station_idx >= pod.station_count) return false;
     pod.stations[station_idx].virtual_tool = virtual_tool;
@@ -232,8 +232,8 @@ bool Service::assign_virtual_tool(const char* pod_id, size_t station_idx, uint16
 }
 
 bool Service::set_locked(size_t pod_idx, bool locked) noexcept {
-    if (pod_idx >= count_) return false;
     kernel::core::ScopedLock lock_guard(lock_);
+    if (pod_idx >= count_) return false;   // range-check under the lock
     pods_[pod_idx].locked = locked;
     return true;
 }
