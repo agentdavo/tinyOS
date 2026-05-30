@@ -62,7 +62,19 @@ inline void* kmemset(void* dest, int ch, size_t count) noexcept {
 }
 
 inline int kmemcmp(const void* ptr1, const void* ptr2, size_t count) noexcept {
-    return ::memcmp(ptr1, ptr2, count); 
+    return ::memcmp(ptr1, ptr2, count);
+}
+
+// Overflow-safe (a * b) / c for 64-bit operands. The naive `a * b` overflows
+// uint64_t for timer math: at QEMU's 62.5 MHz arm64 / 10 MHz rv64 generic
+// timers, `ticks * 1e9` wraps after only a few minutes of uptime, silently
+// corrupting every ns-based deadline (wait_until_ns, motion, EtherCAT DC).
+// Promote to 128-bit for the intermediate product so the result is exact for
+// the full 64-bit tick range. GCC provides __uint128_t on both aarch64 and
+// rv64 (lp64d) targets. Returns 0 if c == 0 rather than trapping.
+inline uint64_t mul_div_u64(uint64_t a, uint64_t b, uint64_t c) noexcept {
+    if (c == 0) return 0;
+    return static_cast<uint64_t>((static_cast<unsigned __int128>(a) * b) / c);
 }
 
 inline size_t kstrlen(const char* str) noexcept {
