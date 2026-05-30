@@ -52,17 +52,21 @@ constexpr uint32_t E1000_RAL0   = 0x8400;
 constexpr uint32_t E1000_RAH0   = 0x8404;
 constexpr uint32_t E1000_MTA    = 0x5200;
 
-// RX/TX descriptor.
+// Legacy e1000 TX descriptor — exactly 16 bytes, fields at the offsets the
+// hardware expects: addr(8) length(2) CSO(1) CMD(1) STA(1) CSS(1) SPECIAL(2).
+// The previous layout had `length` as 4 bytes and `cmd` as 2, pushing CMD/STA
+// to the wrong offsets and making the struct 22 bytes — the device read the
+// command/status from the wrong bytes (only tolerated by lenient emulation).
 struct [[gnu::packed]] TxDesc {
-    volatile uint64_t buffer_addr;
-    volatile uint32_t length;
-    volatile uint16_t csum_offset;
-    volatile uint16_t cmd;
-    volatile uint8_t  status;
-    volatile uint8_t  css;
-    volatile uint16_t special;
-    volatile uint16_t reserved;
+    volatile uint64_t buffer_addr;  // 0
+    volatile uint16_t length;       // 8
+    volatile uint8_t  cso;          // 10 (checksum offset)
+    volatile uint8_t  cmd;          // 11
+    volatile uint8_t  status;       // 12 (lower nibble; DD in bit 0)
+    volatile uint8_t  css;          // 13 (checksum start)
+    volatile uint16_t special;      // 14
 };
+static_assert(sizeof(TxDesc) == 16, "legacy e1000 TX descriptor must be 16 bytes");
 
 struct [[gnu::packed]] RxDesc {
     volatile uint64_t buffer_addr;

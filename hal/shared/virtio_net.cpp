@@ -144,6 +144,22 @@ bool VirtioNetDriver::send_packet(int if_idx, const uint8_t* data, size_t len) {
     if (!initialized_ || !data) { stats_.tx_drops++; return false; }
     if (len + sizeof(VirtioNetHdr) > NET_BUF_SIZE) { stats_.tx_drops++; return false; }
 
+    // Reap completed TX descriptors before reusing a slot. Without this the
+    // used ring was never advanced and `avail.idx % VIRTQ_SIZE` would reuse a
+    // slot's buffer/descriptor after VIRTQ_SIZE sends while the device might
+    // still be DMAing it. Advancing last_used to the device's used.idx frees
+    // the slots it has finished with.
+    if (kernel::g_platform && kernel::g_platform->get_mem_ops()) {
+        kernel::g_platform->get_mem_ops()->invalidate_cache_range(&tx_queue_.used, sizeof(tx_queue_.used));
+    }
+    tx_queue_.last_used = __atomic_load_n(&tx_queue_.used.idx, __ATOMIC_ACQUIRE);
+
+    // If every descriptor is still in flight (device hasn't drained the ring),
+    // drop rather than clobber an unconsumed slot.
+    const uint16_t outstanding =
+        static_cast<uint16_t>(tx_queue_.avail.idx - tx_queue_.last_used);
+    if (outstanding >= VIRTQ_SIZE) { stats_.tx_drops++; return false; }
+
     uint16_t slot = tx_queue_.avail.idx % VIRTQ_SIZE;
     uint8_t* buf = &tx_bufs_[slot * NET_BUF_SIZE];
 
