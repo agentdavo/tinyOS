@@ -68,12 +68,15 @@ bool SDCardDriver::init(uintptr_t spi_base, uint32_t cs_pin) {
     spi_base_ = spi_base;
     cs_pin_ = cs_pin;
     initialized_ = false;
-    
-    if (spi_base_ == 0) {
-        return false;
-    }
-    
-    return true;
+
+    // NOTE: this SPI-mode SD driver is non-functional scaffolding. The real
+    // card-reset/CMD0/CMD8/ACMD41 handshake is not implemented, so
+    // initialized_ deliberately stays false and every read/write op below
+    // returns false. FAT32 mounts via the virtio-blk driver, not this. We
+    // return false here (rather than the old misleading `true`) so no caller
+    // believes the SPI path came up. Implement the handshake and set
+    // initialized_ = true before relying on it.
+    return false;
 }
 
 bool SDCardDriver::send_command(uint8_t cmd, uint32_t arg, uint8_t* response, size_t resp_len) {
