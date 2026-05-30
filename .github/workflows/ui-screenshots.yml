@@ -62,6 +62,16 @@ jobs:
         run: make TARGET=arm64
 
       - name: Capture every TSV UI page
+        # UI_DUMP_SCALE=3 downsamples the 1080×1920 framebuffer to 360×640.
+        # Native res (scale=1, the script default since 8d267ac) writes a
+        # 6.2 MB raw RGB payload per page over the emulated UART — ~31 s/page
+        # under QEMU TCG, so a full 20-page run overruns the runner and the
+        # job was timing out partway through the capture loop. Scale=3 keeps
+        # widget structure legible for the visual-review surface and brings
+        # the full run to ~2.6 min (measured 159 s). Raise toward 1 only if
+        # the runner budget allows.
+        env:
+          UI_DUMP_SCALE: "3"
         run: |
           mkdir -p screenshots
           # Strip stale captures so deleted pages don't linger as orphan PNGs.
