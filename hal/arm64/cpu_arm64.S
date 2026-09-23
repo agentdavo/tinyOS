@@ -194,6 +194,10 @@ exception_vectors:
     .section .text.boot, "ax", %progbits
     .global _start
 _start:
+    // QEMU passes the DTB pointer in x0. Park it in callee-saved x20 before
+    // anything (CurrentEL probe, EL2 drop, early_uart_init) reuses x0 — it
+    // used to be stored only after those had clobbered it.
+    mov     x20, x0
     // If QEMU booted us at EL2, drop to EL1h. QEMU -machine virt -cpu max
     // starts at EL2 by default; our kernel code assumes EL1.
     mrs     x0, CurrentEL
@@ -219,9 +223,7 @@ _start:
     // Now the stack is valid, so early UART routines can be called safely.
     bl      early_uart_init
     ldr     x2, =g_arm64_dtb_ptr
-    str     x0, [x2]
-    stp     x0, x30, [sp, #-16]!        // Save x0 (DTB pointer) and LR
-    mov     x19, x0                     // Preserve x0 across call
+    str     x20, [x2]
     mov     x0, x21
     adr     x1, .L_boot_stage_entry
     bl      boot_log_core_phase
@@ -236,8 +238,6 @@ _start:
     bl      boot_log_reg64
     adr     x0, .L_exc_nl
     bl      early_uart_puts
-    mov     x0, x19                     // Restore original x0
-    ldp     x0, x30, [sp], #16
 
     mov     x0, x21                     // core_id
     adr     x1, .L_boot_stage_stack

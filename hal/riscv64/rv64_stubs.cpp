@@ -99,9 +99,12 @@ bool is_dedicated_rt_core(uint32_t core_id) noexcept {
 }
 
 namespace sync {
-void barrier_dmb() { asm volatile("fence rw, rw" ::: "memory"); }
-void barrier_dsb() { asm volatile("fence rw, rw" ::: "memory"); }
-void barrier_isb() { asm volatile("fence rw, rw" ::: "memory"); }
+// `iorw`: these also order memory against device (MMIO) accesses, e.g. a
+// virtqueue update before the QUEUE_NOTIFY doorbell. `fence rw, rw` only
+// orders memory against memory.
+void barrier_dmb() { asm volatile("fence iorw, iorw" ::: "memory"); }
+void barrier_dsb() { asm volatile("fence iorw, iorw" ::: "memory"); }
+void barrier_isb() { asm volatile("fence iorw, iorw" ::: "memory"); }
 } // namespace sync
 
 void cpu_context_switch(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb) {

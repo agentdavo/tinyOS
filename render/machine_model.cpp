@@ -6,6 +6,8 @@
 #include "render/obj_registry.hpp"
 #include "render/stl_importer.hpp"
 
+#include "util_math.hpp"
+
 #include <cstring>
 #include <new>
 
@@ -13,21 +15,11 @@ namespace render::machine {
 
 namespace {
 
-constexpr float kPi = 3.14159265358979323846f;
 constexpr size_t MAX_CUBE_VERTICES = 24;
 constexpr size_t MAX_CUBE_INDICES = 36;
 
-float sin_approx(float radians) {
-    float x = radians;
-    while (x > kPi) x -= 2.0f * kPi;
-    while (x < -kPi) x += 2.0f * kPi;
-    float x2 = x * x;
-    return x * (1.0f - x2 / 6.0f + (x2 * x2) / 120.0f);
-}
-
-float cos_approx(float radians) {
-    return sin_approx(radians + kPi * 0.5f);
-}
+using kernel::util::math::cos_approx;
+using kernel::util::math::sin_approx;
 
 void* alloc_aligned(size_t size) {
     void* ptr = ::operator new(size);

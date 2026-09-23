@@ -154,15 +154,13 @@ bool WebSocketConnection::send_text(const char* text, size_t len) noexcept {
             header[hlen++] = static_cast<uint8_t>(len >> s);
         }
     }
-    // Stage header + payload into a single buffer so TcpConnection::send
-    // produces one TCP segment (better than two segments back-to-back
-    // for clients that don't coalesce). Cap at our staging size.
-    static uint8_t frame[2048];
-    if (hlen + len > sizeof(frame)) {
-        // Two-segment fallback for big payloads.
-        if (!tcp->send(header, hlen)) return false;
-        return tcp->send(reinterpret_cast<const uint8_t*>(text), len);
-    }
+    // Stage header + payload into one buffer so TcpConnection::send emits a
+    // single segment. TcpConnection keeps one segment in flight and caps it
+    // at RETX_BUF_BYTES, so a frame larger than that can't be sent at all.
+    // (The old two-send fallback could send the header and then have the
+    // payload rejected, leaving a truncated frame on the wire.)
+    static uint8_t frame[TcpConnection::RETX_BUF_BYTES];
+    if (hlen + len > sizeof(frame)) return false;
     std::memcpy(frame, header, hlen);
     std::memcpy(frame + hlen, text, len);
     return tcp->send(frame, hlen + len);
@@ -174,6 +172,13 @@ WebSocketServer::WebSocketServer(uint16_t port, WebSocketHandler* handler,
       payload_buf_(payload_buf), payload_cap_(payload_cap) {}
 
 void WebSocketServer::on_open(TcpConnection& conn) noexcept {
+    // The server keeps one set of handshake/frame-parser state, but TCP
+    // accepts several connections per listener. Refuse a second client
+    // instead of letting it clobber the active session.
+    if (ws_conn_.tcp && ws_conn_.tcp != &conn) {
+        conn.close();
+        return;
+    }
     state_ = State::Handshake;
     http_len_ = 0;
     frame_stage_ = FrameStage::Header;
@@ -183,7 +188,7 @@ void WebSocketServer::on_open(TcpConnection& conn) noexcept {
 }
 
 void WebSocketServer::on_close(TcpConnection& conn) noexcept {
-    (void)conn;
+    if (&conn != ws_conn_.tcp) return;  // a refused second client
     if (state_ == State::Frames && handler_) handler_->on_ws_close(ws_conn_);
     state_ = State::Closing;
     ws_conn_.tcp = nullptr;
@@ -191,18 +196,22 @@ void WebSocketServer::on_close(TcpConnection& conn) noexcept {
 
 void WebSocketServer::on_data(TcpConnection& conn,
                               const uint8_t* data, size_t len) noexcept {
+    if (&conn != ws_conn_.tcp) return;  // a refused second client
     if (state_ == State::Handshake) {
         // Accumulate request into http_buf_ until \r\n\r\n.
+        const size_t prev_len = http_len_;
         size_t copy = len;
         if (http_len_ + copy > HTTP_BUF_CAP) copy = HTTP_BUF_CAP - http_len_;
         std::memcpy(http_buf_ + http_len_, data, copy);
         http_len_ += copy;
         // Find end of headers.
         bool found = false;
+        size_t hdr_end = 0;  // offset in http_buf_ just past the blank line
         for (size_t i = 3; i < http_len_; ++i) {
             if (http_buf_[i - 3] == '\r' && http_buf_[i - 2] == '\n' &&
                 http_buf_[i - 1] == '\r' && http_buf_[i]     == '\n') {
                 found = true;
+                hdr_end = i + 1;
                 break;
             }
         }
@@ -216,8 +225,10 @@ void WebSocketServer::on_data(TcpConnection& conn,
         }
         state_ = State::Frames;
         if (handler_) handler_->on_ws_open(ws_conn_);
-        // Any bytes past the handshake belong to the first frame.
-        const size_t consumed = copy;  // we copied this many into http_buf_
+        // Bytes of this segment past the end of the headers belong to the
+        // first frame (a pipelining client). hdr_end is in http_buf_
+        // coordinates and this segment started at prev_len.
+        const size_t consumed = hdr_end > prev_len ? hdr_end - prev_len : 0;
         if (len > consumed) {
             // Already-buffered data beyond the handshake — unlikely
             // for normal browsers but possible if pipelined. Push
@@ -294,6 +305,12 @@ void WebSocketServer::process_frames(TcpConnection& conn,
                 frame_fin_     = (hdr_buf_[0] & 0x80) != 0;
                 frame_opcode_  = hdr_buf_[0] & 0x0F;
                 frame_masked_  = (hdr_buf_[1] & 0x80) != 0;
+                if (!frame_masked_) {
+                    // RFC 6455 5.1: a server MUST close on an unmasked
+                    // client frame.
+                    close_with_status(conn, 1002);   // Protocol Error
+                    return;
+                }
                 const uint8_t llen = hdr_buf_[1] & 0x7F;
                 if (llen < 126) {
                     frame_len_ = llen;

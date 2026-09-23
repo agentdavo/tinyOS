@@ -52,29 +52,47 @@ inline float wrap_pi(float radians) noexcept {
     return radians;
 }
 
-// Taylor truncation through x^7. Accurate to ~1e-6 across [-pi, pi].
-inline float sin_approx(float x) noexcept {
+// Fold a wrapped angle into [-pi/2, pi/2], where the Taylor series below
+// converge fast: sin(pi - x) = sin(x), cos(pi - x) = -cos(x). Returns the
+// sign cos must be multiplied by.
+inline float fold_half_pi(float& x) noexcept {
     x = wrap_pi(x);
+    if (x >  kHalfPi) { x =  kPi - x; return -1.0f; }
+    if (x < -kHalfPi) { x = -kPi - x; return -1.0f; }
+    return 1.0f;
+}
+
+// Series on |x| <= pi/2 after folding: sin through x^11, cos through x^12.
+// Max error ~7e-7 (float rounding of the range reduction) over +-10 rad. The
+// old version Taylor-expanded over the whole [-pi, pi] and stopped at x^7,
+// so it was off by 0.075 near +-pi (and sincos_approx, stopping at x^5,
+// by up to 1.1) — enough to put G-code arc points millimetres off the arc.
+inline float sin_poly(float x) noexcept {
     const float x2 = x * x;
-    const float x3 = x2 * x;
-    const float x5 = x3 * x2;
-    const float x7 = x5 * x2;
-    return x - x3 / 6.0f + x5 / 120.0f - x7 / 5040.0f;
+    return x * (1.0f + x2 * (-1.0f / 6.0f + x2 * (1.0f / 120.0f + x2 * (-1.0f / 5040.0f +
+               x2 * (1.0f / 362880.0f + x2 * (-1.0f / 39916800.0f))))));
+}
+inline float cos_poly(float x) noexcept {
+    const float x2 = x * x;
+    return 1.0f + x2 * (-0.5f + x2 * (1.0f / 24.0f + x2 * (-1.0f / 720.0f + x2 * (1.0f / 40320.0f +
+               x2 * (-1.0f / 3628800.0f + x2 * (1.0f / 479001600.0f))))));
+}
+
+inline float sin_approx(float x) noexcept {
+    (void)fold_half_pi(x);
+    return sin_poly(x);
 }
 
 inline float cos_approx(float x) noexcept {
-    return sin_approx(x + kHalfPi);
+    const float sign = fold_half_pi(x);
+    return sign * cos_poly(x);
 }
 
-// Same Taylor pair as sin/cos_approx but yields both with one wrap.
+// Both at once with a single range reduction.
 inline void sincos_approx(float x, float& s, float& c) noexcept {
-    x = wrap_pi(x);
-    const float x2 = x * x;
-    const float x3 = x2 * x;
-    const float x4 = x2 * x2;
-    const float x5 = x4 * x;
-    s = x - x3 / 6.0f + x5 / 120.0f;
-    c = 1.0f - x2 / 2.0f + x4 / 24.0f;
+    const float sign = fold_half_pi(x);
+    s = sin_poly(x);
+    c = sign * cos_poly(x);
 }
 
 // Newton-Raphson sqrt. The old seed of max(v,1) does NOT converge in a fixed
@@ -102,12 +120,19 @@ inline float rsqrt_approx(float v) noexcept {
     return x;
 }
 
-// |z| <= 1 branch uses Padé-style fit, else identity atan(z) = pi/2 - atan(1/z).
+// Abramowitz & Stegun 4.4.49 on |z| <= 1 (max error ~2e-8; ~1e-7 in float),
+// with atan(z) = pi/2 - atan(1/z) outside. The old z/(1 + 0.28 z^2) fit was
+// only good to ~5e-3 rad (0.28 deg), which skewed arc start/end angles.
+inline float atan_unit(float x) noexcept {
+    const float x2 = x * x;
+    return x * (1.0f + x2 * (-0.3333314528f + x2 * (0.1999355085f + x2 * (-0.1420889944f +
+               x2 * (0.1065626393f + x2 * (-0.0752896400f + x2 * (0.0429096138f +
+               x2 * (-0.0161657367f + x2 * 0.0028662257f))))))));
+}
 inline float atan_approx(float z) noexcept {
     const float az = absf(z);
-    if (az <= 1.0f) return z / (1.0f + 0.28f * z * z);
-    const float base = kHalfPi - (az / (az * az + 0.28f));
-    return z < 0.0f ? -base : base;
+    const float r = az <= 1.0f ? atan_unit(az) : kHalfPi - atan_unit(1.0f / az);
+    return z < 0.0f ? -r : r;
 }
 
 inline float atan2_approx(float y, float x) noexcept {

@@ -556,18 +556,10 @@ static int cmd_save_cfg(const char*, kernel::hal::UARTDriverOps* uart) {
     return 0;
 }
 static int cmd_meminfo(const char*, kernel::hal::UARTDriverOps* uart) {
-    // Memory introspection: FixedMemoryPool occupancy + per-thread stack
-    // watermarks. Stack-painting is compiled in (see core.hpp
-    // STACK_PAINT) so stack_used_bytes returns meaningful numbers.
+    // Memory introspection: per-thread stack watermarks. Stack-painting is
+    // compiled in (see core.hpp STACK_PAINT) so stack_used_bytes returns
+    // meaningful numbers.
     char buf[160];
-
-    // FixedMemoryPool — the software-timer object pool.
-    const size_t total = kernel::core::g_software_timer_obj_pool.get_total_count();
-    const size_t free_ = kernel::core::g_software_timer_obj_pool.get_free_count();
-    kernel::util::k_snprintf(buf, sizeof(buf),
-        "FixedMemoryPool (software timers): %zu / %zu in use (%zu free)\n",
-        total - free_, total, free_);
-    uart->puts(buf);
 
     // Threads — dump name + state + stack watermark.
     uart->puts("Threads:\n");
@@ -4689,11 +4681,6 @@ static void render_top_frame(kernel::hal::UARTDriverOps* uart) {
         "  active threads: %zu/%zu  stack-in-use: %zu B\n",
         active, kernel::core::MAX_THREADS, stack_in_use_total);
     uart->puts(buf);
-    kernel::util::k_snprintf(buf, sizeof(buf),
-        "  software-timer pool: %zu free / %zu total\n",
-        kernel::core::g_software_timer_obj_pool.get_free_count(),
-        kernel::core::g_software_timer_obj_pool.get_total_count());
-    uart->puts(buf);
 
     // ---- RT telemetry ----
     uart->puts("RT threads (ns):\n");
@@ -5467,7 +5454,13 @@ CLI::CLI() {
 }
 
 bool CLI::register_command(const char* name, CommandHandler handler, const char* help_text) noexcept {
-    if (num_commands_ >= MAX_COMMANDS || !name || !handler) return false;
+    if (!name || !handler) return false;
+    if (num_commands_ >= MAX_COMMANDS) {
+        early_uart_puts("[cli] command table full (MAX_COMMANDS) - dropped: ");
+        early_uart_puts(name);
+        early_uart_puts("\n");
+        return false;
+    }
     commands_[num_commands_++] = {name, handler, help_text ? help_text : ""};
     return true;
 }

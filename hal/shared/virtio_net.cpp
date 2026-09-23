@@ -210,7 +210,10 @@ size_t VirtioNetDriver::poll_rx(kernel::hal::net::PacketReceivedCallback cb,
         const uint16_t desc_idx = static_cast<uint16_t>(ue.id & (VIRTQ_SIZE - 1));
         const uint32_t total_len = ue.len;
 
-        if (total_len > sizeof(VirtioNetHdr)) {
+        // ue.len is device-supplied: bound it by the posted buffer size, or a
+        // bogus length would invalidate and hand the callback memory past
+        // this RX buffer.
+        if (total_len > sizeof(VirtioNetHdr) && total_len <= NET_BUF_SIZE) {
             uint8_t* buf = reinterpret_cast<uint8_t*>(rx_queue_.desc[desc_idx].addr);
             const size_t l2_len = total_len - sizeof(VirtioNetHdr);
             if (kernel::g_platform && kernel::g_platform->get_mem_ops()) {

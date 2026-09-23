@@ -66,13 +66,16 @@ bool Service::load_tsv(const char* buf, size_t len) noexcept {
     LoadCtx ctx;
     const bool parsed = config::parse(buf, len, &record_cb, &ctx);
     if (!parsed || !ctx.ok) return false;
-    kernel::core::ScopedLock lock(lock_);
+    // ISR-safe: snapshot() is reached from the timer IRQ (via
+    // is_dedicated_rt_core), so a holder must not be interruptible on its
+    // own core or the IRQ would spin on the lock forever.
+    kernel::core::ScopedISRLock lock(lock_);
     config_ = ctx.cfg;
     return true;
 }
 
 void Service::snapshot(Config& out) const noexcept {
-    kernel::core::ScopedLock lock(lock_);
+    kernel::core::ScopedISRLock lock(lock_);  // see load_tsv
     out = config_;
 }
 

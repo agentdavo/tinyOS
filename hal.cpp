@@ -189,15 +189,14 @@ namespace sync {
     void barrier_dsb() { asm volatile("dsb sy"  ::: "memory"); }
     void barrier_isb() { asm volatile("isb"     ::: "memory"); }
 #elif defined(__riscv)
-    // rv64 equivalents. `fence rw, rw` covers the load/store ordering
-    // dmb/dsb provide on arm64; `fence.i` is the instruction-cache sync
-    // analogue of isb (also fences rw so ordered vs subsequent loads).
-    void barrier_dmb() { asm volatile("fence rw, rw" ::: "memory"); }
-    void barrier_dsb() { asm volatile("fence rw, rw" ::: "memory"); }
-    // fence.i requires the Zifencei extension; our `-march=rv64imafdc`
-    // baseline doesn't advertise it. `fence rw, rw` serves as a
-    // conservative fallback — stronger than isb but legal everywhere.
-    void barrier_isb() { asm volatile("fence rw, rw" ::: "memory"); }
+    // rv64 equivalents. `fence iorw, iorw` covers the ordering dmb/dsb
+    // provide on arm64, including memory vs device (MMIO) accesses — a
+    // plain `fence rw, rw` would not order a virtqueue update before the
+    // doorbell store. fence.i (the isb analogue) needs Zifencei, which the
+    // rv64imafdc baseline doesn't advertise, so isb uses the same fence.
+    void barrier_dmb() { asm volatile("fence iorw, iorw" ::: "memory"); }
+    void barrier_dsb() { asm volatile("fence iorw, iorw" ::: "memory"); }
+    void barrier_isb() { asm volatile("fence iorw, iorw" ::: "memory"); }
 #else
     void barrier_dmb() { asm volatile(""             ::: "memory"); }
     void barrier_dsb() { asm volatile(""             ::: "memory"); }

@@ -40,7 +40,6 @@ constexpr size_t TRACE_BUFFER_SIZE = 1024;
 // EtherCAT code allocates 1514-byte frame buffers on the stack; 4 KB was too
 // tight for the motion + EC threads at -O0. Bump to 16 KB.
 constexpr size_t DEFAULT_STACK_SIZE = 16384;
-constexpr size_t MAX_SOFTWARE_TIMERS = 64;
 constexpr size_t MAX_LOCKS = 32; 
 constexpr size_t NET_MAX_PACKET_SIZE = 1500; 
 constexpr size_t MAX_AUDIO_CHANNELS = 2;
@@ -241,8 +240,6 @@ extern std::array<TCB, MAX_THREADS> g_task_tcbs;
 
 // Software-timer object pool (used by hal::timer::SoftwareTimer allocations).
 // Exposed for CLI introspection (`top` reports free/total).
-extern uint8_t g_software_timer_obj_pool_mem[];
-extern FixedMemoryPool g_software_timer_obj_pool;
 
 class SchedulerPolicy {
 public:

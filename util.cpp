@@ -375,23 +375,38 @@ int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) no
                 if (*format == '0') zero_pad   = true;
                 format++;
             }
-            // Parse optional width.
+            // Parse optional width: digits, or `*` taking an int argument
+            // (negative means left-align). cli.cpp uses "%-*s"; without `*`
+            // support the spec printed literally and every later argument
+            // was read one slot off.
             int width = 0;
-            while (*format >= '0' && *format <= '9') {
-                width = width * 10 + (*format - '0');
+            if (*format == '*') {
+                width = va_arg(args, int);
+                if (width < 0) { left_align = true; width = -width; }
                 format++;
+            } else {
+                while (*format >= '0' && *format <= '9') {
+                    width = width * 10 + (*format - '0');
+                    format++;
+                }
             }
             // '-' overrides '0' per POSIX.
             if (left_align) zero_pad = false;
-            // Parse a precision spec — `.N`. Used by %f (digits after the
-            // decimal point); ignored by other conversions today.
+            // Parse a precision spec — `.N` or `.*`. Used by %f (digits after
+            // the decimal point); ignored by other conversions today.
             int precision = -1;
             if (*format == '.') {
                 format++;
                 precision = 0;
-                while (*format >= '0' && *format <= '9') {
-                    precision = precision * 10 + (*format - '0');
+                if (*format == '*') {
+                    precision = va_arg(args, int);
+                    if (precision < 0) precision = -1;  // negative = "not given"
                     format++;
+                } else {
+                    while (*format >= '0' && *format <= '9') {
+                        precision = precision * 10 + (*format - '0');
+                        format++;
+                    }
                 }
             }
             bool is_long_long = false;

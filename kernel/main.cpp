@@ -86,66 +86,20 @@ bool g_multicore_supported                      = false;
 std::atomic<uint32_t> g_arm64_secondary_ready_mask{0};
 #endif
 
-char g_boot_timestamp_buf[32];
-static bool g_boot_time_captured = false;
-
-void put_boot_timestamp() {
-    auto* tm = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
-    if (!tm) {
-        early_uart_puts("0000us");
-        return;
-    }
-    uint64_t ns = tm->get_system_time_ns() / 1000ULL;
-    char* p = g_boot_timestamp_buf;
-    uint64_t v = ns;
-    for (int i = 3; i >= 0; --i) {
-        p[i] = '0' + static_cast<char>(v % 10);
-        v /= 10;
-    }
-    p[4] = 'u';
-    p[5] = 's';
-    p[6] = '\0';
-    early_uart_puts(g_boot_timestamp_buf);
-}
-
-void capture_boot_start_time() {
-    if (g_boot_time_captured) return;
-    auto* tm = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
-    if (tm) {
-        (void)tm->get_system_time_ns();  // prime the timer
-    }
-    g_boot_time_captured = true;
-}
-
 void log_timestamped(const char* msg) {
-    // Route via the platform UART rather than early_uart_puts — the latter
-    // hardcodes arm64's PL011 MMIO base (0x09000000) and faults on rv64.
-    // Shared boot helpers are called on both arches, so they have to take
-    // the platform-abstract path.
-    auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr;
-    if (!uart) {
-        // Very early boot (pre-platform): fall back to arm64 early UART.
-        // rv64 never hits this branch because kernel_main_rv64 sets
-        // g_platform before any log_timestamped call.
-        early_uart_puts("[boot] +");
-        put_boot_timestamp();
-        early_uart_puts(" ");
-        early_uart_puts(msg);
-        early_uart_puts("\n");
-        return;
+    // One formatted line, one puts: the old version printed only us % 10000
+    // (wrapping every 10 ms) and emitted five separate puts calls that
+    // interleaved with other cores' output. early_uart_puts is arch-aware,
+    // so it is a safe fallback before the platform UART exists.
+    auto* tm = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
+    const unsigned long long us = tm ? tm->get_system_time_us() : 0ULL;
+    char buf[192];
+    kernel::util::k_snprintf(buf, sizeof(buf), "[boot] +%lluus %s\n", us, msg);
+    if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+        uart->puts(buf);
+    } else {
+        early_uart_puts(buf);
     }
-    char buf[160];
-    uart->puts("[boot] +");
-    // Reuse put_boot_timestamp which itself uses early_uart_puts — inline a
-    // uart-based version.
-    auto* tm = kernel::g_platform->get_timer_ops();
-    uint64_t us = tm ? tm->get_system_time_ns() / 1000ULL : 0;
-    for (int i = 3; i >= 0; --i) { buf[i] = '0' + static_cast<char>(us % 10); us /= 10; }
-    buf[4] = 'u'; buf[5] = 's'; buf[6] = '\0';
-    uart->puts(buf);
-    uart->puts(" ");
-    uart->puts(msg);
-    uart->puts("\n");
 }
 
 // RAII boot-phase scope. Logs "phase=<name> begin" on construction and
@@ -313,14 +267,6 @@ bool initialize_platform_and_scheduler() {
     static kernel::core::EDFPolicy edf_policy;
     scheduler_instance.set_policy(&edf_policy);
     kernel::g_scheduler_ptr = &scheduler_instance;
-
-    if (!kernel::core::g_software_timer_obj_pool.init(kernel::core::g_software_timer_obj_pool_mem,
-                                                      kernel::core::MAX_SOFTWARE_TIMERS,
-                                                      sizeof(kernel::hal::timer::SoftwareTimer),
-                                                      alignof(kernel::hal::timer::SoftwareTimer))) {
-        kernel::g_platform->panic("Failed to init software timer pool", __FILE__, __LINE__);
-        return false;
-    }
 
     return true;
 }
@@ -503,7 +449,6 @@ extern "C" void kernel_main() {
         for (;;) asm volatile("wfi");
     }
 
-    capture_boot_start_time();
     log_timestamped("smp...");
     release_secondary_cores();
 #if defined(__aarch64__)

@@ -177,7 +177,11 @@ extern "C" {
     void __cxa_guard_release(uint64_t* guard_object) {
         kernel::core::ScopedLock lock(g_cxa_guard_lock);
         volatile uint8_t* gb = reinterpret_cast<volatile uint8_t*>(guard_object);
-        gb[0] = 1;   // mark initialised (the flag the compiler checks)
+        // Release store: the compiler's inline fast path reads byte0 with an
+        // acquire load and no lock, so the constructor's writes must be
+        // visible before byte0 is. Taking the spinlock (acquire-only) does
+        // not order those earlier writes before a plain store here.
+        __atomic_store_n(const_cast<uint8_t*>(&gb[0]), static_cast<uint8_t>(1), __ATOMIC_RELEASE);
         gb[1] = 0;   // clear the in-progress claim
     }
 

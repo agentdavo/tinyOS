@@ -300,9 +300,11 @@ void MemoryOps::flush_cache_range(const void* addr, size_t size) {
     (void)size;
     // Generic rv64 on QEMU virt does not expose a standard cache-maintenance
     // instruction set like arm64 DC CVAC/IVAC. The best portable contract we
-    // can provide here is a full memory barrier so prior framebuffer/queue
-    // writes are globally ordered before MMIO doorbells.
-    asm volatile("fence rw, rw" ::: "memory");
+    // can provide here is a full barrier so prior framebuffer/queue writes
+    // are globally ordered before MMIO doorbells. `iorw`, not `rw`: a
+    // memory-only fence does not order memory writes against the device
+    // (I/O) store that follows.
+    asm volatile("fence iorw, iorw" ::: "memory");
 }
 
 void MemoryOps::invalidate_cache_range(const void* addr, size_t size) {
@@ -310,7 +312,7 @@ void MemoryOps::invalidate_cache_range(const void* addr, size_t size) {
     (void)size;
     // Same rationale as flush_cache_range(): on this target we provide strong
     // ordering rather than architected cache-line invalidation.
-    asm volatile("fence rw, rw" ::: "memory");
+    asm volatile("fence iorw, iorw" ::: "memory");
 }
 
 bool USBHostController::init() {
@@ -422,22 +424,30 @@ void TimerDriver::init_system_timer_properties(uint64_t freq_hz_override) {
     if (freq_hz_override) timer_freq_hz_ = freq_hz_override;
 }
 
+// Arm the next scheduler tick, or park mtimecmp at "never" on a dedicated
+// (tickless) RT hart — the rv64 equivalent of arm64 disabling CNTP there.
+// mtimecmp is written with one 8-byte store: split 4-byte writes could
+// momentarily leave it <= mtime and raise a spurious MTI.
+static void rearm_tick(uint32_t core_id, uint64_t freq_hz) {
+    if (kernel::hal::is_dedicated_rt_core(core_id)) {
+        *clint_mtimecmp(core_id) = ~0ULL;
+        return;
+    }
+    *clint_mtimecmp(core_id) = read_mtime() + (freq_hz * TICK_PERIOD_US) / 1'000'000ULL;
+}
+
 void TimerDriver::init_core_timer_interrupt(uint32_t core_id) {
     if (core_id >= MAX_HARTS) return;
-    // Program mtimecmp for "now + 200us" using an 8-byte write. Do NOT split
-    // into two 4-byte writes: a partial update could momentarily leave
-    // mtimecmp at a value <= mtime and trigger a spurious MTI.
-    const uint64_t delta = (timer_freq_hz_ * TICK_PERIOD_US) / 1'000'000ULL;
-    *clint_mtimecmp(core_id) = read_mtime() + delta;
-    // Enable MTIE; caller will flip MIE in mstatus at scheduler go-live.
+    rearm_tick(core_id, timer_freq_hz_);
+    // Enable MTIE (dedicated harts need it too, for wait_until_ns wakes);
+    // MIE in mstatus comes on at scheduler go-live via mret.
     uint64_t bit = 1ULL << 7;
     asm volatile("csrs mie, %0" :: "r"(bit) : "memory");
 }
 
 void TimerDriver::ack_core_timer_interrupt(uint32_t core_id) {
     if (core_id >= MAX_HARTS) return;
-    const uint64_t delta = (timer_freq_hz_ * TICK_PERIOD_US) / 1'000'000ULL;
-    *clint_mtimecmp(core_id) = read_mtime() + delta;
+    rearm_tick(core_id, timer_freq_hz_);
 }
 
 uint64_t TimerDriver::get_system_time_us() {
@@ -461,22 +471,26 @@ void TimerDriver::hardware_timer_irq_fired(uint32_t core_id) {
 }
 
 void TimerDriver::wait_until_ns(uint64_t target_ns) {
-    // Loop: program mtimecmp at target deadline, enable MTIE+MIE, wfi.
-    // WFI can wake spuriously (spec says an implementation may wake even
-    // without a pending interrupt), so we re-check the deadline.
     const uint32_t hart = ::hal::qemu_virt_rv64::g_platform_instance.get_core_id();
+    // Shared (ticked) hart: yield until the deadline, like arm64. The old
+    // path reprogrammed mtimecmp to the caller's deadline, which replaced
+    // this hart's scheduler tick — a 250 ms `jobs` wait starved every other
+    // thread on hart 0 (cli, uart_io, ui, ...) of preemption.
+    if (!kernel::hal::is_dedicated_rt_core(hart) && kernel::g_scheduler_ptr) {
+        while (get_system_time_ns() < target_ns) kernel::g_scheduler_ptr->yield(hart);
+        return;
+    }
+    // Dedicated (tickless) hart: program mtimecmp at the deadline and wfi.
+    // WFI can wake spuriously, so re-check. The trap handler parks
+    // mtimecmp at "never" again on these harts.
     for (;;) {
-        const uint64_t now_ticks = read_mtime();
-        const uint64_t now_ns    = (now_ticks * 1'000'000'000ULL) / timer_freq_hz_;
+        const uint64_t now_ns = get_system_time_ns();
         if (now_ns >= target_ns) return;
-        const uint64_t delta_ns   = target_ns - now_ns;
-        const uint64_t delta_tick = (delta_ns * timer_freq_hz_) / 1'000'000'000ULL;
-        *clint_mtimecmp(hart) = now_ticks + (delta_tick ? delta_tick : 1);
+        const uint64_t delta_tick =
+            kernel::util::mul_div_u64(target_ns - now_ns, timer_freq_hz_, 1'000'000'000ULL);
+        *clint_mtimecmp(hart) = read_mtime() + (delta_tick ? delta_tick : 1);
         csr_set_mie_mtie();
         asm volatile("wfi");
-        // Upon IRQ the trap handler acks mtimecmp by pushing it far into the
-        // future (below). We loop to cover spurious wakes.
-        ::hal::qemu_virt_rv64::g_wfi_wakes[hart]++;
     }
 }
 
@@ -594,9 +608,16 @@ void PLICDriver::set_irq_affinity(uint32_t irq_id, uint32_t core_mask) {
 // ----------------------------------------------------------------------------
 // PowerOps — wfi-based idle for Scheduler::idle_thread_func.
 // ----------------------------------------------------------------------------
-void PowerOps::enter_idle_state(uint32_t /*core_id*/) {
-    // wfi parks the hart until any interrupt is pending. The shared idle loop
-    // then yields back to the scheduler so a freshly-enqueued worker can run.
+void PowerOps::enter_idle_state(uint32_t core_id) {
+    // A tickless (dedicated RT) hart has no timer tick, so a wfi here would
+    // never return to notice a worker queued by another hart afterwards —
+    // e.g. ec_a, created on hart 0 after hart 2 is already idling. Return
+    // and let the shared idle loop yield instead (arm64's idle never wfis,
+    // for the same reason).
+    if (kernel::hal::is_dedicated_rt_core(core_id)) return;
+    // wfi parks the hart until any interrupt is pending (the tick at the
+    // latest). The shared idle loop then yields back to the scheduler so a
+    // freshly-enqueued worker can run.
     asm volatile("wfi");
 }
 bool PowerOps::set_cpu_frequency(uint32_t, uint32_t) { return true; }
@@ -725,6 +746,9 @@ void PlatformQEMUVirtRV64::handle_device_irq(uint32_t core_id, uint32_t irq_id) 
 }
 
 [[noreturn]] void PlatformQEMUVirtRV64::panic(const char* msg, const char* file, int line) {
+    // Mask everything first, like arm64's panic: otherwise the tick keeps
+    // preempting the panicking thread and other threads keep running.
+    asm volatile("csrci mstatus, 0x8\n csrw mie, zero" ::: "memory");
     uart_.puts("\n[PANIC] ");
     if (msg) uart_.puts(msg);
     uart_.puts(" at ");
@@ -783,22 +807,15 @@ extern "C" void hal_trap_dispatch_rv64(uint64_t hartid, uint64_t mcause) {
         }
         uint64_t code = mcause & 0x7FFFFFFFFFFFFFFFULL;
         if (code == 7) {
-            // Machine Timer Interrupt. Re-arm mtimecmp before consulting the
-            // scheduler (so the IRQ deasserts cleanly), then either run the
+            // Machine Timer Interrupt. Re-arm mtimecmp (or park it at
+            // "never" on a tickless RT hart) before consulting the
+            // scheduler, so the IRQ deasserts cleanly; then either run the
             // shared preemptive_tick or — on tickless dedicated RT cores —
             // just leave the wake to wait_until_ns's caller.
             if (hartid < MAX_HARTS) {
-                const uint64_t hz =
-                    g_platform_instance.get_timer_ops()
-                        ? static_cast<TimerDriver*>(
-                              g_platform_instance.get_timer_ops())->freq_hz()
-                        : TIMEBASE_HZ;
-                const uint64_t delta = (hz * TICK_PERIOD_US) / 1'000'000ULL;
-                uint64_t now;
-                asm volatile("rdtime %0" : "=r"(now));
-                *reinterpret_cast<volatile uint64_t*>(
-                    CLINT_MTIMECMP + 8ULL * hartid) = now + delta;
-                g_timer_ticks[hartid]++;
+                if (auto* timer = g_platform_instance.get_timer_ops()) {
+                    timer->ack_core_timer_interrupt(static_cast<uint32_t>(hartid));
+                }
                 if (kernel::hal::is_dedicated_rt_core(static_cast<uint32_t>(hartid))) {
                     // Tickless RT core: wake from WFI is the whole point;
                     // skip preemptive_tick to keep ticks_total == 0 for this
@@ -1066,13 +1083,6 @@ extern "C" void kernel_main_rv64(uint32_t hartid) {
     static kernel::core::EDFPolicy edf_policy;
     scheduler_instance.set_policy(&edf_policy);
     kernel::g_scheduler_ptr = &scheduler_instance;
-    if (!kernel::core::g_software_timer_obj_pool.init(
-            kernel::core::g_software_timer_obj_pool_mem,
-            kernel::core::MAX_SOFTWARE_TIMERS,
-            sizeof(kernel::hal::timer::SoftwareTimer),
-            alignof(kernel::hal::timer::SoftwareTimer))) {
-        plat.panic("Failed to init software timer pool", __FILE__, __LINE__);
-    }
 
     auto& uart  = *plat.get_uart_ops();
     auto& timer = *plat.get_timer_ops();

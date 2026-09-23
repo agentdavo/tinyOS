@@ -37,7 +37,7 @@ The project is **miniOS** — a freestanding, bare-metal C++20 RTOS that runs as
 
 **Still open:**
 - In one run out of 14 after the fixes above, `motion` on hart 1 took `mcause=5` (load access fault, `mtval=0x88000000`) in `run_sync_arbiter` with `ra` inside `safety_status()`. The PC came from one context and the registers from another. Not seen since the `trap_entry` `t0`–`t2` fix (item 6), which is the likely cause; keep watching for it.
-- Two scheduler hazards on both arches, not yet fixed. (a) The timer IRQ calls `is_dedicated_rt_core` → `placement::Service::snapshot`, which takes a plain `ScopedLock`, so a thread on the same core holding that lock deadlocks the tick. (b) `thread_bootstrap` marks an exiting thread `ZOMBIE` before switching off its stack, so `create_thread` on another core can reuse the TCB and stack while the switch is still in flight.
+- A scheduler hazard on both arches, not yet fixed. (The other one, the timer IRQ deadlocking on `placement::Service::snapshot`'s lock, is fixed: that lock is now a `ScopedISRLock`.) `thread_bootstrap` marks an exiting thread `ZOMBIE` before switching off its stack, so `create_thread` on another core can reuse the TCB and stack while the switch is still in flight.
 - Some rv64 PCI/MMIO paths (occasional traps on ec_a / fake_slave threads) may still need arch-aware fixes — not chased yet.
 
 **Useful diagnostic tools added during this work:**

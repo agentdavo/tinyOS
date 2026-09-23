@@ -150,13 +150,6 @@ ConnSlot* alloc_conn() noexcept {
     return nullptr;
 }
 
-ConnSlot* slot_for_conn(const TcpConnection* c) noexcept {
-    for (auto& s : g_conns) {
-        if (s.in_use && &s.conn == c) return &s;
-    }
-    return nullptr;
-}
-
 uint64_t now_us_or_zero() noexcept {
     if (kernel::g_platform && kernel::g_platform->get_timer_ops()) {
         return kernel::g_platform->get_timer_ops()->get_system_time_us();
@@ -171,12 +164,8 @@ bool send_segment_at(TcpConnection& conn,
     constexpr size_t FRAME_CAP = 2048;
     constexpr size_t HDRS = sizeof(EthernetHeader) + sizeof(IPv4Header) + sizeof(TcpHeader);
     if (payload_len > FRAME_CAP - HDRS) return false;
-    // The netif owning this conn lives on the binding referenced by
-    // the ConnSlot. Linear scan is fine at MAX_TCP_CONNS=16.
-    ConnSlot* slot = slot_for_conn(&conn);
-    if (!slot || !slot->binding || !slot->binding->netif) return false;
-    auto* nif = slot->binding->netif;
-    if (!nif->nic()) return false;
+    auto* nif = conn.netif;
+    if (!nif || !nif->nic()) return false;
     auto* nic = nif->nic();
 
     static uint8_t frame[FRAME_CAP];
@@ -363,23 +352,19 @@ bool tcp_dispatch(Netif& netif,
         // segment to nowhere — the latter gets RST.
         Binding* b = find_binding(netif, dst_port);
         if (!b || !(flags & TCP_FLAG_SYN)) {
-            // Send RST (ephemeral conn state for the reply).
+            // Send RST from ephemeral conn state. It carries the receiving
+            // netif itself, so this also works for an unbound port (the
+            // old path went through a ConnSlot whose null binding made the
+            // send bail out, so no RST was ever emitted).
             TcpConnection tmp;
+            tmp.netif = &netif;
             tmp.local_ip = dst_ip; tmp.peer_ip = src_ip;
             tmp.local_port = dst_port; tmp.peer_port = src_port;
             for (size_t i = 0; i < 6; ++i) tmp.peer_mac[i] = src_mac[i];
             tmp.snd_nxt = (flags & TCP_FLAG_ACK) ? ack : 0;
             tmp.rcv_nxt = seq + ((flags & (TCP_FLAG_SYN | TCP_FLAG_FIN)) ? 1u : 0u) + payload_len;
-            // send_segment needs slot_for_conn → but tmp isn't in g_conns.
-            // Inline a one-shot RST builder instead: temporarily install
-            // tmp into a free ConnSlot, send, release.
-            ConnSlot* tmp_slot = alloc_conn();
-            if (tmp_slot) {
-                tmp_slot->in_use = true;
-                tmp_slot->binding = b;  // may be nullptr for unbound-port RST
-                tmp_slot->conn = tmp;
-                send_segment(tmp_slot->conn, TCP_FLAG_RST | TCP_FLAG_ACK, nullptr, 0);
-                release_conn(*tmp_slot);
+            if (!(flags & TCP_FLAG_RST)) {  // never answer a RST with a RST
+                send_segment(tmp, TCP_FLAG_RST | TCP_FLAG_ACK, nullptr, 0);
             }
             return true;
         }
@@ -390,6 +375,7 @@ bool tcp_dispatch(Netif& netif,
         ns->binding = b;
         ns->conn = TcpConnection{};
         ns->conn.listener   = b->listener;
+        ns->conn.netif      = &netif;
         ns->conn.local_ip   = dst_ip;
         ns->conn.local_port = dst_port;
         ns->conn.peer_ip    = src_ip;

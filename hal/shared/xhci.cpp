@@ -213,6 +213,22 @@ void write_context64(uint8_t* ctx, size_t dword_index, uint64_t value) {
     kernel::util::kmemcpy(ctx + dword_index * sizeof(uint32_t), &value, sizeof(value));
 }
 
+// Advance a producer ring past the TRB just written. The last slot is the
+// link TRB: when we reach it, hand it to the controller by stamping it with
+// the current producer cycle bit *before* toggling. Leaving the link TRB's
+// cycle bit at its build-time value made the controller stop at it on the
+// second lap (its consumer cycle no longer matched), stalling the ring.
+template <size_t N>
+void advance_producer(TRB (&ring)[N], uint8_t& index, uint8_t& cycle) {
+    ++index;
+    if (index >= N - 1) {
+        TRB& link = ring[N - 1];
+        link.control = (link.control & ~TRB_CYCLE) | cycle;
+        index = 0;
+        cycle ^= 1u;
+    }
+}
+
 void build_command_ring(ControllerState& state) {
     kernel::util::kmemset(state.command_ring, 0, sizeof(state.command_ring));
     const uintptr_t ring_base = reinterpret_cast<uintptr_t>(&state.command_ring[0]);
@@ -455,11 +471,7 @@ bool submit_command(ControllerState& state,
     const uintptr_t trb_addr = reinterpret_cast<uintptr_t>(&state.command_ring[state.command_ring_index]);
     state.command_ring[state.command_ring_index] = cmd;
 
-    ++state.command_ring_index;
-    if (state.command_ring_index >= ControllerState::COMMAND_RING_TRBS - 1) {
-        state.command_ring_index = 0;
-        state.command_cycle ^= 1u;
-    }
+    advance_producer(state.command_ring, state.command_ring_index, state.command_cycle);
 
     if (mmio_read32(operational_addr(state, XHCI_USBSTS)) & XHCI_USBSTS_EINT) {
         mmio_write32(operational_addr(state, XHCI_USBSTS), XHCI_USBSTS_EINT);
@@ -545,11 +557,7 @@ TRB& queue_control_trb(ControllerState& state, uint8_t& cycle) {
     cycle = state.control_cycle;
     TRB& trb = state.control_ring[state.control_ring_index];
     kernel::util::kmemset(&trb, 0, sizeof(trb));
-    ++state.control_ring_index;
-    if (state.control_ring_index >= ControllerState::CONTROL_RING_TRBS - 1) {
-        state.control_ring_index = 0;
-        state.control_cycle ^= 1u;
-    }
+    advance_producer(state.control_ring, state.control_ring_index, state.control_cycle);
     return trb;
 }
 
@@ -862,19 +870,23 @@ void update_keyboard_report(ControllerState& state, size_t report_len) {
     kernel::util::kmemcpy(state.keyboard_prev_report, state.keyboard_report, sizeof(state.keyboard_prev_report));
 }
 
+// Length of the keyboard interrupt IN transfer. Clamped to the 8-byte
+// keyboard_report DMA target: the descriptor's max packet can be up to 0x7ff,
+// and a device honouring it would overrun into keyboard_prev_report.
+size_t keyboard_transfer_len(const ControllerState& state) {
+    const size_t mp = state.keyboard_max_packet ? state.keyboard_max_packet : sizeof(state.keyboard_report);
+    return mp < sizeof(state.keyboard_report) ? mp : sizeof(state.keyboard_report);
+}
+
 bool arm_keyboard_poll(ControllerState& state) {
     if (!state.keyboard_configured || state.keyboard_poll_pending) return false;
     TRB& trb = state.interrupt_ring[state.interrupt_ring_index];
     kernel::util::kmemset(&trb, 0, sizeof(trb));
     trb.parameter = reinterpret_cast<uintptr_t>(&state.keyboard_report[0]);
-    trb.status = (state.keyboard_max_packet ? state.keyboard_max_packet : sizeof(state.keyboard_report)) & TRB_TRANSFER_LEN_MASK;
+    trb.status = keyboard_transfer_len(state) & TRB_TRANSFER_LEN_MASK;
     trb.control = (TRB_TYPE_NORMAL << TRB_TYPE_SHIFT) | TRB_ISP | TRB_IOC | state.interrupt_cycle;
     state.keyboard_transfer_trb = reinterpret_cast<uintptr_t>(&trb);
-    ++state.interrupt_ring_index;
-    if (state.interrupt_ring_index >= ControllerState::INTERRUPT_RING_TRBS - 1) {
-        state.interrupt_ring_index = 0;
-        state.interrupt_cycle ^= 1u;
-    }
+    advance_producer(state.interrupt_ring, state.interrupt_ring_index, state.interrupt_cycle);
     state.keyboard_poll_pending = true;
     mmio_write32(doorbell_addr(state, state.slot_id), state.keyboard_endpoint_dci);
     return true;
@@ -979,7 +991,7 @@ void process_runtime_events(ControllerState& state) {
             }
             if ((pointer_match || endpoint_match) && cc == TRB_COMPLETION_SUCCESS) {
                 const uint32_t remaining = event.status & TRB_TRANSFER_LEN_MASK;
-                const size_t requested = state.keyboard_max_packet ? state.keyboard_max_packet : sizeof(state.keyboard_report);
+                const size_t requested = keyboard_transfer_len(state);
                 const size_t actual = requested >= remaining ? requested - remaining : 0;
                 update_keyboard_report(state, actual);
                 state.keyboard_connected = true;

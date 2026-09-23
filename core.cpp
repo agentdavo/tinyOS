@@ -215,8 +215,6 @@ void run_benchmark_test() {
 }
 
 
-alignas(64) uint8_t g_software_timer_obj_pool_mem[MAX_SOFTWARE_TIMERS * sizeof(kernel::hal::timer::SoftwareTimer)];
-FixedMemoryPool g_software_timer_obj_pool;
 std::array<TraceEntry, TRACE_BUFFER_SIZE> g_trace_buffer;
 std::array<std::atomic<size_t>, MAX_CORES> g_trace_overflow_count{}; 
 alignas(16) std::array<std::array<uint8_t, DEFAULT_STACK_SIZE>, MAX_THREADS> g_task_stacks;

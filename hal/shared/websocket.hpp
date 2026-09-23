@@ -14,7 +14,8 @@
 //   * Client frames MUST be masked per RFC 6455 — we enforce.
 //   * Single fragment per message (FIN=1). Continuation frames
 //     get dropped (would require streaming reassembly).
-//   * One connection per port (inherited from TcpListener).
+//   * One client at a time: TCP accepts several connections per
+//     listener, so on_open closes any second client while one is active.
 //
 // The user provides a `Handler` that gets the assembled text payload.
 // Replies are sent back via WebSocketConnection::send_text(...).

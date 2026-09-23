@@ -167,7 +167,10 @@ struct Command {
 
 class CLI {
 public:
-    static constexpr size_t MAX_COMMANDS = 96;
+    // cli.cpp registers ~150 commands (a few behind #if). This was 96, and
+    // register_command silently dropped everything past it — `top` among
+    // them. Overflow is now reported at boot; bump this if you see it.
+    static constexpr size_t MAX_COMMANDS = 192;
     static constexpr size_t MAX_LINE_LEN = 128;
     static constexpr size_t HISTORY_SIZE = 8;
 

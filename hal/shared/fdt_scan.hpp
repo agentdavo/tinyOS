@@ -153,6 +153,9 @@ public:
                     if (out_bus_end) *out_bus_end = stack[depth].has_bus_range ? stack[depth].bus_end : 0xff;
                     return true;
                 }
+                // Unbalanced END_NODE: bail rather than let depth go below
+                // -1, where the next BEGIN_NODE would write stack[-1].
+                if (depth < 0) return false;
                 --depth;
                 continue;
             }
@@ -171,24 +174,25 @@ public:
             if (nameoff >= hdr_.size_dt_strings) return false;
             cur += align4(plen);
             const char* prop = strings + nameoff;
+            const size_t prop_len = cstr_len(prop, reinterpret_cast<const uint8_t*>(strings + hdr_.size_dt_strings));
 
-            if (str_eq(prop, cstr_len(prop, reinterpret_cast<const uint8_t*>(strings + hdr_.size_dt_strings)), "compatible")) {
+            if (str_eq(prop, prop_len, "compatible")) {
                 stack[depth].compat_match = compat_list_contains(data, plen, compat);
                 continue;
             }
-            if (str_eq(prop, cstr_len(prop, reinterpret_cast<const uint8_t*>(strings + hdr_.size_dt_strings)), "reg") && plen >= 16) {
+            if (str_eq(prop, prop_len, "reg") && plen >= 16) {
                 stack[depth].reg_base = load_be64(data);
                 stack[depth].reg_size = load_be64(data + 8);
                 stack[depth].has_reg = true;
                 continue;
             }
-            if (str_eq(prop, cstr_len(prop, reinterpret_cast<const uint8_t*>(strings + hdr_.size_dt_strings)), "bus-range") && plen >= 8) {
+            if (str_eq(prop, prop_len, "bus-range") && plen >= 8) {
                 stack[depth].bus_start = load_be32(data);
                 stack[depth].bus_end = load_be32(data + 4);
                 stack[depth].has_bus_range = true;
                 continue;
             }
-            if (str_eq(prop, cstr_len(prop, reinterpret_cast<const uint8_t*>(strings + hdr_.size_dt_strings)), "ranges") && plen >= 28) {
+            if (str_eq(prop, prop_len, "ranges") && plen >= 28) {
                 for (size_t off = 0; off + 28 <= plen; off += 28) {
                     const uint32_t space = load_be32(data + off) & 0x03000000u;
                     if (space != 0x02000000u && space != 0x03000000u) continue;

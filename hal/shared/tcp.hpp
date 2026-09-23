@@ -42,6 +42,7 @@ struct TcpConnection {
     static constexpr uint32_t MAX_RETRIES    = 5;        // ~ 8 s with backoff before giving up
 
     TcpListener* listener = nullptr;
+    Netif*       netif = nullptr;   // interface this connection sends on
     uint8_t      peer_mac[6]{};
     uint32_t     peer_ip = 0;
     uint16_t     peer_port = 0;
