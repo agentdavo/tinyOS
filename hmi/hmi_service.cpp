@@ -5,6 +5,7 @@
 #include "config/tsv.hpp"
 #include "ethercat/master.hpp"
 #include "fs/vfs.hpp"
+#include "hal/shared/inet.hpp"
 #include "hal/shared/tcp.hpp"
 #include "hal/shared/websocket.hpp"
 #include "kernel/main.hpp"
@@ -18,14 +19,21 @@ namespace hmi {
 
 namespace {
 
+using kernel::net::inet::EthernetHeader;
+using kernel::net::inet::IPv4Header;
+using kernel::net::inet::UdpHeader;
+using kernel::net::inet::bswap16;
+using kernel::net::inet::bswap32;
+using kernel::net::inet::checksum16;
+using kernel::net::inet::ETHERTYPE_IPV4;
+using kernel::net::inet::IPPROTO_ICMP;
+using kernel::net::inet::IPPROTO_UDP;
+
 constexpr uint32_t RAW_MAGIC = 0x4D484D49u; // "MHMI"
 constexpr uint8_t VERSION = 1;
 constexpr uint16_t ETHERTYPE_ARP = 0x0806;
-constexpr uint16_t ETHERTYPE_IPV4 = 0x0800;
 constexpr uint16_t UDP_PORT_DHCP_SERVER = 67;
 constexpr uint16_t UDP_PORT_DHCP_CLIENT = 68;
-constexpr uint8_t IPPROTO_UDP = 17;
-constexpr uint8_t IPPROTO_ICMP = 1;
 
 // B5: live preview — TSV-upload UDP listener. Editor / host bridge sends
 // chunked TSV via UDP to this port; kernel reassembles into a static
@@ -113,12 +121,6 @@ enum class StatusCode : uint8_t {
     NotWritable = 4,
 };
 
-struct EthernetHeader {
-    uint8_t dst[6];
-    uint8_t src[6];
-    uint16_t ethertype_be;
-} __attribute__((packed));
-
 struct ArpPacket {
     uint16_t htype_be;
     uint16_t ptype_be;
@@ -129,26 +131,6 @@ struct ArpPacket {
     uint32_t spa_be;
     uint8_t tha[6];
     uint32_t tpa_be;
-} __attribute__((packed));
-
-struct IPv4Header {
-    uint8_t ver_ihl;
-    uint8_t dscp_ecn;
-    uint16_t total_len_be;
-    uint16_t ident_be;
-    uint16_t flags_frag_be;
-    uint8_t ttl;
-    uint8_t proto;
-    uint16_t hdr_checksum_be;
-    uint32_t src_ip_be;
-    uint32_t dst_ip_be;
-} __attribute__((packed));
-
-struct UdpHeader {
-    uint16_t src_port_be;
-    uint16_t dst_port_be;
-    uint16_t length_be;
-    uint16_t checksum_be;
 } __attribute__((packed));
 
 struct IcmpEchoHeader {
@@ -210,16 +192,6 @@ struct DhcpHeader {
     uint8_t options[128];
 } __attribute__((packed));
 
-uint16_t bswap16(uint16_t v) {
-    return static_cast<uint16_t>((v >> 8) | (v << 8));
-}
-
-uint32_t bswap32(uint32_t v) {
-    return ((v & 0x000000FFu) << 24) |
-           ((v & 0x0000FF00u) << 8) |
-           ((v & 0x00FF0000u) >> 8) |
-           ((v & 0xFF000000u) >> 24);
-}
 
 uint16_t host_to_be16(uint16_t v) { return bswap16(v); }
 uint16_t be16_to_host(uint16_t v) { return bswap16(v); }
@@ -231,15 +203,6 @@ uint16_t host_to_le16(uint16_t v) { return v; }
 uint32_t le32_to_host(uint32_t v) { return v; }
 uint16_t le16_to_host(uint16_t v) { return v; }
 
-uint16_t checksum16(const uint8_t* data, size_t len) {
-    uint32_t sum = 0;
-    for (size_t i = 0; i + 1 < len; i += 2) {
-        sum += static_cast<uint16_t>((static_cast<uint16_t>(data[i]) << 8) | data[i + 1]);
-    }
-    if (len & 1u) sum += static_cast<uint16_t>(data[len - 1] << 8);
-    while (sum >> 16) sum = (sum & 0xFFFFu) + (sum >> 16);
-    return static_cast<uint16_t>(~sum);
-}
 
 constexpr uint8_t PING_STATE_IDLE = 0;
 constexpr uint8_t PING_STATE_REQUESTED = 1;

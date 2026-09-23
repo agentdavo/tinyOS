@@ -2,6 +2,7 @@
 
 #include "netif.hpp"
 #include "tcp.hpp"
+#include "inet.hpp"
 #include "../../miniOS.hpp"
 
 #include <cstring>
@@ -10,54 +11,18 @@ namespace kernel::net {
 
 namespace {
 
-constexpr uint16_t ETHERTYPE_IPV4 = 0x0800u;
-constexpr uint8_t  IPPROTO_UDP    = 17u;
-constexpr uint8_t  IPPROTO_TCP    = 6u;
+using inet::EthernetHeader;
+using inet::IPv4Header;
+using inet::UdpHeader;
+using inet::bswap16;
+using inet::bswap32;
+using inet::ETHERTYPE_IPV4;
+using inet::IPPROTO_TCP;
+using inet::IPPROTO_UDP;
 
-// Packed L2/L3/L4 header structs — kept locally so the netif doesn't
-// depend on hmi/* layout. Identical wire format.
-struct EthernetHeader {
-    uint8_t  dst[6];
-    uint8_t  src[6];
-    uint16_t ethertype_be;
-} __attribute__((packed));
-
-struct IPv4Header {
-    uint8_t  ver_ihl;
-    uint8_t  dscp_ecn;
-    uint16_t total_len_be;
-    uint16_t ident_be;
-    uint16_t flags_frag_be;
-    uint8_t  ttl;
-    uint8_t  proto;
-    uint16_t hdr_checksum_be;
-    uint32_t src_ip_be;
-    uint32_t dst_ip_be;
-} __attribute__((packed));
-
-struct UdpHeader {
-    uint16_t src_port_be;
-    uint16_t dst_port_be;
-    uint16_t length_be;
-    uint16_t checksum_be;
-} __attribute__((packed));
-
-inline uint16_t bswap16(uint16_t v) { return static_cast<uint16_t>((v >> 8) | (v << 8)); }
-inline uint32_t bswap32(uint32_t v) {
-    return ((v & 0x000000FFu) << 24) |
-           ((v & 0x0000FF00u) <<  8) |
-           ((v & 0x00FF0000u) >>  8) |
-           ((v & 0xFF000000u) >> 24);
-}
-
-uint16_t ip_checksum(const uint8_t* data, size_t len) noexcept {
-    uint32_t sum = 0;
-    for (size_t i = 0; i + 1 < len; i += 2) {
-        sum += static_cast<uint16_t>((static_cast<uint16_t>(data[i]) << 8) | data[i + 1]);
-    }
-    if (len & 1u) sum += static_cast<uint16_t>(data[len - 1] << 8);
-    while (sum >> 16) sum = (sum & 0xFFFFu) + (sum >> 16);
-    return static_cast<uint16_t>(~sum);
+// IPv4 header checksum.
+inline uint16_t ip_checksum(const uint8_t* data, size_t len) noexcept {
+    return inet::checksum16(data, len);
 }
 
 } // namespace
@@ -346,20 +311,7 @@ uint16_t g_ip_ident = 0x4d49;  // 'MI'
 
 uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip,
                       const uint8_t* udp_segment, size_t udp_len) noexcept {
-    // Pseudo-header: src(4) dst(4) zero(1) proto(1) udp_len(2) = 12 bytes.
-    uint32_t sum = 0;
-    sum += (src_ip >> 16) & 0xFFFFu;
-    sum +=  src_ip        & 0xFFFFu;
-    sum += (dst_ip >> 16) & 0xFFFFu;
-    sum +=  dst_ip        & 0xFFFFu;
-    sum += IPPROTO_UDP;
-    sum += static_cast<uint16_t>(udp_len);
-    for (size_t i = 0; i + 1 < udp_len; i += 2) {
-        sum += static_cast<uint16_t>((static_cast<uint16_t>(udp_segment[i]) << 8) | udp_segment[i + 1]);
-    }
-    if (udp_len & 1u) sum += static_cast<uint16_t>(udp_segment[udp_len - 1] << 8);
-    while (sum >> 16) sum = (sum & 0xFFFFu) + (sum >> 16);
-    uint16_t cs = static_cast<uint16_t>(~sum);
+    const uint16_t cs = inet::l4_checksum(IPPROTO_UDP, src_ip, dst_ip, udp_segment, udp_len);
     // RFC 768: a transmitted zero checksum is reserved to mean "no
     // checksum used"; if the real checksum computes to 0, transmit
     // 0xFFFF instead.

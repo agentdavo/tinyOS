@@ -9,6 +9,7 @@
 // inline without further locking.
 
 #include "tcp.hpp"
+#include "inet.hpp"
 #include "../../miniOS.hpp"
 
 #include <cstring>
@@ -17,8 +18,14 @@ namespace kernel::net {
 
 namespace {
 
-constexpr uint8_t  IPPROTO_TCP = 6u;
-constexpr uint16_t ETHERTYPE_IPV4 = 0x0800u;
+using inet::EthernetHeader;
+using inet::IPv4Header;
+using inet::UdpHeader;
+using inet::bswap16;
+using inet::bswap32;
+using inet::ETHERTYPE_IPV4;
+using inet::IPPROTO_TCP;
+using inet::IPPROTO_UDP;
 constexpr uint32_t INITIAL_SEQ = 0x12345678u;  // simple ISN; not against spoofing
 
 // TCP flags (control bits in the data offset / flags word).
@@ -27,25 +34,6 @@ constexpr uint16_t TCP_FLAG_SYN = 0x0002;
 constexpr uint16_t TCP_FLAG_RST = 0x0004;
 constexpr uint16_t TCP_FLAG_PSH = 0x0008;
 constexpr uint16_t TCP_FLAG_ACK = 0x0010;
-
-struct EthernetHeader {
-    uint8_t  dst[6];
-    uint8_t  src[6];
-    uint16_t ethertype_be;
-} __attribute__((packed));
-
-struct IPv4Header {
-    uint8_t  ver_ihl;
-    uint8_t  dscp_ecn;
-    uint16_t total_len_be;
-    uint16_t ident_be;
-    uint16_t flags_frag_be;
-    uint8_t  ttl;
-    uint8_t  proto;
-    uint16_t hdr_checksum_be;
-    uint32_t src_ip_be;
-    uint32_t dst_ip_be;
-} __attribute__((packed));
 
 struct TcpHeader {
     uint16_t src_port_be;
@@ -58,39 +46,13 @@ struct TcpHeader {
     uint16_t urgent_be;
 } __attribute__((packed));
 
-inline uint16_t bswap16(uint16_t v) { return static_cast<uint16_t>((v >> 8) | (v << 8)); }
-inline uint32_t bswap32(uint32_t v) {
-    return ((v & 0x000000FFu) << 24) |
-           ((v & 0x0000FF00u) <<  8) |
-           ((v & 0x00FF0000u) >>  8) |
-           ((v & 0xFF000000u) >> 24);
+inline uint16_t ip_checksum(const uint8_t* data, size_t len) noexcept {
+    return inet::checksum16(data, len);
 }
 
-uint16_t ip_checksum(const uint8_t* data, size_t len) noexcept {
-    uint32_t sum = 0;
-    for (size_t i = 0; i + 1 < len; i += 2) {
-        sum += static_cast<uint16_t>((static_cast<uint16_t>(data[i]) << 8) | data[i + 1]);
-    }
-    if (len & 1u) sum += static_cast<uint16_t>(data[len - 1] << 8);
-    while (sum >> 16) sum = (sum & 0xFFFFu) + (sum >> 16);
-    return static_cast<uint16_t>(~sum);
-}
-
-uint16_t tcp_checksum(uint32_t src_ip, uint32_t dst_ip,
-                      const uint8_t* segment, size_t seg_len) noexcept {
-    uint32_t sum = 0;
-    sum += (src_ip >> 16) & 0xFFFFu;
-    sum +=  src_ip        & 0xFFFFu;
-    sum += (dst_ip >> 16) & 0xFFFFu;
-    sum +=  dst_ip        & 0xFFFFu;
-    sum += IPPROTO_TCP;
-    sum += static_cast<uint16_t>(seg_len);
-    for (size_t i = 0; i + 1 < seg_len; i += 2) {
-        sum += static_cast<uint16_t>((static_cast<uint16_t>(segment[i]) << 8) | segment[i + 1]);
-    }
-    if (seg_len & 1u) sum += static_cast<uint16_t>(segment[seg_len - 1] << 8);
-    while (sum >> 16) sum = (sum & 0xFFFFu) + (sum >> 16);
-    return static_cast<uint16_t>(~sum);
+inline uint16_t tcp_checksum(uint32_t src_ip, uint32_t dst_ip,
+                             const uint8_t* segment, size_t seg_len) noexcept {
+    return inet::l4_checksum(IPPROTO_TCP, src_ip, dst_ip, segment, seg_len);
 }
 
 // Two-table layout: `Binding` is (netif, listener, port). `ConnSlot`
