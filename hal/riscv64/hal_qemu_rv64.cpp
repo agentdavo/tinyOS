@@ -13,23 +13,20 @@
 //
 // Timer:
 //   get_system_time_ns reads the mtime CSR (rdtime on RV64 reads mtime
-//   directly per the Zicntr extension QEMU implements). 10 MHz timebase,
-//   ticks * 100 = ns.
-//   wait_until_ns programs this hart's mtimecmp for the deadline, sets
-//   MTIE + MIE and issues wfi. On return the IRQ handler has masked MTIE
-//   for the long-deadline path (handled inside).
+//   directly per the Zicntr extension QEMU implements); the timebase comes
+//   from the DTB (10 MHz on QEMU). Shared harts get a periodic scheduler
+//   tick; dedicated RT harts are tickless (mtimecmp parked) and only use
+//   mtimecmp for wait_until_ns wakes.
 //
 // IRQs:
-//   PLIC context map on QEMU virt -bios none: context N = M-mode view of
-//   hart N (because -bios none -> we ARE M-mode, there is no S-mode). That
-//   matches QEMU's sifive_plic model with num-contexts-per-hart = 1.
+//   PLIC context map on QEMU virt -bios none: QEMU allocates an M-mode and an
+//   S-mode context per hart; we are M-mode, so hart N uses context 2N.
 
 #include "hal_qemu_rv64.hpp"
 #include "../../miniOS.hpp"
 #include "../../kernel/main.hpp"
 #include "../../klog.hpp"
 #include "../../diag/cpu_load.hpp"
-#include "rt_wait.hpp"
 #include "fdt.hpp"
 #include "hal/shared/fdt_scan.hpp"
 #include "hal/shared/netif.hpp"
@@ -109,8 +106,6 @@ PlatformQEMUVirtRV64::~PlatformQEMUVirtRV64() = default;
 // Spin-table + counters (extern "C" so the assembler can see g_secondary_entry).
 extern "C" {
 uint64_t g_secondary_entry[MAX_HARTS] = {0, 0, 0, 0};
-uint64_t g_timer_ticks[MAX_HARTS]     = {0, 0, 0, 0};
-uint64_t g_wfi_wakes[MAX_HARTS]       = {0, 0, 0, 0};
 
 // DTB pointer stashed by cpu_rv64.S early in _start before anything can
 // clobber a1. Placed in .data (non-zero sentinel) so it survives the BSS
@@ -149,9 +144,6 @@ constexpr uint8_t  LSR_DR      = 1 << 0;
 inline volatile uint64_t* clint_mtimecmp(uint32_t hart) {
     return reinterpret_cast<volatile uint64_t*>(CLINT_MTIMECMP + 8ULL * hart);
 }
-inline volatile uint64_t* clint_mtime() {
-    return reinterpret_cast<volatile uint64_t*>(CLINT_MTIME);
-}
 
 inline uint64_t read_mtime() {
     // rdtime reads mtime on QEMU virt (Zicntr). Using the CSR read avoids an
@@ -165,10 +157,6 @@ inline void csr_set_mie_mtie() {
     asm volatile("csrsi mstatus, 0x8" ::: "memory"); // MIE
     uint64_t bit = 1ULL << 7; // MTIE
     asm volatile("csrs mie, %0" :: "r"(bit) : "memory");
-}
-inline void csr_clear_mtie() {
-    uint64_t bit = 1ULL << 7;
-    asm volatile("csrc mie, %0" :: "r"(bit) : "memory");
 }
 inline void csr_set_meie() {
     uint64_t bit = 1ULL << 11;
@@ -463,11 +451,6 @@ uint64_t TimerDriver::get_system_time_ns() {
     // of uptime (the old "no overflow for centuries" comment was wrong). The
     // 128-bit intermediate in mul_div_u64 is exact for the full tick range.
     return kernel::util::mul_div_u64(read_mtime(), 1'000'000'000ULL, timer_freq_hz_);
-}
-
-void TimerDriver::hardware_timer_irq_fired(uint32_t core_id) {
-    // Software timer queue not implemented on rv64 yet.
-    (void)core_id;
 }
 
 void TimerDriver::wait_until_ns(uint64_t target_ns) {
@@ -1027,10 +1010,6 @@ static void boot_dma_selftest(hal::qemu_virt_rv64::UARTDriver& uart,
     uart.puts(passed ? " PASS\n" : " FAIL\n");
 }
 
-// Voluntary context switch defined in cpu_rv64.S.
-extern "C" void cpu_context_switch_rv64(kernel::core::TCB* old_tcb,
-                                        kernel::core::TCB* new_tcb);
-
 // Enter the highest-priority ready thread for this hart for the first time.
 // The shared Scheduler::start_core_scheduler installs the chosen worker into
 // g_per_cpu_data[hart].current_thread but does not switch (it expects the
@@ -1039,7 +1018,7 @@ extern "C" void cpu_context_switch_rv64(kernel::core::TCB* old_tcb,
     auto* tcb = kernel::core::g_per_cpu_data[hartid].current_thread;
     if (!tcb) tcb = kernel::core::g_per_cpu_data[hartid].idle_thread;
     if (!tcb) for (;;) asm volatile("wfi");
-    cpu_context_switch_rv64(nullptr, tcb);
+    ::hal::qemu_virt_rv64::cpu_context_switch_rv64(nullptr, tcb);
     __builtin_unreachable();
 }
 
@@ -1204,14 +1183,10 @@ extern "C" void kernel_main_rv64(uint32_t hartid) {
     // Make the store visible to polling secondaries BEFORE kicking them.
     asm volatile("fence w,w" ::: "memory");
     uart.puts("[miniOS rv64] hart 0 releasing secondaries via spin-table\n");
-    // Kick secondary harts out of WFI via IPI (software interrupt). Harts
-    // poll the spin table and fall through once their slot is non-zero; the
-    // WFI in cpu_rv64.S is woken by any pending interrupt, and writing MSIP
-    // asserts the MSI pending bit. Note we don't need MSIP enabled to wake
-    // from WFI — WFI wakes on any pending interrupt, even if masked.
-    for (uint32_t h = 1; h < MAX_HARTS; ++h) {
-        *reinterpret_cast<volatile uint32_t*>(CLINT_MSIP + 4ULL * h) = 1;
-    }
+    // No IPI needed: secondaries busy-poll the spin table in cpu_rv64.S.
+    // (An MSIP kick used to be sent here; with MSIE never enabled it just
+    // stayed pending, which made every later wfi on those harts return
+    // immediately.)
 
     // Wait briefly for secondaries to finish their per-hart IRQ/timer setup.
     // This is better than a blind fixed delay: we only wait as long as needed,
@@ -1250,16 +1225,9 @@ extern "C" void kernel_main_rv64(uint32_t hartid) {
     kernel::ui::init_ui_backends();
     kernel::ui::boot_ui_once();
 
-    auto rv64_create_thread = [](void (*fn)(void*), void* arg, int prio,
-                                 int affinity, const char* name, bool is_idle,
-                                 uint64_t deadline_us) -> bool {
-        return kernel::g_scheduler_ptr->create_thread(fn, arg, prio, affinity,
-                                                      name, is_idle, deadline_us) != nullptr;
-    };
-
-    kernel::boot::create_boot_services(rv64_create_thread);
+    kernel::boot::create_boot_services(&kernel::boot::create_scheduler_thread);
     (void)machine::wiring::wire_motion_axes_from_topology(&uart);
-    kernel::boot::create_runtime_services(rv64_create_thread);
+    kernel::boot::create_runtime_services(&kernel::boot::create_scheduler_thread);
 
     uart.puts("[miniOS rv64] scheduler: services armed on harts 0-2\n");
 

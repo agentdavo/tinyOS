@@ -9,18 +9,6 @@ extern "C" void kernel_secondary_main(uint32_t core_id);
 
 namespace kernel {
 
-struct BootHooks {
-    using SecondaryReleaseFn = void (*)(uint32_t core_id, void* entry_fn, uint32_t arg);
-    using SecondaryEntryFn  = void (*)(uint32_t core_id);
-
-    bool (*supports_multicore)();
-    void (*init_secondary_core)(uint32_t core_id);
-    void (*post_platform_init)();
-};
-
-void register_boot_hooks(const BootHooks* hooks);
-bool has_multicore_support();
-
 namespace boot {
 
 // Unified create-thread signature used by the shared boot helpers below.
@@ -29,6 +17,11 @@ namespace boot {
 using CreateThreadFn = bool (*)(void (*fn)(void*), void* arg, int prio,
                                 int affinity, const char* name, bool is_idle,
                                 uint64_t deadline_us);
+
+// The CreateThreadFn both arches pass: forwards to g_scheduler_ptr.
+bool create_scheduler_thread(void (*fn)(void*), void* arg, int prio,
+                             int affinity, const char* name, bool is_idle,
+                             uint64_t deadline_us);
 
 // Register embedded defaults in the VFS, probe the block device (virtio-blk),
 // mount FAT32 if present, and shadow-register on-disk files over embedded

@@ -8,7 +8,6 @@
 #include "miniOS.hpp"
 #include "util.hpp"
 #include "klog.hpp"
-#include "rt_wait.hpp"
 #include "hal/shared/fdt_scan.hpp"
 #include "hal/shared/netif.hpp"
 #include <cstring>
@@ -207,7 +206,7 @@ void IRQController::set_irq_affinity(uint32_t irq_id, uint32_t core_mask) {
 }
 
 // --- TimerDriver ---
-TimerDriver::TimerDriver() : timer_freq_hz_(0), active_sw_timers_head_(nullptr) {
+TimerDriver::TimerDriver() : timer_freq_hz_(0) {
     HAL_VDBG("[HAL_DEBUG] TimerDriver::TimerDriver() CONSTRUCTOR ENTRY\n");
     timer_freq_hz_ = read_sysreg_cntfrq();
     if (timer_freq_hz_ == 0) {
@@ -228,7 +227,7 @@ void TimerDriver::init_core_timer_interrupt(uint32_t core_id) {
     if (kernel::hal::is_dedicated_rt_core(core_id)) {
         // Tickless core: leave CNTP disabled. The RT worker on this core will
         // program CNTP_TVAL_EL0 + enable CTL each time it calls
-        // wait_wfi_until_ns; the scheduler tick is not used here at all.
+        // TimerDriver::wait_until_ns; the scheduler tick is not used here.
         write_sysreg_cntp_ctl(0);
         HAL_VDBG("[HAL_DEBUG] TimerDriver::init_core_timer_interrupt() skipped (tickless)\n");
         return;
@@ -244,7 +243,7 @@ void TimerDriver::init_core_timer_interrupt(uint32_t core_id) {
 }
 void TimerDriver::ack_core_timer_interrupt(uint32_t core_id) {
     if (kernel::hal::is_dedicated_rt_core(core_id)) {
-        // Tickless core: this IRQ is a WFI wake from wait_wfi_until_ns. Just
+        // Tickless core: this IRQ is a WFI wake from wait_until_ns. Just
         // disable the compare so the line de-asserts; the RT worker will
         // re-arm via CNTP_TVAL on its next wait.
         write_sysreg_cntp_ctl(0);
@@ -281,32 +280,6 @@ void TimerDriver::wait_until_ns(uint64_t target_ns) {
     while (get_system_time_ns() < target_ns) asm volatile("yield");
     #endif
 }
-bool TimerDriver::add_software_timer(kernel::hal::timer::SoftwareTimer* timer) { 
-    if (!timer) return false;
-    kernel::core::ScopedLock lock(sw_timer_lock_);
-    timer->next = active_sw_timers_head_;
-    active_sw_timers_head_ = timer;
-    return true;
-}
-bool TimerDriver::remove_software_timer(kernel::hal::timer::SoftwareTimer* timer_to_remove) { 
-    if (!timer_to_remove) return false;
-    kernel::core::ScopedLock lock(sw_timer_lock_);
-    if (active_sw_timers_head_ == timer_to_remove) {
-        active_sw_timers_head_ = timer_to_remove->next;
-        timer_to_remove->next = nullptr; 
-        return true;
-    }
-    kernel::hal::timer::SoftwareTimer* current = active_sw_timers_head_;
-    while (current && current->next) {
-        if (current->next == timer_to_remove) {
-            current->next = timer_to_remove->next;
-            timer_to_remove->next = nullptr; 
-            return true;
-        }
-        current = current->next;
-    }
-    return false;
-}
 uint64_t TimerDriver::get_system_time_us() {
     if (timer_freq_hz_ == 0) return 0;
     // 128-bit intermediate: a plain `ticks * 1e6` overflows uint64 after
@@ -321,29 +294,6 @@ uint64_t TimerDriver::get_system_time_ns() {
     // the full 64-bit tick range.
     return kernel::util::mul_div_u64(read_sysreg_cntpct(), 1000000000ULL, timer_freq_hz_);
 }
-void TimerDriver::hardware_timer_irq_fired(uint32_t core_id) { 
-    (void)core_id;
-    kernel::core::ScopedLock lock(sw_timer_lock_);
-    uint64_t now_us = get_system_time_us();
-    kernel::hal::timer::SoftwareTimer* timer = active_sw_timers_head_;
-    while (timer) {
-        if (timer->active && now_us >= timer->expiry_time_us) {
-            if (timer->callback) {
-                timer->callback(timer, timer->context);
-            }
-            if (timer->period_us > 0) { 
-                timer->expiry_time_us += timer->period_us; 
-                if (timer->expiry_time_us < now_us) { 
-                    timer->expiry_time_us = now_us + timer->period_us;
-                }
-            } else {
-                timer->active = false; 
-            }
-        }
-        timer = timer->next;
-    }
-}
-
 // --- DMAController ---
 DMAController::DMAController() { 
     HAL_VDBG("[DEBUG] DMAController CONSTRUCTOR ENTRY\n");

@@ -92,14 +92,6 @@ inline int kstrncmp(const char* lhs, const char* rhs, size_t count) noexcept {
     return ::strncmp(lhs, rhs, count); 
 }
 
-inline char* kstrcpy(char* dest, const char* src) noexcept {
-    return ::strcpy(dest, src); 
-}
-
-inline char* kstrncpy(char* dest, const char* src, size_t count) noexcept {
-    return ::strncpy(dest, src, count); 
-}
-
 // Declarations for functions defined in util.cpp
 bool safe_strcpy(char* dest, const char* src, size_t dest_size) noexcept; 
 char* kstrcat(char* dest, const char* src, size_t dest_max_len) noexcept; 
@@ -111,15 +103,6 @@ inline bool isspace(char c) noexcept {
 inline bool isdigit(char c) noexcept { 
     return (c >= '0' && c <= '9');
 }
-bool isalpha(char c) noexcept; 
-bool isalnum(char c) noexcept; 
-int toupper(int c) noexcept;   
-int tolower(int c) noexcept;   
-
-// String to number conversion
-bool str_to_int32(std::string_view input, int32_t& out_val) noexcept;
-bool str_to_uint32(std::string_view input, uint32_t& out_val) noexcept;
-bool str_to_float(std::string_view input, float& out_val) noexcept; 
 
 // IP address conversion
 bool ipv4_to_uint32(std::string_view ip_str, uint32_t& ip_addr) noexcept;
@@ -132,8 +115,6 @@ int uint64_to_str(uint64_t value, char* buffer, size_t buffer_size, int base = 1
 int uint64_to_hex_str(uint64_t value, char* buffer, size_t buffer_size, bool leading_0x = true) noexcept;
 
 void uint32_to_ipv4_str(uint32_t ip_addr, std::span<char> out_buffer) noexcept; 
-
-std::string_view get_next_token(std::string_view& input, char delimiter) noexcept;
 
 // Simplified snprintf-like functions (definitions in util.cpp)
 int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) noexcept;

@@ -9,22 +9,7 @@
 #include "util.hpp"
 #include "trace.hpp"
 #include "miniOS.hpp"
-#include "cli.hpp"
-#include "ethercat/master.hpp"
-#include "ethercat/bus_config.hpp"
-#if MINIOS_FAKE_SLAVE
-#include "ethercat/fake_slave.hpp"
-#endif
-#include "motion/motion.hpp"
-#include "devices/embedded.hpp"
-#include "devices/device_db.hpp"
-#include "rt/base_thread.hpp"
-#include "ui/splash.hpp"
-#include "ui/fb.hpp"
 #include "diag/cpu_load.hpp"
-#include "render/benchmark.hpp"
-#include "render/gles1.hpp"
-#include "render/machine_model.hpp"
 
 #include <cstring>
 #include <algorithm>    
@@ -86,150 +71,9 @@ extern "C" kernel::core::PerCPUData* const kernel_g_per_cpu_data = kernel::core:
 namespace kernel {
 namespace core {
 
-// Benchmark runner for 1000 spinning cubes
-void run_benchmark_test() {
-    using namespace kernel;
-    using namespace render;
-    
-    auto* uart = g_platform ? g_platform->get_uart_ops() : nullptr;
-    if (!uart) return;
-    
-    auto& fb = ui::framebuffer();
-    
-    static gles1::Renderer renderer;
-    static bool cube_created = false;
-    static machine::MeshPart cube_part;
-    static uint64_t start_ticks = 0;
-    static uint64_t frame_start = 0;
-    static bool g_dumped_test_pattern = false;
-    
-    if (!cube_created) {
-        machine::create_cube(cube_part, 1.0f, 1.0f, 1.0f, {255, 128, 64, 255});
-        cube_created = true;
-        benchmark::init();
-        
-        auto* timer = g_platform->get_timer_ops();
-        start_ticks = timer ? timer->get_system_time_ns() / 1000000ULL : 0;
-        frame_start = start_ticks;
-        
-        char initbuf[48];
-        kernel::util::k_snprintf(initbuf, sizeof(initbuf), "[bench] cube benchmark initialized\n");
-        uart->puts(initbuf);
-    }
-    
-    auto* timer = g_platform->get_timer_ops();
-    uint64_t now = timer ? timer->get_system_time_ns() / 1000000ULL : 0;
-    uint32_t elapsed = static_cast<uint32_t>(now - start_ticks);
-    
-    gles1::FramebufferView fb_view{
-        fb.data(),
-        fb.width(),
-        fb.height(),
-        fb.width()
-    };
-    renderer.bind_framebuffer(fb_view);
-    renderer.clear(0xFF000000);  // Black
-    
-    const uint32_t center_idx = (1920/2) * 1080 + (1080/2);
-    fb.data()[center_idx] = 0xFF00FF00;  // Green test pixel
-    fb.data()[center_idx + 1] = 0xFF00FF00;
-    fb.data()[center_idx + 1080] = 0xFF00FF00;
-    fb.data()[center_idx - 1] = 0xFF00FF00;
-    fb.data()[center_idx - 1080] = 0xFF00FF00;
-    
-    gles1::Mat4 proj = gles1::make_perspective(1.2f, 0.5625f, 0.1f, 100.0f);
-    gles1::Mat4 view = gles1::make_look_at({0.0f, 0.0f, 5.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f});
-    renderer.set_projection_matrix(proj);
-    renderer.set_view_matrix(view);
-    
-    gles1::Light light{
-        {0.0f, 0.0f, 1.0f},
-        {0.3f, 0.3f, 0.3f, 1.0f},
-        {0.7f, 0.7f, 0.7f, 1.0f},
-        {0.5f, 0.5f, 0.5f, 1.0f}
-    };
-    renderer.set_light(light);
-    
-    gles1::Material mat;
-    mat.ambient = {0.2f, 0.2f, 0.2f, 1.0f};
-    mat.diffuse = {1.0f, 0.0f, 0.0f, 1.0f};
-    mat.specular = {0.5f, 0.5f, 0.5f, 1.0f};
-    mat.shininess = 32.0f;
-    renderer.set_material(mat);
-    
-    gles1::MeshView cube_mesh{
-        cube_part.vertices,
-        cube_part.vertex_count,
-        cube_part.indices,
-        cube_part.index_count
-    };
-    
-    float time = static_cast<float>(elapsed) * 0.01f;
-    gles1::Mat4 test_model = gles1::make_rotation_y(time) ;
-    test_model = gles1::multiply(test_model, gles1::make_rotation_x(time * 0.7f));
-    test_model = gles1::multiply(test_model, gles1::make_translation(0.0f, 0.0f, -3.0f));
-    renderer.set_model_matrix(test_model);
-    mat.diffuse = {1.0f, 0.3f, 0.0f, 1.0f};
-    renderer.set_material(mat);
-    bool drawn = renderer.draw_mesh_solid(cube_mesh);
-    char dbg[48];
-    kernel::util::k_snprintf(dbg, sizeof(dbg), "[bench] gles1 cube drawn=%d\n", drawn ? 1 : 0);
-    uart->puts(dbg);
-    
-    benchmark::run(renderer, cube_mesh, elapsed);
-    
-    if (cube_created && !g_dumped_test_pattern) {
-        constexpr int TEST_W = 32;
-        constexpr int TEST_H = 32;
-        constexpr int center_x = (1080 - TEST_W) / 2;
-        constexpr int center_y = (1920 - TEST_H) / 2;
-        
-        uart->puts("[bench] test pattern (32x32 center):\n");
-        for (int y = 0; y < TEST_H; y += 4) {
-            char line[128];
-            char* p = line;
-            for (int x = 0; x < TEST_W; x += 4) {
-                uint32_t px = fb.data()[(center_y + y) * 1080 + (center_x + x)];
-                p += kernel::util::k_snprintf(p, 8, "%08X ", px);
-            }
-            *p++ = '\n';
-            *p = '\0';
-            uart->puts(line);
-        }
-        g_dumped_test_pattern = true;
-    }
-    
-    uint64_t frames = benchmark::get_frame_count();
-    if (frames > 0 && frames % 60 == 0) {
-        uint64_t now2 = timer ? timer->get_system_time_ns() / 1000000ULL : 0;
-        uint64_t duration = now2 - frame_start;
-        if (duration > 0) {
-            uint32_t fps = static_cast<uint32_t>((frames * 1000) / duration);
-            char buf[64];
-            kernel::util::k_snprintf(buf, sizeof(buf), "[bench] %llu frames, %u fps\n", 
-                static_cast<unsigned long long>(frames), fps);
-            uart->puts(buf);
-            frame_start = now2;
-        }
-    }
-}
-
-
-std::array<TraceEntry, TRACE_BUFFER_SIZE> g_trace_buffer;
-std::array<std::atomic<size_t>, MAX_CORES> g_trace_overflow_count{}; 
 alignas(16) std::array<std::array<uint8_t, DEFAULT_STACK_SIZE>, MAX_THREADS> g_task_stacks;
 std::array<TCB, MAX_THREADS> g_task_tcbs;
 alignas(64) std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
-uint32_t Spinlock::next_lock_id_ = 0;
-
-Spinlock::Spinlock() noexcept : lock_id_(next_lock_id_++) {}
-
-// ISR-safe paths intentionally skip priority inheritance. Inside an ISR there
-// is no meaningful "current TCB" to inherit from (the interrupted thread isn't
-// the requester), and the boost write would race with the scheduler without
-// any benefit — ISR critical sections are bounded by hardware mask state, not
-// by thread priority.
-//
 // IRQs are masked BEFORE the CAS spin so that a timer IRQ can't fire while
 // this CPU holds the lock and re-enter the same lock from the scheduler tick
 // path. The pre-acquire mask state is returned to the caller and round-tripped
@@ -252,127 +96,17 @@ void Spinlock::release_isr_safe(uint64_t saved_irq_state) noexcept {
 }
 
 void Spinlock::acquire_general() noexcept {
-    // Resolve the requesting TCB once, before we start spinning. Early-boot
-    // callers (before g_platform is set, before per-CPU data is wired up) get
-    // nullptr here and silently skip the inheritance path — they still get the
-    // CAS spin, which is what they had before this change.
-    TCB* self = nullptr;
-    if (kernel::g_platform) {
-        const uint32_t cid = kernel::g_platform->get_core_id();
-        if (cid < MAX_CORES) self = g_per_cpu_data[cid].current_thread;
-    }
     bool expected = false;
-    bool boosted_owner = false;
     while (!lock_flag_.compare_exchange_strong(expected, true, std::memory_order_acquire, std::memory_order_relaxed)) {
         expected = false;
-        // First contention iteration: try to boost the current owner if our
-        // priority exceeds theirs. We only boost once per acquire attempt
-        // (boosted_owner guard) so a long spin doesn't keep rewriting the
-        // same fields, and so we don't repeatedly stomp transitive chains.
-        if (!boosted_owner && self) {
-            TCB* h = owner_.load(std::memory_order_acquire);
-            if (h && h != self) {
-                int holder_prio = __atomic_load_n(&h->priority, __ATOMIC_ACQUIRE);
-                int my_prio = __atomic_load_n(&self->priority, __ATOMIC_ACQUIRE);
-                if (my_prio > holder_prio) {
-                    // Capture the holder's original priority so release can
-                    // restore it. CAS on -1 ensures only the first booster
-                    // wins — subsequent waiters with even higher prio raise
-                    // priority but don't overwrite the saved original.
-                    int neg1 = -1;
-                    boosted_priority_.compare_exchange_strong(neg1, holder_prio,
-                        std::memory_order_acq_rel, std::memory_order_relaxed);
-                    __atomic_store_n(&h->priority, my_prio, __ATOMIC_RELEASE);
-                    boosted_owner = true;
-                }
-            }
-        }
         while (lock_flag_.load(std::memory_order_relaxed)) {
             MINIOS_CPU_RELAX();
         }
     }
-    // Lock acquired — record ownership and reset boost slot for the new owner.
-    owner_.store(self, std::memory_order_release);
-    boosted_priority_.store(-1, std::memory_order_release);
 }
 
 void Spinlock::release_general() noexcept {
-    // Restore the holder's priority before clearing ownership, so a waiter
-    // observing owner_ == nullptr never sees an inflated priority on a TCB
-    // that no longer holds anything.
-    TCB* h = owner_.load(std::memory_order_acquire);
-    int boost = boosted_priority_.load(std::memory_order_acquire);
-    if (h && boost >= 0) {
-        __atomic_store_n(&h->priority, boost, __ATOMIC_RELEASE);
-        boosted_priority_.store(-1, std::memory_order_release);
-    }
-    owner_.store(nullptr, std::memory_order_release);
     lock_flag_.store(false, std::memory_order_release);
-}
-
-bool FixedMemoryPool::init(void* base, size_t num_blocks, size_t blk_sz_user, size_t align_user_data) {
-    if (!base || num_blocks == 0 || blk_sz_user == 0) return false;
-    size_t internal_header_align = sizeof(Block*);
-    size_t final_user_data_align = (align_user_data == 0 || (align_user_data & (align_user_data - 1)) != 0) 
-                                   ? internal_header_align : align_user_data;
-    header_actual_size_ = (sizeof(Block) + internal_header_align - 1) & ~(internal_header_align - 1);
-    user_data_offset_ = header_actual_size_;
-    if ((user_data_offset_ % final_user_data_align) != 0) {
-        user_data_offset_ = (user_data_offset_ + final_user_data_align - 1) & ~(final_user_data_align - 1);
-    }
-    block_storage_size_ = user_data_offset_ + blk_sz_user;
-    pool_memory_start_ = static_cast<uint8_t*>(base);
-    num_total_blocks_ = num_free_blocks_ = num_blocks;
-    free_head_ = nullptr;
-    for (size_t i = 0; i < num_blocks; ++i) {
-        uint8_t* current_block_raw_ptr = pool_memory_start_ + i * block_storage_size_;
-        Block* block_header = reinterpret_cast<Block*>(current_block_raw_ptr);
-        block_header->next = free_head_;
-        free_head_ = block_header;
-    }
-    return true;
-}
-void* FixedMemoryPool::allocate() {
-    ScopedLock lock(pool_lock_);
-    if (!free_head_) return nullptr;
-    Block* block_header_raw = free_head_;
-    free_head_ = block_header_raw->next;
-    num_free_blocks_--;
-    return static_cast<uint8_t*>(static_cast<void*>(block_header_raw)) + user_data_offset_;
-}
-void FixedMemoryPool::free_block(void* user_data_ptr) {
-    if (!user_data_ptr) return;
-    Block* block_header_raw = reinterpret_cast<Block*>(static_cast<uint8_t*>(user_data_ptr) - user_data_offset_);
-    ScopedLock lock(pool_lock_);
-    // Double-free guard: walk the free list; if this block is already on it, panic
-    // rather than corrupt the list.
-    for (Block* b = free_head_; b; b = b->next) {
-        if (b == block_header_raw) {
-            if (kernel::g_platform) kernel::g_platform->panic("FixedMemoryPool: double free", __FILE__, __LINE__);
-            for (;;) asm volatile("wfi");
-        }
-    }
-    block_header_raw->next = free_head_;
-    free_head_ = block_header_raw;
-    num_free_blocks_++;
-}
-
-template<typename T, size_t Capacity>
-bool SPSCQueue<T, Capacity>::enqueue(T* item) noexcept {
-    size_t current_tail = tail_.load(std::memory_order_relaxed);
-    size_t next_tail = (current_tail + 1) & (Capacity - 1);
-    if (next_tail == head_.load(std::memory_order_acquire)) return false;
-    items_[current_tail] = item;
-    tail_.store(next_tail, std::memory_order_release);
-    return true;
-}
-template<typename T, size_t Capacity>
-T* SPSCQueue<T, Capacity>::dequeue() noexcept {
-    size_t current_head = head_.load(std::memory_order_relaxed);
-    if (current_head == tail_.load(std::memory_order_acquire)) return nullptr;
-    T* item = items_[current_head];
-    head_.store((current_head + 1) & (Capacity - 1), std::memory_order_release);
-    return item;
 }
 
 TCB* EDFPolicy::select_next_task(uint32_t core_id, TCB* current_task) {
@@ -509,7 +243,7 @@ TCB* Scheduler::create_thread(void (*fn)(void*), const void* arg, int prio, int 
     tcb.regs[0] = reinterpret_cast<uint64_t>(&tcb);
 #endif
     tcb.deadline_us = deadline_us; tcb.state = TCB::State::READY;
-    tcb.cpu_id_running_on = static_cast<uint32_t>(-1); tcb.event_flag.store(false, std::memory_order_relaxed);
+    tcb.cpu_id_running_on = static_cast<uint32_t>(-1);
     trace::g_trace_manager.record_event(&tcb, trace::EventType::THREAD_CREATE, tcb.name);
     uint32_t target_core = (tcb.core_affinity != -1) ? static_cast<uint32_t>(tcb.core_affinity) : 0;
     if (is_idle) {
@@ -578,15 +312,10 @@ void Scheduler::start_core_scheduler(uint32_t core_id) {
         worker->state = TCB::State::RUNNING;
         worker->cpu_id_running_on = core_id;
     }
-    // Dedicated-core tickless mode (cores 2/3 on arm64): the scheduler tick is
-    // disabled for this core (see TimerDriver::init_core_timer_interrupt +
-    // hal_irq_handler). The GIC IRQ line is still enabled — wait_wfi_until_ns
-    // uses it to wake from WFI.
-    if (kernel::hal::is_dedicated_rt_core(core_id)) {
-        kernel::g_platform->get_irq_ops()->enable_irq_line(kernel::hal::SYSTEM_TIMER_IRQ);
-        kernel::g_platform->get_irq_ops()->enable_core_irqs(core_id, 0x1);
-        return;
-    }
+    // Dedicated (tickless) RT cores get the same enables: their scheduler
+    // tick is disabled in TimerDriver::init_core_timer_interrupt instead, and
+    // the timer IRQ line stays enabled so TimerDriver::wait_until_ns can use
+    // it as a wake source.
     kernel::g_platform->get_irq_ops()->enable_irq_line(kernel::hal::SYSTEM_TIMER_IRQ);
     kernel::g_platform->get_irq_ops()->enable_core_irqs(core_id, 0x1);
 }
@@ -616,18 +345,6 @@ void Scheduler::yield(uint32_t core_id) {
     if (kernel::g_platform) core_id = kernel::g_platform->get_core_id();
     if (core_id >= MAX_CORES) return;
     schedule(core_id, false);
-}
-
-void Scheduler::signal_event_isr(TCB* tcb) {
-    if (!tcb) return;
-    tcb->event_flag.exchange(true, std::memory_order_release);
-    // Ensure the flag write is visible to waiters on other cores before we leave ISR.
-    kernel::hal::sync::barrier_dsb();
-}
-void Scheduler::wait_for_event(TCB* tcb) {
-    if (!tcb) return;
-    while (!tcb->event_flag.load(std::memory_order_acquire)) kernel::hal::sync::barrier_dmb();
-    tcb->event_flag.store(false, std::memory_order_relaxed);
 }
 
 TCB* Scheduler::pop_highest_priority_ready_task(uint32_t current_core_id) {
@@ -706,8 +423,7 @@ void Scheduler::idle_thread_func(void* arg) {
         kernel::hal::sync::barrier_dmb();
         // Cooperatively yield in case work was enqueued onto this core's
         // ready queue but no IRQ could wake us. On dedicated RT cores the
-        // scheduler tick is left disabled until an RT worker programs CNTP
-        // via wait_wfi_until_ns — without this yield, the first RT thread
+        // scheduler tick is disabled, so without this yield the first RT thread
         // bound to the core after start_core_scheduler() would never be
         // picked up. Cheap on shared cores (already preempted by timer).
         if (kernel::g_scheduler_ptr) kernel::g_scheduler_ptr->yield(core_id);
@@ -737,59 +453,6 @@ void Scheduler::thread_bootstrap(TCB* self) {
 
 } // namespace core
 
-void trace_event(const char* event_str, uintptr_t arg1, uintptr_t arg2) {
-    if (!g_platform || !g_platform->get_timer_ops() || !trace::g_trace_manager.is_enabled()) return;
-    uint32_t core_id = g_platform->get_core_id();
-    if (core_id >= core::MAX_CORES) return;
-    core::ScopedISRLock lock(g_trace_lock); 
-    static std::atomic<size_t> g_legacy_trace_idx{0};
-    size_t current_idx = g_legacy_trace_idx.fetch_add(1, std::memory_order_relaxed);
-    size_t buffer_idx = current_idx % core::TRACE_BUFFER_SIZE;
-    if (current_idx >= core::TRACE_BUFFER_SIZE && (current_idx % core::TRACE_BUFFER_SIZE == 0) ) {
-        core::g_trace_overflow_count[core_id].fetch_add(1, std::memory_order_relaxed);
-    }
-    auto* entry_ptr = &core::g_trace_buffer[buffer_idx];
-    entry_ptr->timestamp_us = g_platform->get_timer_ops()->get_system_time_us();
-    entry_ptr->core_id = core_id; entry_ptr->event_str = event_str;
-    entry_ptr->arg1 = arg1; entry_ptr->arg2 = arg2;
-}
-
-void dump_trace_buffer(hal::UARTDriverOps* uart_ops) {
-    if (!uart_ops) return;
-    // ScopedISRLock (not ScopedLock): trace_event acquires this same lock from
-    // ISR context with IRQs masked. If the dump held it with IRQs enabled and a
-    // timer IRQ on this core then called trace_event, the non-recursive
-    // spinlock would self-deadlock. Masking IRQs for the dump closes that.
-    core::ScopedISRLock lock(g_trace_lock);
-    uart_ops->puts("\n--- Legacy Global Trace Buffer ---\n");
-    size_t num_valid_entries = 0;
-    for(const auto& entry : core::g_trace_buffer) if(entry.event_str != nullptr) num_valid_entries++;
-    if (num_valid_entries == 0) {
-        uart_ops->puts("Legacy trace buffer empty or uninitialized.\n--- End Legacy Trace ---\n"); return;
-    }
-    for (size_t i = 0; i < core::TRACE_BUFFER_SIZE; ++i) {
-        const core::TraceEntry& entry = core::g_trace_buffer[i];
-        if (entry.event_str) {
-            char buf[128];
-            kernel::util::k_snprintf(buf, sizeof(buf), "[LTraceC%u] %llu us: %s", entry.core_id, (unsigned long long)entry.timestamp_us, entry.event_str);
-            uart_ops->puts(buf);
-            if (entry.arg1 != 0 || entry.arg2 != 0) {
-                 kernel::util::k_snprintf(buf, sizeof(buf), ", args: 0x%llx, 0x%llx", 
-                    static_cast<unsigned long long>(entry.arg1), static_cast<unsigned long long>(entry.arg2));
-                 uart_ops->puts(buf);
-            }
-            uart_ops->puts("\n");
-        }
-    }
-    uart_ops->puts("--- End Legacy Trace ---\n");
-    for (uint32_t i = 0; i < core::MAX_CORES; ++i) {
-        size_t overflows = core::g_trace_overflow_count[i].load(std::memory_order_relaxed);
-        if (overflows > 0) {
-            char buf[64]; kernel::util::k_snprintf(buf, sizeof(buf), "Core %u legacy trace overflow count: %zu\n", i, overflows);
-            uart_ops->puts(buf);
-        }
-    }
-}
 void get_kernel_stats(hal::UARTDriverOps* uart_ops) { 
     if (!uart_ops || !g_scheduler_ptr) return; 
     core::ScopedLock lock(g_scheduler_ptr->get_global_scheduler_lock()); 

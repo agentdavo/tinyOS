@@ -107,7 +107,7 @@ Concrete "is this an accidental divergence?" checklist:
 1. If a boot step needs adding to one side, does it also need to run on the other? If yes, add it to `kernel::boot::*` and have both sides call it. Don't duplicate.
 2. If a driver ships under `hal/shared/`, both arches link it. Missing a shared driver from one arch's `HAL_CPP` is a regression.
 3. TCB layout is a single type: `kernel::core::TCB`. Byte offsets for `regs[31]` / `sp` / `pc` / `pstate` are fixed — both `cpu_arm64.S` and `cpu_rv64.S` use the same offsets. rv64 stores `mstatus` in the `pstate` slot.
-4. Both arches now share `kernel::core::Scheduler` + `EDFPolicy` from `core.cpp`. The arch boundary is the context-switch primitive (`cpu_context_switch_impl` — arm64 in `hal.cpp`, rv64 in `rv64_stubs.cpp`) plus the per-arch trap dispatcher's `preemptive_tick` hand-off. rv64's `rv64_sched.cpp` is empty — kept around so existing build-system references don't break.
+4. Both arches now share `kernel::core::Scheduler` + `EDFPolicy` from `core.cpp`. The arch boundary is the context-switch primitive (`cpu_context_switch_impl` — arm64 in `hal.cpp`, rv64 in `rv64_stubs.cpp`) plus the per-arch trap dispatcher's `preemptive_tick` hand-off.
 
 New MMIO drivers go behind `hal::Platform`; concrete impls in `hal/arm64/hal_qemu_arm64.cpp` and `hal/riscv64/hal_qemu_rv64.cpp`.
 
@@ -126,9 +126,9 @@ clang-tidy -p compile_commands.json <file>
 
 Three-layer stack, each layer depends only on the ones below it:
 
-1. **`core.hpp`/`core.cpp`** — pure kernel types: `TCB`, `Scheduler` (SMP-aware EDF, up to `MAX_CORES=4`), `Spinlock`/`ScopedLock`/`ScopedISRLock`, `FixedMemoryPool`, `PerCPUData`. No HAL dependency.
+1. **`core.hpp`/`core.cpp`** — pure kernel types: `TCB`, `Scheduler` (SMP-aware EDF, up to `MAX_CORES=4`), `Spinlock`/`ScopedLock`/`ScopedISRLock` (plain test-and-set; no priority inheritance), `PerCPUData`. No HAL dependency.
 2. **`hal.hpp`** — abstract `Platform` plus `*Ops` interfaces (`UARTDriverOps`, `IRQControllerOps`, `TimerDriverOps`, `DMAControllerOps`, `I2SDriverOps`, `MemoryOps`, `NetworkDriverOps`, `PowerOps`, `GPIODriverOps`, `WatchdogOps`). Pure virtuals only.
-3. **`hal_qemu_arm64.{hpp,cpp}` + `cpu_arm64.S`** (arm64) or **`hal_qemu_rv64.{hpp,cpp}` + `cpu_rv64.S` + `rv64_stubs.cpp` + `rv64_sched.cpp`** (rv64) — per-arch concrete platforms. Boot/context-switch is in the `.S`; MMIO drivers are in the `.cpp`.
+3. **`hal_qemu_arm64.{hpp,cpp}` + `cpu_arm64.S`** (arm64) or **`hal_qemu_rv64.{hpp,cpp}` + `cpu_rv64.S` + `rv64_stubs.cpp`** (rv64) — per-arch concrete platforms. Boot/context-switch is in the `.S`; MMIO drivers are in the `.cpp`.
 
 `kernel_globals.cpp` defines the singletons (`g_platform`, `g_scheduler_ptr`, trace/IRQ locks). arm64's `kernel_main()` and rv64's `kernel_main_rv64()` each instantiate their concrete `Platform`, assign `g_platform`, then hand off to the shared `kernel::boot::*` helpers for the rest of bring-up. To port to new hardware: new `hal_*` pair, new `cpu_*.S`, a linker script, and a new `kernel_main_<arch>` that follows the same sequence. For an arm64-SBC port specifically, see `HARDWARE_PORT.md` at the repo root — it walks through what's QEMU-only, what's real-hw-ready, and a 15-step bring-up checklist.
 
@@ -142,9 +142,9 @@ Single implementation: `cli.cpp` (tab completion, history, full command table). 
 
 ### Subsystems not currently linked
 
-The active kernel links core, hal, util, trace, klog, cli, kernel_globals, the freestanding/runtime stubs, the EtherCAT stack, motion, config/tsv, devices, diag, rt/base_thread, ui (fb + splash + display + operator_api + ui_builder_tsv), automation (macro/ladder/probe runtimes), machine (toolpods/topology/placement/motion_wiring), hmi service, cnc interpreter + MDI, fs/vfs + fat32 + fs_fat32, and the per-arch HAL (`cpu_<arch>.S`, `hal_qemu_<arch>.cpp`, plus shared drivers: `virtio_net`, `virtio_gpu`, `virtio_blk`, `virtio_input`, `e1000`, `pci`, `xhci`, `sdcard`). arm64 additionally links `fake_slave.cpp` when `FAKE_SLAVE=1`. Adding a subsystem means appending its `.cpp` to `CORE_CPP` in the Makefile and calling its init from `kernel::boot::*` (so both arches pick it up).
+The active kernel links core, hal, util, trace, klog, cli, kernel_globals, the freestanding/runtime stubs, the EtherCAT stack, motion, config/tsv, devices, diag, ui (fb + splash + display + operator_api + ui_builder_tsv), automation (macro/ladder/probe runtimes), machine (toolpods/topology/placement/motion_wiring), hmi service, cnc interpreter + MDI, fs/vfs + fat32 + fs_fat32, and the per-arch HAL (`cpu_<arch>.S`, `hal_qemu_<arch>.cpp`, plus shared drivers: `virtio_net`, `virtio_gpu`, `virtio_blk`, `virtio_input`, `e1000`, `pci`, `xhci`). arm64 additionally links `fake_slave.cpp` when `FAKE_SLAVE=1`. Adding a subsystem means appending its `.cpp` to `CORE_CPP` in the Makefile and calling its init from `kernel::boot::*` (so both arches pick it up).
 
-Historical orphans (`audio.cpp`, `dsp.cpp`, `fs.cpp`, `gpio.cpp`, `net.cpp`, `demo_cli_dsp.cpp`, `test_framework.cpp` and their headers except `audio.hpp`) were removed when audit confirmed they had no callers in the active build. `audio.hpp` stays because `hal/arm64/hal_qemu_arm64.cpp`'s I2SDriver uses the `kernel::audio::AudioBuffer` POD type. Git history preserves the deleted code if any of it needs to be revived.
+Historical orphans (`audio.cpp`, `dsp.cpp`, `fs.cpp`, `gpio.cpp`, `net.cpp`, `demo_cli_dsp.cpp`, `test_framework.cpp` and their headers except `audio.hpp`) were removed when audit confirmed they had no callers in the active build. `audio.hpp` stays, reduced to the `kernel::audio::AudioBuffer` POD that `hal/arm64/hal_qemu_arm64.cpp`'s I2SDriver uses. A later dead-code pass removed `rt/base_thread` (never spawned), the legacy `trace_event` buffer, `FixedMemoryPool`/`SPSCQueue` and the software-timer API, the SPI `sdcard` driver, and `rt_wait.hpp`. Git history preserves the deleted code if any of it needs to be revived.
 
 ### Memory layout
 
@@ -154,5 +154,5 @@ Linker scripts `hal/arm64/linker.ld` / `hal/riscv64/linker.ld` fix the load base
 
 - Two namespaces carry all kernel code: `kernel::core::` (types) and `kernel::hal::` (interfaces/drivers). Subsystems get their own sub-namespace (`kernel::audio`, `kernel::dsp`, …).
 - Global kernel constants (`MAX_THREADS=16`, `MAX_CORES=4`, `DEFAULT_STACK_SIZE=4096`, etc.) live in `core.hpp` — change them there, not in subsystem headers.
-- Lock discipline: use `ScopedISRLock` inside IRQ context, `ScopedLock` elsewhere. `g_irq_handler_lock` wraps the dispatch in `hal_irq_handler`; `g_trace_lock` guards the legacy global trace buffer.
+- Lock discipline: use `ScopedISRLock` inside IRQ context, `ScopedLock` elsewhere. Any lock that IRQ-context code can take must be taken as `ScopedISRLock` everywhere, or a same-core holder deadlocks the IRQ (see `placement::Service`). The CLI `trace` command dumps `trace::g_trace_manager`.
 - License header (`SPDX-License-Identifier: MIT OR Apache-2.0`) goes at the top of every new source/header.

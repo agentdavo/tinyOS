@@ -6,7 +6,6 @@
 #include "miniOS.hpp"
 #include "ui/ui_builder_tsv.hpp"
 
-namespace kernel { namespace core { void run_benchmark_test(); } }
 #include "trace.hpp"
 #include "util.hpp"
 #include "cli.hpp"
@@ -29,7 +28,6 @@ namespace kernel { namespace core { void run_benchmark_test(); } }
 #include "machine/motion_wiring.hpp"
 #include "devices/embedded.hpp"
 #include "devices/device_db.hpp"
-#include "rt/base_thread.hpp"
 #include "ui/splash.hpp"
 #include "diag/cpu_load.hpp"
 #include "hmi/hmi_service.hpp"
@@ -67,21 +65,6 @@ extern const char _binary_embedded_hmi_tsv_end[];
 
 namespace {
 
-[[maybe_unused]] bool create_named_thread(void (*fn)(void*), const void* arg, int prio, int affinity,
-                         const char* name, bool is_idle, uint64_t deadline_us,
-                         const char* log_label) {
-    if (kernel::g_scheduler_ptr->create_thread(fn, arg, prio, affinity, name, is_idle, deadline_us)) {
-        return true;
-    }
-    char buf[128];
-    kernel::util::k_snprintf(buf, sizeof(buf), "[boot] thread create failed: %s\n",
-                             log_label ? log_label : (name ? name : "unknown"));
-    early_uart_puts(buf);
-    return false;
-}
-
-const kernel::BootHooks* g_boot_hooks          = nullptr;
-bool g_multicore_supported                      = false;
 #if defined(__aarch64__)
 std::atomic<uint32_t> g_arm64_secondary_ready_mask{0};
 #endif
@@ -162,7 +145,9 @@ void log_net_role(const char* role, uint8_t nic, uint8_t core, uint32_t num_nets
     }
 }
 
+#if defined(__aarch64__)
 long psci_cpu_on_impl(uint64_t mpidr, uint64_t entry_pa, uint64_t context);
+#endif
 
 const char* dma_engine_name(kernel::hal::dma::EngineKind kind) {
     switch (kind) {
@@ -302,16 +287,10 @@ void initialize_core0_boot_services() {
     { BootPhase p("ui_backends");      kernel::ui::init_ui_backends(); }
     { BootPhase p("ui_first_render");  kernel::ui::boot_ui_once(); }
 
-    auto arm64_create_thread = [](void (*fn)(void*), void* arg, int prio,
-                                  int affinity, const char* name, bool is_idle,
-                                  uint64_t deadline_us) -> bool {
-        return kernel::g_scheduler_ptr->create_thread(fn, arg, prio, affinity,
-                                                      name, is_idle, deadline_us) != nullptr;
-    };
     if (auto* uart = kernel::g_platform->get_uart_ops()) {
         cli::io::init(uart);
     }
-    { BootPhase p("boot_services");    kernel::boot::create_boot_services(arm64_create_thread); }
+    { BootPhase p("boot_services");    kernel::boot::create_boot_services(&kernel::boot::create_scheduler_thread); }
 }
 
 void wire_motion_axes_from_device_db() {
@@ -321,24 +300,11 @@ void wire_motion_axes_from_device_db() {
 }
 
 void create_runtime_threads() {
-    auto arm64_create_thread = [](void (*fn)(void*), void* arg, int prio,
-                                  int affinity, const char* name, bool is_idle,
-                                  uint64_t deadline_us) -> bool {
-        return kernel::g_scheduler_ptr->create_thread(fn, arg, prio, affinity,
-                                                      name, is_idle, deadline_us) != nullptr;
-    };
     BootPhase p("runtime_services");
-    kernel::boot::create_runtime_services(arm64_create_thread);
+    kernel::boot::create_runtime_services(&kernel::boot::create_scheduler_thread);
 }
 
 void release_secondary_cores() {
-    if (g_boot_hooks && g_boot_hooks->supports_multicore && g_boot_hooks->init_secondary_core) {
-        for (uint32_t i = 1; i < kernel::g_platform->get_num_cores(); ++i) {
-            g_boot_hooks->init_secondary_core(i);
-        }
-        return;
-    }
-
 #if defined(__aarch64__)
     for (uint32_t i = 1; i < kernel::g_platform->get_num_cores(); ++i) {
         long rc = psci_cpu_on_impl(static_cast<uint64_t>(i),
@@ -396,23 +362,16 @@ long psci_cpu_on_impl(uint64_t mpidr, uint64_t entry_pa, uint64_t context) {
                  : "memory");
     return x0;
 }
-#elif defined(__riscv)
-long psci_cpu_on_impl(uint64_t, uint64_t, uint64_t) { return 0; }
-#else
-long psci_cpu_on_impl(uint64_t, uint64_t, uint64_t) { return -1; }
 #endif
 
 } // namespace
 
-void kernel::register_boot_hooks(const kernel::BootHooks* hooks) {
-    if (hooks) {
-        g_boot_hooks          = hooks;
-        g_multicore_supported = hooks->supports_multicore ? hooks->supports_multicore() : false;
-    }
-}
-
-bool kernel::has_multicore_support() {
-    return g_multicore_supported;
+bool kernel::boot::create_scheduler_thread(void (*fn)(void*), void* arg, int prio,
+                                           int affinity, const char* name, bool is_idle,
+                                           uint64_t deadline_us) {
+    return kernel::g_scheduler_ptr &&
+           kernel::g_scheduler_ptr->create_thread(fn, arg, prio, affinity,
+                                                  name, is_idle, deadline_us) != nullptr;
 }
 
 extern "C" void kernel_secondary_main(uint32_t core_id) {

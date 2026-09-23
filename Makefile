@@ -30,7 +30,6 @@ CORE_CPP = core.cpp hal.cpp util.cpp trace.cpp klog.cpp cli.cpp kernel_globals.c
            motion/motion.cpp config/tsv.cpp \
            devices/device_db.cpp devices/embedded.cpp \
             diag/histogram.cpp diag/jitter.cpp diag/cpu_load.cpp \
-            rt/base_thread.cpp \
 ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
              ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp machine/pallet.cpp hmi/hmi_service.cpp \
               cnc/offsets.cpp cnc/programs.cpp cnc/interpreter.cpp cnc/mdi.cpp \
@@ -69,7 +68,7 @@ ifeq ($(TARGET),arm64)
     CPU_S      = $(HAL_DIR)/cpu_arm64.S
     HAL_CPP    = $(HAL_DIR)/hal_qemu_arm64.cpp hal/shared/virtio_net.cpp \
                  hal/shared/virtio_gpu.cpp hal/shared/virtio_blk.cpp \
-                 hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp hal/shared/sdcard.cpp \
+                 hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp \
                  hal/shared/virtio_input.cpp hal/shared/netif.cpp hal/shared/tcp.cpp hal/shared/websocket.cpp
     LINKER     = $(HAL_DIR)/linker.ld
     # Disable libgcc outline-atomics. Not needed now LSE is mandated by
@@ -121,7 +120,6 @@ ifeq ($(TARGET),riscv64)
                  hal/shared/virtio_net.cpp hal/shared/virtio_gpu.cpp \
                  hal/shared/virtio_blk.cpp \
                  hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp \
-                 hal/shared/sdcard.cpp \
                  hal/shared/virtio_input.cpp hal/shared/netif.cpp hal/shared/tcp.cpp hal/shared/websocket.cpp
     LINKER     = $(HAL_DIR)/linker.ld
     # -fno-pic/-fno-pie stops the compiler from emitting GOT-indirect
@@ -173,7 +171,6 @@ CORE_CPP  = kernel/main.cpp core.cpp util.cpp trace.cpp klog.cpp cli.cpp kernel_
                 motion/motion.cpp config/tsv.cpp \
                 devices/device_db.cpp devices/embedded.cpp \
                 diag/histogram.cpp diag/jitter.cpp diag/cpu_load.cpp \
-                rt/base_thread.cpp \
                 ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
                 ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp machine/pallet.cpp hmi/hmi_service.cpp \
                 cnc/offsets.cpp cnc/programs.cpp cnc/interpreter.cpp cnc/mdi.cpp \
@@ -350,8 +347,6 @@ $(OBJDIR)/histogram.o: diag/histogram.cpp | $(OBJDIR)
 $(OBJDIR)/jitter.o: diag/jitter.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(OBJDIR)/cpu_load.o: diag/cpu_load.cpp | $(OBJDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-$(OBJDIR)/base_thread.o: rt/base_thread.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(OBJDIR)/fb.o: ui/fb.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<

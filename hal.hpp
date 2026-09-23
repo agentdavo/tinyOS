@@ -201,26 +201,11 @@ struct I2SDriverOps {
     virtual void convert_dsp_format_to_hw_format(kernel::audio::AudioBuffer* buffer, const i2s::Format& format) = 0;
 };
 
-namespace timer {
-    struct SoftwareTimer;
-    using software_timer_callback_t = void (*)(SoftwareTimer* timer, void* context);
-    struct SoftwareTimer {
-        uint64_t expiry_time_us;
-        uint64_t period_us;
-        software_timer_callback_t callback;
-        void* context;
-        bool active = false;
-        SoftwareTimer* next = nullptr;
-        uint32_t id = 0;
-    };
-}
 struct TimerDriverOps {
     virtual ~TimerDriverOps() = default;
     virtual void init_system_timer_properties(uint64_t freq_hz_override = 0) = 0;
     virtual void init_core_timer_interrupt(uint32_t core_id) = 0;
     virtual void ack_core_timer_interrupt(uint32_t core_id) = 0;
-    virtual bool add_software_timer(timer::SoftwareTimer* timer) = 0;
-    virtual bool remove_software_timer(timer::SoftwareTimer* timer) = 0;
     virtual uint64_t get_system_time_us() = 0;
     // Nanosecond precision for jitter tracking. Default decomposes to us*1000
     // but platforms should override when the timer resolves finer than 1 µs
@@ -240,7 +225,6 @@ struct TimerDriverOps {
 #endif
         }
     }
-    virtual void hardware_timer_irq_fired(uint32_t core_id) = 0;
 };
 
 namespace net {

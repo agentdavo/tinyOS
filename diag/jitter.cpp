@@ -5,11 +5,9 @@
 namespace diag {
 
 namespace rt {
-// Default periods (ns). The RT plane is uniformly 200 µs with a single 25 µs
-// base thread for step generation / fast I/O. Drives whose spec minimum cycle
-// exceeds 200 µs (e.g. ClearPath-EC at 250 µs) must be driven every N-th
-// frame; that's a per-device config issue, not a global period.
-JitterTracker base  {   25'000};   //  25 µs
+// Default periods (ns). Drives whose spec minimum cycle exceeds 200 µs (e.g.
+// ClearPath-EC at 250 µs) must be driven every N-th frame; that's a
+// per-device config issue, not a global period.
 JitterTracker motion{  200'000};   // 200 µs (servo)
 JitterTracker ecat_a{  200'000};   // 200 µs
 JitterTracker ecat_b{  200'000};   // 200 µs

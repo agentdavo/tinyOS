@@ -104,7 +104,7 @@ Three layers, each depending only on those below:
    timer, DMA, GPIO, watchdog, network, display, input, storage, USB).
 3. **Per-arch HAL** — `hal/arm64/` + `cpu_arm64.S` or `hal/riscv64/` +
    `cpu_rv64.S`. Plus shared MMIO drivers under `hal/shared/` (virtio-net /
-   gpu / blk / input, e1000, pci, xhci, sdcard).
+   gpu / blk / input, e1000, pci, xhci).
 
 Above the HAL the controller stack is layered:
 

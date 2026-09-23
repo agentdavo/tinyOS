@@ -23,9 +23,6 @@
 
 namespace hal::qemu_virt_rv64 {
 
-// TCB_Rv64 is a typedef for kernel::core::TCB (see rv64_sched.cpp). Exposed
-// here so other TUs can reference it without pulling in rv64_sched internals.
-using TCB_Rv64 = kernel::core::TCB;
 class USBHostController;
 
 // QEMU virt RISC-V peripheral addresses.
@@ -94,11 +91,8 @@ public:
     void init_system_timer_properties(uint64_t freq_hz_override = 0) override;
     void init_core_timer_interrupt(uint32_t core_id) override;
     void ack_core_timer_interrupt(uint32_t core_id) override;
-    bool add_software_timer(kernel::hal::timer::SoftwareTimer*) override { return false; }
-    bool remove_software_timer(kernel::hal::timer::SoftwareTimer*) override { return false; }
     uint64_t get_system_time_us() override;
     uint64_t get_system_time_ns() override;
-    void hardware_timer_irq_fired(uint32_t core_id) override;
     void wait_until_ns(uint64_t target_ns) override;
     // Current timebase in Hz — either the DTB-reported value or the
     // TIMEBASE_HZ fallback, whichever init_system_timer_properties picked.
@@ -267,10 +261,6 @@ extern PlatformQEMUVirtRV64 g_platform_instance;
 // Secondary-hart spin-table (one u64 per hart). Hart 0 writes an entry
 // address here; secondaries poll in cpu_rv64.S and jump when non-zero.
 extern "C" uint64_t g_secondary_entry[MAX_HARTS];
-
-// Counters for liveness reporting (incremented by trap dispatcher).
-extern "C" uint64_t g_timer_ticks[MAX_HARTS];
-extern "C" uint64_t g_wfi_wakes[MAX_HARTS];
 
 } // namespace hal::qemu_virt_rv64
 

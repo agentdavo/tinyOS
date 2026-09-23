@@ -33,6 +33,7 @@
 #include "devices/device_db.hpp"
 #include "diag/jitter.hpp"
 #include "diag/cpu_load.hpp"
+#include "trace.hpp"
 #include "hmi/hmi_service.hpp"
 #include "ui/fb.hpp"
 #include "ui/operator_api.hpp"
@@ -1638,7 +1639,9 @@ static int cmd_help(const char*, kernel::hal::UARTDriverOps* uart) {
     return 0;
 }
 static int cmd_trace(const char*, kernel::hal::UARTDriverOps* uart) {
-    kernel::dump_trace_buffer(uart); return 0;
+    // The old legacy global buffer this used to dump was never written; the
+    // real events live in the TraceManager.
+    trace::g_trace_manager.dump_trace(uart); return 0;
 }
 static int cmd_stats(const char*, kernel::hal::UARTDriverOps* uart) {
     kernel::get_kernel_stats(uart); return 0;
@@ -4544,7 +4547,6 @@ static int cmd_cia402(const char*, kernel::hal::UARTDriverOps* uart) {
 }
 static int cmd_rt(const char*, kernel::hal::UARTDriverOps* uart) {
     uart->puts("RT threads (ns):\n");
-    diag::rt::base.dump  (uart, "base  ");
     diag::rt::motion.dump(uart, "motion");
     diag::rt::ecat_a.dump(uart, "ecat_a");
     diag::rt::ecat_b.dump(uart, "ecat_b");
@@ -4552,7 +4554,6 @@ static int cmd_rt(const char*, kernel::hal::UARTDriverOps* uart) {
 }
 
 static int cmd_rt_reset(const char*, kernel::hal::UARTDriverOps* uart) {
-    diag::rt::base.reset();
     diag::rt::motion.reset();
     diag::rt::ecat_a.reset();
     diag::rt::ecat_b.reset();
@@ -4591,7 +4592,6 @@ static void dump_budget_line(kernel::hal::UARTDriverOps* uart,
 
 static int cmd_budget(const char*, kernel::hal::UARTDriverOps* uart) {
     uart->puts("RT budget (verdict from max interval vs period):\n");
-    dump_budget_line(uart, "base  ", diag::rt::base,   0);
     dump_budget_line(uart, "motion", diag::rt::motion,
                      motion::g_motion.stats().deadline_miss.load(std::memory_order_relaxed));
     dump_budget_line(uart, "ecat_a", diag::rt::ecat_a,
@@ -4684,7 +4684,6 @@ static void render_top_frame(kernel::hal::UARTDriverOps* uart) {
 
     // ---- RT telemetry ----
     uart->puts("RT threads (ns):\n");
-    diag::rt::base.dump  (uart, "base  ");
     diag::rt::motion.dump(uart, "motion");
     diag::rt::ecat_a.dump(uart, "ecat_a");
     diag::rt::ecat_b.dump(uart, "ecat_b");

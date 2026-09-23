@@ -110,21 +110,15 @@ public:
     void init_system_timer_properties(uint64_t freq_hz_override = 0) override;
     void init_core_timer_interrupt(uint32_t core_id) override;
     void ack_core_timer_interrupt(uint32_t core_id) override;
-    bool add_software_timer(kernel::hal::timer::SoftwareTimer* timer) override;
-    bool remove_software_timer(kernel::hal::timer::SoftwareTimer* timer) override;
     uint64_t get_system_time_us() override;
     uint64_t get_system_time_ns() override;
     // Dedicated-core tickless path: on cores listed via is_dedicated_rt_core
-    // we skip the scheduler's 200 µs tick and let a single RT worker own
-    // CNTP_*. wait_until_ns on those cores uses CNTP_TVAL_EL0 + WFI
-    // (hal::rt::wait_wfi_until_ns) instead of a yield-spin loop, which stops
-    // the VCPU from looking busy to Hyper-V/WSL2 between EC cycles.
+    // the scheduler tick is disabled and a single RT worker owns the core.
+    // wait_until_ns spins there (WFI only with MINIOS_USE_WFI) and yields
+    // on shared cores.
     void wait_until_ns(uint64_t target_ns) override;
-    void hardware_timer_irq_fired(uint32_t core_id) override;
 private:
     uint64_t timer_freq_hz_;
-    kernel::hal::timer::SoftwareTimer* active_sw_timers_head_ = nullptr;
-    kernel::core::Spinlock sw_timer_lock_;
 };
 
 class DMAController : public kernel::hal::DMAControllerOps {

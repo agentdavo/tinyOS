@@ -165,13 +165,11 @@ extern "C" void hal_irq_handler(uint32_t core_id) {
             irq_ops->end_irq(core_id, irq_id);
             if (kernel::hal::is_dedicated_rt_core(core_id)) {
                 // Tickless RT core: the timer IRQ is strictly a WFI wake for
-                // wait_wfi_until_ns. Don't fire software timers (they run on
-                // core 0/1) and don't call preemptive_tick — we deliberately
+                // wait_until_ns. Don't call preemptive_tick — we deliberately
                 // keep ticks_total at 0 on these cores so `top` shows zero
                 // scheduler ticks as the tickless proof.
                 return;
             }
-            timer_ops->hardware_timer_irq_fired(core_id);
             if (kernel::g_scheduler_ptr) {
                 kernel::g_scheduler_ptr->preemptive_tick(core_id);
             }

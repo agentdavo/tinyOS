@@ -78,7 +78,6 @@ private:
 // so they're findable from the CLI and telemetry paths without passing pointers
 // around.
 namespace rt {
-    extern JitterTracker base;    //  25 µs — step / fast I/O
     extern JitterTracker motion;  // 200 µs — servo / motion kernel
     extern JitterTracker ecat_a;  // 200 µs — EtherCAT master A
     extern JitterTracker ecat_b;  // 200 µs — EtherCAT master B

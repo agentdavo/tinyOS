@@ -37,9 +37,7 @@
  */
 
     .equ STACK_SIZE,      0x4000      /* 16 KiB per-hart boot stack */
-    .equ IRQ_STACK_SIZE,  0x1000      /* 4 KiB per-hart IRQ stack */
     .equ MAX_CORES,       4
-    .equ UART_THR,        0x10000000
     .equ MSTATUS_FS,      0x00006000  /* FS[1:0] = 11 (Dirty) */
 
     .global g_irq_in_progress

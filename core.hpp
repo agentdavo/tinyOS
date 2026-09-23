@@ -36,16 +36,9 @@ constexpr size_t MAX_THREADS = 32;
 constexpr size_t MAX_NAME_LENGTH = 32;
 constexpr size_t MAX_CORES = 4;
 constexpr size_t MAX_PRIORITY_LEVELS = 16;
-constexpr size_t TRACE_BUFFER_SIZE = 1024; 
 // EtherCAT code allocates 1514-byte frame buffers on the stack; 4 KB was too
 // tight for the motion + EC threads at -O0. Bump to 16 KB.
 constexpr size_t DEFAULT_STACK_SIZE = 16384;
-constexpr size_t MAX_LOCKS = 32; 
-constexpr size_t NET_MAX_PACKET_SIZE = 1500; 
-constexpr size_t MAX_AUDIO_CHANNELS = 2;
-// GPIO configuration
-constexpr size_t GPIO_BANKS = 4;
-constexpr size_t GPIO_PINS_PER_BANK = 32;
 
 // Stack-painting controls used by Scheduler::create_thread + TCB::stack_used_bytes.
 // At thread creation we fill the whole stack region with STACK_PAINT_BYTE; at
@@ -61,29 +54,17 @@ constexpr size_t  STACK_PAINT_SKIP_BOTTOM = 16;
 
 // Forward declarations
 struct PerCPUData; // Forward declaration
-struct TCB;        // Used by Spinlock for priority-inheritance bookkeeping.
+struct TCB;
 
-alignas(64) extern std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
-
-// Priority inheritance:
-//   When a higher-priority thread contends for a lock held by a lower-priority
-//   thread, the holder is temporarily boosted to the waiter's priority so it
-//   can run to completion and release. Without this, a medium-priority task
-//   could preempt the holder forever and the high-priority waiter would never
-//   make progress (classic priority inversion). Boost is one-level only:
-//   transitive chains (A waits on B which waits on C) only boost the immediate
-//   holder. Sufficient for the current kernel; the few RT critical sections
-//   are short and never nested across more than one shared lock. Re-entrant
-//   acquire by the same thread still deadlocks — pre-existing behaviour, not
-//   addressed here.
+// Plain test-and-set spinlock. constexpr-constructible so every global
+// lock is constant-initialised (no static-init-order hazard). There used to
+// be priority inheritance here, but the EDF policy picks by deadline, not
+// priority, so a boost could not help the holder run — and the boost/restore
+// raced with release, leaving priorities permanently inflated.
 class Spinlock {
     std::atomic<bool> lock_flag_{false};
-    std::atomic<TCB*> owner_{nullptr};
-    std::atomic<int>  boosted_priority_{-1};
-    uint32_t lock_id_;
-    static uint32_t next_lock_id_;
 public:
-    Spinlock() noexcept;
+    constexpr Spinlock() noexcept = default;
     // ISR-safe variants return/take the caller's interrupt-mask state so the
     // critical section is entered with IRQs disabled and exited with the
     // pre-acquire mask restored. This closes the window where a timer IRQ
@@ -93,11 +74,6 @@ public:
     void release_isr_safe(uint64_t saved_irq_state) noexcept;
     void acquire_general() noexcept;
     void release_general() noexcept;
-    uint32_t get_id() const noexcept { return lock_id_; }
-    // Test/diag accessors. Returning the raw owner is safe because the TCB
-    // pool storage is static — pointers never become invalid.
-    TCB* owner() const noexcept { return owner_.load(std::memory_order_acquire); }
-    int  boosted_priority() const noexcept { return boosted_priority_.load(std::memory_order_acquire); }
 };
 
 class ScopedLock {
@@ -118,45 +94,6 @@ public:
     ~ScopedISRLock() { lock_.release_isr_safe(saved_irq_state_); }
     ScopedISRLock(const ScopedISRLock&) = delete;
     ScopedISRLock& operator=(const ScopedISRLock&) = delete;
-};
-
-class FixedMemoryPool {
-    struct Block { Block* next; };
-    Block* free_head_ = nullptr;
-    uint8_t* pool_memory_start_ = nullptr;
-    size_t block_storage_size_ = 0; 
-    size_t header_actual_size_ = 0; 
-    size_t user_data_offset_ = 0;   
-    size_t num_total_blocks_ = 0;
-    size_t num_free_blocks_ = 0;
-    Spinlock pool_lock_;
-public:
-    FixedMemoryPool() = default;
-    bool init(void* base, size_t num_blocks, size_t blk_sz_user, size_t align_user_data);
-    void* allocate();
-    void free_block(void* ptr);
-    size_t get_free_count() const noexcept { ScopedLock lock(const_cast<Spinlock&>(pool_lock_)); return num_free_blocks_; }
-    size_t get_total_count() const noexcept { return num_total_blocks_; }
-};
-
-template<typename T, size_t Capacity>
-class SPSCQueue {
-    static_assert(Capacity > 0 && (Capacity & (Capacity - 1)) == 0, "Capacity must be a power of 2");
-    std::array<T*, Capacity> items_;
-    alignas(64) std::atomic<size_t> head_{0}; 
-    alignas(64) std::atomic<size_t> tail_{0};
-public:
-    SPSCQueue() = default;
-    bool enqueue(T* item) noexcept;
-    T* dequeue() noexcept;
-    bool is_empty() const noexcept { return head_.load(std::memory_order_acquire) == tail_.load(std::memory_order_acquire); }
-    bool is_full() const noexcept {
-        size_t next_tail = (tail_.load(std::memory_order_acquire) + 1) & (Capacity - 1);
-        return next_tail == head_.load(std::memory_order_acquire);
-    }
-    size_t count() const noexcept {
-        return (tail_.load(std::memory_order_relaxed) - head_.load(std::memory_order_relaxed) + Capacity) & (Capacity - 1);
-    }
 };
 
 // TCB is laid out to match the byte offsets used by cpu_arm64.S (TCB_REGS_X0_OFFSET
@@ -184,7 +121,6 @@ struct TCB {
     uint32_t cpu_id_running_on;
     char name[MAX_NAME_LENGTH];
     TCB* next_in_q = nullptr;
-    std::atomic<bool> event_flag{false};
     uint64_t deadline_us = 0;
     // Monotonic timestamp of the last context-switch INTO this task. Used as
     // a tie-breaker in EDFPolicy::select_next_task: among tasks with equal
@@ -219,13 +155,6 @@ static_assert(offsetof(TCB, pstate)  == 264, "TCB.pstate offset is fixed by the 
 static_assert(offsetof(TCB, fp_regs) == 272, "TCB.fp_regs offset is fixed by the .S files");
 static_assert(offsetof(TCB, fp_ctrl) == 784, "TCB.fp_ctrl offset is fixed by the .S files");
 
-struct TraceEntry {
-    uint64_t timestamp_us;
-    uint32_t core_id;
-    const char* event_str; 
-    uintptr_t arg1, arg2;
-};
-
 struct PerCPUData {
     TCB* current_thread = nullptr; 
     TCB* idle_thread = nullptr;    
@@ -237,9 +166,6 @@ alignas(64) extern std::array<PerCPUData, MAX_CORES> g_per_cpu_data;
 // Storage for all thread control blocks. The scheduler hands them out from
 // this pool; CLI introspection (e.g. `top`) walks the array.
 extern std::array<TCB, MAX_THREADS> g_task_tcbs;
-
-// Software-timer object pool (used by hal::timer::SoftwareTimer allocations).
-// Exposed for CLI introspection (`top` reports free/total).
 
 class SchedulerPolicy {
 public:
@@ -268,8 +194,6 @@ public:
     void start_core_scheduler(uint32_t core_id); 
     void preemptive_tick(uint32_t core_id);      
     void yield(uint32_t core_id);                
-    void signal_event_isr(TCB* tcb);             
-    void wait_for_event(TCB* tcb);               
     size_t get_num_active_tasks() const noexcept { return num_active_tasks_.load(std::memory_order_relaxed); }
     Spinlock& get_global_scheduler_lock() noexcept { return scheduler_global_lock_; }
 friend class EDFPolicy; 

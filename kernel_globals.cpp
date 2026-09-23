@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /**
  * @file kernel_globals.cpp
- * @brief Minimal definitions of global kernel variables and early UART output.
+ * @brief Definitions of global kernel variables.
  * @details
- *   - Definitions for g_platform, g_scheduler_ptr, spinlocks, etc.
- *   - Stubs for configure_memory_protection.
- *   - Minimal early UART output for debugging/panic.
- *   - __dso_handle for C++ runtime linking.
+ *   - g_platform, g_scheduler_ptr, the fp self-test scrub flags.
+ *   - Stub for configure_memory_protection.
  */
 
 #include "miniOS.hpp"   // For kernel::g_platform, g_scheduler_ptr, etc
@@ -21,10 +19,6 @@ hal::Platform* g_platform = nullptr;
 
 // Global scheduler pointer
 core::Scheduler* g_scheduler_ptr = nullptr;
-
-// Global spinlocks for IRQ/tracing
-core::Spinlock g_trace_lock;
-core::Spinlock g_irq_handler_lock;
 
 // fp_context_selftest hook (see hal.hpp). Shared so both arches' IRQ
 // handlers read the same per-core flag.

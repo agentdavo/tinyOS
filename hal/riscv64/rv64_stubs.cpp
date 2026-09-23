@@ -5,8 +5,8 @@
 // Two callers reach cpu_context_switch_impl:
 //
 //   (A) Voluntary: Scheduler::yield() -> Scheduler::schedule() from a thread
-//       context (no in-flight trap). cpu_context_switch_rv64 saves callee-saved
-//       state into old_tcb and reloads from new_tcb.
+//       context (no in-flight trap). cpu_context_switch_rv64 saves all GPRs +
+//       FP state into old_tcb and restores them from new_tcb.
 //
 //   (B) Preemptive: trap_entry (cpu_rv64.S) saves the full interrupted state
 //       into g_per_cpu_data[hart].current_thread, then calls into C; the C
