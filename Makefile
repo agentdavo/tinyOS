@@ -74,7 +74,10 @@ ifeq ($(TARGET),arm64)
     LINKER     = $(HAL_DIR)/linker.ld
     # Disable libgcc outline-atomics. Not needed now LSE is mandated by
     # -march, and its discovery ctor reads a nonexistent aux vector.
-    EXTRA_CF   = -mno-outline-atomics
+    # -mstrict-align: the MMU is never enabled, so all memory is Device
+    # type and any unaligned access faults. GCC 15 otherwise zero-fills
+    # structs with `stp q, q` at 8-byte-aligned addresses (cli::CLI ctor).
+    EXTRA_CF   = -mno-outline-atomics -mstrict-align
     # Bare-metal arm64 must be a fully resolved static ELF. If ld is left to
     # its defaults it emits PIE/dynamic metadata plus RELATIVE relocations for
     # vtables and .init_array, but no loader ever applies them at boot.
@@ -233,7 +236,10 @@ CFLAGS += -MMD -MP
 
 ASFLAGS = $(CPU_FLAGS) -g3
 
-LDFLAGS = $(OPT_FLAGS) -T $(LINKER) -nostartfiles -nostdlib \
+# $(CPU_FLAGS) at link time makes multilib toolchains (e.g. MSYS2's
+# riscv64-unknown-elf-) pick the libgcc matching -march/-mabi rather than
+# the default multilib.
+LDFLAGS = $(OPT_FLAGS) $(CPU_FLAGS) -T $(LINKER) -nostartfiles -nostdlib \
           -Wl,--no-relax -Wl,-z,separate-code \
           -Wl,-z,now -Wl,-z,noexecstack \
           -Wl,--gc-sections \

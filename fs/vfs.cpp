@@ -7,6 +7,32 @@
 
 #include <cstring>
 
+// External .incbin symbols. Declared in the same shape as kernel/main.cpp.
+// Keeping them inside this TU makes the VFS the single place that knows
+// the `_binary_*` naming convention — no other file has to import those.
+// Must stay at global scope: GCC 15 gives extern "C" declarations inside
+// an unnamed namespace internal linkage, so they'd mangle and fail to link.
+extern "C" {
+extern const char _binary_embedded_ui_tsv_start[];
+extern const char _binary_embedded_ui_tsv_end[];
+extern const char _binary_kinematic_mill3_tsv_start[];
+extern const char _binary_kinematic_mill3_tsv_end[];
+extern const char _binary_kinematic_millturn_tsv_start[];
+extern const char _binary_kinematic_millturn_tsv_end[];
+extern const char _binary_kinematic_mx850_tsv_start[];
+extern const char _binary_kinematic_mx850_tsv_end[];
+extern const char _binary_embedded_toolpods_tsv_start[];
+extern const char _binary_embedded_toolpods_tsv_end[];
+extern const char _binary_embedded_pallets_tsv_start[];
+extern const char _binary_embedded_pallets_tsv_end[];
+extern const char _binary_embedded_jobs_tsv_start[];
+extern const char _binary_embedded_jobs_tsv_end[];
+extern const char _binary_demo_box_obj_start[];
+extern const char _binary_demo_box_obj_end[];
+extern const char _binary_demo_part_stl_start[];
+extern const char _binary_demo_part_stl_end[];
+}
+
 namespace kernel::vfs {
 
 namespace {
@@ -35,30 +61,6 @@ int find_index(const char* path) noexcept {
 void register_embedded(const char* path, const char* start, const char* end) noexcept {
     if (!start || !end || end <= start) return;
     (void)register_blob(path, start, static_cast<size_t>(end - start));
-}
-
-// External .incbin symbols. Declared in the same shape as kernel/main.cpp.
-// Keeping them inside this TU makes the VFS the single place that knows
-// the `_binary_*` naming convention — no other file has to import those.
-extern "C" {
-extern const char _binary_embedded_ui_tsv_start[];
-extern const char _binary_embedded_ui_tsv_end[];
-extern const char _binary_kinematic_mill3_tsv_start[];
-extern const char _binary_kinematic_mill3_tsv_end[];
-extern const char _binary_kinematic_millturn_tsv_start[];
-extern const char _binary_kinematic_millturn_tsv_end[];
-extern const char _binary_kinematic_mx850_tsv_start[];
-extern const char _binary_kinematic_mx850_tsv_end[];
-extern const char _binary_embedded_toolpods_tsv_start[];
-extern const char _binary_embedded_toolpods_tsv_end[];
-extern const char _binary_embedded_pallets_tsv_start[];
-extern const char _binary_embedded_pallets_tsv_end[];
-extern const char _binary_embedded_jobs_tsv_start[];
-extern const char _binary_embedded_jobs_tsv_end[];
-extern const char _binary_demo_box_obj_start[];
-extern const char _binary_demo_box_obj_end[];
-extern const char _binary_demo_part_stl_start[];
-extern const char _binary_demo_part_stl_end[];
 }
 
 }  // namespace
