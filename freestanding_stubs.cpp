@@ -13,12 +13,32 @@
 extern "C" {
 
 // --- Memory and String Functions ---
-void* memcpy(void* dest_ptr, const void* src_ptr, size_t count) {
+//
+// memcpy/memmove/memset move 8 bytes at a time when source and destination
+// share the same alignment (byte head until aligned, aligned words, byte
+// tail), and fall back to bytes otherwise. Every access stays naturally
+// aligned, which arm64 needs (-mstrict-align: the MMU is off, so all memory
+// is Device type and an unaligned access faults). They sit under every
+// compiler-generated struct copy/zeroing and the EtherCAT frame copies, so
+// the old byte-at-a-time loops cost ~8x on those paths.
+//
+// no-tree-loop-distribute-patterns stops GCC from recognising these loops
+// as memcpy/memset and compiling them into a call to themselves.
+#define MINIOS_MEMFN __attribute__((optimize("no-tree-loop-distribute-patterns")))
+typedef uint64_t __attribute__((may_alias)) word_alias_t;
+
+MINIOS_MEMFN void* memcpy(void* dest_ptr, const void* src_ptr, size_t count) {
     auto* dest = static_cast<unsigned char*>(dest_ptr);
     const auto* src = static_cast<const unsigned char*>(src_ptr);
-    for (size_t i = 0; i < count; ++i) {
-        dest[i] = src[i];
+    if (((reinterpret_cast<uintptr_t>(dest) ^ reinterpret_cast<uintptr_t>(src)) & 7u) == 0) {
+        while (count && (reinterpret_cast<uintptr_t>(dest) & 7u)) { *dest++ = *src++; --count; }
+        auto* dw = reinterpret_cast<word_alias_t*>(dest);
+        const auto* sw = reinterpret_cast<const word_alias_t*>(src);
+        for (; count >= 8; count -= 8) *dw++ = *sw++;
+        dest = reinterpret_cast<unsigned char*>(dw);
+        src = reinterpret_cast<const unsigned char*>(sw);
     }
+    while (count--) *dest++ = *src++;
     return dest_ptr;
 }
 
@@ -30,15 +50,25 @@ void* __memcpy_chk(void* dest_ptr, const void* src_ptr, size_t count, size_t /*d
 // assignment to a memmove call; without this stub that either fails to link or
 // (worse) silently resolves to the forward-only memcpy and corrupts on
 // overlap. Copy backward when the regions overlap with dest above src.
-void* memmove(void* dest_ptr, const void* src_ptr, size_t count) {
+MINIOS_MEMFN void* memmove(void* dest_ptr, const void* src_ptr, size_t count) {
     auto* dest = static_cast<unsigned char*>(dest_ptr);
     const auto* src = static_cast<const unsigned char*>(src_ptr);
     if (dest == src || count == 0) return dest_ptr;
-    if (dest < src) {
-        for (size_t i = 0; i < count; ++i) dest[i] = src[i];
-    } else {
-        for (size_t i = count; i != 0; --i) dest[i - 1] = src[i - 1];
+    // A forward copy is overlap-safe when dest is below src (every source
+    // word is read before the write that could cover it).
+    if (dest < src) return memcpy(dest_ptr, src_ptr, count);
+    // Backward copy, mirroring memcpy: byte tail until aligned, words, head.
+    dest += count;
+    src += count;
+    if (((reinterpret_cast<uintptr_t>(dest) ^ reinterpret_cast<uintptr_t>(src)) & 7u) == 0) {
+        while (count && (reinterpret_cast<uintptr_t>(dest) & 7u)) { *--dest = *--src; --count; }
+        auto* dw = reinterpret_cast<word_alias_t*>(dest);
+        const auto* sw = reinterpret_cast<const word_alias_t*>(src);
+        for (; count >= 8; count -= 8) *--dw = *--sw;
+        dest = reinterpret_cast<unsigned char*>(dw);
+        src = reinterpret_cast<const unsigned char*>(sw);
     }
+    while (count--) *--dest = *--src;
     return dest_ptr;
 }
 
@@ -46,12 +76,15 @@ void* __memmove_chk(void* dest_ptr, const void* src_ptr, size_t count, size_t /*
     return memmove(dest_ptr, src_ptr, count);
 }
 
-void* memset(void* dest_ptr, int ch_int, size_t count) {
+MINIOS_MEMFN void* memset(void* dest_ptr, int ch_int, size_t count) {
     auto* dest = static_cast<unsigned char*>(dest_ptr);
-    unsigned char ch = static_cast<unsigned char>(ch_int);
-    for (size_t i = 0; i < count; ++i) {
-        dest[i] = ch;
-    }
+    const unsigned char ch = static_cast<unsigned char>(ch_int);
+    while (count && (reinterpret_cast<uintptr_t>(dest) & 7u)) { *dest++ = ch; --count; }
+    const uint64_t pattern = 0x0101010101010101ULL * ch;
+    auto* dw = reinterpret_cast<word_alias_t*>(dest);
+    for (; count >= 8; count -= 8) *dw++ = pattern;
+    dest = reinterpret_cast<unsigned char*>(dw);
+    while (count--) *dest++ = ch;
     return dest_ptr;
 }
 

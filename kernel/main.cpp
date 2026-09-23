@@ -607,7 +607,7 @@ void create_boot_services(CreateThreadFn create_thread) {
 
     if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
         // Same deadline as the UI/HMI/housekeeper group so the EDF tie-breaker
-        // (oldest last_scheduled_us wins) rotates these into the same fair
+        // (oldest last_scheduled_seq wins) rotates these into the same fair
         // pool. Setting 0 here would make them last-resort under EDF and
         // they'd never win against UI/HMI on their own core.
         (void)checked_create(create_thread, &cli::CLI::thread_entry, nullptr, 3, cli_core, "cli", false, 1000);

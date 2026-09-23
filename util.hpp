@@ -73,9 +73,27 @@ inline int kmemcmp(const void* ptr1, const void* ptr2, size_t count) noexcept {
 // Promote to 128-bit for the intermediate product so the result is exact for
 // the full 64-bit tick range. GCC provides __uint128_t on both aarch64 and
 // rv64 (lp64d) targets. Returns 0 if c == 0 rather than trapping.
+//
+// Implemented without a 128-bit divide: a*b/c == (a/c)*b + ((a%c)*b)/c
+// exactly, and (a%c)*b < c*b fits in 64 bits whenever c*b does — true for
+// every tick<->time conversion (c = timer Hz, b = 1e6 or 1e9, or the
+// reverse). The old `(__int128)a*b / c` lowered to libgcc's __udivti3 on
+// every time read; on rv64, Ubuntu's RVA23-built libgcc version of it traps
+// on plain rv64 CPUs. Only if c*b itself overflows do we fall back to a
+// shift-subtract long division of the full 128-bit product (inline, no
+// libgcc). Result is truncated to 64 bits, as before.
 inline uint64_t mul_div_u64(uint64_t a, uint64_t b, uint64_t c) noexcept {
     if (c == 0) return 0;
-    return static_cast<uint64_t>((static_cast<unsigned __int128>(a) * b) / c);
+    if (b == 0 || c <= ~0ULL / b) return (a / c) * b + ((a % c) * b) / c;
+    const unsigned __int128 n = static_cast<unsigned __int128>(a) * b;
+    unsigned __int128 rem = 0;
+    uint64_t q = 0;
+    for (int bit = 127; bit >= 0; --bit) {
+        rem = (rem << 1) | ((n >> bit) & 1u);
+        q <<= 1;
+        if (rem >= c) { rem -= c; q |= 1u; }
+    }
+    return q;
 }
 
 inline size_t kstrlen(const char* str) noexcept {

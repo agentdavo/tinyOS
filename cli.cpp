@@ -1661,6 +1661,7 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         uart->puts("  jobs     - job scheduler state-machine smoke\n");
         uart->puts("  ui       - walk every TSV page + dialog and force a render\n");
         uart->puts("  fp       - FP registers survive 50 ms of preemption\n");
+        uart->puts("  mem      - memcpy/memmove/memset vs byte reference\n");
         uart->puts("  all      - run every subtest and emit a summary\n");
         return 1;
     }
@@ -1971,6 +1972,48 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         uart->puts(buf);
         return pass ? 0 : 1;
     }
+    if (kernel::util::kstrcmp(args, "mem") == 0) {
+        // memcpy / memmove / memset (freestanding_stubs.cpp word-wise paths)
+        // against a byte-at-a-time reference over every head/tail alignment,
+        // including overlapping memmove in both directions and the guard
+        // bytes either side of the written range.
+        static uint8_t a[128], ref[128], src[128];
+        uint32_t failures = 0;
+        auto fill = [](uint8_t* p, size_t n, uint8_t seed) {
+            for (size_t i = 0; i < n; ++i) p[i] = static_cast<uint8_t>(seed + i * 7u);
+        };
+        auto same = [](const uint8_t* x, const uint8_t* y, size_t n) {
+            for (size_t i = 0; i < n; ++i) if (x[i] != y[i]) return false;
+            return true;
+        };
+        for (size_t so = 0; so < 9; ++so) for (size_t d = 0; d < 9; ++d) for (size_t n = 0; n < 41; ++n) {
+            fill(src, sizeof(src), 1); fill(a, sizeof(a), 0x80); fill(ref, sizeof(ref), 0x80);
+            std::memcpy(a + d, src + so, n);
+            for (size_t i = 0; i < n; ++i) ref[d + i] = src[so + i];
+            if (!same(a, ref, sizeof(a))) ++failures;
+
+            fill(a, sizeof(a), 3); fill(ref, sizeof(ref), 3);
+            std::memset(a + d + so, 0x5A, n);
+            for (size_t i = 0; i < n; ++i) ref[d + so + i] = 0x5A;
+            if (!same(a, ref, sizeof(a))) ++failures;
+
+            // Overlapping memmove, both directions (dst below and above src).
+            for (int dir = 0; dir < 2; ++dir) {
+                const size_t s_off = dir ? so : so + 8, d_off = dir ? so + d : so;
+                fill(a, sizeof(a), 9); fill(ref, sizeof(ref), 9);
+                std::memmove(a + d_off, a + s_off, n);
+                uint8_t tmp[48];
+                for (size_t i = 0; i < n; ++i) tmp[i] = ref[s_off + i];
+                for (size_t i = 0; i < n; ++i) ref[d_off + i] = tmp[i];
+                if (!same(a, ref, sizeof(a))) ++failures;
+            }
+        }
+        char buf[96];
+        kernel::util::k_snprintf(buf, sizeof(buf), "mem test: memcpy/memmove/memset, %u mismatches => %s\n",
+                                 static_cast<unsigned>(failures), failures == 0 ? "PASSED" : "FAILED");
+        uart->puts(buf);
+        return failures == 0 ? 0 : 1;
+    }
     if (kernel::util::kstrcmp(args, "all") == 0) {
         // CI-grep target. Runs every subtest and emits a consolidated
         // summary "Tests completed: <total>, <failed> failed".
@@ -1978,7 +2021,7 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
             "status", "motion", "ec", "devices",
             "chain", "mtl", "fake_sdo",
             "tcp", "pallet", "jobs",
-            "ui", "fp",
+            "ui", "fp", "mem",
         };
         size_t failed = 0;
         for (const char* s : subtests) {

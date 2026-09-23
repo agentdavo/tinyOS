@@ -148,7 +148,7 @@ TCB* EDFPolicy::select_next_task(uint32_t core_id, TCB* current_task) {
                     const bool wins_outright = eff_deadline < earliest_deadline;
                     const bool wins_by_age   = earliest_task &&
                                                eff_deadline == earliest_deadline &&
-                                               task_iter->last_scheduled_us < earliest_task->last_scheduled_us;
+                                               task_iter->last_scheduled_seq < earliest_task->last_scheduled_seq;
                     if (wins_outright || wins_by_age) {
                         earliest_deadline = eff_deadline; earliest_task = task_iter;
                         chosen_priority_idx = p_idx; chosen_prev_in_list = prev_in_list;
@@ -399,9 +399,8 @@ void Scheduler::schedule(uint32_t core_id, bool is_preemption) {
         g_per_cpu_data[core_id].current_thread = next_task;
         next_task->state = TCB::State::RUNNING;
         next_task->cpu_id_running_on = core_id;
-        if (auto* t = kernel::g_platform->get_timer_ops()) {
-            next_task->last_scheduled_us = t->get_system_time_us();
-        }
+        static std::atomic<uint64_t> s_sched_seq{0};
+        next_task->last_scheduled_seq = s_sched_seq.fetch_add(1, std::memory_order_relaxed) + 1;
         // record_event left out of this hot path — it reads the timer and
         // does an atomic fetch_add on every context switch. Re-enable if
         // you're actively instrumenting scheduling.

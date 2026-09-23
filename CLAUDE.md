@@ -6,13 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The project is **miniOS** — a freestanding, bare-metal C++20 RTOS that runs as a QEMU `virt` kernel. The working directory is named `tinyOS` but all code, branding, and artifacts use `miniOS`. Build artifacts live under `build/<target>/` (for example `build/arm64/miniOS_kernel_arm64.elf`). Source headers and Makefile are v1.7.
 
-**Boot status**: arm64 boots cleanly through SMP bring-up, virtio-gpu scanout configuration, FAT32 mount (when `sdcard.img` is attached), and into the UI + CLI + HMI services on core 0. rv64 now does the same: in a 10-run soak (QEMU 11.1, GCC 15.2) every cold boot reached `miniOS CLI ready`, echoed `ci-ok`, logged `[ec0] cycle=250us` and passed `test all` with `Tests completed: 11, 0 failed`. One earlier run hit a single unexplained fault (see open items below).
+**Boot status**: arm64 boots cleanly through SMP bring-up, virtio-gpu scanout configuration, FAT32 mount (when `sdcard.img` is attached), and into the UI + CLI + HMI services on core 0. rv64 now does the same, on the Makefile's plain `-cpu rv64`: every soak run (QEMU 11.1, GCC 15.2) reaches `miniOS CLI ready`, echoes `ci-ok`, logs `[ec0] cycle=250us` and passes `test all`. One run early in the rv64 work hit a single unexplained fault (see open items below).
 
 ### rv64 boot work
 
 **Goal:** rv64 reaches the CLI banner and accepts input as reliably as arm64 — both arches must satisfy the arch-parity contract below.
 
-**rv64 needs `-cpu rva23s64` with Ubuntu 26.04's cross GCC.** Its `riscv64-linux-gnu` libgcc is built for the RVA23 profile (Zcb, Zb*, V), and the kernel pulls in `__udivti3` (`hal_qemu_rv64.cpp`) and `__floatuntidf` (`cnc/interpreter.cpp`) via 128-bit integer maths. On the Makefile's `-cpu rv64` those take an illegal-instruction trap (`mcause=2`, e.g. `c.lbu`) before the scheduler starts. The MSYS2 `riscv64-unknown-elf` toolchain can't link the kernel at all: its libgcc multilibs are `medlow` and can't reach `0x80000000`.
+**Keep libgcc out of the link.** Ubuntu 26.04's `riscv64-linux-gnu` libgcc is built for the RVA23 profile (Zcb, Zb*, V), so any libgcc routine the kernel pulls in traps with an illegal instruction (`mcause=2`, e.g. `c.lbu`) on the Makefile's `-cpu rv64`. The kernel used to pull in `__udivti3` (128-bit divide in `util::mul_div_u64`, used by every time read) and `__floatuntidf` (`cnc/interpreter.cpp` distances). Both are gone, and neither arch's `.elf.map` lists any `libgcc.a(...)` object now. Avoid `unsigned __int128` division and 128-bit to float conversions; check the map after touching arithmetic. The MSYS2 `riscv64-unknown-elf` toolchain can't link the kernel at all: its libgcc multilibs are `medlow` and can't reach `0x80000000`.
 
 **Context-switch bugs fixed in the rv64 hang work** (all in `cpu_rv64.S` unless noted). Symptom: the banner printed, then the `ui` / `hmi` threads re-printed their startup lines on every tick and the system wedged.
 1. `trap_entry` set `g_irq_in_progress[hart] = 1` and then skipped the TCB save whenever that flag was set, which was always. The interrupted state was never saved, so trap exit restored `current_thread` from its stale TCB and every tick rewound threads to their last voluntary switch point. The skip is gone. `cpu_context_switch_rv64` runs with MIE=0 end to end, so no interrupt can land mid-switch.
@@ -113,7 +113,7 @@ New MMIO drivers go behind `hal::Platform`; concrete impls in `hal/arm64/hal_qem
 
 ### Tests
 
-There is no host-runnable test binary. The CLI's `test` command runs a small built-in suite defined directly in `cli.cpp::cmd_test`. Subtests: status, motion, ec, devices, chain, mtl, fake_sdo, tcp, pallet, jobs, ui, fp. `test all` runs them all. CI greps the serial log for `Tests completed:.*0 failed`. To add a subtest, edit the dispatch in `cmd_test`.
+There is no host-runnable test binary. The CLI's `test` command runs a small built-in suite defined directly in `cli.cpp::cmd_test`. Subtests: status, motion, ec, devices, chain, mtl, fake_sdo, tcp, pallet, jobs, ui, fp, mem. `test all` runs them all. CI greps the serial log for `Tests completed:.*0 failed`. To add a subtest, edit the dispatch in `cmd_test`.
 
 ### Static analysis (matches CI)
 
