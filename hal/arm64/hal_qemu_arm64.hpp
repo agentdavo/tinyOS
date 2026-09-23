@@ -7,6 +7,7 @@
 #ifndef HAL_QEMU_ARM64_HPP
 #define HAL_QEMU_ARM64_HPP
 
+#include "hal/shared/soft_dma.hpp"
 #include "hal.hpp"       // Directly include the base HAL interfaces FIRST
 #include "core.hpp"      // For TCB definition if used in context switch stubs, and core constants
 #include "audio.hpp"     // For kernel::audio::AudioBuffer
@@ -119,20 +120,6 @@ public:
     void wait_until_ns(uint64_t target_ns) override;
 private:
     uint64_t timer_freq_hz_;
-};
-
-class DMAController : public kernel::hal::DMAControllerOps {
-public:
-    DMAController();
-    kernel::hal::dma::ChannelID request_channel() override;
-    kernel::hal::dma::Capabilities get_capabilities() const override;
-    bool configure_and_start_transfer(kernel::hal::dma::ChannelID channel,
-                                     const kernel::hal::dma::TransferConfig& cfg,
-                                     kernel::hal::dma::DMACallback cb, void* context) override;
-    void release_channel(kernel::hal::dma::ChannelID channel) override;
-private:
-    std::array<bool, 8> channels_in_use_;
-    kernel::core::Spinlock dma_lock_;
 };
 
 class InputDriver : public kernel::hal::InputOps {
@@ -306,7 +293,7 @@ private:
     UARTDriver uart_driver_;
     IRQController irq_controller_;
     TimerDriver timer_driver_;
-    DMAController dma_controller_;
+    ::hal::shared::SoftwareDMAController dma_controller_;
     I2SDriver i2s_driver_;
     MemoryOps memory_ops_;
     NetworkDriver network_driver_; // Legacy stub, kept for now.

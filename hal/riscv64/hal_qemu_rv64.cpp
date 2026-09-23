@@ -218,69 +218,8 @@ void UARTDriver::lock_write()   { early_uart_lock_acquire(); }
 void UARTDriver::unlock_write() { early_uart_lock_release(); }
 
 // ----------------------------------------------------------------------------
-// DMA (software fallback for now; future hardware DMA can replace this behind
-// the same HAL surface once detected during platform bring-up).
+// MemoryOps (the software DMA engine is hal/shared/soft_dma.cpp)
 // ----------------------------------------------------------------------------
-kernel::hal::dma::ChannelID DMAController::request_channel() {
-    if (channel_in_use_) return kernel::hal::dma::INVALID_CHANNEL;
-    channel_in_use_ = true;
-    return 0;
-}
-
-void DMAController::release_channel(kernel::hal::dma::ChannelID channel) {
-    if (channel == 0) channel_in_use_ = false;
-}
-
-kernel::hal::dma::Capabilities DMAController::get_capabilities() const {
-    kernel::hal::dma::Capabilities caps;
-    caps.engine_kind = kernel::hal::dma::EngineKind::Software;
-    caps.available = true;
-    caps.mem_to_mem = true;
-    caps.mem_to_periph = true;
-    caps.periph_to_mem = true;
-    caps.async_completion = false;
-    caps.scatter_gather = false;
-    caps.cache_coherent = false;
-    caps.driver_name = "qemu-rv64-softdma";
-    return caps;
-}
-
-bool DMAController::configure_and_start_transfer(kernel::hal::dma::ChannelID channel,
-                                                 const kernel::hal::dma::TransferConfig& cfg,
-                                                 kernel::hal::dma::DMACallback cb,
-                                                 void* context) {
-    if (channel != 0 || !channel_in_use_) return false;
-    if (cfg.size_bytes == 0) {
-        if (cb) cb(channel, true, context);
-        release_channel(channel);
-        return true;
-    }
-    if (cfg.direction == kernel::hal::dma::Direction::MEM_TO_MEM) {
-        auto* dst = reinterpret_cast<uint8_t*>(cfg.dst_addr);
-        auto* src = reinterpret_cast<const uint8_t*>(cfg.src_addr);
-        if (!dst || !src) {
-            release_channel(channel);
-            return false;
-        }
-        if (cfg.src_increment && cfg.dst_increment) {
-            if (dst < src) {
-                for (size_t i = 0; i < cfg.size_bytes; ++i) dst[i] = src[i];
-            } else {
-                for (size_t i = cfg.size_bytes; i != 0; --i) dst[i - 1] = src[i - 1];
-            }
-        } else {
-            for (size_t i = 0; i < cfg.size_bytes; ++i) {
-                const size_t src_i = cfg.src_increment ? i : 0;
-                const size_t dst_i = cfg.dst_increment ? i : 0;
-                dst[dst_i] = src[src_i];
-            }
-        }
-    }
-    if (cb) cb(channel, true, context);
-    release_channel(channel);
-    return true;
-}
-
 void MemoryOps::flush_cache_range(const void* addr, size_t size) {
     (void)addr;
     (void)size;

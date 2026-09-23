@@ -294,69 +294,6 @@ uint64_t TimerDriver::get_system_time_ns() {
     // the full 64-bit tick range.
     return kernel::util::mul_div_u64(read_sysreg_cntpct(), 1000000000ULL, timer_freq_hz_);
 }
-// --- DMAController ---
-DMAController::DMAController() { 
-    HAL_VDBG("[DEBUG] DMAController CONSTRUCTOR ENTRY\n");
-    channels_in_use_.fill(false);
-    HAL_VDBG("[DEBUG] DMAController CONSTRUCTOR EXIT\n");
-}
-kernel::hal::dma::Capabilities DMAController::get_capabilities() const {
-    kernel::hal::dma::Capabilities caps;
-    caps.engine_kind = kernel::hal::dma::EngineKind::Software;
-    caps.available = true;
-    caps.mem_to_mem = true;
-    caps.mem_to_periph = true;
-    caps.periph_to_mem = true;
-    caps.async_completion = false;
-    caps.scatter_gather = false;
-    caps.cache_coherent = false;
-    caps.driver_name = "qemu-arm64-softdma";
-    return caps;
-}
-kernel::hal::dma::ChannelID DMAController::request_channel() {
-    kernel::core::ScopedLock lock(dma_lock_);
-    for (size_t i = 0; i < channels_in_use_.size(); ++i) {
-        if (!channels_in_use_[i]) { channels_in_use_[i] = true; return static_cast<kernel::hal::dma::ChannelID>(i); }
-    }
-    return kernel::hal::dma::INVALID_CHANNEL;
-}
-bool DMAController::configure_and_start_transfer(kernel::hal::dma::ChannelID ch, const kernel::hal::dma::TransferConfig& cfg, kernel::hal::dma::DMACallback cb, void* ctx) {
-    if (ch < 0 || static_cast<size_t>(ch) >= channels_in_use_.size() || !channels_in_use_[static_cast<size_t>(ch)]) return false;
-    if (cfg.size_bytes == 0) {
-        if (cb) cb(ch, true, ctx);
-        release_channel(ch);
-        return true;
-    }
-    if (cfg.direction == kernel::hal::dma::Direction::MEM_TO_MEM) {
-        auto* dst = reinterpret_cast<uint8_t*>(cfg.dst_addr);
-        auto* src = reinterpret_cast<const uint8_t*>(cfg.src_addr);
-        if (!dst || !src) {
-            release_channel(ch);
-            return false;
-        }
-        if (cfg.src_increment && cfg.dst_increment) {
-            if (dst < src) {
-                for (size_t i = 0; i < cfg.size_bytes; ++i) dst[i] = src[i];
-            } else {
-                for (size_t i = cfg.size_bytes; i != 0; --i) dst[i - 1] = src[i - 1];
-            }
-        } else {
-            for (size_t i = 0; i < cfg.size_bytes; ++i) {
-                const size_t src_i = cfg.src_increment ? i : 0;
-                const size_t dst_i = cfg.dst_increment ? i : 0;
-                dst[dst_i] = src[src_i];
-            }
-        }
-    }
-    if (cb) cb(ch, true, ctx);
-    release_channel(ch);
-    return true;
-}
-void DMAController::release_channel(kernel::hal::dma::ChannelID ch) {
-    kernel::core::ScopedLock lock(dma_lock_);
-    if (ch >= 0 && static_cast<size_t>(ch) < channels_in_use_.size()) channels_in_use_[static_cast<size_t>(ch)] = false;
-}
-
 // --- I2SDriver ---
 bool I2SDriver::init(uint32_t id, kernel::hal::i2s::Mode, const kernel::hal::i2s::Format& fmt, size_t, uint8_t, kernel::hal::i2s::I2SCallback cb, void* udata) {
     if (id >= instances_.size()) return false;
@@ -597,7 +534,7 @@ PlatformQEMUVirtARM64::PlatformQEMUVirtARM64() :
     uart_driver_(),
     irq_controller_(),
     timer_driver_(),
-    dma_controller_(),
+    dma_controller_("qemu-arm64-softdma"),
     i2s_driver_(),
     memory_ops_(),
     network_driver_(),

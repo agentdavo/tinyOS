@@ -9,6 +9,7 @@
 #ifndef HAL_QEMU_RV64_HPP
 #define HAL_QEMU_RV64_HPP
 
+#include "hal/shared/soft_dma.hpp"
 #include "hal.hpp"
 #include "hal/shared/virtio_gpu.hpp"
 #include "hal/shared/virtio_input.hpp"
@@ -123,20 +124,6 @@ private:
     uint8_t irq_affinity_mask_[128]{};
 };
 
-class DMAController : public kernel::hal::DMAControllerOps {
-public:
-    DMAController() = default;
-    kernel::hal::dma::ChannelID request_channel() override;
-    void release_channel(kernel::hal::dma::ChannelID channel) override;
-    kernel::hal::dma::Capabilities get_capabilities() const override;
-    bool configure_and_start_transfer(kernel::hal::dma::ChannelID channel,
-                                      const kernel::hal::dma::TransferConfig& cfg,
-                                      kernel::hal::dma::DMACallback cb,
-                                      void* context) override;
-private:
-    bool channel_in_use_ = false;
-};
-
 class MemoryOps : public kernel::hal::MemoryOps {
 public:
     void flush_cache_range(const void* addr, size_t size) override;
@@ -239,7 +226,7 @@ private:
     UARTDriver  uart_;
     TimerDriver timer_;
     PLICDriver  plic_;
-    DMAController dma_;
+    ::hal::shared::SoftwareDMAController dma_{"qemu-rv64-softdma"};
     MemoryOps memory_ops_;
     PowerOps power_ops_;
     USBHostController usb_;
