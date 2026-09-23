@@ -40,42 +40,14 @@ void input_log_event_count(const char* tag, uint32_t count) {
     }
 }
 
-inline uint32_t mmio_r32(uint64_t addr) {
-    return *reinterpret_cast<volatile uint32_t*>(addr);
-}
-
-inline void mmio_w32(uint64_t addr, uint32_t v) {
-    *reinterpret_cast<volatile uint32_t*>(addr) = v;
-}
-
 } // namespace
 
-uint32_t VirtIOInputDevice::mmio_read(uint32_t off) const {
-    return mmio_r32(base_ + off);
-}
-
-void VirtIOInputDevice::mmio_write(uint32_t off, uint32_t val) {
-    mmio_w32(base_ + off, val);
-}
+uint32_t VirtIOInputDevice::mmio_read(uint32_t off) const { return virtio_mmio::read32(base_, off); }
+void     VirtIOInputDevice::mmio_write(uint32_t off, uint32_t v) { virtio_mmio::write32(base_, off, v); }
 
 bool VirtIOInputDevice::setup_queue(uint32_t queue_idx) {
-    mmio_write(VMMIO_QUEUE_SEL, queue_idx);
-    const uint32_t max = mmio_read(VMMIO_QUEUE_NUM_MAX);
-    if (max == 0 || max < VIRTQ_SIZE) return false;
-    mmio_write(VMMIO_QUEUE_NUM, VIRTQ_SIZE);
-
-    const uint64_t desc_pa = reinterpret_cast<uint64_t>(&event_queue_.desc[0]);
-    const uint64_t avail_pa = reinterpret_cast<uint64_t>(&event_queue_.avail);
-    const uint64_t used_pa = reinterpret_cast<uint64_t>(&event_queue_.used);
-
-    mmio_write(VMMIO_QUEUE_DESC_LO, static_cast<uint32_t>(desc_pa));
-    mmio_write(VMMIO_QUEUE_DESC_HI, static_cast<uint32_t>(desc_pa >> 32));
-    mmio_write(VMMIO_QUEUE_DRIVER_LO, static_cast<uint32_t>(avail_pa));
-    mmio_write(VMMIO_QUEUE_DRIVER_HI, static_cast<uint32_t>(avail_pa >> 32));
-    mmio_write(VMMIO_QUEUE_DEVICE_LO, static_cast<uint32_t>(used_pa));
-    mmio_write(VMMIO_QUEUE_DEVICE_HI, static_cast<uint32_t>(used_pa >> 32));
-    mmio_write(VMMIO_QUEUE_READY, 1);
-    return true;
+    return virtio_mmio::setup_queue(base_, queue_idx, VIRTQ_SIZE,
+                                    &event_queue_.desc[0], &event_queue_.avail, &event_queue_.used);
 }
 
 void VirtIOInputDevice::post_event_buffers() {
@@ -87,44 +59,20 @@ void VirtIOInputDevice::post_event_buffers() {
         event_queue_.avail.ring[i] = static_cast<uint16_t>(i);
     }
     __atomic_store_n(&event_queue_.avail.idx, static_cast<uint16_t>(VIRTQ_SIZE), __ATOMIC_RELEASE);
-    mmio_write(VMMIO_QUEUE_NOTIFY, 0);
+    virtio_mmio::notify(base_, 0);  // barrier before the doorbell (was missing)
 }
 
 bool VirtIOInputDevice::init(uint64_t slot_base) {
     base_ = slot_base;
 
-    if (mmio_read(VMMIO_MAGIC) != 0x74726976) return false;
-    if (mmio_read(VMMIO_VERSION) != 2) return false;
-    if (mmio_read(VMMIO_DEVICE_ID) != VIRTIO_DEV_ID_INPUT) return false;
-
-    mmio_write(VMMIO_STATUS, 0);
-    mmio_write(VMMIO_STATUS, VIRTIO_STATUS_ACK);
-    mmio_write(VMMIO_STATUS, VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER);
-
-    mmio_write(VMMIO_DEV_FEAT_SEL, 1);
-    const uint64_t dev_feat_hi = mmio_read(VMMIO_DEV_FEAT);
-    if ((dev_feat_hi & 1u) == 0) {
-        mmio_write(VMMIO_STATUS, VIRTIO_STATUS_FAILED);
-        return false;
-    }
-
-    mmio_write(VMMIO_DRV_FEAT_SEL, 0);
-    mmio_write(VMMIO_DRV_FEAT, 0);
-    mmio_write(VMMIO_DRV_FEAT_SEL, 1);
-    mmio_write(VMMIO_DRV_FEAT, 1);
-    mmio_write(VMMIO_STATUS, VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEAT_OK);
-    if ((mmio_read(VMMIO_STATUS) & VIRTIO_STATUS_FEAT_OK) == 0) {
-        mmio_write(VMMIO_STATUS, VIRTIO_STATUS_FAILED);
-        return false;
-    }
+    if (!virtio_mmio::begin(base_, VIRTIO_DEV_ID_INPUT, 0)) return false;
 
     if (!setup_queue(0)) {
         mmio_write(VMMIO_STATUS, VIRTIO_STATUS_FAILED);
         return false;
     }
 
-    mmio_write(VMMIO_STATUS, VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER |
-                             VIRTIO_STATUS_FEAT_OK | VIRTIO_STATUS_DRIVER_OK);
+    virtio_mmio::driver_ok(base_);
     post_event_buffers();
     initialized_ = true;
     return true;
@@ -267,8 +215,8 @@ bool VirtIOInput::init(uintptr_t base, uint32_t irq) {
 
     for (size_t i = 0; i < bus_slot_count_ && device_count_ < MAX_INPUT_DEVS; ++i) {
         const uint64_t slot_base = bus_base_ + i * bus_stride_;
-        if (mmio_r32(slot_base + VMMIO_MAGIC) != 0x74726976) continue;
-        if (mmio_r32(slot_base + VMMIO_DEVICE_ID) != VIRTIO_DEV_ID_INPUT) continue;
+        if (virtio_mmio::read32(slot_base, VMMIO_MAGIC) != VIRTIO_MMIO_MAGIC_VALUE) continue;
+        if (virtio_mmio::read32(slot_base, VMMIO_DEVICE_ID) != VIRTIO_DEV_ID_INPUT) continue;
         if (devices_[device_count_].init(slot_base)) {
             ++device_count_;
             input_logf("[input] virtio-input ready slot=0x%lx count=%lu\n",

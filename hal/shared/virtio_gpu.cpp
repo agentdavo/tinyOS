@@ -2,43 +2,15 @@
 // Minimal virtio-gpu MMIO driver for QEMU virt.
 
 #include "virtio_gpu.hpp"
+#include "virtio_mmio.hpp"
 #include "../../miniOS.hpp"
 #include "../../util.hpp"
 
 namespace hal::shared::virtio_gpu {
 
+using namespace ::hal::shared::virtio_mmio;
+
 namespace {
-
-constexpr uint32_t VMMIO_MAGIC         = 0x000;
-constexpr uint32_t VMMIO_VERSION       = 0x004;
-constexpr uint32_t VMMIO_DEVICE_ID     = 0x008;
-constexpr uint32_t VMMIO_DEV_FEAT      = 0x010;
-constexpr uint32_t VMMIO_DEV_FEAT_SEL  = 0x014;
-constexpr uint32_t VMMIO_DRV_FEAT      = 0x020;
-constexpr uint32_t VMMIO_DRV_FEAT_SEL  = 0x024;
-constexpr uint32_t VMMIO_QUEUE_SEL     = 0x030;
-constexpr uint32_t VMMIO_QUEUE_NUM_MAX = 0x034;
-constexpr uint32_t VMMIO_QUEUE_NUM     = 0x038;
-constexpr uint32_t VMMIO_QUEUE_READY   = 0x044;
-constexpr uint32_t VMMIO_QUEUE_NOTIFY  = 0x050;
-constexpr uint32_t VMMIO_STATUS        = 0x070;
-constexpr uint32_t VMMIO_QUEUE_DESC_LO   = 0x080;
-constexpr uint32_t VMMIO_QUEUE_DESC_HI   = 0x084;
-constexpr uint32_t VMMIO_QUEUE_DRIVER_LO = 0x090;
-constexpr uint32_t VMMIO_QUEUE_DRIVER_HI = 0x094;
-constexpr uint32_t VMMIO_QUEUE_DEVICE_LO = 0x0a0;
-constexpr uint32_t VMMIO_QUEUE_DEVICE_HI = 0x0a4;
-
-constexpr uint32_t VIRTIO_STATUS_ACK       = 1u << 0;
-constexpr uint32_t VIRTIO_STATUS_DRIVER    = 1u << 1;
-constexpr uint32_t VIRTIO_STATUS_DRIVER_OK = 1u << 2;
-constexpr uint32_t VIRTIO_STATUS_FEAT_OK   = 1u << 3;
-constexpr uint32_t VIRTIO_STATUS_FAILED    = 1u << 7;
-
-constexpr uint16_t VIRTQ_DESC_F_NEXT  = 1u;
-constexpr uint16_t VIRTQ_DESC_F_WRITE = 2u;
-
-constexpr uint64_t VIRTIO_F_VERSION_1 = 1ULL << 32;
 
 constexpr uint32_t VIRTIO_GPU_CMD_RESOURCE_CREATE_2D     = 0x0101;
 constexpr uint32_t VIRTIO_GPU_CMD_SET_SCANOUT            = 0x0103;
@@ -49,14 +21,6 @@ constexpr uint32_t VIRTIO_GPU_RESP_OK_NODATA             = 0x1100;
 
 constexpr uint32_t VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM = 1;
 constexpr uint32_t RESOURCE_ID = 1;
-
-inline uint32_t mmio_r32(uint64_t addr) {
-    return *reinterpret_cast<volatile uint32_t*>(addr);
-}
-
-inline void mmio_w32(uint64_t addr, uint32_t value) {
-    *reinterpret_cast<volatile uint32_t*>(addr) = value;
-}
 
 template <typename T>
 T zeroed() {
@@ -77,13 +41,8 @@ inline kernel::hal::MemoryOps* mem_ops() {
 
 } // namespace
 
-uint32_t VirtioGpuDriver::mmio_read(uint32_t off) const {
-    return mmio_r32(base_ + off);
-}
-
-void VirtioGpuDriver::mmio_write(uint32_t off, uint32_t value) {
-    mmio_w32(base_ + off, value);
-}
+uint32_t VirtioGpuDriver::mmio_read(uint32_t off) const { return virtio_mmio::read32(base_, off); }
+void     VirtioGpuDriver::mmio_write(uint32_t off, uint32_t v) { virtio_mmio::write32(base_, off, v); }
 
 void VirtioGpuDriver::configure_bus(uint64_t base, size_t slot_size,
                                     size_t slot_count) {
@@ -125,23 +84,7 @@ void VirtioGpuDriver::get_resolution(uint32_t& width, uint32_t& height) {
 }
 
 bool VirtioGpuDriver::setup_queue(uint32_t queue_idx) {
-    mmio_write(VMMIO_QUEUE_SEL, queue_idx);
-    uint32_t max = mmio_read(VMMIO_QUEUE_NUM_MAX);
-    if (max == 0 || max < 8) return false;
-    mmio_write(VMMIO_QUEUE_NUM, 8);
-
-    const uint64_t desc_pa  = reinterpret_cast<uint64_t>(&queue_.desc[0]);
-    const uint64_t avail_pa = reinterpret_cast<uint64_t>(&queue_.avail);
-    const uint64_t used_pa  = reinterpret_cast<uint64_t>(&queue_.used);
-
-    mmio_write(VMMIO_QUEUE_DESC_LO, static_cast<uint32_t>(desc_pa));
-    mmio_write(VMMIO_QUEUE_DESC_HI, static_cast<uint32_t>(desc_pa >> 32));
-    mmio_write(VMMIO_QUEUE_DRIVER_LO, static_cast<uint32_t>(avail_pa));
-    mmio_write(VMMIO_QUEUE_DRIVER_HI, static_cast<uint32_t>(avail_pa >> 32));
-    mmio_write(VMMIO_QUEUE_DEVICE_LO, static_cast<uint32_t>(used_pa));
-    mmio_write(VMMIO_QUEUE_DEVICE_HI, static_cast<uint32_t>(used_pa >> 32));
-    mmio_write(VMMIO_QUEUE_READY, 1);
-    return true;
+    return virtio_mmio::setup_queue(base_, queue_idx, 8, &queue_.desc[0], &queue_.avail, &queue_.used);
 }
 
 bool VirtioGpuDriver::submit_command(const void* req, uint32_t req_len, void* resp,
@@ -247,43 +190,16 @@ bool VirtioGpuDriver::init(uint64_t slot_base, uint32_t* framebuffer,
     height_ = height;
     stride_bytes_ = stride_bytes;
 
-    if (mmio_read(VMMIO_MAGIC) != 0x74726976) {
-        gpu_log("[virtio-gpu] bad magic\n");
-        return false;
-    }
-    if (mmio_read(VMMIO_VERSION) != 2) {
-        gpu_log("[virtio-gpu] bad version\n");
-        return false;
-    }
-    if (mmio_read(VMMIO_DEVICE_ID) != VIRTIO_DEV_ID_GPU) {
-        gpu_log("[virtio-gpu] bad device id\n");
-        return false;
-    }
-
-    mmio_write(VMMIO_STATUS, 0);
-    mmio_write(VMMIO_STATUS, VIRTIO_STATUS_ACK);
-    mmio_write(VMMIO_STATUS, VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER);
-
-    mmio_write(VMMIO_DEV_FEAT_SEL, 0);
-    uint64_t dev_feat = mmio_read(VMMIO_DEV_FEAT);
-    mmio_write(VMMIO_DEV_FEAT_SEL, 1);
-    dev_feat |= static_cast<uint64_t>(mmio_read(VMMIO_DEV_FEAT)) << 32;
-    if ((dev_feat & VIRTIO_F_VERSION_1) == 0) {
-        gpu_log("[virtio-gpu] missing version1 feature\n");
-        mmio_write(VMMIO_STATUS, VIRTIO_STATUS_FAILED);
-        return false;
-    }
-
-    mmio_write(VMMIO_DRV_FEAT_SEL, 0);
-    mmio_write(VMMIO_DRV_FEAT, 0);
-    mmio_write(VMMIO_DRV_FEAT_SEL, 1);
-    mmio_write(VMMIO_DRV_FEAT, 1);
-
-    mmio_write(VMMIO_STATUS,
-               VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEAT_OK);
-    if ((mmio_read(VMMIO_STATUS) & VIRTIO_STATUS_FEAT_OK) == 0) {
-        gpu_log("[virtio-gpu] feature negotiation failed\n");
-        mmio_write(VMMIO_STATUS, VIRTIO_STATUS_FAILED);
+    InitError err = InitError::None;
+    if (!virtio_mmio::begin(base_, VIRTIO_DEV_ID_GPU, 0, nullptr, &err)) {
+        switch (err) {
+            case InitError::BadMagic:         gpu_log("[virtio-gpu] bad magic\n"); break;
+            case InitError::BadVersion:       gpu_log("[virtio-gpu] bad version\n"); break;
+            case InitError::WrongDevice:      gpu_log("[virtio-gpu] bad device id\n"); break;
+            case InitError::NoVersion1:       gpu_log("[virtio-gpu] missing version1 feature\n"); break;
+            case InitError::FeaturesRejected: gpu_log("[virtio-gpu] feature negotiation failed\n"); break;
+            case InitError::None:             break;
+        }
         return false;
     }
 
@@ -293,8 +209,7 @@ bool VirtioGpuDriver::init(uint64_t slot_base, uint32_t* framebuffer,
         return false;
     }
 
-    mmio_write(VMMIO_STATUS, VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER |
-                                  VIRTIO_STATUS_FEAT_OK | VIRTIO_STATUS_DRIVER_OK);
+    virtio_mmio::driver_ok(base_);
     initialized_ = true;
 
     if (!create_scanout_resource()) {
@@ -378,9 +293,9 @@ bool discover_and_init(uint64_t base, size_t slot_size, size_t slot_count,
                         size_t* slot_idx) {
     for (size_t i = 0; i < slot_count; ++i) {
         const uint64_t slot_base = base + i * slot_size;
-        uint32_t magic = mmio_r32(slot_base + VMMIO_MAGIC);
-        if (magic != 0x74726976) continue;
-        const uint32_t dev_id = mmio_r32(slot_base + VMMIO_DEVICE_ID);
+        uint32_t magic = virtio_mmio::read32(slot_base, VMMIO_MAGIC);
+        if (magic != VIRTIO_MMIO_MAGIC_VALUE) continue;
+        const uint32_t dev_id = virtio_mmio::read32(slot_base, VMMIO_DEVICE_ID);
         if (dev_id != VIRTIO_DEV_ID_GPU) continue;
         char buf[96];
         kernel::util::k_snprintf(buf, sizeof(buf),

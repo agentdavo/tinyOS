@@ -4,46 +4,21 @@
 #ifndef HAL_SHARED_VIRTIO_INPUT_HPP
 #define HAL_SHARED_VIRTIO_INPUT_HPP
 
+#include "virtio_mmio.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
 namespace hal::shared::input {
+
+// Transport registers, status bits and descriptor flags (virtio_mmio.hpp).
+using namespace ::hal::shared::virtio_mmio;
 
 constexpr size_t MAX_INPUT_DEVS = 4;
 constexpr size_t MAX_KEYBOARD_KEYS = 128;
 constexpr size_t MAX_TOUCH_POINTS = 4;
 constexpr uint32_t VIRTIO_DEV_ID_INPUT = 18;
 
-constexpr uint32_t VMMIO_MAGIC         = 0x000;
-constexpr uint32_t VMMIO_VERSION       = 0x004;
-constexpr uint32_t VMMIO_DEVICE_ID     = 0x008;
-constexpr uint32_t VMMIO_DEV_FEAT      = 0x010;
-constexpr uint32_t VMMIO_DEV_FEAT_SEL  = 0x014;
-constexpr uint32_t VMMIO_DRV_FEAT      = 0x020;
-constexpr uint32_t VMMIO_DRV_FEAT_SEL  = 0x024;
-constexpr uint32_t VMMIO_QUEUE_SEL     = 0x030;
-constexpr uint32_t VMMIO_QUEUE_NUM_MAX = 0x034;
-constexpr uint32_t VMMIO_QUEUE_NUM     = 0x038;
-constexpr uint32_t VMMIO_QUEUE_READY   = 0x044;
-constexpr uint32_t VMMIO_QUEUE_NOTIFY  = 0x050;
-constexpr uint32_t VMMIO_INT_STATUS    = 0x060;
-constexpr uint32_t VMMIO_INT_ACK       = 0x064;
-constexpr uint32_t VMMIO_STATUS        = 0x070;
-constexpr uint32_t VMMIO_QUEUE_DESC_LO   = 0x080;
-constexpr uint32_t VMMIO_QUEUE_DESC_HI   = 0x084;
-constexpr uint32_t VMMIO_QUEUE_DRIVER_LO = 0x090;
-constexpr uint32_t VMMIO_QUEUE_DRIVER_HI = 0x094;
-constexpr uint32_t VMMIO_QUEUE_DEVICE_LO = 0x0A0;
-constexpr uint32_t VMMIO_QUEUE_DEVICE_HI = 0x0A4;
-
-constexpr uint32_t VIRTIO_STATUS_ACK        = 1u << 0;
-constexpr uint32_t VIRTIO_STATUS_DRIVER     = 1u << 1;
-constexpr uint32_t VIRTIO_STATUS_DRIVER_OK  = 1u << 2;
-constexpr uint32_t VIRTIO_STATUS_FEAT_OK    = 1u << 3;
-constexpr uint32_t VIRTIO_STATUS_FAILED     = 1u << 7;
-
-constexpr uint16_t VIRTQ_DESC_F_NEXT  = 1u;
-constexpr uint16_t VIRTQ_DESC_F_WRITE = 2u;
 constexpr size_t VIRTQ_SIZE = 16;
 
 constexpr uint16_t EV_SYN = 0x00;

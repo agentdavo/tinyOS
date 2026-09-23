@@ -11,13 +11,6 @@ namespace hal::shared::virtio {
 
 namespace {
 
-inline uint32_t mmio_r32(uint64_t addr) {
-    return *reinterpret_cast<volatile uint32_t*>(addr);
-}
-inline void mmio_w32(uint64_t addr, uint32_t v) {
-    *reinterpret_cast<volatile uint32_t*>(addr) = v;
-}
-
 // Single statically-allocated driver — QEMU virt has one block slot in
 // practice, and the FS layer caches everything at boot so we never need
 // concurrent readers.
@@ -26,64 +19,18 @@ bool g_driver_bound = false;
 
 }  // namespace
 
-uint32_t VirtioBlkDriver::mmio_read(uint32_t off) const { return mmio_r32(base_ + off); }
-void     VirtioBlkDriver::mmio_write(uint32_t off, uint32_t v) { mmio_w32(base_ + off, v); }
+uint32_t VirtioBlkDriver::mmio_read(uint32_t off) const { return virtio_mmio::read32(base_, off); }
+void     VirtioBlkDriver::mmio_write(uint32_t off, uint32_t v) { virtio_mmio::write32(base_, off, v); }
 
 bool VirtioBlkDriver::setup_queue() {
-    mmio_write(VMMIO_QUEUE_SEL, 0);
-    uint32_t max = mmio_read(VMMIO_QUEUE_NUM_MAX);
-    if (max == 0 || max < VIRTQ_SIZE) return false;
-    mmio_write(VMMIO_QUEUE_NUM, VIRTQ_SIZE);
-
-    const uint64_t desc_pa  = reinterpret_cast<uint64_t>(&q_.desc[0]);
-    const uint64_t avail_pa = reinterpret_cast<uint64_t>(&q_.avail);
-    const uint64_t used_pa  = reinterpret_cast<uint64_t>(&q_.used);
-
-    mmio_write(VMMIO_QUEUE_DESC_LO,   desc_pa & 0xFFFFFFFF);
-    mmio_write(VMMIO_QUEUE_DESC_HI,   desc_pa >> 32);
-    mmio_write(VMMIO_QUEUE_DRIVER_LO, avail_pa & 0xFFFFFFFF);
-    mmio_write(VMMIO_QUEUE_DRIVER_HI, avail_pa >> 32);
-    mmio_write(VMMIO_QUEUE_DEVICE_LO, used_pa & 0xFFFFFFFF);
-    mmio_write(VMMIO_QUEUE_DEVICE_HI, used_pa >> 32);
-    mmio_write(VMMIO_QUEUE_READY, 1);
-    return true;
+    return virtio_mmio::setup_queue(base_, 0, VIRTQ_SIZE, &q_.desc[0], &q_.avail, &q_.used);
 }
 
 bool VirtioBlkDriver::init(uint64_t slot_base) {
     base_ = slot_base;
-    if (mmio_read(VMMIO_MAGIC) != 0x74726976) return false;
-    if (mmio_read(VMMIO_VERSION) != 2) return false;
-    if (mmio_read(VMMIO_DEVICE_ID) != VIRTIO_DEV_ID_BLK) return false;
-
-    mmio_write(VMMIO_STATUS, 0);
-    mmio_write(VMMIO_STATUS, VIRTIO_STATUS_ACK);
-    mmio_write(VMMIO_STATUS, VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER);
-
-    // Read device features. We only need VIRTIO_F_VERSION_1 (bit 32) to
-    // be present; everything else (read-only flag, segment caps, etc.) is
-    // ignorable for a read-only polling driver.
-    constexpr uint64_t VIRTIO_F_VERSION_1 = 1ULL << 32;
-    mmio_write(VMMIO_DEV_FEAT_SEL, 0);
-    uint64_t dev_feat = mmio_read(VMMIO_DEV_FEAT);
-    mmio_write(VMMIO_DEV_FEAT_SEL, 1);
-    dev_feat |= static_cast<uint64_t>(mmio_read(VMMIO_DEV_FEAT)) << 32;
-
-    if ((dev_feat & VIRTIO_F_VERSION_1) == 0) {
-        mmio_write(VMMIO_STATUS, VIRTIO_STATUS_FAILED);
-        return false;
-    }
-    const uint64_t drv_feat = VIRTIO_F_VERSION_1;
-    mmio_write(VMMIO_DRV_FEAT_SEL, 0);
-    mmio_write(VMMIO_DRV_FEAT, static_cast<uint32_t>(drv_feat));
-    mmio_write(VMMIO_DRV_FEAT_SEL, 1);
-    mmio_write(VMMIO_DRV_FEAT, static_cast<uint32_t>(drv_feat >> 32));
-
-    mmio_write(VMMIO_STATUS,
-               VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEAT_OK);
-    if ((mmio_read(VMMIO_STATUS) & VIRTIO_STATUS_FEAT_OK) == 0) {
-        mmio_write(VMMIO_STATUS, VIRTIO_STATUS_FAILED);
-        return false;
-    }
+    // Only VIRTIO_F_VERSION_1 is needed; everything else (read-only flag,
+    // segment caps, ...) is ignorable for this polling driver.
+    if (!virtio_mmio::begin(base_, VIRTIO_DEV_ID_BLK, 0)) return false;
 
     // Capacity lives at the start of the config region — 8 bytes little-endian.
     auto* cfg_cap_lo = reinterpret_cast<volatile uint32_t*>(base_ + VMMIO_CONFIG + 0);
@@ -92,8 +39,7 @@ bool VirtioBlkDriver::init(uint64_t slot_base) {
 
     if (!setup_queue()) return false;
 
-    mmio_write(VMMIO_STATUS, VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER |
-                             VIRTIO_STATUS_FEAT_OK | VIRTIO_STATUS_DRIVER_OK);
+    virtio_mmio::driver_ok(base_);
     initialized_ = true;
     return true;
 }
@@ -266,9 +212,9 @@ VirtioBlkDriver* discover_virtio_blk(uint64_t base, size_t slot_size, size_t slo
     if (g_driver_bound) return &g_driver;
     for (size_t i = 0; i < slot_count; ++i) {
         const uint64_t slot_base = base + i * slot_size;
-        if (mmio_r32(slot_base + VMMIO_MAGIC) != 0x74726976) continue;
-        if (mmio_r32(slot_base + VMMIO_VERSION) != 2) continue;
-        if (mmio_r32(slot_base + VMMIO_DEVICE_ID) != VIRTIO_DEV_ID_BLK) continue;
+        if (virtio_mmio::read32(slot_base, VMMIO_MAGIC) != VIRTIO_MMIO_MAGIC_VALUE) continue;
+        if (virtio_mmio::read32(slot_base, VMMIO_VERSION) != 2) continue;
+        if (virtio_mmio::read32(slot_base, VMMIO_DEVICE_ID) != VIRTIO_DEV_ID_BLK) continue;
         if (g_driver.init(slot_base)) {
             g_driver_bound = true;
             return &g_driver;
