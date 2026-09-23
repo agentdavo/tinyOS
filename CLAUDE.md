@@ -65,7 +65,7 @@ make clean
 make run                   # boot in qemu-system-aarch64, serial goes to serial_core0.log
 make debug                 # launches QEMU paused on :1234, then gdb-multiarch with gdb_init.gdb
 make docs                  # doxygen -> docs/
-make ENABLE_TRACE=0        # compile out the tracing subsystem (TRACE_DEFAULT_ENABLED macro)
+make ENABLE_TRACE=0        # boot with tracing disabled (sets TRACE_DEFAULT_ENABLED; code stays linked)
 ```
 
 The build emits `build/$(TARGET)/miniOS_kernel_$(TARGET).elf` — so `build/arm64/miniOS_kernel_arm64.elf` or `build/riscv64/miniOS_kernel_riscv64.elf`. There is no unqualified `miniOS_kernel.elf`; if you see one on disk it's stale from an older build. Always pass the build-dir ELF to qemu manually, or use `make run` (which resolves `$(ELF)` for you).

@@ -190,6 +190,12 @@ CFLAGS += -I. -I$(HAL_DIR)
 # alternate slave wiring. Always defined (0/1) so #if works without #ifdef.
 CFLAGS += -DMINIOS_FAKE_SLAVE=$(FAKE_SLAVE)
 
+# ENABLE_TRACE=0 boots with the trace manager disabled (trace.hpp's
+# TRACE_DEFAULT_ENABLED). The code stays linked; this only flips the
+# boot-time default.
+ENABLE_TRACE ?= 1
+CFLAGS += -DTRACE_DEFAULT_ENABLED=$(ENABLE_TRACE)
+
 # Git hash stamped into the `version` CLI output. Falls back to
 # "unknown" when git is unavailable (e.g. tarball build). The `+dirty`
 # suffix flags uncommitted changes — useful when debugging what's on
