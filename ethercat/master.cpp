@@ -884,7 +884,8 @@ size_t Master::upload_sdo_segmented(uint16_t station_addr,
             upload_busy_.store(false, std::memory_order_release);
             return 0;
         }
-        if (kernel::g_scheduler_ptr) kernel::g_scheduler_ptr->yield(0);
+        if (kernel::g_scheduler_ptr && kernel::g_platform)
+            kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id());
     }
 }
 
@@ -1001,8 +1002,8 @@ bool Master::run_homing_sequence(uint16_t station_addr,
             if (sw & (1u << 13)) return false; // Homing Error
             if (sw & (1u << 12)) break;        // Homing Attained
         }
-        if (kernel::g_scheduler_ptr)
-            kernel::g_scheduler_ptr->yield(0);
+        if (kernel::g_scheduler_ptr && kernel::g_platform)
+            kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id());
     }
     if (now_us() >= deadline) return false;
 
@@ -1289,7 +1290,8 @@ bool Master::read_esc_register(uint16_t station_addr, uint16_t reg,
         const int r = poll_esc_read(out, len);
         if (r == 1) return true;
         if (r == -1) return false;
-        if (kernel::g_scheduler_ptr) kernel::g_scheduler_ptr->yield(0);
+        if (kernel::g_scheduler_ptr && kernel::g_platform)
+            kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id());
     }
 }
 

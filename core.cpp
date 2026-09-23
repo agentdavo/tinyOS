@@ -609,6 +609,13 @@ void Scheduler::preemptive_tick(uint32_t core_id) {
 }
 
 void Scheduler::yield(uint32_t core_id) {
+    // schedule() switches the CALLING CPU's context, so it must be handed the
+    // calling core. A mismatched id (e.g. a hard-coded yield(0) from a thread
+    // on another core) would requeue the other core's running thread, save
+    // this core's registers into its TCB and run its successor here — the
+    // other core keeps executing under a stale current_thread and threads
+    // later resume from bogus snapshots. Always use the real core id.
+    if (kernel::g_platform) core_id = kernel::g_platform->get_core_id();
     if (core_id >= MAX_CORES) return;
     schedule(core_id, false);
 }

@@ -19,8 +19,8 @@
  *   - mret.
  *
  * Context switch (voluntary):
- *   cpu_context_switch_rv64(old_tcb, new_tcb) — saves callee-saved + ra/sp
- *   into old_tcb, loads from new_tcb, returns into new_tcb's saved ra.
+ *   cpu_context_switch_rv64(old_tcb, new_tcb) — saves all GPRs + pc/mstatus
+ *   into old_tcb, restores all GPRs from new_tcb, then mrets to new_tcb.pc.
  *   Used from cooperative yield paths.
  *
  * TCB layout (byte offsets, must match kernel::core::TCB in core.hpp):
@@ -269,13 +269,18 @@ trap_entry:
     csrr    t0, mepc
     sd      t0, FR_MEPC(sp)
 
-    /* ---- If g_per_cpu_data[hartid].current_thread != 0 AND g_irq_in_progress == 0, copy frame into TCB ---- */
+    /* ---- If g_per_cpu_data[hartid].current_thread != 0, copy frame into TCB ---- */
     /* PerCPUData is two pointers (16 bytes); current_thread is at offset 0.
      * kernel_g_per_cpu_data is a pointer slot holding the array's base.
-     * g_irq_in_progress is set by cpu_context_switch_rv64 to indicate a context
-     * switch is in-progress — if set, we skip the TCB save to avoid corrupting
-     * the half-written target TCB. Use the frame instead; the interrupted
-     * context will be restored when the nested trap returns. */
+     *
+     * Do NOT gate this on g_irq_in_progress: we set that flag ourselves at
+     * the top of trap_entry, so a "skip if set" check here was always
+     * true and the interrupted state was never saved. Trap exit then
+     * restored current_thread from its stale TCB, rewinding every thread
+     * to its last voluntary switch point (or creation seed) on each tick —
+     * the "threads re-run their entry prints, then wedge" rv64 symptom.
+     * No guard is needed for cpu_context_switch_rv64: it runs with MIE=0
+     * from entry to mret, so no interrupt can land mid-switch. */
     csrr    a0, mhartid
     lla     t1, kernel_g_per_cpu_data
     ld      t1, 0(t1)                       /* t1 = &g_per_cpu_data[0] */
@@ -283,13 +288,6 @@ trap_entry:
     add     t1, t1, t2                      /* &g_per_cpu_data[hartid] */
     ld      t1, 0(t1)                       /* current_thread (TCB* or 0) */
     beqz    t1, .L_trap_skip_tcb_save
-
-    /* Check g_irq_in_progress — skip TCB save if a context switch is in flight. */
-    lla     t2, g_irq_in_progress
-    slli    t3, a0, 3                       /* hartid * 8 (uint64_t array) */
-    add     t2, t2, t3
-    ld      t3, 0(t2)                       /* t3 = g_irq_in_progress[hart] */
-    bnez    t3, .L_trap_skip_tcb_save
 
     /* memcpy 31*8=248 bytes of regs + sp-slot from frame to TCB.
      * Frame regs[] = offsets 0..240 by 8, matches TCB_REGS_OFF..+30*8. */
@@ -347,7 +345,11 @@ trap_entry:
 
     ld      t5, TCB_PC_OFF(t1)
     csrw    mepc, t5
+    /* Mask MIE in the written value: MIE must stay 0 until mret (which
+     * takes MIE from MPIE), otherwise an IRQ could nest mid-restore while
+     * mscratch already holds the thread sp. */
     ld      t5, TCB_MSTATUS_OFF(t1)
+    andi    t5, t5, ~0x8
     csrw    mstatus, t5
     j       .L_trap_restore_frame_after_csrs
 
@@ -359,6 +361,19 @@ trap_entry:
      *  the CPU state we leave.  The C handler hasn't modified it.) */
 
 .L_trap_restore_frame_after_csrs:
+    /* Clear g_irq_in_progress before returning to thread context. Without
+     * this, the flag remains set after every trap and the NEXT timer would
+     * skip saving to the TCB (corrupting the interrupted thread's state).
+     * Must happen HERE, before the GPR restore: clearing it after the
+     * restore (as this code used to) needs scratch registers and clobbered
+     * the interrupted thread's t0/t1/t2 on every trap. MIE is 0 for the
+     * whole trap, so nothing can observe the flag cleared early. */
+    csrr    t0, mhartid
+    lla     t1, g_irq_in_progress
+    slli    t2, t0, 3
+    add     t1, t1, t2
+    sd      zero, 0(t1)
+
     /* Restore all GPRs from the frame.  We stage the thread sp into
      * mscratch FIRST using x5/t0 as the scratch, THEN restore t0 last so
      * it ends up with the interrupted value.  Leaving t0 till the end
@@ -409,18 +424,6 @@ trap_entry:
     addi    sp, sp, 256                     /* sp = irq_sp_top */
     csrrw   sp, mscratch, sp                /* sp = thread sp, mscratch = irq_sp_top */
 
-    /* Clear g_irq_in_progress before returning to thread context. Without
-     * this, the flag remains set after every trap and the NEXT timer would
-     * skip saving to the TCB (corrupting the interrupted thread's state).
-     * The clear must be after the sp swap so we have the thread's sp for
-     * any scratch, and after all GPRs are restored so we have hartid via
-     * mhartid CSR. */
-    csrr    t0, mhartid
-    lla     t1, g_irq_in_progress
-    slli    t2, t0, 3
-    add     t1, t1, t2
-    sd      zero, 0(t1)
-
     mret
 
     /* -----------------------------------------------------------------
@@ -468,22 +471,43 @@ cpu_context_switch_rv64:
     fence   rw, rw                      /* ensure store is visible before we touch the TCB */
     beqz    a0, .L_ctx_restore          /* first switch: skip save */
 
-    /* Save callee-saved regs + ra + sp into old_tcb. */
-    sd      ra,  (TCB_REGS_OFF + 0*8)(a0)   /* x1 */
-    sd      sp,  (TCB_REGS_OFF + 1*8)(a0)   /* x2 */
+    /* Save every GPR into old_tcb, not just the callee-saved set, so a TCB
+     * is always a complete snapshot regardless of which path saved it (the
+     * trap path writes all 31). Mirrors arm64's voluntary save. t1-t4 hold
+     * scratch values by now, but they're caller-saved and dead at this
+     * call boundary. */
+    sd      x1,  (TCB_REGS_OFF + 0*8)(a0)   /* ra */
+    sd      x2,  (TCB_REGS_OFF + 1*8)(a0)   /* sp */
     sd      sp,  (TCB_SP_OFF)(a0)           /* mirror */
-    sd      s0,  (TCB_REGS_OFF + 7*8)(a0)   /* x8 */
-    sd      s1,  (TCB_REGS_OFF + 8*8)(a0)   /* x9 */
-    sd      s2,  (TCB_REGS_OFF + 17*8)(a0)  /* x18 */
-    sd      s3,  (TCB_REGS_OFF + 18*8)(a0)
-    sd      s4,  (TCB_REGS_OFF + 19*8)(a0)
-    sd      s5,  (TCB_REGS_OFF + 20*8)(a0)
-    sd      s6,  (TCB_REGS_OFF + 21*8)(a0)
-    sd      s7,  (TCB_REGS_OFF + 22*8)(a0)
-    sd      s8,  (TCB_REGS_OFF + 23*8)(a0)
-    sd      s9,  (TCB_REGS_OFF + 24*8)(a0)
-    sd      s10, (TCB_REGS_OFF + 25*8)(a0)
-    sd      s11, (TCB_REGS_OFF + 26*8)(a0)
+    sd      x3,  (TCB_REGS_OFF + 2*8)(a0)   /* gp */
+    sd      x4,  (TCB_REGS_OFF + 3*8)(a0)   /* tp */
+    sd      x5,  (TCB_REGS_OFF + 4*8)(a0)
+    sd      x6,  (TCB_REGS_OFF + 5*8)(a0)
+    sd      x7,  (TCB_REGS_OFF + 6*8)(a0)
+    sd      x8,  (TCB_REGS_OFF + 7*8)(a0)   /* s0 */
+    sd      x9,  (TCB_REGS_OFF + 8*8)(a0)   /* s1 */
+    sd      x10, (TCB_REGS_OFF + 9*8)(a0)
+    sd      x11, (TCB_REGS_OFF + 10*8)(a0)
+    sd      x12, (TCB_REGS_OFF + 11*8)(a0)
+    sd      x13, (TCB_REGS_OFF + 12*8)(a0)
+    sd      x14, (TCB_REGS_OFF + 13*8)(a0)
+    sd      x15, (TCB_REGS_OFF + 14*8)(a0)
+    sd      x16, (TCB_REGS_OFF + 15*8)(a0)
+    sd      x17, (TCB_REGS_OFF + 16*8)(a0)
+    sd      x18, (TCB_REGS_OFF + 17*8)(a0)  /* s2 */
+    sd      x19, (TCB_REGS_OFF + 18*8)(a0)
+    sd      x20, (TCB_REGS_OFF + 19*8)(a0)
+    sd      x21, (TCB_REGS_OFF + 20*8)(a0)
+    sd      x22, (TCB_REGS_OFF + 21*8)(a0)
+    sd      x23, (TCB_REGS_OFF + 22*8)(a0)
+    sd      x24, (TCB_REGS_OFF + 23*8)(a0)
+    sd      x25, (TCB_REGS_OFF + 24*8)(a0)
+    sd      x26, (TCB_REGS_OFF + 25*8)(a0)
+    sd      x27, (TCB_REGS_OFF + 26*8)(a0)  /* s11 */
+    sd      x28, (TCB_REGS_OFF + 27*8)(a0)
+    sd      x29, (TCB_REGS_OFF + 28*8)(a0)
+    sd      x30, (TCB_REGS_OFF + 29*8)(a0)
+    sd      x31, (TCB_REGS_OFF + 30*8)(a0)
     /* Resume pc = ra (the call site of cpu_context_switch_rv64). */
     sd      ra,  (TCB_PC_OFF)(a0)
     /* Save the pre-disable mstatus, fixing up the fields mret will consume:
@@ -507,36 +531,22 @@ cpu_context_switch_rv64:
     sd      t1,  (TCB_MSTATUS_OFF)(a0)
 
 .L_ctx_restore:
-    /* Load from new_tcb. */
-    ld      sp,  (TCB_REGS_OFF + 1*8)(a1)
-    ld      s0,  (TCB_REGS_OFF + 7*8)(a1)
-    ld      s1,  (TCB_REGS_OFF + 8*8)(a1)
-    ld      s2,  (TCB_REGS_OFF + 17*8)(a1)
-    ld      s3,  (TCB_REGS_OFF + 18*8)(a1)
-    ld      s4,  (TCB_REGS_OFF + 19*8)(a1)
-    ld      s5,  (TCB_REGS_OFF + 20*8)(a1)
-    ld      s6,  (TCB_REGS_OFF + 21*8)(a1)
-    ld      s7,  (TCB_REGS_OFF + 22*8)(a1)
-    ld      s8,  (TCB_REGS_OFF + 23*8)(a1)
-    ld      s9,  (TCB_REGS_OFF + 24*8)(a1)
-    ld      s10, (TCB_REGS_OFF + 25*8)(a1)
-    ld      s11, (TCB_REGS_OFF + 26*8)(a1)
-    /* First-entry seed: scheduler sets regs[x10-1] = TCB* so thread
-     * bootstrap gets its TCB in a0. */
-    ld      a0,  (TCB_REGS_OFF + 9*8)(a1)
-    /* mret will atomically restore PC and IRQ state from the new TCB. */
-    fence   rw, rw                      /* ensure all prior loads complete before mret */
+    /* mret will atomically restore PC and IRQ state from the new TCB.
+     * Clear MIE in the value we write so IRQs stay masked until mret
+     * (which sets MIE from MPIE); a voluntary-saved mstatus may carry
+     * MIE=1 from the pre-disable snapshot. */
     ld      t0, (TCB_PC_OFF)(a1)
     csrw    mepc, t0
     ld      t0, (TCB_MSTATUS_OFF)(a1)
+    andi    t0, t0, ~0x8
     csrw    mstatus, t0
 
     /* Clear g_irq_in_progress[hart] before mret — mirrors the trap-exit
-     * path at line ~422. The flag was set on entry (line ~467) so that a
+     * path (.L_trap_restore_frame_after_csrs). The flag was set on entry so that a
      * timer firing mid-switch would NOT spill into new_tcb. If we mret to
      * the new thread without clearing, the flag stays at 1 and the next
-     * trap that fires on this hart skips its TCB save (trap_entry line
-     * ~291), then on trap-exit restores from a TCB whose caller-saved
+     * trap that fires on this hart skips its TCB save (trap_entry
+     * .L_trap_skip_tcb_save), then on trap-exit restores from a TCB whose caller-saved
      * state was never written — corrupting pc/regs of whatever ran in
      * between. Symptom: residual mcause=1 with mtval=0 / mepc landing on
      * a stale-zero TCB.pc (the open CLAUDE.md rv64 boot regression).
@@ -548,5 +558,44 @@ cpu_context_switch_rv64:
     add     t1, t1, t2
     sd      zero, 0(t1)
 
-    fence   i, rw                      /* sync instruction fetch with memory state */
+    /* Restore every GPR from new_tcb, a1 (x11, the base) last. The new
+     * thread may have been switched out by a trap at an arbitrary
+     * instruction, in which case its caller-saved regs are live; the old
+     * callee-saved-only restore resumed it with the yielding thread's
+     * ra, t0-t6 and a1-a7 and it returned into the wrong call chain (threads visibly
+     * re-running their entry functions, then wedging). Mirrors arm64's
+     * full restore before eret. For a fresh thread the seeded regs[]
+     * give ra = bootstrap, sp, a0 = TCB*. */
+    fence   rw, rw
+    ld      x1,  (TCB_REGS_OFF + 0*8)(a1)
+    ld      x2,  (TCB_REGS_OFF + 1*8)(a1)
+    ld      x3,  (TCB_REGS_OFF + 2*8)(a1)
+    ld      x4,  (TCB_REGS_OFF + 3*8)(a1)
+    ld      x5,  (TCB_REGS_OFF + 4*8)(a1)
+    ld      x6,  (TCB_REGS_OFF + 5*8)(a1)
+    ld      x7,  (TCB_REGS_OFF + 6*8)(a1)
+    ld      x8,  (TCB_REGS_OFF + 7*8)(a1)
+    ld      x9,  (TCB_REGS_OFF + 8*8)(a1)
+    ld      x10, (TCB_REGS_OFF + 9*8)(a1)
+    ld      x12, (TCB_REGS_OFF + 11*8)(a1)
+    ld      x13, (TCB_REGS_OFF + 12*8)(a1)
+    ld      x14, (TCB_REGS_OFF + 13*8)(a1)
+    ld      x15, (TCB_REGS_OFF + 14*8)(a1)
+    ld      x16, (TCB_REGS_OFF + 15*8)(a1)
+    ld      x17, (TCB_REGS_OFF + 16*8)(a1)
+    ld      x18, (TCB_REGS_OFF + 17*8)(a1)
+    ld      x19, (TCB_REGS_OFF + 18*8)(a1)
+    ld      x20, (TCB_REGS_OFF + 19*8)(a1)
+    ld      x21, (TCB_REGS_OFF + 20*8)(a1)
+    ld      x22, (TCB_REGS_OFF + 21*8)(a1)
+    ld      x23, (TCB_REGS_OFF + 22*8)(a1)
+    ld      x24, (TCB_REGS_OFF + 23*8)(a1)
+    ld      x25, (TCB_REGS_OFF + 24*8)(a1)
+    ld      x26, (TCB_REGS_OFF + 25*8)(a1)
+    ld      x27, (TCB_REGS_OFF + 26*8)(a1)
+    ld      x28, (TCB_REGS_OFF + 27*8)(a1)
+    ld      x29, (TCB_REGS_OFF + 28*8)(a1)
+    ld      x30, (TCB_REGS_OFF + 29*8)(a1)
+    ld      x31, (TCB_REGS_OFF + 30*8)(a1)
+    ld      x11, (TCB_REGS_OFF + 10*8)(a1)
     mret

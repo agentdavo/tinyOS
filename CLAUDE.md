@@ -6,13 +6,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The project is **miniOS** — a freestanding, bare-metal C++20 RTOS that runs as a QEMU `virt` kernel. The working directory is named `tinyOS` but all code, branding, and artifacts use `miniOS`. Build artifacts live under `build/<target>/` (for example `build/arm64/miniOS_kernel_arm64.elf`). Source headers and Makefile are v1.7.
 
-**Boot status**: arm64 boots cleanly through SMP bring-up, virtio-gpu scanout configuration, FAT32 mount (when `sdcard.img` is attached), and into the UI + CLI + HMI services on core 0. rv64 reaches `miniOS CLI ready` intermittently (~1 in 10 cold runs at the time of writing) — substantial progress from "never reaches CLI", but still flaky. See "rv64 boot work in progress" below for the open items.
+**Boot status**: arm64 boots cleanly through SMP bring-up, virtio-gpu scanout configuration, FAT32 mount (when `sdcard.img` is attached), and into the UI + CLI + HMI services on core 0. rv64 now does the same: in a 10-run soak (QEMU 11.1, GCC 15.2) every cold boot reached `miniOS CLI ready`, echoed `ci-ok`, logged `[ec0] cycle=250us` and passed `test all` with `Tests completed: 11, 0 failed`. One earlier run hit a single unexplained fault (see open items below).
 
-### rv64 boot work in progress
+### rv64 boot work
 
 **Goal:** rv64 reaches the CLI banner and accepts input as reliably as arm64 — both arches must satisfy the arch-parity contract below.
 
-**Fixed since the EDF-adoption regression:**
+**rv64 needs `-cpu rva23s64` with Ubuntu 26.04's cross GCC.** Its `riscv64-linux-gnu` libgcc is built for the RVA23 profile (Zcb, Zb*, V), and the kernel pulls in `__udivti3` (`hal_qemu_rv64.cpp`) and `__floatuntidf` (`cnc/interpreter.cpp`) via 128-bit integer maths. On the Makefile's `-cpu rv64` those take an illegal-instruction trap (`mcause=2`, e.g. `c.lbu`) before the scheduler starts. The MSYS2 `riscv64-unknown-elf` toolchain can't link the kernel at all: its libgcc multilibs are `medlow` and can't reach `0x80000000`.
+
+**Context-switch bugs fixed in the rv64 hang work** (all in `cpu_rv64.S` unless noted). Symptom: the banner printed, then the `ui` / `hmi` threads re-printed their startup lines on every tick and the system wedged.
+1. `trap_entry` set `g_irq_in_progress[hart] = 1` and then skipped the TCB save whenever that flag was set, which was always. The interrupted state was never saved, so trap exit restored `current_thread` from its stale TCB and every tick rewound threads to their last voluntary switch point. The skip is gone. `cpu_context_switch_rv64` runs with MIE=0 end to end, so no interrupt can land mid-switch.
+2. Trap exit cleared `g_irq_in_progress` *after* restoring GPRs, using `t0`–`t2` as scratch, which corrupted them in the interrupted thread on every trap. The flag is now cleared before the GPR restore.
+3. `cpu_context_switch_rv64` saved and restored only the callee-saved registers. A thread last switched out by a trap resumed with the yielding thread's `ra`/`t*`/`a*`. It now saves and restores all 31 GPRs, like arm64's `cpu_context_switch_impl`.
+4. Both mret paths mask `MIE` in the `mstatus` value they write, so an IRQ can't nest mid-restore; `mret` sets MIE from MPIE.
+5. `ethercat/master.cpp` had three `yield(0)` calls. `schedule()` switches the *calling* CPU, so a cross-core id requeued another core's running thread and saved this core's registers into its TCB. `Scheduler::yield` (shared `core.cpp`) now always uses the calling core's id.
+
+**Fixed earlier, during the EDF-adoption regression:**
+
 1. Secondary harts could read `ready_qs_[N]` without the per-core lock and grab a partially-initialised TCB, faulting in `safe_strcpy` on a name pointer that hadn't propagated. `start_core_scheduler` now holds the lock around `pop_highest_priority_ready_task` (commit `188b223`).
 2. Voluntary `cpu_context_switch_rv64` was using `ret` instead of `mret`, leaving a window where a timer IRQ could fire mid-switch and the trap entry would spill CPU state into the new thread's TCB, corrupting the in-flight switch. Now uses `mret` to atomically restore PC + mstatus from the new TCB — same idiom as arm64's `eret`-based switch (commit `72965c6`).
 3. `PLICDriver::enable_core_irqs` no longer flips `mstatus.MIE` — it only enables per-source `mie` bits. The CPU stays IRQ-masked from boot until `mret` atomically restores MIE from the new thread's pstate. Mirrors arm64's `GICDriver::enable_core_irqs` (commit `72965c6`).
@@ -20,9 +30,10 @@ The project is **miniOS** — a freestanding, bare-metal C++20 RTOS that runs as
 5. `early_uart_puts` is arch-aware. The arm64 PL011 base `0x09000000` was hardcoded; any shared code that called it (Master::run_loop banner, FakeSlave halt, dc_drift periodic log) faulted on rv64. Now writes to NS16550 at `0x10000000` on rv64 (commit `72965c6`).
 6. `uart_io_entry`'s `flush_line` uses the captured `uart` parameter rather than the static `cli::io::g_uart` — some path on rv64 was leaving `g_uart` apparently NULL'd by the time the flush ran (vtable[3]=NULL → jumped to address 0). Function parameter is on uart_io's stack and stable (commit `8efe5a0`).
 
-**Still blocked / open:**
-- Residual `mcause=1` (instruction access fault) with `mepc=trap_entry's mret address` and `mtval=0` — looks like a TCB.pc somewhere is being clobbered to 0, mret jumps to 0, fetch faults. Hypothesis: another path where a trap fires while a thread is mid-`cpu_context_switch_rv64` and the trap-entry's TCB-spill races with the in-flight load. The `g_irq_in_progress[hart]` flag is supposed to make trap-time switches transparent — there may be a hole.
-- Some rv64 PCI/MMIO paths (occasional traps on ec_a / fake_slave threads) still need arch-aware fixes — not chased yet.
+**Still open:**
+- In one run out of 14 after the fixes above, `motion` on hart 1 took `mcause=5` (load access fault, `mtval=0x88000000`) in `run_sync_arbiter` with `ra` inside `safety_status()`. The PC came from one context and the registers from another. Cause not found yet.
+- Two scheduler hazards on both arches, not yet fixed. (a) The timer IRQ calls `is_dedicated_rt_core` → `placement::Service::snapshot`, which takes a plain `ScopedLock`, so a thread on the same core holding that lock deadlocks the tick. (b) `thread_bootstrap` marks an exiting thread `ZOMBIE` before switching off its stack, so `create_thread` on another core can reuse the TCB and stack while the switch is still in flight.
+- Some rv64 PCI/MMIO paths (occasional traps on ec_a / fake_slave threads) may still need arch-aware fixes — not chased yet.
 
 **Useful diagnostic tools added during this work:**
 - The rv64 trap dump prints `mtval`, `ra` (regs[0]), `sp` (regs[1]), and the current_thread's `name` in a single locked puts() so concurrent harts don't fragment it. Decode a trap PC with `riscv64-linux-gnu-addr2line -f -e build/riscv64/miniOS_kernel_riscv64.elf <addr>`. Walk the stack by reading words at `sp+offset` (frame layouts visible in `objdump -d`).
