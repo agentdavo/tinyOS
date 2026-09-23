@@ -233,13 +233,6 @@ void run_usb_boot_probe() {
 }
 
 bool initialize_platform_and_scheduler() {
-    trace::g_trace_manager.init();
-#if TRACE_DEFAULT_ENABLED
-    trace::g_trace_manager.set_enabled(true);
-#else
-    trace::g_trace_manager.set_enabled(false);
-#endif
-
     kernel::g_platform = kernel::hal::get_platform();
     if (!kernel::g_platform) {
         early_uart_puts("[PANIC] Null platform, halting\n");
@@ -247,12 +240,7 @@ bool initialize_platform_and_scheduler() {
     }
 
     kernel::g_platform->early_init_platform();
-
-    static kernel::core::Scheduler scheduler_instance;
-    static kernel::core::EDFPolicy edf_policy;
-    scheduler_instance.set_policy(&edf_policy);
-    kernel::g_scheduler_ptr = &scheduler_instance;
-
+    kernel::boot::init_scheduler_and_trace();
     return true;
 }
 
@@ -365,6 +353,19 @@ long psci_cpu_on_impl(uint64_t mpidr, uint64_t entry_pa, uint64_t context) {
 #endif
 
 } // namespace
+
+void kernel::boot::init_scheduler_and_trace() {
+    trace::g_trace_manager.init();
+#if TRACE_DEFAULT_ENABLED
+    trace::g_trace_manager.set_enabled(true);
+#else
+    trace::g_trace_manager.set_enabled(false);
+#endif
+    static kernel::core::Scheduler scheduler_instance;
+    static kernel::core::EDFPolicy edf_policy;
+    scheduler_instance.set_policy(&edf_policy);
+    kernel::g_scheduler_ptr = &scheduler_instance;
+}
 
 bool kernel::boot::create_scheduler_thread(void (*fn)(void*), void* arg, int prio,
                                            int affinity, const char* name, bool is_idle,

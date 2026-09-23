@@ -18,6 +18,11 @@ using CreateThreadFn = bool (*)(void (*fn)(void*), void* arg, int prio,
                                 int affinity, const char* name, bool is_idle,
                                 uint64_t deadline_us);
 
+// Stand up the trace manager and the shared EDF scheduler (sets
+// g_scheduler_ptr). Both arches call this before creating any thread; rv64
+// used to duplicate the scheduler half and skip trace init entirely.
+void init_scheduler_and_trace();
+
 // The CreateThreadFn both arches pass: forwards to g_scheduler_ptr.
 bool create_scheduler_thread(void (*fn)(void*), void* arg, int prio,
                              int affinity, const char* name, bool is_idle,

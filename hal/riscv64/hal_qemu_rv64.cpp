@@ -79,19 +79,19 @@ namespace hal::qemu_virt_rv64 {
 
 // ----------------------------------------------------------------------------
 // UART lock.  The NS16550A at 0x10000000 is shared across all 4 harts, so
-// without serialization their putc streams interleave at the byte level
-// (e.g. "threthreadad" when two harts both print "thread" at once).  A
-// single `std::atomic_flag` acquired around each whole string is enough —
-// the UART is not on the steady-state hot path (the kernel only prints on
-// bring-up events + the demo threads on hart 0).  We keep putc() lock-free
-// so code inside the critical section can still emit single bytes, and
-// only lock at the puts()/hex() granularity where smearing is visible.
+// without serialization their putc streams interleave at the byte level.
+// puts()/hex() hold the lock for a whole string; putc() stays lock-free so
+// code inside the critical section can still emit single bytes. This is the
+// same lock early_uart_puts (freestanding_stubs.cpp) takes — as on arm64 —
+// so early_uart_puts callers ([ecN] cycle banner, fake slave, dc_drift) can
+// no longer interleave with platform puts or a binary ui_dump payload.
 // ----------------------------------------------------------------------------
-static std::atomic_flag g_uart_lock = ATOMIC_FLAG_INIT;
+extern "C" void early_uart_lock_acquire();
+extern "C" void early_uart_lock_release();
 
 struct UartLockGuard {
-    UartLockGuard()  { while (g_uart_lock.test_and_set(std::memory_order_acquire)) { asm volatile("" ::: "memory"); } }
-    ~UartLockGuard() { g_uart_lock.clear(std::memory_order_release); }
+    UartLockGuard()  { early_uart_lock_acquire(); }
+    ~UartLockGuard() { early_uart_lock_release(); }
 };
 
 PlatformQEMUVirtRV64 g_platform_instance;
@@ -140,6 +140,7 @@ constexpr uint32_t NS16550_RBR = 0;
 constexpr uint32_t NS16550_THR = 0;
 constexpr uint32_t NS16550_LSR = 5;
 constexpr uint8_t  LSR_DR      = 1 << 0;
+constexpr uint8_t  LSR_THRE    = 1 << 5;   // transmit holding register empty
 
 inline volatile uint64_t* clint_mtimecmp(uint32_t hart) {
     return reinterpret_cast<volatile uint64_t*>(CLINT_MTIMECMP + 8ULL * hart);
@@ -166,6 +167,9 @@ inline void csr_set_meie() {
 } // anon namespace
 
 void UARTDriver::putc(char c) {
+    // Wait for THR to drain like arm64's PL011 putc waits on TXFF. QEMU's
+    // 16550 never backs up, but a real one silently drops bytes otherwise.
+    while ((*uart_reg(NS16550_LSR) & LSR_THRE) == 0) {}
     *uart_reg(NS16550_THR) = static_cast<uint8_t>(c);
 }
 void UARTDriver::puts(const char* str) {
@@ -206,18 +210,12 @@ bool UARTDriver::try_getc(char& out) {
     out = static_cast<char>(*uart_reg(NS16550_RBR));
     return true;
 }
-// Manual lock acquire/release sharing the same g_uart_lock that
-// UartLockGuard uses inside puts/hex. cli's cmd_ui_dump uses these to
-// write the binary UI dump atomically against other puts callers,
-// going through this driver's putc which doesn't CRLF-cook.
-void UARTDriver::lock_write()   {
-    while (g_uart_lock.test_and_set(std::memory_order_acquire)) {
-        asm volatile("" ::: "memory");
-    }
-}
-void UARTDriver::unlock_write() {
-    g_uart_lock.clear(std::memory_order_release);
-}
+// Manual lock acquire/release sharing the lock UartLockGuard uses inside
+// puts/hex. cli's cmd_ui_dump uses these to write the binary UI dump
+// atomically against other puts callers, going through this driver's putc
+// which doesn't CRLF-cook.
+void UARTDriver::lock_write()   { early_uart_lock_acquire(); }
+void UARTDriver::unlock_write() { early_uart_lock_release(); }
 
 // ----------------------------------------------------------------------------
 // DMA (software fallback for now; future hardware DMA can replace this behind
@@ -748,7 +746,6 @@ void PlatformQEMUVirtRV64::handle_device_irq(uint32_t core_id, uint32_t irq_id) 
 // same surface; rv64's instance lives in the qemu_virt_rv64 namespace.
 namespace kernel::hal {
 Platform& get_platform_instance() { return ::hal::qemu_virt_rv64::g_platform_instance; }
-Platform* get_platform() { return &::hal::qemu_virt_rv64::g_platform_instance; }
 }
 
 
@@ -1058,10 +1055,7 @@ extern "C" void kernel_main_rv64(uint32_t hartid) {
     // Stand the shared scheduler up before any thread creation. Mirrors the
     // arm64 initialize_platform_and_scheduler() prelude — same EDFPolicy,
     // same Scheduler instance type, same g_scheduler_ptr global.
-    static kernel::core::Scheduler scheduler_instance;
-    static kernel::core::EDFPolicy edf_policy;
-    scheduler_instance.set_policy(&edf_policy);
-    kernel::g_scheduler_ptr = &scheduler_instance;
+    kernel::boot::init_scheduler_and_trace();
 
     auto& uart  = *plat.get_uart_ops();
     auto& timer = *plat.get_timer_ops();

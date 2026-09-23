@@ -54,62 +54,10 @@ extern "C" void cpu_context_switch_impl(kernel::core::TCB* old_tcb, kernel::core
     cpu_context_switch_rv64(old_tcb, new_tcb);
 }
 
-// is_dedicated_rt_core lives in hal.cpp on arm64; rv64 doesn't link hal.cpp
-// (it would pull in arm64-tied symbols), so re-provide the same logic here.
-// Keep behaviour bit-for-bit identical so dedicated-RT-core gating works the
-// same on both arches.
-#include "machine/runtime_placement.hpp"
-
+// is_dedicated_rt_core, the sync barriers and cpu_context_switch come from
+// the shared hal.cpp; only the rv64-specific pieces live here.
 namespace kernel {
 namespace hal {
-
-bool is_dedicated_rt_core(uint32_t core_id) noexcept {
-    machine::placement::Config cfg{};
-    machine::placement::g_service.snapshot(cfg);
-    const uint32_t num_cores = g_platform ? g_platform->get_num_cores() : kernel::core::MAX_CORES;
-    const auto sanitize = [&](uint8_t requested) noexcept -> uint32_t {
-        return machine::placement::g_service.sanitize_core(requested, num_cores);
-    };
-
-    const uint32_t ec_a_core = sanitize(cfg.ec_a_core);
-#if MINIOS_FAKE_SLAVE
-    const uint32_t rt_peer_core = sanitize(cfg.fake_slave_core);
-#else
-    const uint32_t rt_peer_core = sanitize(cfg.ec_b_core);
-#endif
-    if (core_id != ec_a_core && core_id != rt_peer_core) {
-        return false;
-    }
-
-    const uint32_t shared_general_cores[] = {
-        sanitize(cfg.cli_core),
-        sanitize(cfg.uart_io_core),
-        sanitize(cfg.ui_core),
-        sanitize(cfg.motion_core),
-        sanitize(cfg.gcode_core),
-        sanitize(cfg.macro_core),
-        sanitize(cfg.ladder_core),
-        sanitize(cfg.probe_core),
-        sanitize(cfg.bus_config_core),
-    };
-    for (uint32_t shared_core : shared_general_cores) {
-        if (shared_core == core_id) return false;
-    }
-    return true;
-}
-
-namespace sync {
-// `iorw`: these also order memory against device (MMIO) accesses, e.g. a
-// virtqueue update before the QUEUE_NOTIFY doorbell. `fence rw, rw` only
-// orders memory against memory.
-void barrier_dmb() { asm volatile("fence iorw, iorw" ::: "memory"); }
-void barrier_dsb() { asm volatile("fence iorw, iorw" ::: "memory"); }
-void barrier_isb() { asm volatile("fence iorw, iorw" ::: "memory"); }
-} // namespace sync
-
-void cpu_context_switch(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb) {
-    cpu_context_switch_impl(old_tcb, new_tcb);
-}
 
 void fp_scrub_registers() noexcept {
     // The compiler preserves the callee-saved fs0-fs11 around this call, so

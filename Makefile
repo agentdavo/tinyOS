@@ -40,20 +40,19 @@ ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
 
 # Binary blobs embedded via .incbin — built as a separate .S file so the raw
 # TSV bytes get a predictable start/end symbol pair in .rodata.
-CORE_S_EXTRA =
-ifeq ($(TARGET),arm64)
-    CORE_S_EXTRA += devices/embedded_blob.S devices/embedded_ui.S devices/embedded_kinematics.S devices/embedded_kinematic_obj.S devices/embedded_automation.S devices/embedded_signals.S devices/embedded_topology.S devices/embedded_placement.S devices/embedded_hmi.S devices/embedded_esi.S
-endif
+CORE_S_EXTRA = devices/embedded_blob.S devices/embedded_ui.S devices/embedded_kinematics.S \
+               devices/embedded_kinematic_obj.S devices/embedded_automation.S devices/embedded_signals.S \
+               devices/embedded_topology.S devices/embedded_placement.S devices/embedded_hmi.S \
+               devices/embedded_esi.S
 
-ifeq ($(TARGET),riscv64)
-    CORE_S_EXTRA += devices/embedded_ui.S devices/embedded_kinematics.S devices/embedded_kinematic_obj.S devices/embedded_automation.S devices/embedded_signals.S devices/embedded_topology.S devices/embedded_placement.S devices/embedded_hmi.S devices/embedded_esi.S
-endif
-
-ifeq ($(TARGET),arm64)
 ifeq ($(FAKE_SLAVE),1)
     CORE_CPP += ethercat/fake_slave.cpp
 endif
-endif
+
+# Arch-neutral MMIO drivers under hal/shared/ — both arches link all of them.
+HAL_SHARED_CPP = hal/shared/virtio_net.cpp hal/shared/virtio_gpu.cpp hal/shared/virtio_blk.cpp \
+                 hal/shared/virtio_input.cpp hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp \
+                 hal/shared/netif.cpp hal/shared/tcp.cpp hal/shared/websocket.cpp
 
 # ----- arm64 -----
 ifeq ($(TARGET),arm64)
@@ -66,10 +65,7 @@ ifeq ($(TARGET),arm64)
     # target for real hardware; upgrading march doesn't break that.
     CPU_FLAGS  = -mcpu=cortex-a53 -march=armv8-a+simd+lse
     CPU_S      = $(HAL_DIR)/cpu_arm64.S
-    HAL_CPP    = $(HAL_DIR)/hal_qemu_arm64.cpp hal/shared/virtio_net.cpp \
-                 hal/shared/virtio_gpu.cpp hal/shared/virtio_blk.cpp \
-                 hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp \
-                 hal/shared/virtio_input.cpp hal/shared/netif.cpp hal/shared/tcp.cpp hal/shared/websocket.cpp
+    HAL_CPP    = $(HAL_DIR)/hal_qemu_arm64.cpp $(HAL_DIR)/hal_arm64_irq.cpp $(HAL_SHARED_CPP)
     LINKER     = $(HAL_DIR)/linker.ld
     # Disable libgcc outline-atomics. Not needed now LSE is mandated by
     # -march, and its discovery ctor reads a nonexistent aux vector.
@@ -116,11 +112,7 @@ ifeq ($(TARGET),riscv64)
     CROSS      = riscv64-linux-gnu-
     CPU_FLAGS  = -march=rv64imafdc -mabi=lp64d -mcmodel=medany
     CPU_S      = $(HAL_DIR)/cpu_rv64.S
-    HAL_CPP    = $(HAL_DIR)/hal_qemu_rv64.cpp $(HAL_DIR)/rv64_stubs.cpp \
-                 hal/shared/virtio_net.cpp hal/shared/virtio_gpu.cpp \
-                 hal/shared/virtio_blk.cpp \
-                 hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp \
-                 hal/shared/virtio_input.cpp hal/shared/netif.cpp hal/shared/tcp.cpp hal/shared/websocket.cpp
+    HAL_CPP    = $(HAL_DIR)/hal_qemu_rv64.cpp $(HAL_DIR)/rv64_stubs.cpp $(HAL_SHARED_CPP)
     LINKER     = $(HAL_DIR)/linker.ld
     # -fno-pic/-fno-pie stops the compiler from emitting GOT-indirect
     # address-of-symbol sequences. On a freestanding kernel nothing
@@ -156,28 +148,11 @@ ifeq ($(TARGET),riscv64)
                  -device virtio-blk-device,drive=miniosblk
     # xhci removed from rv64 for parity with arm64 — see note under the
     # arm64 args block. If USB comes back, both arches need it.
-    # rv64 links the same shared kernel as arm64 (kernel/main.cpp + core.cpp +
-    # the EDFPolicy scheduler). The arch boundary is just the context-switch
-    # primitive (cpu_context_switch_rv64 in cpu_rv64.S, called via
-    # cpu_context_switch_impl in rv64_stubs.cpp) and the trap dispatcher's
+    # rv64 links exactly the same CORE_CPP as arm64 (kernel/main.cpp +
+    # core.cpp + hal.cpp + the EDFPolicy scheduler). The arch boundary is the
+    # context-switch primitive (cpu_context_switch_rv64 in cpu_rv64.S, called
+    # via cpu_context_switch_impl in rv64_stubs.cpp) and the trap dispatcher's
     # preemptive_tick hand-off in hal_qemu_rv64.cpp.
-    # rv64: excludes hal.cpp (its hal_irq_handler is arm64 IRQ-asm specific
-    #       and is_dedicated_rt_core is re-provided in rv64_stubs.cpp).
-    # rv64: also excludes embedded_blob.S (arm64-only TSV blobs).
-CORE_CPP  = kernel/main.cpp core.cpp util.cpp trace.cpp klog.cpp cli.cpp kernel_globals.cpp kernel/usb/usb.cpp \
-                cpp_runtime_stubs.cpp freestanding_stubs.cpp \
-                ethercat/master.cpp ethercat/frame.cpp ethercat/esm.cpp \
-                ethercat/pdo.cpp ethercat/bus_config.cpp ethercat/fake_slave.cpp \
-                motion/motion.cpp config/tsv.cpp \
-                devices/device_db.cpp devices/embedded.cpp \
-                diag/histogram.cpp diag/jitter.cpp diag/cpu_load.cpp \
-                ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
-                ui/ui_builder_tsv.cpp machine/machine_registry.cpp machine/machine_topology.cpp machine/runtime_placement.cpp machine/motion_wiring.cpp automation/macro_runtime.cpp automation/ladder_runtime.cpp automation/probe_runtime.cpp automation/signals.cpp machine/toolpods.cpp machine/pallet.cpp hmi/hmi_service.cpp \
-                cnc/offsets.cpp cnc/programs.cpp cnc/interpreter.cpp cnc/mdi.cpp \
-                cnc/setup.cpp cnc/jobs.cpp \
-                render/gles1.cpp render/machine_model.cpp render/kinematic_model.cpp \
-                render/obj_importer.cpp render/obj_registry.cpp render/stl_importer.cpp render/benchmark.cpp \
-                fs/vfs.cpp fs/fat32.cpp fs/fs_fat32.cpp
 endif
 
 ifndef CPU_S

@@ -42,8 +42,6 @@ void log_esi_result(size_t loaded, size_t skipped, bool ok) noexcept {
 
 } // namespace devices
 
-#if defined(__aarch64__)
-
 namespace devices {
 
 // Defined in embedded_blob.S via .incbin.
@@ -129,20 +127,3 @@ bool load_all_embedded() noexcept {
 
 } // namespace devices
 
-#else
-
-namespace devices {
-
-bool load_all_embedded() noexcept {
-    // No per-arch TSV blobs on rv64 yet — only the ESI vendor catalog.
-    size_t esi_loaded = 0, esi_skipped = 0;
-    const bool esi_ok = g_device_db.load_esi_blob(_binary_esi_payload_start,
-                                                  _binary_esi_payload_end,
-                                                  &esi_loaded, &esi_skipped);
-    log_esi_result(esi_loaded, esi_skipped, esi_ok);
-    return esi_ok;
-}
-
-} // namespace devices
-
-#endif

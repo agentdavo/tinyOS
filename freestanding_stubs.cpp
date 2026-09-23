@@ -220,14 +220,11 @@ extern "C" void early_uart_lock_release() {
 void early_uart_puts(const char* str) {
     if (!str) return;
 
-    // Test-and-set acquire. No spurious failures, no CAS-retry pitfall.
-    while (g_early_uart_lock.exchange(true, std::memory_order_acquire)) {
-        kernel::util::cpu_relax();
-    }
+    early_uart_lock_acquire();
 
     early_uart_write_unlocked(str);
 
-    g_early_uart_lock.store(false, std::memory_order_release);
+    early_uart_lock_release();
 }
 
 static inline void format_hex16(uint64_t value, char out[17]) {
@@ -248,14 +245,12 @@ extern "C" void boot_log_core_phase_c(uint64_t core_id, const char* phase) {
     char hex[17];
     format_hex16(core_id, hex);
 
-    while (g_early_uart_lock.exchange(true, std::memory_order_acquire)) {
-        kernel::util::cpu_relax();
-    }
+    early_uart_lock_acquire();
     early_uart_write_unlocked("[boot] core ");
     early_uart_write_unlocked(hex);
     early_uart_write_unlocked(": ");
     early_uart_write_unlocked(phase);
-    g_early_uart_lock.store(false, std::memory_order_release);
+    early_uart_lock_release();
 }
 
 // Emit a "<label><hex16>" pair atomically (ASM boot_log_reg64 used two
@@ -265,12 +260,10 @@ extern "C" void boot_log_reg64_c(uint64_t value, const char* label) {
     char hex[17];
     format_hex16(value, hex);
 
-    while (g_early_uart_lock.exchange(true, std::memory_order_acquire)) {
-        kernel::util::cpu_relax();
-    }
+    early_uart_lock_acquire();
     early_uart_write_unlocked(label);
     early_uart_write_unlocked(hex);
-    g_early_uart_lock.store(false, std::memory_order_release);
+    early_uart_lock_release();
 }
 
 
