@@ -39,6 +39,57 @@ g_irq_in_progress:
     .equ TCB_SP_OFFSET,       (31*8) // Offset for SP
     .equ TCB_PC_OFFSET,       (31*8 + 8)  // Offset for PC (ELR_EL1)
     .equ TCB_PSTATE_OFFSET,   (31*8 + 16) // Offset for PSTATE (SPSR_EL1)
+    .equ TCB_FP_OFFSET,       (31*8 + 24) // q0..q31, 16 bytes each (TCB.fp_regs)
+    .equ TCB_FPCTRL_OFFSET,   (TCB_FP_OFFSET + 32*16) // FPCR, FPSR (TCB.fp_ctrl)
+
+// Save / restore the full FP/SIMD state to/from a TCB. Eager on every switch:
+// GCC uses q-registers for ordinary code (struct zeroing, memcpy), so the
+// IRQ handler and every thread touch them. \tmp is clobbered.
+.macro SAVE_FP base, tmp
+    stp     q0,  q1,  [\base, #TCB_FP_OFFSET + 0*32]
+    stp     q2,  q3,  [\base, #TCB_FP_OFFSET + 1*32]
+    stp     q4,  q5,  [\base, #TCB_FP_OFFSET + 2*32]
+    stp     q6,  q7,  [\base, #TCB_FP_OFFSET + 3*32]
+    stp     q8,  q9,  [\base, #TCB_FP_OFFSET + 4*32]
+    stp     q10, q11, [\base, #TCB_FP_OFFSET + 5*32]
+    stp     q12, q13, [\base, #TCB_FP_OFFSET + 6*32]
+    stp     q14, q15, [\base, #TCB_FP_OFFSET + 7*32]
+    stp     q16, q17, [\base, #TCB_FP_OFFSET + 8*32]
+    stp     q18, q19, [\base, #TCB_FP_OFFSET + 9*32]
+    stp     q20, q21, [\base, #TCB_FP_OFFSET + 10*32]
+    stp     q22, q23, [\base, #TCB_FP_OFFSET + 11*32]
+    stp     q24, q25, [\base, #TCB_FP_OFFSET + 12*32]
+    stp     q26, q27, [\base, #TCB_FP_OFFSET + 13*32]
+    stp     q28, q29, [\base, #TCB_FP_OFFSET + 14*32]
+    stp     q30, q31, [\base, #TCB_FP_OFFSET + 15*32]
+    mrs     \tmp, fpcr
+    str     \tmp, [\base, #TCB_FPCTRL_OFFSET]
+    mrs     \tmp, fpsr
+    str     \tmp, [\base, #TCB_FPCTRL_OFFSET + 8]
+.endm
+
+.macro RESTORE_FP base, tmp
+    ldr     \tmp, [\base, #TCB_FPCTRL_OFFSET]
+    msr     fpcr, \tmp
+    ldr     \tmp, [\base, #TCB_FPCTRL_OFFSET + 8]
+    msr     fpsr, \tmp
+    ldp     q0,  q1,  [\base, #TCB_FP_OFFSET + 0*32]
+    ldp     q2,  q3,  [\base, #TCB_FP_OFFSET + 1*32]
+    ldp     q4,  q5,  [\base, #TCB_FP_OFFSET + 2*32]
+    ldp     q6,  q7,  [\base, #TCB_FP_OFFSET + 3*32]
+    ldp     q8,  q9,  [\base, #TCB_FP_OFFSET + 4*32]
+    ldp     q10, q11, [\base, #TCB_FP_OFFSET + 5*32]
+    ldp     q12, q13, [\base, #TCB_FP_OFFSET + 6*32]
+    ldp     q14, q15, [\base, #TCB_FP_OFFSET + 7*32]
+    ldp     q16, q17, [\base, #TCB_FP_OFFSET + 8*32]
+    ldp     q18, q19, [\base, #TCB_FP_OFFSET + 9*32]
+    ldp     q20, q21, [\base, #TCB_FP_OFFSET + 10*32]
+    ldp     q22, q23, [\base, #TCB_FP_OFFSET + 11*32]
+    ldp     q24, q25, [\base, #TCB_FP_OFFSET + 12*32]
+    ldp     q26, q27, [\base, #TCB_FP_OFFSET + 13*32]
+    ldp     q28, q29, [\base, #TCB_FP_OFFSET + 14*32]
+    ldp     q30, q31, [\base, #TCB_FP_OFFSET + 15*32]
+.endm
 
 // External symbols defined in linker script or C++/other object files
 .extern __init_array_start     // Provided by linker script
@@ -324,6 +375,7 @@ _secondary_start:
 
     ldr     x1, [x0, #TCB_SP_OFFSET]
     mov     sp, x1
+    RESTORE_FP x0, x1
     ldr     x30, [x0, #TCB_PC_OFFSET]
     ldr     x1, [x0, #TCB_PSTATE_OFFSET]
     msr     spsr_el1, x1
@@ -474,6 +526,10 @@ current_el_spx_irq_entry:
     mrs     x2, spsr_el1
     str     x2, [x1, #TCB_PSTATE_OFFSET]
 
+    // FP/SIMD state too — hal_irq_handler and whatever thread it switches
+    // to may both use q-registers.
+    SAVE_FP x1, x2
+
     // Mark this core as "in IRQ" so cpu_context_switch_impl knows the
     // outgoing thread is already spilled and it should just return rather
     // than do its own save+eret.
@@ -509,13 +565,14 @@ current_el_spx_irq_entry:
     ldr     x1, [x1]                                // current_thread
     cbz     x1, unhandled_exception_entry_point
 
-    // Restore from TCB: SP, ELR_EL1, SPSR_EL1, then GPRs, then eret.
+    // Restore from TCB: SP, ELR_EL1, SPSR_EL1, FP/SIMD, then GPRs, then eret.
     ldr     x2, [x1, #TCB_SP_OFFSET]
     mov     sp, x2
     ldr     x2, [x1, #TCB_PC_OFFSET]
     msr     elr_el1, x2
     ldr     x2, [x1, #TCB_PSTATE_OFFSET]
     msr     spsr_el1, x2
+    RESTORE_FP x1, x2
 
     ldr     x30,      [x1, #TCB_REGS_X30_OFFSET]
     ldp     x28, x29, [x1, #TCB_REGS_X0_OFFSET + (28*8)]
@@ -719,15 +776,17 @@ cpu_context_switch_impl:
     // SP = current SP at entry.
     mov     x2, sp
     str     x2, [x0, #TCB_SP_OFFSET]
+    SAVE_FP x0, x2
 
 .L_restore_new_context_for_switch:
-    // x1 = new_tcb. Restore SP, ELR_EL1, SPSR_EL1, GPRs, then eret.
+    // x1 = new_tcb. Restore SP, ELR_EL1, SPSR_EL1, FP/SIMD, GPRs, then eret.
     ldr     x2, [x1, #TCB_SP_OFFSET]
     mov     sp, x2
     ldr     x2, [x1, #TCB_PC_OFFSET]
     msr     elr_el1, x2
     ldr     x2, [x1, #TCB_PSTATE_OFFSET]
     msr     spsr_el1, x2
+    RESTORE_FP x1, x2
 
     ldr     x30,      [x1, #TCB_REGS_X30_OFFSET]
     ldp     x28, x29, [x1, #TCB_REGS_X0_OFFSET + (28*8)]

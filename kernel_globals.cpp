@@ -26,6 +26,10 @@ core::Scheduler* g_scheduler_ptr = nullptr;
 core::Spinlock g_trace_lock;
 core::Spinlock g_irq_handler_lock;
 
+// fp_context_selftest hook (see hal.hpp). Shared so both arches' IRQ
+// handlers read the same per-core flag.
+volatile uint8_t hal::g_fp_scrub_in_irq[core::MAX_CORES] = {};
+
 // Stub for memory protection (do nothing in minimal)
 void configure_memory_protection(core::TCB* tcb, bool enable_for_task) {
     (void)tcb;

@@ -28,6 +28,7 @@
 #include "../../miniOS.hpp"
 #include "../../kernel/main.hpp"
 #include "../../klog.hpp"
+#include "../../diag/cpu_load.hpp"
 #include "rt_wait.hpp"
 #include "fdt.hpp"
 #include "hal/shared/fdt_scan.hpp"
@@ -770,7 +771,16 @@ extern "C" void hal_trap_dispatch_rv64(uint64_t hartid, uint64_t mcause) {
         ~IrqGuard() { if (h < MAX_HARTS) g_irq_in_progress[h] = 0; }
     } irq_guard{hartid};
 
+    if (hartid < kernel::core::MAX_CORES && kernel::hal::g_fp_scrub_in_irq[hartid]) {
+        kernel::hal::fp_scrub_registers();
+    }
+
     if (mcause & MCAUSE_INT) {
+        // Per-core IRQ counter for the `top` CLI command (arm64 counts in
+        // hal_irq_handler).
+        if (hartid < kernel::core::MAX_CORES) {
+            diag::g_core_counters[hartid].irqs.fetch_add(1, std::memory_order_relaxed);
+        }
         uint64_t code = mcause & 0x7FFFFFFFFFFFFFFFULL;
         if (code == 7) {
             // Machine Timer Interrupt. Re-arm mtimecmp before consulting the

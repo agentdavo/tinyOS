@@ -51,6 +51,28 @@
     .equ TCB_SP_OFF,      (31*8)
     .equ TCB_PC_OFF,      (31*8 + 8)
     .equ TCB_MSTATUS_OFF, (31*8 + 16)
+    .equ TCB_FP_OFF,      (31*8 + 24)       /* f0..f31, 8 bytes each (TCB.fp_regs) */
+    .equ TCB_FCSR_OFF,    (TCB_FP_OFF + 512) /* fcsr (TCB.fp_ctrl[0]) */
+
+/* Save / restore the full FP state (f0..f31 + fcsr) to/from a TCB. Eager on
+ * every switch: lp64d code uses f-registers freely, including the
+ * callee-saved fs0..fs11. Requires mstatus.FS != Off, which _start and every
+ * TCB mstatus seed guarantee. \tmp is clobbered. */
+.macro SAVE_FP base, tmp
+    .irp n, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    fsd     f\n, (TCB_FP_OFF + \n*8)(\base)
+    .endr
+    frcsr   \tmp
+    sd      \tmp, TCB_FCSR_OFF(\base)
+.endm
+
+.macro RESTORE_FP base, tmp
+    ld      \tmp, TCB_FCSR_OFF(\base)
+    fscsr   \tmp
+    .irp n, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    fld     f\n, (TCB_FP_OFF + \n*8)(\base)
+    .endr
+.endm
 
     /* IRQ-stack frame layout (256 bytes, 16-byte aligned). Offsets here
      * index into the frame; r<N> means "slot for x<N>".  Matches the order
@@ -203,20 +225,10 @@ _start:
     .balign 4
     .global trap_entry
 trap_entry:
-    /* Mark this hart as handling an IRQ. Critical: this must happen BEFORE
-     * we swap stacks or save any state. Without this, a timer arriving during
-     * cpu_context_switch_rv64 (between MIE disable and mret) would have
-     * trap_entry save into current_thread — which is the NEW thread being
-     * loaded — corrupting pc/mstatus and causing the mret instruction-access
-     * fault we chase in the rv64 boot fix. Arm64 sets g_irq_in_progress at
-     * the hardware exception vector; rv64 must do the same at trap_entry. */
-    csrr    t0, mhartid
-    lla     t1, g_irq_in_progress
-    slli    t2, t0, 3
-    add     t1, t1, t2
-    li      t2, 1
-    sd      t2, 0(t1)
-    fence   rw, rw
+    /* Nothing may touch a GPR before the save below — every register holds
+     * interrupted-thread state. (g_irq_in_progress used to be set here via
+     * t0-t2, which clobbered them on every trap; it's now set after the
+     * save.) */
 
     /* Swap to per-hart IRQ stack. mscratch = irq_sp_top coming in,
      * mscratch = old (interrupted) sp on exit of this instruction. */
@@ -269,6 +281,17 @@ trap_entry:
     csrr    t0, mepc
     sd      t0, FR_MEPC(sp)
 
+    /* Mark this hart as handling a trap, so cpu_context_switch_impl knows
+     * the outgoing thread is saved here and trap exit will restore from
+     * current_thread. Mirrors arm64 setting g_irq_in_progress in its IRQ
+     * vector (after its GPR spill). GPRs are all saved, so t0-t2 are free. */
+    csrr    t0, mhartid
+    lla     t1, g_irq_in_progress
+    slli    t2, t0, 3
+    add     t1, t1, t2
+    li      t2, 1
+    sd      t2, 0(t1)
+
     /* ---- If g_per_cpu_data[hartid].current_thread != 0, copy frame into TCB ---- */
     /* PerCPUData is two pointers (16 bytes); current_thread is at offset 0.
      * kernel_g_per_cpu_data is a pointer slot holding the array's base.
@@ -314,6 +337,10 @@ trap_entry:
     csrr    t5, mstatus
     sd      t5, TCB_MSTATUS_OFF(t1)
 
+    /* FP state too — the C dispatcher and whatever thread it switches to
+     * may both use f-registers. */
+    SAVE_FP t1, t5
+
 .L_trap_skip_tcb_save:
     /* ---- Dispatch C handler ---- */
     csrr    a0, mhartid
@@ -351,6 +378,7 @@ trap_entry:
     ld      t5, TCB_MSTATUS_OFF(t1)
     andi    t5, t5, ~0x8
     csrw    mstatus, t5
+    RESTORE_FP t1, t5
     j       .L_trap_restore_frame_after_csrs
 
 .L_trap_restore_frame:
@@ -529,6 +557,7 @@ cpu_context_switch_rv64:
     li      t5, 0x1880                  /* MPIE | (MPP=M) */
     or      t1, t1, t5
     sd      t1,  (TCB_MSTATUS_OFF)(a0)
+    SAVE_FP a0, t5
 
 .L_ctx_restore:
     /* mret will atomically restore PC and IRQ state from the new TCB.
@@ -557,6 +586,8 @@ cpu_context_switch_rv64:
     slli    t2, t0, 3
     add     t1, t1, t2
     sd      zero, 0(t1)
+
+    RESTORE_FP a1, t0
 
     /* Restore every GPR from new_tcb, a1 (x11, the base) last. The new
      * thread may have been switched out by a trap at an arbitrary

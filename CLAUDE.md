@@ -20,6 +20,11 @@ The project is **miniOS** — a freestanding, bare-metal C++20 RTOS that runs as
 3. `cpu_context_switch_rv64` saved and restored only the callee-saved registers. A thread last switched out by a trap resumed with the yielding thread's `ra`/`t*`/`a*`. It now saves and restores all 31 GPRs, like arm64's `cpu_context_switch_impl`.
 4. Both mret paths mask `MIE` in the `mstatus` value they write, so an IRQ can't nest mid-restore; `mret` sets MIE from MPIE.
 5. `ethercat/master.cpp` had three `yield(0)` calls. `schedule()` switches the *calling* CPU, so a cross-core id requeued another core's running thread and saved this core's registers into its TCB. `Scheduler::yield` (shared `core.cpp`) now always uses the calling core's id.
+6. `trap_entry` also set `g_irq_in_progress` *before* saving GPRs, using `t0`–`t2`, so every trap corrupted them on entry as well as on exit. The flag is now set after the frame save. This was found by the `test fp` self-test below, and is the likely cause of the mismatched-context `motion` fault listed under open items.
+
+**FP/SIMD state is context-switched on both arches.** `TCB.fp_regs[64]` / `TCB.fp_ctrl[2]` (byte offsets 272 / 784, pinned by `static_assert`s in `core.hpp`) hold q0–q31 + FPCR/FPSR on arm64 and f0–f31 + fcsr on rv64. `SAVE_FP` / `RESTORE_FP` macros in each `.S` run on the trap/IRQ path and on the voluntary switch. The saves are eager, because GCC uses q-registers for ordinary struct zeroing and memcpy. `test fp` loads patterns into FP registers and spins for 50 ms while `g_fp_scrub_in_irq[core]` makes that core's IRQ handler overwrite every FP register (`fp_scrub_registers()`). It fails if any register changes or if no IRQ landed on the core, since a run without an IRQ proves nothing. Negative control: with the macros disabled it fails with mask `0xf3` on arm64 and `0xc3` on rv64.
+
+**arm64 had no timer preemption until the FP work.** `TimerDriver::init_core_timer_interrupt` wrote `CNTP_CTL_EL0 = 7`, but bit 1 is IMASK, so the scheduler tick was enabled *and masked*. No IRQ ever reached `hal_irq_handler` on any core, and arm64 ran purely cooperatively. It now writes `1`. `rt_wait.hpp` already did.
 
 **Fixed earlier, during the EDF-adoption regression:**
 
@@ -31,7 +36,7 @@ The project is **miniOS** — a freestanding, bare-metal C++20 RTOS that runs as
 6. `uart_io_entry`'s `flush_line` uses the captured `uart` parameter rather than the static `cli::io::g_uart` — some path on rv64 was leaving `g_uart` apparently NULL'd by the time the flush ran (vtable[3]=NULL → jumped to address 0). Function parameter is on uart_io's stack and stable (commit `8efe5a0`).
 
 **Still open:**
-- In one run out of 14 after the fixes above, `motion` on hart 1 took `mcause=5` (load access fault, `mtval=0x88000000`) in `run_sync_arbiter` with `ra` inside `safety_status()`. The PC came from one context and the registers from another. Cause not found yet.
+- In one run out of 14 after the fixes above, `motion` on hart 1 took `mcause=5` (load access fault, `mtval=0x88000000`) in `run_sync_arbiter` with `ra` inside `safety_status()`. The PC came from one context and the registers from another. Not seen since the `trap_entry` `t0`–`t2` fix (item 6), which is the likely cause; keep watching for it.
 - Two scheduler hazards on both arches, not yet fixed. (a) The timer IRQ calls `is_dedicated_rt_core` → `placement::Service::snapshot`, which takes a plain `ScopedLock`, so a thread on the same core holding that lock deadlocks the tick. (b) `thread_bootstrap` marks an exiting thread `ZOMBIE` before switching off its stack, so `create_thread` on another core can reuse the TCB and stack while the switch is still in flight.
 - Some rv64 PCI/MMIO paths (occasional traps on ec_a / fake_slave threads) may still need arch-aware fixes — not chased yet.
 
@@ -108,7 +113,7 @@ New MMIO drivers go behind `hal::Platform`; concrete impls in `hal/arm64/hal_qem
 
 ### Tests
 
-There is no host-runnable test binary. The CLI's `test` command runs a small built-in suite (status / motion / ec / devices subtests) defined directly in `cli.cpp::cmd_test`. CI greps the serial log for `Tests completed:.*0 failed`. To add a subtest, edit the dispatch in `cmd_test`.
+There is no host-runnable test binary. The CLI's `test` command runs a small built-in suite defined directly in `cli.cpp::cmd_test`. Subtests: status, motion, ec, devices, chain, mtl, fake_sdo, tcp, pallet, jobs, ui, fp. `test all` runs them all. CI greps the serial log for `Tests completed:.*0 failed`. To add a subtest, edit the dispatch in `cmd_test`.
 
 ### Static analysis (matches CI)
 

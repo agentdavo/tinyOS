@@ -169,6 +169,12 @@ struct TCB {
     uint64_t sp;
     uint64_t pc;
     uint64_t pstate;
+    // FP/SIMD state, saved and restored by both the trap path and the
+    // voluntary switch on each arch. arm64: q0..q31 (two words each) then
+    // fp_ctrl = {FPCR, FPSR}. rv64: f0..f31 in fp_regs[0..31] then
+    // fp_ctrl[0] = fcsr. Offsets are pinned below for the .S files.
+    alignas(16) uint64_t fp_regs[64];
+    uint64_t fp_ctrl[2];
     void (*entry_point)(void*);
     void* arg_ptr;
     uint8_t* stack_base;
@@ -205,7 +211,16 @@ struct TCB {
     }
 };
 
-struct TraceEntry { 
+// Byte offsets the context-switch assembly hard-codes (cpu_arm64.S TCB_*_OFFSET,
+// cpu_rv64.S TCB_*_OFF). Change these together or not at all.
+static_assert(offsetof(TCB, regs)    == 0,   "TCB.regs offset is fixed by the .S files");
+static_assert(offsetof(TCB, sp)      == 248, "TCB.sp offset is fixed by the .S files");
+static_assert(offsetof(TCB, pc)      == 256, "TCB.pc offset is fixed by the .S files");
+static_assert(offsetof(TCB, pstate)  == 264, "TCB.pstate offset is fixed by the .S files");
+static_assert(offsetof(TCB, fp_regs) == 272, "TCB.fp_regs offset is fixed by the .S files");
+static_assert(offsetof(TCB, fp_ctrl) == 784, "TCB.fp_ctrl offset is fixed by the .S files");
+
+struct TraceEntry {
     uint64_t timestamp_us;
     uint32_t core_id;
     const char* event_str; 

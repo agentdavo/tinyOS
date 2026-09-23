@@ -1665,6 +1665,7 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         uart->puts("  pallet   - pallet roster + status mutation\n");
         uart->puts("  jobs     - job scheduler state-machine smoke\n");
         uart->puts("  ui       - walk every TSV page + dialog and force a render\n");
+        uart->puts("  fp       - FP registers survive 50 ms of preemption\n");
         uart->puts("  all      - run every subtest and emit a summary\n");
         return 1;
     }
@@ -1954,6 +1955,27 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         uart->puts(buf);
         return mismatched == 0 ? 0 : 1;
     }
+    if (kernel::util::kstrcmp(args, "fp") == 0) {
+        // Context-switch FP integrity: timer ticks and preemptive switches
+        // land inside the self-test's asm block, so any register the trap or
+        // switch path fails to save/restore shows up as corrupted.
+        // Zero IRQs during the window means the trap path was never
+        // exercised, so the result proves nothing — count that as a failure.
+        const uint32_t core = kernel::g_platform ? kernel::g_platform->get_core_id() : 0;
+        const uint64_t irqs0 = core < kernel::core::MAX_CORES
+            ? diag::g_core_counters[core].irqs.load(std::memory_order_relaxed) : 0;
+        const uint32_t bad = kernel::hal::fp_context_selftest(50'000);
+        const uint64_t irqs = core < kernel::core::MAX_CORES
+            ? diag::g_core_counters[core].irqs.load(std::memory_order_relaxed) - irqs0 : 0;
+        const bool pass = bad == 0 && irqs > 0;
+        char buf[128];
+        kernel::util::k_snprintf(buf, sizeof(buf),
+            "fp test: 8 regs across 50 ms, %llu irqs on core %u, corrupted mask=0x%02x => %s\n",
+            static_cast<unsigned long long>(irqs), static_cast<unsigned>(core),
+            static_cast<unsigned>(bad), pass ? "PASSED" : "FAILED");
+        uart->puts(buf);
+        return pass ? 0 : 1;
+    }
     if (kernel::util::kstrcmp(args, "all") == 0) {
         // CI-grep target. Runs every subtest and emits a consolidated
         // summary "Tests completed: <total>, <failed> failed".
@@ -1961,7 +1983,7 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
             "status", "motion", "ec", "devices",
             "chain", "mtl", "fake_sdo",
             "tcp", "pallet", "jobs",
-            "ui",
+            "ui", "fp",
         };
         size_t failed = 0;
         for (const char* s : subtests) {

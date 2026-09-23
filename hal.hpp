@@ -48,6 +48,23 @@ namespace sync {
 // Its implementation is architecture-specific and typically involves assembly.
 void cpu_context_switch(kernel::core::TCB* old_tcb, kernel::core::TCB* new_tcb);
 
+// Context-switch FP self-test (CLI `test fp`). Loads known patterns into eight
+// FP registers (callee- and caller-saved), spins on the arch counter for
+// `duration_us` with IRQs left as the caller has them so timer ticks and
+// preemptive switches land mid-block, then checks them. Returns a bitmask of
+// corrupted registers (bit i = i-th register loaded in the per-arch impl) —
+// 0 means FP state survived every switch.
+uint32_t fp_context_selftest(uint64_t duration_us) noexcept;
+
+// Test hook for fp_context_selftest: while g_fp_scrub_in_irq[core] is set,
+// that core's IRQ/trap handler calls fp_scrub_registers() to overwrite every
+// FP register with garbage. Values the self-test holds in FP registers then
+// survive only if the trap path saves and restores FP state — which makes
+// the test deterministic instead of relying on another thread happening to
+// use the same registers.
+extern volatile uint8_t g_fp_scrub_in_irq[kernel::core::MAX_CORES];
+void fp_scrub_registers() noexcept;
+
 
 struct MemoryOps {
     virtual ~MemoryOps() = default;

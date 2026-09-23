@@ -235,7 +235,11 @@ void TimerDriver::init_core_timer_interrupt(uint32_t core_id) {
     }
     uint64_t ticks_for_period = (timer_freq_hz_ * TIMER_TICK_US) / 1000000ULL;
     write_sysreg_cntp_tval(ticks_for_period);
-    write_sysreg_cntp_ctl(7); // EN(1) + not-masked(2) + IEN(4) = 7
+    // CNTP_CTL_EL0: bit0 ENABLE, bit1 IMASK (1 = interrupt MASKED), bit2
+    // ISTATUS (read-only). ENABLE with IMASK clear is 1. This used to write
+    // 7, which set IMASK: the tick never fired and arm64 ran fully
+    // cooperatively with no preemption.
+    write_sysreg_cntp_ctl(1);
     HAL_VDBG("[HAL_DEBUG] TimerDriver::init_core_timer_interrupt() EXIT\n");
 }
 void TimerDriver::ack_core_timer_interrupt(uint32_t core_id) {
