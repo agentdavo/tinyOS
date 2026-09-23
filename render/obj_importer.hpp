@@ -85,6 +85,13 @@ struct ImportedMesh {
     // importer's default (0xFFFFFFFF) and the caller's back-paint pass
     // (machine_model.cpp::import_mesh_into_meshpart) overrides it.
     const MaterialMap* materials = nullptr;
+    // Optional STL vertex welding. When non-null, the STL importer reuses an
+    // existing vertex whose position and normal are bit-identical instead of
+    // emitting a fresh one per facet corner (CAD STLs repeat every corner
+    // ~6x). Open-addressed table of vertex indices, 0xFFFF = empty;
+    // weld_table_size must be a power of two larger than max_vertices.
+    uint16_t* weld_table = nullptr;
+    size_t weld_table_size = 0;
 };
 
 enum class ImportStatus : uint8_t {

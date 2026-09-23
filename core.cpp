@@ -105,6 +105,12 @@ void Spinlock::acquire_general() noexcept {
     }
 }
 
+bool Spinlock::try_acquire_general() noexcept {
+    bool expected = false;
+    return lock_flag_.compare_exchange_strong(expected, true, std::memory_order_acquire,
+                                              std::memory_order_relaxed);
+}
+
 void Spinlock::release_general() noexcept {
     lock_flag_.store(false, std::memory_order_release);
 }

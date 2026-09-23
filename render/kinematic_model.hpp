@@ -76,19 +76,55 @@ enum class MachineType : uint8_t {
 };
 
 void create_standard_machine(KinematicChain& chain, MachineType type);
-void destroy_kinematic_chain(KinematicChain& chain);
 bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len);
 
-void update_axis_position(KinematicChain& chain, size_t axis_idx, float position);
-void update_axis_by_name(KinematicChain& chain, const char* name, float position);
 void compute_forward_kinematics(KinematicChain& chain);
 const gles1::Mat4& get_link_transform(const KinematicChain& chain, size_t link_idx);
-const gles1::Mat4& get_mesh_local_transform(const KinematicChain& chain, size_t link_idx);
 gles1::Mat4 get_mesh_world_transform(const KinematicChain& chain, size_t link_idx);
 size_t find_axis_by_name(const KinematicChain& chain, const char* name);
 
-size_t get_channel_axis_count(const KinematicChain& chain, uint8_t channel);
-size_t get_channel_axes(const KinematicChain& chain, uint8_t channel, size_t* axis_indices_out, size_t max_out);
+// Motion counts per model unit (mm or deg) for mapping live axis positions
+// onto the chain. Matches cnc/interpreter.cpp's units_to_counts (100/mm).
+// NOTE: the operator DRO bindings in ui/ divide by 1000 instead — the two
+// disagree and are not reconciled yet.
+constexpr float kMotionCountsPerUnit = 100.0f;
+
+// ---- Tool pose + inverse kinematics --------------------------------------
+// Chains are authored in millimetres and degrees, Z up. A machine is two
+// branches off a common root: the tool side ends at the tool link, the work
+// side at the work link (the root when the table is not moved by any axis).
+// The tool pose is the tool link's origin and +Z axis, expressed in the work
+// link's frame. So table-table, head-head and table-head machines use the
+// same round trip.
+struct ToolFrames {
+    int8_t tool_link = -1;
+    int8_t work_link = -1;
+};
+
+struct ToolPose {
+    gles1::Vec3f position{};   // mm, in the work link's frame
+    gles1::Vec3f axis{};       // unit, in the work link's frame
+};
+
+struct IkResult {
+    bool converged = false;
+    float position_error = 0.0f;   // mm
+    float axis_error = 0.0f;       // |axis - target axis| (≈ radians)
+    int iterations = 0;
+};
+
+// Tool link = a link named "spindle", else "Z", else the last link. Work link
+// = the deepest link that is not on the tool link's ancestor path, else the
+// root.
+ToolFrames find_tool_frames(const KinematicChain& chain);
+// Reads the transforms from the last compute_forward_kinematics().
+ToolPose compute_tool_pose(const KinematicChain& chain, const ToolFrames& frames);
+// Damped least squares with an analytic Jacobian. Seeds from the chain's
+// current axis positions, keeps every joint inside [travel_min, travel_max]
+// (rotaries whose span is >= 360 deg wrap instead of clamping), and leaves
+// the chain at the solution with FK up to date.
+IkResult solve_ik(KinematicChain& chain, const ToolFrames& frames, const ToolPose& target,
+                  int max_iterations = 64);
 
 } // namespace render::kinematic
 

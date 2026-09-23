@@ -91,6 +91,15 @@ public:
     void mark_dirty() { needs_redraw_ = true; }
     virtual void mark_subtree_dirty() { mark_dirty(); }
 
+    // True if this widget or any visible descendant needs a repaint. A
+    // bound leaf that marks itself dirty (poll_bind_dirty) leaves its
+    // containers clean, so render paths must ask this rather than
+    // needs_redraw() to reach it.
+    virtual bool subtree_dirty() const { return needs_redraw_; }
+    // Repaint only dirty descendants, without this widget's own background
+    // (it is clean). Leaves have no descendants.
+    virtual void render_dirty_children(Framebuffer&) {}
+
     // Bind-driven dirty: called once per UI tick on every visible widget.
     // Bound widgets override to compare the current bind value against an
     // internal cache and call mark_dirty() only when the value changed.
@@ -141,13 +150,33 @@ public:
     }
     
     void render(Framebuffer& fb) override {
+        Container::render_dirty_children(fb);   // non-virtual: subclasses may route theirs back to render()
+    }
+
+    // Dirty children repaint fully; clean child containers pass the repaint
+    // down to their own dirty descendants. Without the second branch a
+    // bind-driven mark_dirty() on a leaf never reached the screen until
+    // something dirtied the whole page (page switch, CLI ui_page / ui_dump).
+    void render_dirty_children(Framebuffer& fb) override {
         for (size_t i = 0; i < child_count_; ++i) {
             Widget* child = children_[i];
-            if (child->visible() && child->needs_redraw()) {
+            if (!child || !child->visible()) continue;
+            if (child->needs_redraw()) {
                 child->render(fb);
                 child->clear_redraw();
+            } else if (child->subtree_dirty()) {
+                child->render_dirty_children(fb);
             }
         }
+    }
+
+    bool subtree_dirty() const override {
+        if (needs_redraw_) return true;
+        for (size_t i = 0; i < child_count_; ++i) {
+            const Widget* child = children_[i];
+            if (child && child->visible() && child->subtree_dirty()) return true;
+        }
+        return false;
     }
 
     void poll_bind_dirty() override {
@@ -488,6 +517,9 @@ public:
                 fb_.clear(Color::Black());
                 current_screen_->render(fb_);
                 current_screen_->clear_redraw();
+            } else if (current_screen_->subtree_dirty()) {
+                // Partial update: only the dirty widgets repaint, no clear.
+                current_screen_->render_dirty_children(fb_);
             }
         }
     }

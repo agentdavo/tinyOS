@@ -780,17 +780,19 @@ function loadLocal() {
 
 // ---- BEGIN SYNCED DEFAULTS (regenerate via machines/sync_defaults.sh) ----
 const DEFAULT_KINEMATIC_TSV = `# Kinematic chain configuration for 3-axis mill visualization.
-# Extended to 15 columns (trailing obj_file) — kernel parser accepts both
-# 14 and 15. Leaving obj_file empty falls back to the mesh= slot lookup
-# (programmatic MachineModel); setting it routes through the OBJ registry
-# -> ObjImporter -> MachineModel::per_axis[] at boot.
+# Units: millimetres and degrees, Z up (same as every chain TSV).
+# 22-column format: obj_file plus mesh_off/mesh_rot/mesh_scale. An empty
+# obj_file falls back to the name-keyed placeholder primitive; setting it
+# routes through the OBJ registry -> importer -> MachineModel::per_axis[].
+# The base is the unit demo_box.obj scaled to 1200 mm and sunk so its top
+# face sits at Z=0 under the X/Y travel.
 
-name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file
-base,Fixed,-1,0,0,0,0,0,0,0,0,obj,0,-1,demo_box.obj
-X,Linear,base,1,0,0,0,0,0,0,1000,box,0,0,
-Y,Linear,X,0,1,0,0,0,0,0,800,box,0,1,
-Z,Linear,Y,0,0,1,0,0,0,0,500,box,0,2,
-spindle,Fixed,Z,0,0,0,0,0.15,0,0,0,spindle,0,3,`;
+name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z,mesh_scale
+base,Fixed,-1,0,0,0,0,0,0,0,0,obj,0,-1,demo_box.obj,500,400,-600,0,0,0,1200
+X,Linear,base,1,0,0,0,0,0,0,1000,box,0,0,,0,0,0,0,0,0,1
+Y,Linear,X,0,1,0,0,0,0,0,800,box,0,1,,0,0,0,0,0,0,1
+Z,Linear,Y,0,0,1,0,0,0,0,500,box,0,2,,0,0,0,0,0,0,1
+spindle,Fixed,Z,0,0,0,0,0,150,0,0,spindle,0,-1,,0,0,0,0,0,0,1`;
 const DEFAULT_PODS_TSV = `# SPDX-License-Identifier: MIT OR Apache-2.0
 # Physical tool pods and virtual tool assignments.
 # Pod rows carry a machine-space anchor (x/y/z); station offsets are relative

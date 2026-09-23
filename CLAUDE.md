@@ -85,7 +85,11 @@ For UI capture, prefer the guest-driven path instead of gdb framebuffer pokes:
 bash scripts/qemu_dump_ui_pages.sh /tmp/ui_captures
 ```
 
-That script talks to the CLI over serial, issues `ui_page <id>` and `ui_dump <scale>`, and writes page `.ppm` / `.png` files. The relevant CLI commands live in `cli.cpp`; `ui_page` and `ui_dump` both force `kernel::ui::render_ui_once()` so the framebuffer reflects the requested page immediately.
+That script talks to the CLI over serial, issues `ui_page <id>` and `ui_dump <scale>`, and writes page `.ppm` / `.png` files. The relevant CLI commands live in `cli.cpp`; `ui_page` and `ui_dump` both force `kernel::ui::render_ui_once()` so the framebuffer reflects the requested page immediately. `kin <link> <mm|deg>` / `kin zoom <f>` pose and frame the machine view without drives, so a capture can show a specific machine pose.
+
+### sdcard.img shadows the embedded defaults
+
+Every file on `sdcard.img` (`/system/machine/*`, `/system/ui/embedded_ui.tsv`) **replaces** the kernel's `.incbin` copy of the same path at boot. A stale card silently overrides a freshly built kernel — it once carried an old `embedded_ui.tsv` that failed to load, so every page rendered blank. After touching `machines/` or `devices/embedded_ui.tsv`, regenerate it with `python3 scripts/mkimg.py` (pure Python, byte-reproducible; `scripts/mkimg.sh` wraps it). CI fails if the committed image differs from the generated one. `.gitattributes` keeps the embedded TSV/OBJ/.S inputs LF on Windows checkouts; the parsers also tolerate CRLF.
 
 ### Target selection
 
@@ -113,7 +117,7 @@ New MMIO drivers go behind `hal::Platform`; concrete impls in `hal/arm64/hal_qem
 
 ### Tests
 
-There is no host-runnable test binary. The CLI's `test` command runs a small built-in suite defined directly in `cli.cpp::cmd_test`. Subtests: status, motion, ec, devices, chain, mtl, fake_sdo, tcp, pallet, jobs, ui, fp, mem. `test all` runs them all. CI greps the serial log for `Tests completed:.*0 failed`. To add a subtest, edit the dispatch in `cmd_test`.
+There is no host-runnable test binary. The CLI's `test` command runs a small built-in suite defined directly in `cli.cpp::cmd_test`. Subtests: status, motion, ec, devices, chain, mtl, fake_sdo, tcp, pallet, jobs, ui, fp, mem, kin. `test all` runs them all (`Tests completed: 14, 0 failed`). `kin` checks the gles1 matrix conventions, chain-TSV validation, and FK/IK round trips for every shipped machine. CI greps the serial log for `Tests completed:.*0 failed`. To add a subtest, edit the dispatch in `cmd_test`.
 
 ### Static analysis (matches CI)
 
@@ -154,5 +158,7 @@ Linker scripts `hal/arm64/linker.ld` / `hal/riscv64/linker.ld` fix the load base
 
 - Two namespaces carry all kernel code: `kernel::core::` (types) and `kernel::hal::` (interfaces/drivers). Subsystems get their own sub-namespace (`kernel::audio`, `kernel::dsp`, …).
 - Global kernel constants (`MAX_THREADS=16`, `MAX_CORES=4`, `DEFAULT_STACK_SIZE=4096`, etc.) live in `core.hpp` — change them there, not in subsystem headers.
+- UI rendering: every whole-tree render (UI loop, `render_ui_once` from CLI/HMI) holds `ui_builder::lock_state()`, whose waiters yield. It is not recursive — never call `set_page` / `show_dialog` from a widget's `render()`. Bound widgets repaint via `poll_bind_dirty()` → `mark_dirty()`; containers pass that down through `subtree_dirty()` / `render_dirty_children()`, so a leaf must fully repaint its own rect.
+- Machine model: chains, meshes and overlays are millimetres/degrees, Z up; motion counts map to chain units through `render::kinematic::kMotionCountsPerUnit`. `gles1::Mat4` is column-major (`m[col*4+row]`) with column vectors. See `render/MACHINE_MODEL.md` for the data flow and open findings.
 - Lock discipline: use `ScopedISRLock` inside IRQ context, `ScopedLock` elsewhere. Any lock that IRQ-context code can take must be taken as `ScopedISRLock` everywhere, or a same-core holder deadlocks the IRQ (see `placement::Service`). The CLI `trace` command dumps `trace::g_trace_manager`.
 - License header (`SPDX-License-Identifier: MIT OR Apache-2.0`) goes at the top of every new source/header.

@@ -73,6 +73,8 @@ public:
     [[nodiscard]] uint64_t acquire_isr_safe() noexcept;
     void release_isr_safe(uint64_t saved_irq_state) noexcept;
     void acquire_general() noexcept;
+    // One CAS attempt; lets callers back off (e.g. yield) instead of spinning.
+    [[nodiscard]] bool try_acquire_general() noexcept;
     void release_general() noexcept;
 };
 

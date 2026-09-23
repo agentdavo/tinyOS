@@ -18,20 +18,10 @@
 
 namespace render::obj {
 
-struct RegistryEntry {
-    const char* name;
-    const char* data;   // start of OBJ text
-    size_t size;        // bytes
-};
-
-// Returns a pointer+size pair for the given `name`, or {nullptr,0} if not
-// registered. Lookup is linear over the static table; it runs once at chain
-// bind time, so O(n) is fine for n<=MAX_AXES.
+// Resolves a chain obj_file basename to its bytes under system/machine/ in
+// the VFS (SD card first, then the embedded defaults). Returns false and
+// {nullptr,0} if absent.
 bool lookup(const char* name, const char*& out_data, size_t& out_size);
-
-// Registry exposed for introspection / CLI listing.
-const RegistryEntry* entries();
-size_t entry_count();
 
 } // namespace render::obj
 

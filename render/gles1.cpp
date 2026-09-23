@@ -90,11 +90,15 @@ Mat4 Mat4::identity() {
     return out;
 }
 
+// Column-major product A·B: element (row i, col j) lives at m[j*4 + i].
+// This used to store into m[i*4 + j] and so returned (A·B)ᵀ — every
+// composed MVP was transposed, which put the camera target behind the eye
+// (w < 0) and left the machine view blank.
 Mat4 multiply(const Mat4& a, const Mat4& b) {
     Mat4 out{};
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            out.m[i * 4 + j] = 
+            out.m[j * 4 + i] =
                 a.m[0 * 4 + i] * b.m[j * 4 + 0] +
                 a.m[1 * 4 + i] * b.m[j * 4 + 1] +
                 a.m[2 * 4 + i] * b.m[j * 4 + 2] +
@@ -159,8 +163,8 @@ Mat4 make_rotation_z(float radians) {
     Mat4 out = Mat4::identity();
     float s, c;
     sincos_approx(radians, s, c);
-    out.m[0] = c;  out.m[1] = -s;
-    out.m[4] = s;  out.m[5] = c;
+    out.m[0] = c;  out.m[1] = s;    // column 0 = ( c, s, 0)
+    out.m[4] = -s; out.m[5] = c;    // column 1 = (-s, c, 0)
     return out;
 }
 
@@ -211,10 +215,12 @@ Mat4 make_look_at(const Vec3f& eye, const Vec3f& center, const Vec3f& up) {
     Vec3f s = normalize_v3_fast(cross_v3v3(f, up));
     Vec3f u = cross_v3v3(s, f);
 
+    // The camera basis goes in the ROWS (view = Rᵀ·T(-eye)); in column-major
+    // storage row r of column c is m[c*4 + r].
     Mat4 out = Mat4::identity();
-    out.m[0] = s.x; out.m[1] = s.y; out.m[2] = s.z;
-    out.m[4] = u.x; out.m[5] = u.y; out.m[6] = u.z;
-    out.m[8] = -f.x; out.m[9] = -f.y; out.m[10] = -f.z;
+    out.m[0] = s.x;  out.m[4] = s.y;  out.m[8]  = s.z;
+    out.m[1] = u.x;  out.m[5] = u.y;  out.m[9]  = u.z;
+    out.m[2] = -f.x; out.m[6] = -f.y; out.m[10] = -f.z;
     out.m[12] = -dot_v3v3(s, eye);
     out.m[13] = -dot_v3v3(u, eye);
     out.m[14] = dot_v3v3(f, eye);

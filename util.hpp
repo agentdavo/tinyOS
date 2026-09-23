@@ -122,6 +122,55 @@ inline bool isdigit(char c) noexcept {
     return (c >= '0' && c <= '9');
 }
 
+// Decimal float scanner shared by every text-config / G-code parser (there
+// used to be seven hand-rolled copies). Reads [+-]digits[.digits] starting at
+// s[idx] and advances idx past what it consumed. With allow_exponent, an
+// e/E followed by [+-]digits scales the result; G-code callers leave it off
+// so a following word letter is never swallowed. Stops at the first
+// character that doesn't fit, like strtof without locale or hex.
+inline float parse_float_at(const char* s, size_t& idx, bool allow_exponent = false) noexcept {
+    bool neg = false;
+    if (s[idx] == '-') { neg = true; ++idx; }
+    else if (s[idx] == '+') { ++idx; }
+    float value = 0.0f;
+    while (isdigit(s[idx])) {
+        value = value * 10.0f + static_cast<float>(s[idx] - '0');
+        ++idx;
+    }
+    if (s[idx] == '.') {
+        ++idx;
+        float place = 0.1f;
+        while (isdigit(s[idx])) {
+            value += static_cast<float>(s[idx] - '0') * place;
+            place *= 0.1f;
+            ++idx;
+        }
+    }
+    if (allow_exponent && (s[idx] == 'e' || s[idx] == 'E')) {
+        size_t j = idx + 1;
+        bool eneg = false;
+        if (s[j] == '-') { eneg = true; ++j; }
+        else if (s[j] == '+') { ++j; }
+        if (isdigit(s[j])) {
+            int exp = 0;
+            while (isdigit(s[j])) {
+                if (exp < 100) exp = exp * 10 + (s[j] - '0');
+                ++j;
+            }
+            for (int k = 0; k < exp; ++k) value = eneg ? value * 0.1f : value * 10.0f;
+            idx = j;
+        }
+    }
+    return neg ? -value : value;
+}
+
+// Whole-string convenience: null or empty returns `fallback`.
+inline float parse_float(const char* s, float fallback = 0.0f) noexcept {
+    if (!s || !*s) return fallback;
+    size_t idx = 0;
+    return parse_float_at(s, idx, true);
+}
+
 // IP address conversion
 bool ipv4_to_uint32(std::string_view ip_str, uint32_t& ip_addr) noexcept;
 
@@ -133,6 +182,11 @@ int uint64_to_str(uint64_t value, char* buffer, size_t buffer_size, int base = 1
 int uint64_to_hex_str(uint64_t value, char* buffer, size_t buffer_size, bool leading_0x = true) noexcept;
 
 void uint32_to_ipv4_str(uint32_t ip_addr, std::span<char> out_buffer) noexcept; 
+
+// Kernel bump-heap usage (cpp_runtime_stubs.cpp). operator delete is a no-op,
+// so `used` is monotonic.
+size_t kernel_heap_used() noexcept;
+size_t kernel_heap_capacity() noexcept;
 
 // Simplified snprintf-like functions (definitions in util.cpp)
 int k_vsnprintf(char* buffer, size_t bufsz, const char* format, va_list args) noexcept;

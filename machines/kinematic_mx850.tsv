@@ -1,5 +1,6 @@
 # Kinematic chain for the MX850 — 5-axis mill, trunnion-table layout.
-# 15-column format (trailing obj_file column). Two chains branch off the
+# Units: millimetres and degrees, Z up (same as every chain TSV).
+# 21-column format (obj_file + mesh_off/mesh_rot). Two chains branch off the
 # upper base: the table slide stack (X -> B -> C) and the spindle stack
 # (Y -> Z).
 #
@@ -17,14 +18,24 @@
 # alongside this TSV in machines/, and on the SD card they land flat at
 # /system/machine/. render::obj::lookup("MX850-DOC1227B.STL") rewrites to
 # `system/machine/MX850-DOC1227B.STL` and hits the VFS cache directly.
-# STL vertices are already in machine frame so offsets are zero — tweak
-# only if you need to shift a whole sub-chain.
+#
+# STL vertices are in one shared assembly frame, so the fixed and linear
+# links need no offsets. The rotaries do: a joint rotates about its own
+# origin, so each rotary's origin sits on its axis and mesh_off moves the
+# STL back by the same amount (the assembly is unchanged at B=C=0).
+#   C axis: centre of the 629 mm table (DOC3186A bounding box), top face
+#           at z=984.8  ->  (1364.0, 1114.05, 984.8)
+#   B axis: runs along X; y/z least-squares fitted to the trunnion and
+#           carriage bearing bores (DOC3184A / DOC1227B), ~±3 mm  ->
+#           y=1114.05 (same as the table centre), z=986.0. x is arbitrary on
+#           the axis; 1364.0 keeps C's offset purely vertical.
+# Confirm both against the machine drawings before trusting sim clearances.
 
-name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file
-base_floor,Fixed,-1,0,0,0,-500,-1000,-1000,0,0,obj,0,-1,MX850-DOC1231B.STL
-base_upper,Fixed,base_floor,0,0,0,0,0,0,0,0,obj,0,-1,MX850-DOC1228A.STL
-X,Linear,base_upper,1,0,0,0,0,0,-450,450,obj,0,0,MX850-DOC1227B.STL
-B,Rotary,X,1,0,0,0,0,0,-90,90,obj,0,3,MX850-DOC3184A.STL
-C,Rotary,B,0,0,1,0,0,0,0,360,obj,0,4,MX850-DOC3186A.STL
-Y,Linear,base_upper,0,1,0,0,0,0,0,550,obj,0,1,MX850-DOC1230A.STL
-Z,Linear,Y,0,0,1,0,0,0,0,500,obj,0,2,MX850-DOC1234B.STL
+name,type,parent,dir_x,dir_y,dir_z,off_x,off_y,off_z,min,max,mesh,channel,motion_axis,obj_file,mesh_off_x,mesh_off_y,mesh_off_z,mesh_rot_x,mesh_rot_y,mesh_rot_z
+base_floor,Fixed,-1,0,0,0,-500,-1000,-1000,0,0,obj,0,-1,MX850-DOC1231B.STL,0,0,0,0,0,0
+base_upper,Fixed,base_floor,0,0,0,0,0,0,0,0,obj,0,-1,MX850-DOC1228A.STL,0,0,0,0,0,0
+X,Linear,base_upper,1,0,0,0,0,0,-450,450,obj,0,0,MX850-DOC1227B.STL,0,0,0,0,0,0
+B,Rotary,X,1,0,0,1364,1114.05,986,-90,90,obj,0,3,MX850-DOC3184A.STL,-1364,-1114.05,-986,0,0,0
+C,Rotary,B,0,0,1,0,0,-1.2,0,360,obj,0,4,MX850-DOC3186A.STL,-1364,-1114.05,-984.8,0,0,0
+Y,Linear,base_upper,0,1,0,0,0,0,0,550,obj,0,1,MX850-DOC1230A.STL,0,0,0,0,0,0
+Z,Linear,Y,0,0,1,0,0,0,0,500,obj,0,2,MX850-DOC1234B.STL,0,0,0,0,0,0

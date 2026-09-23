@@ -5,6 +5,7 @@
 #include "miniOS.hpp"
 #include "hal.hpp"
 #include "util.hpp"
+#include "util_math.hpp"
 
 namespace render::kinematic {
 
@@ -42,25 +43,7 @@ int32_t simple_atoi(const char* s) {
 }
 
 float simple_atof(const char* s) {
-    if (!s) return 0.0f;
-    int sign = 1;
-    if (*s == '-') { sign = -1; ++s; }
-    int32_t whole = 0;
-    while (*s >= '0' && *s <= '9') {
-        whole = whole * 10 + (*s - '0');
-        ++s;
-    }
-    float out = static_cast<float>(whole);
-    if (*s == '.') {
-        ++s;
-        float scale = 0.1f;
-        while (*s >= '0' && *s <= '9') {
-            out += static_cast<float>(*s - '0') * scale;
-            scale *= 0.1f;
-            ++s;
-        }
-    }
-    return sign < 0 ? -out : out;
+    return kernel::util::parse_float(s, 0.0f);
 }
 
 AxisType parse_axis_type(const char* s) {
@@ -148,6 +131,8 @@ size_t recognize_header(const char* line) {
 
 } // namespace
 
+// Built-in templates, used only when no chain TSV resolves in the VFS.
+// Units match the TSVs: millimetres and degrees, Z up.
 void create_standard_machine(KinematicChain& chain, MachineType type) {
     chain = KinematicChain{};
     chain.axis_count = 0;
@@ -160,7 +145,7 @@ void create_standard_machine(KinematicChain& chain, MachineType type) {
             set_axis(chain.axes[1], "X",      AxisType::Linear, "base", 0, 1,0,0, 0,0,0, 0,1000, "box", "axis_x.obj", 0);
             set_axis(chain.axes[2], "Y",      AxisType::Linear, "X", 0, 0,1,0, 0,0,0, 0,800, "box", "axis_y.obj", 1);
             set_axis(chain.axes[3], "Z",      AxisType::Linear, "Y", 0, 0,0,1, 0,0,0, 0,500, "box", "axis_z.obj", 2);
-            set_axis(chain.axes[4], "spindle",AxisType::Fixed,  "Z", 0, 0,0,0, 0,0,0.15f, 0,0, "spindle", "spindle.obj", 3);
+            set_axis(chain.axes[4], "spindle",AxisType::Fixed,  "Z", 0, 0,0,0, 0,0,150, 0,0, "spindle", "spindle.obj", 3);
             chain.axis_count = 5;
             chain.num_channels = 1;
             break;
@@ -170,9 +155,9 @@ void create_standard_machine(KinematicChain& chain, MachineType type) {
             set_axis(chain.axes[1], "X",      AxisType::Linear, "base", 0, 1,0,0, 0,0,0, 0,500, "box", "x_axis.obj", 0);
             set_axis(chain.axes[2], "Y",      AxisType::Linear, "X", 0, 0,1,0, 0,0,0, 0,400, "box", "y_axis.obj", 1);
             set_axis(chain.axes[3], "Z",      AxisType::Linear, "Y", 0, 0,0,1, 0,0,0, 0,300, "box", "z_axis.obj", 2);
-            set_axis(chain.axes[4], "C",      AxisType::Rotary, "Z", 1, 0,0,1, 0,0,0.1f, 0,360, "table", "c_table.obj", 16);
-            set_axis(chain.axes[5], "B",      AxisType::Rotary, "C", 1, 0,1,0, 0,0,0.15f, -120,120, "pivot", "b_pivot.obj", 17);
-            set_axis(chain.axes[6], "spindle",AxisType::Fixed,  "B", 1, 0,0,0, 0,0,0.25f, 0,0, "spindle", "spindle.obj", 18);
+            set_axis(chain.axes[4], "C",      AxisType::Rotary, "Z", 1, 0,0,1, 0,0,100, 0,360, "table", "c_table.obj", 16);
+            set_axis(chain.axes[5], "B",      AxisType::Rotary, "C", 1, 0,1,0, 0,0,150, -120,120, "pivot", "b_pivot.obj", 17);
+            set_axis(chain.axes[6], "spindle",AxisType::Fixed,  "B", 1, 0,0,0, 0,0,250, 0,0, "spindle", "spindle.obj", 18);
             chain.axis_count = 7;
             chain.num_channels = 2;
             break;
@@ -182,9 +167,9 @@ void create_standard_machine(KinematicChain& chain, MachineType type) {
             set_axis(chain.axes[1], "X",      AxisType::Linear, "base", 0, 1,0,0, 0,0,0, 0,1000, "box", "x_axis.obj", 0);
             set_axis(chain.axes[2], "Y",      AxisType::Linear, "X", 0, 0,1,0, 0,0,0, 0,800, "box", "y_axis.obj", 1);
             set_axis(chain.axes[3], "Z",      AxisType::Linear, "Y", 0, 0,0,1, 0,0,0, 0,500, "box", "z_axis.obj", 2);
-            set_axis(chain.axes[4], "A",      AxisType::Rotary, "Z", 0, 1,0,0, 0,0,0.1f, -120,120, "pivot", "a_pivot.obj", 3);
-            set_axis(chain.axes[5], "C",      AxisType::Rotary, "A", 0, 0,0,1, 0,0,0.15f, 0,360, "table", "c_table.obj", 4);
-            set_axis(chain.axes[6], "spindle",AxisType::Fixed,  "C", 0, 0,0,0, 0,0,0.2f, 0,0, "spindle", "spindle.obj", 5);
+            set_axis(chain.axes[4], "A",      AxisType::Rotary, "Z", 0, 1,0,0, 0,0,100, -120,120, "pivot", "a_pivot.obj", 3);
+            set_axis(chain.axes[5], "C",      AxisType::Rotary, "A", 0, 0,0,1, 0,0,150, 0,360, "table", "c_table.obj", 4);
+            set_axis(chain.axes[6], "spindle",AxisType::Fixed,  "C", 0, 0,0,0, 0,0,200, 0,0, "spindle", "spindle.obj", 5);
             chain.axis_count = 7;
             chain.num_channels = 1;
             break;
@@ -193,11 +178,6 @@ void create_standard_machine(KinematicChain& chain, MachineType type) {
             break;
     }
     initialize_transforms(chain);
-}
-
-void destroy_kinematic_chain(KinematicChain& chain) {
-    chain.axis_count = 0;
-    chain.num_channels = 1;
 }
 
 bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
@@ -214,14 +194,28 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
     // yet, in which case rows fall back to the legacy "13+ fields" rule.
     size_t expected_cols = 0;
     size_t line_no = 0;
+    auto reject = [&](const char* why, const char* detail) {
+        char msg[192];
+        kernel::util::k_snprintf(msg, sizeof(msg), "[kinematic] tsv line %u: %s%s%s%s\n",
+                                 static_cast<unsigned>(line_no), why,
+                                 detail ? " '" : "", detail ? detail : "", detail ? "'" : "");
+        warn_kinematic_tsv(msg);
+        chain.axis_count = 0;
+        return false;
+    };
     while (pos < len) {
         size_t line_len = 0;
         while (pos < len && buf[pos] != '\n' && buf[pos] != '\r' && line_len + 1 < kLineBuf) {
             line[line_len++] = buf[pos++];
         }
-        while (pos < len && (buf[pos] == '\n' || buf[pos] == '\r')) ++pos;
         line[line_len] = '\0';
         ++line_no;
+        // A line that didn't end at the buffer limit used to be split into
+        // two bogus rows; refuse it instead.
+        if (pos < len && buf[pos] != '\n' && buf[pos] != '\r') {
+            return reject("line longer than 255 chars", nullptr);
+        }
+        while (pos < len && (buf[pos] == '\n' || buf[pos] == '\r')) ++pos;
         if (line_len == 0 || line[0] == '#') continue;
         // Recognise the 14/15/21/22-column headers and remember their column
         // count for the row-shape contract below.
@@ -230,38 +224,45 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
             expected_cols = header_cols;
             continue;
         }
-        if (chain.axis_count >= MAX_AXES) return false;
+        if (chain.axis_count >= MAX_AXES) return reject("more than MAX_AXES links", nullptr);
 
         char* fields[24]{};
         const size_t field_count = split_csv_fields(line, fields, 24);
-        if (field_count < 13) return false;
+        if (field_count < 13) return reject("fewer than 13 columns", nullptr);
         if (expected_cols != 0 && field_count < expected_cols) {
-            char msg[160];
-            kernel::util::k_snprintf(msg, sizeof(msg),
-                "[kinematic] tsv line %u: %u cols, header promises %u — refusing to load (column drift)\n",
-                static_cast<unsigned>(line_no),
-                static_cast<unsigned>(field_count),
-                static_cast<unsigned>(expected_cols));
-            warn_kinematic_tsv(msg);
-            return false;
+            return reject("fewer columns than the header promises (column drift)", nullptr);
         }
+
+        const char* type_s = fields[1];
+        if (kstrcmp(type_s, "Linear") != 0 && kstrcmp(type_s, "Rotary") != 0 &&
+            kstrcmp(type_s, "Fixed") != 0) {
+            return reject("unknown axis type", type_s);
+        }
+        const int32_t channel = simple_atoi(fields[12]);
+        if (channel < 0 || channel >= static_cast<int32_t>(MAX_CHANNELS)) {
+            return reject("channel out of range", fields[12]);
+        }
+        const int32_t motion_axis = field_count > 13 ? simple_atoi(fields[13]) : -1;
+        if (motion_axis < -1 || motion_axis > 127) {
+            return reject("motion_axis out of range", fields[13]);
+        }
+
         // mesh_scale defaults to 1.0 (not 0.0) when the column is absent —
         // that's the difference between "no scaling applied" and "render
         // collapses to a point".
-
         AxisConfig& axis = chain.axes[chain.axis_count];
         clear_axis(axis);
         set_axis(axis,
                  fields[0],
-                 parse_axis_type(fields[1]),
+                 parse_axis_type(type_s),
                  fields[2],
-                 static_cast<uint8_t>(simple_atoi(fields[12])),
+                 static_cast<uint8_t>(channel),
                  simple_atof(fields[3]), simple_atof(fields[4]), simple_atof(fields[5]),
                  simple_atof(fields[6]), simple_atof(fields[7]), simple_atof(fields[8]),
                  simple_atof(fields[9]), simple_atof(fields[10]),
                  fields[11],
                  field_count > 14 ? fields[14] : "",
-                 field_count > 13 ? static_cast<int8_t>(simple_atoi(fields[13])) : -1,
+                 static_cast<int8_t>(motion_axis),
                  field_count > 15 ? simple_atof(fields[15]) : 0.0f,
                  field_count > 16 ? simple_atof(fields[16]) : 0.0f,
                  field_count > 17 ? simple_atof(fields[17]) : 0.0f,
@@ -269,45 +270,47 @@ bool load_chain_from_tsv(KinematicChain& chain, const char* buf, size_t len) {
                  field_count > 19 ? simple_atof(fields[19]) : 0.0f,
                  field_count > 20 ? simple_atof(fields[20]) : 0.0f,
                  field_count > 21 ? simple_atof(fields[21]) : 1.0f);
-        // Clamp the channel to the supported range so a junk TSV value can't
-        // inflate num_channels past MAX_CHANNELS (downstream code indexes by
-        // channel and would otherwise trust a bogus count).
-        if (axis.channel >= MAX_CHANNELS) axis.channel = MAX_CHANNELS - 1;
+
+        if (axis.name[0] == '\0') return reject("empty link name", nullptr);
+        for (size_t j = 0; j < chain.axis_count; ++j) {
+            if (kstrcmp(chain.axes[j].name, axis.name) == 0) {
+                return reject("duplicate link name", axis.name);
+            }
+        }
+        if (axis.travel_min > axis.travel_max) return reject("min > max for", axis.name);
+        if (!(axis.mesh_scale > 0.0f)) return reject("mesh_scale must be > 0 for", axis.name);
+        if (axis.type != AxisType::Fixed) {
+            // FK scales the linear step by |dir| and IK assumes unit axes, so
+            // normalise here; a zero direction would be a joint that can't move.
+            auto& d = axis.axis_direction;
+            const float len2 = d.x * d.x + d.y * d.y + d.z * d.z;
+            if (len2 < 1e-8f) return reject("zero axis direction for", axis.name);
+            const float inv = 1.0f / kernel::util::math::sqrt_approx(len2);
+            d.x *= inv; d.y *= inv; d.z *= inv;
+        }
+        // Parents must appear on an EARLIER row: compute_forward_kinematics is
+        // a single forward pass that reads the parent's world transform, so a
+        // later parent (or a cycle) would silently compose last frame's value.
+        axis.parent_index = -1;
+        const bool is_root = axis.parent_name[0] == '\0' ||
+            (axis.parent_name[0] == '-' && axis.parent_name[1] == '1' && axis.parent_name[2] == '\0');
+        if (!is_root) {
+            for (size_t j = 0; j < chain.axis_count; ++j) {
+                if (kstrcmp(axis.parent_name, chain.axes[j].name) == 0) {
+                    axis.parent_index = static_cast<int8_t>(j);
+                    break;
+                }
+            }
+            if (axis.parent_index < 0) {
+                return reject("parent not defined on an earlier row:", axis.parent_name);
+            }
+        }
         if (axis.channel + 1 > chain.num_channels) chain.num_channels = static_cast<uint8_t>(axis.channel + 1);
         ++chain.axis_count;
     }
 
-    for (size_t i = 0; i < chain.axis_count; ++i) {
-        AxisConfig& axis = chain.axes[i];
-        if (axis.parent_name[0] == '\0' ||
-            (axis.parent_name[0] == '-' && axis.parent_name[1] == '1' && axis.parent_name[2] == '\0')) {
-            axis.parent_index = -1;
-            continue;
-        }
-        axis.parent_index = -1;
-        for (size_t j = 0; j < chain.axis_count; ++j) {
-            if (kstrcmp(axis.parent_name, chain.axes[j].name) == 0) {
-                axis.parent_index = static_cast<int8_t>(j);
-                break;
-            }
-        }
-        if (axis.parent_index < 0) return false;
-    }
-
     initialize_transforms(chain);
     return chain.axis_count != 0;
-}
-
-void update_axis_position(KinematicChain& chain, size_t axis_idx, float position) {
-    if (axis_idx >= chain.axis_count) return;
-    chain.axes[axis_idx].position = position;
-}
-
-void update_axis_by_name(KinematicChain& chain, const char* name, float position) {
-    size_t idx = find_axis_by_name(chain, name);
-    if (idx < chain.axis_count) {
-        chain.axes[idx].position = position;
-    }
 }
 
 size_t find_axis_by_name(const KinematicChain& chain, const char* name) {
@@ -317,24 +320,6 @@ size_t find_axis_by_name(const KinematicChain& chain, const char* name) {
         }
     }
     return chain.axis_count;
-}
-
-size_t get_channel_axis_count(const KinematicChain& chain, uint8_t channel) {
-    size_t count = 0;
-    for (size_t i = 0; i < chain.axis_count; ++i) {
-        if (chain.axes[i].channel == channel) ++count;
-    }
-    return count;
-}
-
-size_t get_channel_axes(const KinematicChain& chain, uint8_t channel, size_t* axis_indices_out, size_t max_out) {
-    size_t written = 0;
-    for (size_t i = 0; i < chain.axis_count && written < max_out; ++i) {
-        if (chain.axes[i].channel == channel) {
-            axis_indices_out[written++] = i;
-        }
-    }
-    return written;
 }
 
 void compute_forward_kinematics(KinematicChain& chain) {
@@ -393,16 +378,280 @@ const gles1::Mat4& get_link_transform(const KinematicChain& chain, size_t link_i
     return chain.transforms[link_idx].world_transform;
 }
 
-const gles1::Mat4& get_mesh_local_transform(const KinematicChain& chain, size_t link_idx) {
-    static const gles1::Mat4 identity = gles1::Mat4::identity();
-    if (link_idx >= chain.axis_count) return identity;
-    return chain.transforms[link_idx].mesh_local_transform;
-}
-
 gles1::Mat4 get_mesh_world_transform(const KinematicChain& chain, size_t link_idx) {
     if (link_idx >= chain.axis_count) return gles1::Mat4::identity();
     return gles1::multiply(chain.transforms[link_idx].world_transform,
                            chain.transforms[link_idx].mesh_local_transform);
+}
+
+// ---- Tool pose + inverse kinematics --------------------------------------
+
+namespace {
+
+using gles1::Vec3f;
+
+Vec3f v_sub(const Vec3f& a, const Vec3f& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+Vec3f v_scale(const Vec3f& a, float s) { return {a.x * s, a.y * s, a.z * s}; }
+float v_dot(const Vec3f& a, const Vec3f& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+float v_len(const Vec3f& a) { return kernel::util::math::sqrt_approx(v_dot(a, a)); }
+Vec3f v_cross(const Vec3f& a, const Vec3f& b) {
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+// Column c of the upper 3x3 (c = 3 is the translation).
+Vec3f m_col(const gles1::Mat4& m, int c) { return {m.m[c * 4], m.m[c * 4 + 1], m.m[c * 4 + 2]}; }
+// R * v for the rotation part (links are rigid; base_transform is identity).
+Vec3f m_rot(const gles1::Mat4& m, const Vec3f& v) {
+    return {m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z,
+            m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z,
+            m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z};
+}
+// Rᵀ * v — the inverse rotation of a rigid transform.
+Vec3f m_rot_t(const gles1::Mat4& m, const Vec3f& v) {
+    return {v_dot(m_col(m, 0), v), v_dot(m_col(m, 1), v), v_dot(m_col(m, 2), v)};
+}
+
+bool is_ancestor_or_self(const KinematicChain& chain, int anc, int link) {
+    for (int guard = 0; link >= 0 && guard <= static_cast<int>(MAX_AXES); ++guard) {
+        if (link == anc) return true;
+        link = chain.axes[link].parent_index;
+    }
+    return false;
+}
+
+int depth_of(const KinematicChain& chain, int link) {
+    int d = 0;
+    while (link >= 0 && d <= static_cast<int>(MAX_AXES)) {
+        link = chain.axes[link].parent_index;
+        ++d;
+    }
+    return d;
+}
+
+float clamp_joint(const AxisConfig& ax, float q) {
+    if (ax.type == AxisType::Rotary && ax.travel_max - ax.travel_min >= 359.999f) {
+        while (q < ax.travel_min) q += 360.0f;
+        while (q >= ax.travel_min + 360.0f) q -= 360.0f;
+        return q;
+    }
+    if (q < ax.travel_min) return ax.travel_min;
+    if (q > ax.travel_max) return ax.travel_max;
+    return q;
+}
+
+// Orientation rows are weighted by this length so a unit-vector error
+// competes with millimetres of position error.
+constexpr float kAxisWeightMm = 100.0f;
+
+float pose_cost(const ToolPose& p, const ToolPose& target, float& pos_err, float& axis_err) {
+    pos_err = v_len(v_sub(target.position, p.position));
+    axis_err = v_len(v_sub(target.axis, p.axis));
+    const float wa = axis_err * kAxisWeightMm;
+    return pos_err * pos_err + wa * wa;
+}
+
+// Solve the n×n system A x = b in place (Gaussian elimination, partial
+// pivoting). A is row-major with stride MAX_AXES. Returns false if singular.
+bool solve_dense(float (&A)[MAX_AXES][MAX_AXES], float (&b)[MAX_AXES], size_t n) {
+    for (size_t col = 0; col < n; ++col) {
+        size_t piv = col;
+        float best = A[col][col] < 0 ? -A[col][col] : A[col][col];
+        for (size_t r = col + 1; r < n; ++r) {
+            const float v = A[r][col] < 0 ? -A[r][col] : A[r][col];
+            if (v > best) { best = v; piv = r; }
+        }
+        if (best < 1e-20f) return false;
+        if (piv != col) {
+            for (size_t c = 0; c < n; ++c) { const float t = A[col][c]; A[col][c] = A[piv][c]; A[piv][c] = t; }
+            const float t = b[col]; b[col] = b[piv]; b[piv] = t;
+        }
+        for (size_t r = col + 1; r < n; ++r) {
+            const float f = A[r][col] / A[col][col];
+            if (f == 0.0f) continue;
+            for (size_t c = col; c < n; ++c) A[r][c] -= f * A[col][c];
+            b[r] -= f * b[col];
+        }
+    }
+    for (size_t i = n; i-- > 0;) {
+        float s = b[i];
+        for (size_t c = i + 1; c < n; ++c) s -= A[i][c] * b[c];
+        b[i] = s / A[i][i];
+    }
+    return true;
+}
+
+} // namespace
+
+ToolFrames find_tool_frames(const KinematicChain& chain) {
+    ToolFrames f{};
+    if (chain.axis_count == 0) return f;
+    size_t tool = find_axis_by_name(chain, "spindle");
+    if (tool >= chain.axis_count) tool = find_axis_by_name(chain, "Z");
+    if (tool >= chain.axis_count) tool = chain.axis_count - 1;
+    f.tool_link = static_cast<int8_t>(tool);
+
+    int work = -1;
+    int work_depth = -1;
+    for (size_t i = 0; i < chain.axis_count; ++i) {
+        if (is_ancestor_or_self(chain, static_cast<int>(i), static_cast<int>(tool))) continue;
+        const int d = depth_of(chain, static_cast<int>(i));
+        if (d > work_depth) { work_depth = d; work = static_cast<int>(i); }
+    }
+    if (work < 0) {
+        // Every link is on the tool path: the work is the root of that path.
+        work = static_cast<int>(tool);
+        while (chain.axes[work].parent_index >= 0) work = chain.axes[work].parent_index;
+    }
+    f.work_link = static_cast<int8_t>(work);
+    return f;
+}
+
+ToolPose compute_tool_pose(const KinematicChain& chain, const ToolFrames& frames) {
+    ToolPose p{};
+    if (frames.tool_link < 0 || frames.work_link < 0 ||
+        static_cast<size_t>(frames.tool_link) >= chain.axis_count ||
+        static_cast<size_t>(frames.work_link) >= chain.axis_count) {
+        return p;
+    }
+    const gles1::Mat4& T = chain.transforms[frames.tool_link].world_transform;
+    const gles1::Mat4& W = chain.transforms[frames.work_link].world_transform;
+    p.position = m_rot_t(W, v_sub(m_col(T, 3), m_col(W, 3)));
+    p.axis = m_rot_t(W, m_col(T, 2));
+    const float len = v_len(p.axis);
+    if (len > 1e-6f) p.axis = v_scale(p.axis, 1.0f / len);
+    return p;
+}
+
+IkResult solve_ik(KinematicChain& chain, const ToolFrames& frames, const ToolPose& target,
+                  int max_iterations) {
+    IkResult res{};
+    if (frames.tool_link < 0 || frames.work_link < 0 ||
+        static_cast<size_t>(frames.tool_link) >= chain.axis_count ||
+        static_cast<size_t>(frames.work_link) >= chain.axis_count) {
+        return res;
+    }
+
+    // Joints that move the tool relative to the work: +1 on the tool path,
+    // -1 on the work path (moving the work is the inverse motion), 0 when
+    // shared by both.
+    size_t joint[MAX_AXES];
+    float sign[MAX_AXES];
+    size_t n = 0;
+    for (size_t i = 0; i < chain.axis_count; ++i) {
+        chain.axes[i].position = clamp_joint(chain.axes[i], chain.axes[i].position);
+        if (chain.axes[i].type == AxisType::Fixed) continue;
+        const int s = (is_ancestor_or_self(chain, static_cast<int>(i), frames.tool_link) ? 1 : 0) -
+                      (is_ancestor_or_self(chain, static_cast<int>(i), frames.work_link) ? 1 : 0);
+        if (s == 0) continue;
+        joint[n] = i;
+        sign[n] = static_cast<float>(s);
+        ++n;
+    }
+
+    compute_forward_kinematics(chain);
+    float cost = pose_cost(compute_tool_pose(chain, frames), target,
+                           res.position_error, res.axis_error);
+    float lambda = 1e-3f;
+    constexpr float kDegToRad = 0.01745329252f;
+
+    for (int it = 0; it < max_iterations; ++it) {
+        res.iterations = it;
+        if (res.position_error < 2e-3f && res.axis_error < 2e-5f) {
+            res.converged = true;
+            return res;
+        }
+        if (n == 0) break;
+
+        // Analytic Jacobian in the work frame; rows 0-2 position (mm per
+        // unit), rows 3-5 tool axis weighted by kAxisWeightMm.
+        const gles1::Mat4& T = chain.transforms[frames.tool_link].world_transform;
+        const gles1::Mat4& W = chain.transforms[frames.work_link].world_transform;
+        const Vec3f P = m_col(T, 3);
+        const Vec3f Z = m_col(T, 2);
+        float J[6][MAX_AXES];
+        for (size_t k = 0; k < n; ++k) {
+            const AxisConfig& ax = chain.axes[joint[k]];
+            const gles1::Mat4& J_world = chain.transforms[joint[k]].world_transform;
+            const Vec3f a = m_rot(J_world, ax.axis_direction);
+            Vec3f dp{}, dz{};
+            if (ax.type == AxisType::Linear) {
+                dp = a;
+            } else {
+                const Vec3f w = v_scale(a, kDegToRad);
+                dp = v_cross(w, v_sub(P, m_col(J_world, 3)));
+                dz = v_cross(w, Z);
+            }
+            dp = m_rot_t(W, v_scale(dp, sign[k]));
+            dz = m_rot_t(W, v_scale(dz, sign[k] * kAxisWeightMm));
+            J[0][k] = dp.x; J[1][k] = dp.y; J[2][k] = dp.z;
+            J[3][k] = dz.x; J[4][k] = dz.y; J[5][k] = dz.z;
+        }
+        const ToolPose cur = compute_tool_pose(chain, frames);
+        const Vec3f ep = v_sub(target.position, cur.position);
+        const Vec3f ez = v_scale(v_sub(target.axis, cur.axis), kAxisWeightMm);
+        const float e[6] = {ep.x, ep.y, ep.z, ez.x, ez.y, ez.z};
+
+        float JtJ[MAX_AXES][MAX_AXES];
+        float Jte[MAX_AXES];
+        float diag_max = 0.0f;
+        for (size_t r = 0; r < n; ++r) {
+            for (size_t c = 0; c < n; ++c) {
+                float s = 0.0f;
+                for (int k = 0; k < 6; ++k) s += J[k][r] * J[k][c];
+                JtJ[r][c] = s;
+            }
+            float s = 0.0f;
+            for (int k = 0; k < 6; ++k) s += J[k][r] * e[k];
+            Jte[r] = s;
+            if (JtJ[r][r] > diag_max) diag_max = JtJ[r][r];
+        }
+
+        // Levenberg-Marquardt: shrink the damping after a step that lowers
+        // the cost, grow it and retry after one that doesn't.
+        float saved[MAX_AXES];
+        for (size_t k = 0; k < n; ++k) saved[k] = chain.axes[joint[k]].position;
+        bool improved = false;
+        for (int attempt = 0; attempt < 8 && !improved; ++attempt) {
+            float A[MAX_AXES][MAX_AXES];
+            float dq[MAX_AXES];
+            for (size_t r = 0; r < n; ++r) {
+                for (size_t c = 0; c < n; ++c) A[r][c] = JtJ[r][c];
+                A[r][r] += lambda * (diag_max + 1e-6f);
+                dq[r] = Jte[r];
+            }
+            if (!solve_dense(A, dq, n)) { lambda *= 10.0f; continue; }
+            // Cap the step so one iteration can't swing a rotary by more
+            // than 30 deg; scale the whole step to keep its direction.
+            float scale = 1.0f;
+            for (size_t k = 0; k < n; ++k) {
+                if (chain.axes[joint[k]].type != AxisType::Rotary) continue;
+                const float mag = dq[k] < 0 ? -dq[k] : dq[k];
+                if (mag * scale > 30.0f) scale = 30.0f / mag;
+            }
+            for (size_t k = 0; k < n; ++k) {
+                AxisConfig& ax = chain.axes[joint[k]];
+                ax.position = clamp_joint(ax, saved[k] + dq[k] * scale);
+            }
+            compute_forward_kinematics(chain);
+            float pe = 0.0f, ae = 0.0f;
+            const float new_cost = pose_cost(compute_tool_pose(chain, frames), target, pe, ae);
+            if (new_cost < cost) {
+                cost = new_cost;
+                res.position_error = pe;
+                res.axis_error = ae;
+                lambda = lambda * 0.3f < 1e-7f ? 1e-7f : lambda * 0.3f;
+                improved = true;
+            } else {
+                for (size_t k = 0; k < n; ++k) chain.axes[joint[k]].position = saved[k];
+                lambda *= 10.0f;
+            }
+        }
+        if (!improved) {
+            compute_forward_kinematics(chain);
+            break;   // stuck (limit or local minimum)
+        }
+    }
+    res.converged = res.position_error < 2e-3f && res.axis_error < 2e-5f;
+    return res;
 }
 
 } // namespace render::kinematic

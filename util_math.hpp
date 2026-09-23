@@ -110,13 +110,16 @@ inline float sqrt_approx(float v) noexcept {
     return x;
 }
 
-// Two Newton iterations on 1/sqrt; adequate for normal-vector normalisation
-// where downstream tolerates ~1e-4 relative error.
+// 1/sqrt(v): IEEE-754 exponent-halving seed (~3.4% error) plus three Newton
+// steps, good to float precision for any magnitude. The old 1/v seed only
+// converged for v near 1 — normalising a 10 mm vector gave length 0.22, which
+// skewed make_look_at's camera basis once the scene moved to millimetres.
 inline float rsqrt_approx(float v) noexcept {
-    if (v <= 1e-6f) return 0.0f;
-    float x = 1.0f / v;
-    x = 0.5f * x * (3.0f - v * x * x);
-    x = 0.5f * x * (3.0f - v * x * x);
+    if (!(v > 1e-30f)) return 0.0f;   // also catches NaN and negatives
+    union { float f; uint32_t u; } val{v};
+    val.u = 0x5F3759DFU - (val.u >> 1);
+    float x = val.f;
+    for (int i = 0; i < 3; ++i) x = x * (1.5f - 0.5f * v * x * x);
     return x;
 }
 

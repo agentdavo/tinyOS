@@ -36,12 +36,6 @@ bool build_path(const char* name, char (&out)[kPathBuf]) {
     return true;
 }
 
-struct CountCtx { size_t count; };
-bool count_cb(const char*, const char*, size_t, void* user) {
-    static_cast<CountCtx*>(user)->count++;
-    return true;
-}
-
 }  // namespace
 
 bool lookup(const char* name, const char*& out_data, size_t& out_size) {
@@ -52,12 +46,5 @@ bool lookup(const char* name, const char*& out_data, size_t& out_size) {
     return kernel::vfs::lookup(path, out_data, out_size);
 }
 
-const RegistryEntry* entries() { return nullptr; }
-
-size_t entry_count() {
-    CountCtx ctx{0};
-    kernel::vfs::walk(kMachinePrefix, &count_cb, &ctx);
-    return ctx.count;
-}
 
 }  // namespace render::obj

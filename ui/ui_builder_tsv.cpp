@@ -15,9 +15,11 @@
 #include "motion/motion.hpp"
 #include "ui/operator_api.hpp"
 #include "ui/ui.hpp"
+#include "ui/splash.hpp"
 #include "miniOS.hpp"
 #include "klog.hpp"
 #include "util.hpp"
+#include "util_math.hpp"
 
 #include <cstring>
 #include <new>
@@ -178,6 +180,27 @@ static uint32_t g_last_error_line = 0;
 static uint32_t g_click_trace_count = 0;
 static kernel::core::Spinlock g_state_lock;
 
+// g_state_lock is held across whole-tree renders, which run on several
+// threads (UI loop, CLI ui_page / ui_dump / test ui, HMI) and take ~1 s on
+// TCG for the GLES machine view. Waiters yield rather than spin, so a
+// higher-priority waiter on the same core can't starve the holder.
+void acquire_state_lock() noexcept {
+    while (!g_state_lock.try_acquire_general()) {
+        if (kernel::g_scheduler_ptr && kernel::g_platform) {
+            kernel::g_scheduler_ptr->yield(kernel::g_platform->get_core_id());
+        } else {
+            kernel::util::cpu_relax();
+        }
+    }
+}
+
+struct StateGuard {
+    StateGuard() noexcept { acquire_state_lock(); }
+    ~StateGuard() { g_state_lock.release_general(); }
+    StateGuard(const StateGuard&) = delete;
+    StateGuard& operator=(const StateGuard&) = delete;
+};
+
 void advance_focus(int step);
 
 // Bridges for view:* actions so run_action_target (defined before the
@@ -244,28 +267,7 @@ int32_t simple_atoi(const char* s) {
 }
 
 float simple_atof(const char* s) {
-    if (!s) return 0.0f;
-    int sign = 1;
-    if (*s == '-') {
-        sign = -1;
-        ++s;
-    }
-    int32_t whole = 0;
-    while (*s >= '0' && *s <= '9') {
-        whole = whole * 10 + (*s - '0');
-        ++s;
-    }
-    float value = static_cast<float>(whole);
-    if (*s == '.') {
-        ++s;
-        float scale = 0.1f;
-        while (*s >= '0' && *s <= '9') {
-            value += static_cast<float>(*s - '0') * scale;
-            scale *= 0.1f;
-            ++s;
-        }
-    }
-    return sign < 0 ? -value : value;
+    return kernel::util::parse_float(s, 0.0f);
 }
 
 uint8_t simple_hex(char c) {
@@ -2670,7 +2672,7 @@ void set_active_page(int idx) {
     // `goto:<dialog_id>` from teleporting the operator into a modal with
     // no way out.
     if (g_pages[idx].is_dialog) return;
-    kernel::core::ScopedLock guard(g_state_lock);
+    StateGuard guard;
     g_active_page = idx;
     for (uint32_t i = 0; i < g_page_count; ++i) {
         if (!g_pages[i].root) continue;
@@ -4086,13 +4088,13 @@ class BuilderImage final : public Widget {
 public:
     // Orbit camera state per widget. Each GLES1 image widget has its own
     // view so operators can frame the Program page's toolpath preview and
-    // the Machine View page's live scene differently. Defaults picked to
-    // match the legacy hardcoded eye/center in render_live_machine.
+    // the Machine View page's live scene differently. The camera orbits the
+    // centre of the loaded machine's bounding box; `zoom` scales the
+    // distance that just fits that box (1.0 = fit).
     struct Camera {
-        float yaw = 0.0f;       // radians around world-Y
-        float pitch = 0.5f;     // radians from horizontal (+ looks down)
-        float dist = 4.4f;      // units from center
-        bool dual_channel_default = false;  // remembers which default we applied
+        float yaw = 0.0f;       // radians around world Z (0 = looking from -Y)
+        float pitch = 0.5f;     // radians above the XY plane
+        float zoom = 1.0f;      // multiple of the fit-the-machine distance
     };
 
     explicit BuilderImage(const WidgetSpec& spec)
@@ -4100,11 +4102,9 @@ public:
                  spec.w > 0 ? static_cast<uint32_t>(spec.w) : 160U,
                  spec.h > 0 ? static_cast<uint32_t>(spec.h) : 120U),
           spec_(spec) {
-        // Clamp the widget's render size to the framebuffer. This keeps the
-        // depth-buffer allocation (width_*height_) bounded and the depth/pixel
-        // strides consistent everywhere downstream — a TSV-supplied 60000x60000
-        // image otherwise tried to allocate gigabytes and could index a stride
-        // far past the framebuffer.
+        // Clamp the widget's render size to the framebuffer so the pixel
+        // strides stay consistent everywhere downstream — a TSV-supplied
+        // 60000x60000 image could otherwise index far past the framebuffer.
         if (width_  > kernel::ui::FB_WIDTH)  set_size(kernel::ui::FB_WIDTH,  height_);
         if (height_ > kernel::ui::FB_HEIGHT) set_size(width_, kernel::ui::FB_HEIGHT);
         // Register for view:reset action targeting. Tiny static fan-out;
@@ -4112,20 +4112,6 @@ public:
         // reset_state, so no lifetime concern.
         if (g_gles1_widget_count < kMaxGles1Widgets) {
             g_gles1_widgets[g_gles1_widget_count++] = this;
-        }
-    }
-
-    ~BuilderImage() override {
-        // Release the lazy depth buffer (allocated by ensure_depth_buffer
-        // via ::operator new). The bump heap can't actually reclaim the
-        // bytes, but the matching delete here keeps the path correct for
-        // any future real allocator and documents the ownership. Until
-        // hot reload lands the destructor never fires; setting it up now
-        // means widget lifecycles are correct end-to-end when it does.
-        if (depth_buffer_) {
-            ::operator delete(depth_buffer_);
-            depth_buffer_ = nullptr;
-            depth_capacity_ = 0;
         }
     }
 
@@ -4144,18 +4130,36 @@ public:
     }
 
     void reset_camera() {
-        camera_.yaw = 0.0f;
-        camera_.pitch = 0.5f;
-        camera_.dist = camera_.dual_channel_default ? 6.2f : 4.4f;
+        camera_ = Camera{};
         mark_dirty();
     }
 
     void poll_bind_dirty() override {
-        // GLES1 widgets render live machine state every frame the page is
-        // visible — axis positions, tool position, etc. all drive the
-        // scene and they update at the motion cycle rate (250 µs).
-        // Static fallback images don't change after first paint.
-        if (kernel::util::kstrncmp(spec_.text, "gles1:", 6) == 0) {
+        // GLES1 widgets draw live machine state, but a machine-view render
+        // walks ~18k MX-850 triangles (20-50 ms on TCG, `kin` reports it) and
+        // re-rendering on every 100 ms UI tick burned core 0 with the machine
+        // idle. Re-render when
+        // the inputs the scene reads change (axis positions, pose overrides,
+        // view toggles, program preview), plus a 1 s heartbeat for rarer
+        // ones (toolpod stations, probe registry). Camera moves and pose
+        // overrides mark_dirty() directly. Static images never repaint.
+        if (kernel::util::kstrncmp(spec_.text, "gles1:", 6) != 0) return;
+        uint32_t sig = 2166136261u;
+        auto mix = [&](uint32_t v) { sig = (sig ^ v) * 16777619u; };
+        for (size_t i = 0; i < motion::MAX_AXES; ++i) {
+            mix(static_cast<uint32_t>(motion::g_motion.axis(i).actual_pos.load(std::memory_order_relaxed)));
+        }
+        mix(g_scene_generation);
+        const auto snap = kernel::ui::operator_api::machine_snapshot();
+        mix((snap.view_toolpath ? 1u : 0u) | (snap.view_toolpods ? 2u : 0u));
+        for (size_t ch = 0; ch < cnc::programs::MAX_CHANNELS; ++ch) {
+            const gles1::Vec3f* pts = nullptr;
+            mix(static_cast<uint32_t>(kernel::ui::operator_api::selected_program_preview(ch, pts)));
+            mix(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pts)));
+        }
+        if (sig != last_scene_sig_ || ++ticks_since_render_ >= 10) {
+            last_scene_sig_ = sig;
+            ticks_since_render_ = 0;
             mark_dirty();
         }
     }
@@ -4230,9 +4234,9 @@ public:
         for (uint32_t i = 0; i < g_gles1_widget_count; ++i) {
             if (!g_gles1_widgets[i]) continue;
             auto& c = g_gles1_widgets[i]->camera_;
-            c.dist *= factor;
-            if (c.dist < 0.5f) c.dist = 0.5f;
-            if (c.dist > 40.0f) c.dist = 40.0f;
+            c.zoom *= factor;
+            if (c.zoom < 0.1f) c.zoom = 0.1f;
+            if (c.zoom > 10.0f) c.zoom = 10.0f;
             g_gles1_widgets[i]->mark_dirty();
         }
     }
@@ -4241,6 +4245,11 @@ private:
     static constexpr uint32_t kMaxGles1Widgets = 8;
     static BuilderImage* g_gles1_widgets[kMaxGles1Widgets];
     static uint32_t g_gles1_widget_count;
+    // Bumped whenever non-motion scene inputs change (pose overrides).
+    static uint32_t g_scene_generation;
+    // Machine-view render stats for `kin` (count, last wall time).
+    static uint32_t g_render_count;
+    static uint32_t g_last_render_us;
 
     static machine::MachineModel& machine_model() {
         alignas(machine::MachineModel) static unsigned char storage[sizeof(machine::MachineModel)];
@@ -4256,6 +4265,14 @@ private:
         kinematic::KinematicChain chain{};
         kinematic::MachineType type = kinematic::MachineType::Custom;
         bool loaded = false;
+        // World-space bounds of the machine at load time (mm), for framing.
+        gles1::Vec3f center{0.0f, 0.0f, 0.0f};
+        float radius = 500.0f;
+        kinematic::ToolFrames frames{};
+        // Pose-preview overrides by link name (see machine_view_set_override).
+        struct Override { char link[16]; float value; };
+        Override overrides[kinematic::MAX_AXES]{};
+        size_t override_count = 0;
     };
 
     static SimState& sim_state() {
@@ -4276,31 +4293,6 @@ private:
             constructed = true;
         }
         return *reinterpret_cast<gles1::Renderer*>(storage);
-    }
-
-    // Each machine_view widget gets its own depth buffer sized to width × height
-    // so overlapping geometry resolves correctly without paying for a full
-    // FB-sized (8 MiB) depth allocation. Lazy alloc so widgets that never
-    // render 3D don't pay anything; the buffer is reused across redraws.
-    float* ensure_depth_buffer() const {
-        // Bound the request to the framebuffer area. A widget can't draw more
-        // than the whole screen anyway, and an unclamped width_*height_ from a
-        // malformed TSV (e.g. 60000x60000) would try to allocate gigabytes from
-        // the bump heap and OOM-halt the kernel.
-        constexpr size_t kMaxArea =
-            static_cast<size_t>(kernel::ui::FB_WIDTH) * kernel::ui::FB_HEIGHT;
-        size_t needed = static_cast<size_t>(width_) * static_cast<size_t>(height_);
-        if (needed > kMaxArea) needed = kMaxArea;
-        if (needed == 0) return nullptr;
-        if (depth_buffer_ && depth_capacity_ >= needed) return depth_buffer_;
-        if (depth_buffer_) {
-            ::operator delete(depth_buffer_);
-            depth_buffer_ = nullptr;
-            depth_capacity_ = 0;
-        }
-        depth_buffer_ = static_cast<float*>(::operator new(needed * sizeof(float)));
-        depth_capacity_ = needed;
-        return depth_buffer_;
     }
 
     gles1::FramebufferView bind_view(Framebuffer& fb) const {
@@ -4324,10 +4316,14 @@ private:
         v.width  = width_  < max_w ? width_  : max_w;
         v.height = height_ < max_h ? height_ : max_h;
         v.stride_pixels = kernel::ui::FB_WIDTH;
-        v.depth = ensure_depth_buffer();
-        // Depth buffer is sized width_*height_ with row stride width_; v.width
-        // is <= width_ after clamping so depth indexing stays in bounds.
-        v.depth_stride_pixels = width_;
+        // No depth buffer: the machine / program previews draw wireframe
+        // only, which never depth-tests. The old per-widget buffer (4 B/px,
+        // ~5.2 MB for the 1040x1240 machine view) was allocated from the
+        // never-freeing bump heap, cleared every frame, and re-allocated on
+        // every UI reload — two reloads were enough to exhaust the 8 MB heap.
+        // Bind one here if a solid (depth-tested) path is ever wired up.
+        v.depth = nullptr;
+        v.depth_stride_pixels = 0;
         return v;
     }
 
@@ -4356,18 +4352,33 @@ private:
         return kinematic::MachineType::Mill3Axis;
     }
 
+    // True if any link's obj_file resolves under system/machine/.
+    static bool chain_has_meshes(const kinematic::KinematicChain& chain) {
+        for (size_t i = 0; i < chain.axis_count; ++i) {
+            if (!chain.axes[i].obj_file[0]) continue;
+            char path[64];
+            kernel::util::k_snprintf(path, sizeof(path), "system/machine/%s", chain.axes[i].obj_file);
+            const char* data = nullptr;
+            size_t n = 0;
+            if (kernel::vfs::lookup(path, data, n) && data && n > 0) return true;
+        }
+        return false;
+    }
+
     static bool load_embedded_chain(kinematic::KinematicChain& chain, kinematic::MachineType type) {
         const char* start = nullptr;
         size_t len = 0;
-        // Operator override: if an authored MX850 chain is present in the
-        // VFS (typically via sdcard.img system/machine/kinematic_mx850.tsv),
-        // prefer it over the built-in Mill3/MillTurn templates regardless
-        // of the live motion-axis count. This lets a customer ship a 5-axis
-        // machine just by dropping kinematic_mx850.tsv + its STLs onto the
-        // card — no kernel rebuild required.
+        // Operator override: if the MX850 chain AND its meshes are in the VFS
+        // (the STLs only ship on sdcard.img), prefer it over the built-in
+        // Mill3/MillTurn templates regardless of the live motion-axis count,
+        // so a customer can ship a 5-axis machine by dropping the chain +
+        // STLs onto the card. The chain TSV itself is always embedded, so
+        // without the meshes this used to render seven scattered placeholder
+        // cubes instead of the template machine.
         if (kernel::vfs::lookup("system/machine/kinematic_mx850.tsv", start, len)
-            && start && len > 0) {
-            return kinematic::load_chain_from_tsv(chain, start, len);
+            && start && len > 0 && kinematic::load_chain_from_tsv(chain, start, len)
+            && chain_has_meshes(chain)) {
+            return true;
         }
         const char* path = nullptr;
         switch (type) {
@@ -4401,11 +4412,52 @@ private:
         // template switches.
         machine::destroy_machine_model(machine_model());
         (void)machine::populate_axis_meshes(machine_model(), sim.chain);
+        sim.frames = kinematic::find_tool_frames(sim.chain);
+        compute_scene_bounds(sim);
     }
 
+    // Bounding sphere of every mesh at the chain's home pose. Runs once per
+    // chain load (tens of thousands of vertices for the MX-850 set).
+    static void compute_scene_bounds(SimState& sim) {
+        for (size_t i = 0; i < sim.chain.axis_count; ++i) {
+            auto& ax = sim.chain.axes[i];
+            ax.position = ax.travel_min > 0.0f ? ax.travel_min
+                        : (ax.travel_max < 0.0f ? ax.travel_max : 0.0f);
+        }
+        kinematic::compute_forward_kinematics(sim.chain);
+        gles1::Vec3f lo{1e30f, 1e30f, 1e30f};
+        gles1::Vec3f hi{-1e30f, -1e30f, -1e30f};
+        auto grow = [&](const gles1::Vec4f& p) {
+            if (p.x < lo.x) lo.x = p.x;
+            if (p.y < lo.y) lo.y = p.y;
+            if (p.z < lo.z) lo.z = p.z;
+            if (p.x > hi.x) hi.x = p.x;
+            if (p.y > hi.y) hi.y = p.y;
+            if (p.z > hi.z) hi.z = p.z;
+        };
+        const auto& model = machine_model();
+        for (size_t i = 0; i < sim.chain.axis_count; ++i) {
+            const auto* part = mesh_for_axis(model, sim.chain.axes[i], i);
+            const gles1::Mat4 link = kinematic::get_link_transform(sim.chain, i);
+            grow(gles1::multiply(link, gles1::Vec4f{0.0f, 0.0f, 0.0f, 1.0f}));
+            if (!part) continue;
+            const gles1::Mat4 m = gles1::multiply(kinematic::get_mesh_world_transform(sim.chain, i),
+                gles1::make_translation(part->offset_x, part->offset_y, part->offset_z));
+            for (size_t v = 0; v < part->vertex_count; ++v) {
+                const auto& p = part->vertices[v].position;
+                grow(gles1::multiply(m, gles1::Vec4f{p.x, p.y, p.z, 1.0f}));
+            }
+        }
+        if (lo.x > hi.x) return;   // nothing to frame; keep the defaults
+        sim.center = {(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
+        const float dx = hi.x - lo.x, dy = hi.y - lo.y, dz = hi.z - lo.z;
+        sim.radius = 0.5f * kernel::util::math::sqrt_approx(dx * dx + dy * dy + dz * dz);
+        if (sim.radius < 50.0f) sim.radius = 50.0f;
+    }
+
+    // Motion counts -> chain units (mm / deg), clamped to the link's travel.
     static float motion_to_scene_units(const kinematic::AxisConfig& axis_cfg, int32_t raw_pos) {
-        const float scale = 0.01f;
-        float pos = static_cast<float>(raw_pos) * scale;
+        float pos = static_cast<float>(raw_pos) / kinematic::kMotionCountsPerUnit;
         if (pos < axis_cfg.travel_min) pos = axis_cfg.travel_min;
         if (pos > axis_cfg.travel_max) pos = axis_cfg.travel_max;
         return pos;
@@ -4428,7 +4480,83 @@ private:
                     .actual_pos.load(std::memory_order_relaxed);
             axis_cfg.position = motion_to_scene_units(axis_cfg, raw_pos);
         }
+        for (size_t o = 0; o < sim.override_count; ++o) {
+            const size_t i = kinematic::find_axis_by_name(sim.chain, sim.overrides[o].link);
+            if (i < sim.chain.axis_count) sim.chain.axes[i].position = sim.overrides[o].value;
+        }
         kinematic::compute_forward_kinematics(sim.chain);
+    }
+
+public:
+    // Callers hold the UI state lock (the renderer reads the same state).
+    static bool set_override(const char* link, float value) {
+        ensure_sim_machine();
+        auto& sim = sim_state();
+        const size_t i = kinematic::find_axis_by_name(sim.chain, link);
+        if (i >= sim.chain.axis_count) return false;
+        const auto& ax = sim.chain.axes[i];
+        if (value < ax.travel_min) value = ax.travel_min;
+        if (value > ax.travel_max) value = ax.travel_max;
+        size_t o = 0;
+        while (o < sim.override_count && strcmp(sim.overrides[o].link, ax.name) != 0) ++o;
+        if (o == sim.override_count) {
+            if (sim.override_count >= kinematic::MAX_AXES) return false;
+            kernel::util::safe_strcpy(sim.overrides[o].link, ax.name, sizeof(sim.overrides[o].link));
+            ++sim.override_count;
+        }
+        sim.overrides[o].value = value;
+        mark_all_dirty();
+        return true;
+    }
+
+    static void clear_overrides() {
+        sim_state().override_count = 0;
+        mark_all_dirty();
+    }
+
+    static void dump(kernel::hal::UARTDriverOps* uart) {
+        sync_live_axes();
+        const auto& sim = sim_state();
+        char line[160];
+        for (size_t i = 0; i < sim.chain.axis_count; ++i) {
+            const auto& ax = sim.chain.axes[i];
+            const auto& w = kinematic::get_link_transform(sim.chain, i).m;
+            bool overridden = false;
+            for (size_t o = 0; o < sim.override_count; ++o) {
+                if (strcmp(sim.overrides[o].link, ax.name) == 0) overridden = true;
+            }
+            kernel::util::k_snprintf(line, sizeof(line),
+                "  %-10s %-6s parent=%-10s pos=%9.3f%s  origin=(%.1f, %.1f, %.1f)\n",
+                ax.name,
+                ax.type == kinematic::AxisType::Linear ? "linear" :
+                ax.type == kinematic::AxisType::Rotary ? "rotary" : "fixed",
+                ax.parent_index >= 0 ? sim.chain.axes[ax.parent_index].name : "-",
+                static_cast<double>(ax.position), overridden ? "*" : " ",
+                static_cast<double>(w[12]), static_cast<double>(w[13]), static_cast<double>(w[14]));
+            uart->puts(line);
+        }
+        const auto pose = kinematic::compute_tool_pose(sim.chain, sim.frames);
+        kernel::util::k_snprintf(line, sizeof(line),
+            "  tool %s in %s frame: pos=(%.3f, %.3f, %.3f) axis=(%.4f, %.4f, %.4f)   (* = override)\n",
+            sim.frames.tool_link >= 0 ? sim.chain.axes[sim.frames.tool_link].name : "?",
+            sim.frames.work_link >= 0 ? sim.chain.axes[sim.frames.work_link].name : "?",
+            static_cast<double>(pose.position.x), static_cast<double>(pose.position.y),
+            static_cast<double>(pose.position.z), static_cast<double>(pose.axis.x),
+            static_cast<double>(pose.axis.y), static_cast<double>(pose.axis.z));
+        uart->puts(line);
+        kernel::util::k_snprintf(line, sizeof(line), "  machine view: %u renders, last %u us; ui loop %u iterations\n",
+                                 static_cast<unsigned>(g_render_count),
+                                 static_cast<unsigned>(g_last_render_us),
+                                 kernel::ui::ui_loop_iterations());
+        uart->puts(line);
+    }
+
+private:
+    static void mark_all_dirty() {
+        ++g_scene_generation;
+        for (uint32_t i = 0; i < g_gles1_widget_count; ++i) {
+            if (g_gles1_widgets[i]) g_gles1_widgets[i]->mark_dirty();
+        }
     }
 
     static const machine::MeshPart* mesh_for_axis(const machine::MachineModel& model,
@@ -4452,14 +4580,12 @@ private:
 
     static gles1::Mat4 toolpod_station_transform(const ::machine::toolpods::Pod& pod,
                                                  const ::machine::toolpods::Station& station) {
-        // Station machine_* are expressed relative to the pod's machine_*
-        // anchor. With the Z-up / SolidWorks world, machine X/Y/Z map
-        // straight to world X/Y/Z; no axis swap. 0.35 is a small Z lift
-        // so markers sit above the table rather than coplanar with it.
-        const float scale = 0.01f;
-        return gles1::make_translation((pod.machine_x + station.machine_x) * scale,
-                                       (pod.machine_y + station.machine_y) * scale,
-                                       0.35f + (pod.machine_z + station.machine_z) * scale);
+        // Station machine_* are mm relative to the pod's machine_* anchor;
+        // world is Z-up mm, so they map straight across. The 35 mm Z lift
+        // keeps markers above the table rather than coplanar with it.
+        return gles1::make_translation(pod.machine_x + station.machine_x,
+                                       pod.machine_y + station.machine_y,
+                                       35.0f + pod.machine_z + station.machine_z);
     }
 
     void render_toolpods(Framebuffer& fb, gles1::Renderer& renderer) {
@@ -4501,7 +4627,7 @@ private:
 
         const float half = pocket_size * 0.5f;
         const float depth = pocket_depth > 0.0f ? -pocket_depth : floor_z;
-        const float scale = 0.01f;
+        const float scale = 1.0f;   // registry values are mm, like the scene
         // Z-up world: pocket corners sit on the X-Y plane, depth is along Z.
         gles1::Vec3f pocket[5] = {
             {(-half) * scale, (-half) * scale, depth * scale},
@@ -4517,50 +4643,57 @@ private:
             {(center_x - half) * scale, (center_y + half) * scale, floor_z * scale},
             {(center_x - half) * scale, (center_y - half) * scale, floor_z * scale},
         };
-        renderer.set_model_matrix(gles1::Mat4::identity());
+        renderer.set_model_matrix(work_frame());
         renderer.draw_polyline(pocket, 5, gles1::Color4u8{45, 212, 191, 255});
         renderer.draw_polyline(measured, 5, gles1::Color4u8{251, 191, 36, 255});
         fb.draw_text(x_ + 12, y_ + height_ - 42, "teal=nominal pocket  amber=probed datum", Color(148, 163, 184), Color(17, 24, 39));
     }
 
+    // Program / probe overlays are in part coordinates: draw them in the
+    // work link's frame so they sit on (and move with) the table. Without
+    // work offsets wired in, program zero is the work link's origin — the
+    // C-table centre on a trunnion machine, the world origin on a 3-axis.
+    static gles1::Mat4 work_frame() {
+        const auto& sim = sim_state();
+        if (sim.frames.work_link < 0) return gles1::Mat4::identity();
+        return kinematic::get_link_transform(sim.chain, static_cast<size_t>(sim.frames.work_link));
+    }
+
     void render_live_machine(Framebuffer& fb, gles1::Renderer& renderer, bool overlay_program) {
+        using kernel::util::math::sincos_approx;
+        auto* timer = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
+        const uint64_t t0 = timer ? timer->get_system_time_ns() : 0;
+        render_live_machine_scene(fb, renderer, overlay_program);
+        ++g_render_count;
+        if (timer) g_last_render_us = static_cast<uint32_t>((timer->get_system_time_ns() - t0) / 1000u);
+    }
+
+    void render_live_machine_scene(Framebuffer& fb, gles1::Renderer& renderer, bool overlay_program) {
+        using kernel::util::math::sincos_approx;
         sync_live_axes();
         auto& model = machine_model();
         auto& sim = sim_state();
         const bool dual_channel = sim.type == kinematic::MachineType::MillTurn2Channel;
-        // Z-up / SolidWorks world. The centre-of-interest is slightly
-        // above the XY ground plane to frame the bulk of the machine.
-        const gles1::Vec3f center = dual_channel ? gles1::Vec3f{0.0f, 0.6f, 0.7f}
-                                                 : gles1::Vec3f{0.0f, 0.0f, 0.5f};
-        // First-touch defaulting: pick a distance based on machine type so
-        // mill-turn frames get a wider shot than a plain mill.
-        if (camera_.dual_channel_default != dual_channel) {
-            camera_.dual_channel_default = dual_channel;
-            if (camera_.yaw == 0.0f && camera_.pitch == 0.5f) {
-                camera_.dist = dual_channel ? 6.2f : 4.4f;
-            }
-        }
-        // Polar -> cartesian for the orbit camera. yaw rotates around the
-        // Z axis (world up), pitch tilts above/below the XY plane. Eye
-        // sits in the +X/-Y/+Z octant by default — SolidWorks iso.
-        auto ssin = [](float x) {
-            constexpr float kPi = 3.14159265358979f;
-            while (x > kPi) x -= 2.0f * kPi;
-            while (x < -kPi) x += 2.0f * kPi;
-            const float x2 = x * x;
-            return x * (1.0f - x2 / 6.0f + (x2 * x2) / 120.0f);
-        };
-        auto scos = [&](float x) { return ssin(x + 1.57079632679f); };
-        const float horiz = scos(camera_.pitch) * camera_.dist;
-        const float ez = center.z + ssin(camera_.pitch) * camera_.dist;
-        // Yaw 0 puts the camera on -Y (SolidWorks Front direction).
+        // Orbit the machine's bounding-sphere centre. The fit distance puts
+        // the whole sphere inside the vertical FOV; `zoom` scales it. Yaw 0
+        // puts the eye on -Y (SolidWorks Front); pitch lifts it above XY.
+        constexpr float kFovY = 1.05f;
+        float sh, ch;
+        sincos_approx(kFovY * 0.5f, sh, ch);
+        const float dist = sim.radius / sh * 1.05f * camera_.zoom;
+        float sp, cp, sy, cy;
+        sincos_approx(camera_.pitch, sp, cp);
+        sincos_approx(camera_.yaw, sy, cy);
+        const gles1::Vec3f center = sim.center;
         const gles1::Vec3f eye = {
-            center.x + ssin(camera_.yaw) * horiz,
-            center.y - scos(camera_.yaw) * horiz,
-            ez,
+            center.x + sy * cp * dist,
+            center.y - cy * cp * dist,
+            center.z + sp * dist,
         };
+        const float z_near = dist * 0.02f;
+        const float z_far = dist + sim.radius * 4.0f;
         renderer.set_projection_matrix(gles1::make_perspective(
-            1.05f, static_cast<float>(width_) / static_cast<float>(height_ ? height_ : 1U), 0.1f, 100.0f));
+            kFovY, static_cast<float>(width_) / static_cast<float>(height_ ? height_ : 1U), z_near, z_far));
         renderer.set_view_matrix(gles1::make_look_at(eye, center, {0.0f, 0.0f, 1.0f}));
 
         for (size_t i = 0; i < sim.chain.axis_count; ++i) {
@@ -4583,7 +4716,7 @@ private:
         render_probe_calibration_overlay(fb, renderer);
 
         if (draw_path) {
-            renderer.set_model_matrix(gles1::Mat4::identity());
+            renderer.set_model_matrix(work_frame());
             for (size_t channel = 0; channel < cnc::programs::MAX_CHANNELS; ++channel) {
                 const gles1::Vec3f* points = nullptr;
                 const size_t count = kernel::ui::operator_api::selected_program_preview(channel, points);
@@ -4635,15 +4768,15 @@ private:
     int32_t drag_x_ = 0;
     int32_t drag_y_ = 0;
     Camera camera_{};
-    // Per-widget depth buffer for the GLES1 Z-test path. Lazy-allocated by
-    // ensure_depth_buffer() the first time bind_view runs; mutable so the
-    // const bind_view can populate it without losing the const-call ergonomics.
-    mutable float* depth_buffer_ = nullptr;
-    mutable size_t depth_capacity_ = 0;
+    uint32_t last_scene_sig_ = 0;
+    uint32_t ticks_since_render_ = 0;
 };
 
 BuilderImage* BuilderImage::g_gles1_widgets[BuilderImage::kMaxGles1Widgets] = {};
 uint32_t BuilderImage::g_gles1_widget_count = 0;
+uint32_t BuilderImage::g_scene_generation = 0;
+uint32_t BuilderImage::g_render_count = 0;
+uint32_t BuilderImage::g_last_render_us = 0;
 
 void view_reset_all_cameras() { BuilderImage::reset_all_cameras(); }
 void view_zoom_all(float factor) { BuilderImage::zoom_all(factor); }
@@ -4690,11 +4823,20 @@ public:
             last_rendered_dialog_ = g_active_dialog;
         }
         Widget* dialog_root = g_pages[g_active_dialog].root;
-        if (dialog_root && dialog_root->visible() && dialog_root->needs_redraw()) {
-            dialog_root->render(fb);
-            dialog_root->clear_redraw();
+        if (dialog_root && dialog_root->visible()) {
+            if (dialog_root->needs_redraw()) {
+                dialog_root->render(fb);
+                dialog_root->clear_redraw();
+            } else if (dialog_root->subtree_dirty()) {
+                dialog_root->render_dirty_children(fb);
+            }
         }
     }
+
+    // Partial updates (ScreenManager, root clean) must still honour the
+    // dialog layer, so route them through render(): with no dialog it is the
+    // plain dirty-descendant walk; with one, only the dialog repaints.
+    void render_dirty_children(Framebuffer& fb) override { render(fb); }
 
     bool on_event(const UIEvent& event) override {
         // Dialog active: dispatch to the dialog root first; if it doesn't
@@ -4913,7 +5055,7 @@ void show_dialog(const char* id) {
     if (!id || !*id) return;
     int idx = find_page_index_by_id(id);
     if (idx < 0 || !g_pages[idx].is_dialog) return;
-    kernel::core::ScopedLock guard(g_state_lock);
+    StateGuard guard;
     // Hide any other dialog that might still be shown (defensive — caller
     // shouldn't normally stack).
     for (uint32_t i = 0; i < g_page_count; ++i) {
@@ -4927,7 +5069,7 @@ void show_dialog(const char* id) {
 }
 
 void hide_dialog() {
-    kernel::core::ScopedLock guard(g_state_lock);
+    StateGuard guard;
     if (g_active_dialog >= 0 && static_cast<uint32_t>(g_active_dialog) < g_page_count) {
         if (g_pages[g_active_dialog].root) g_pages[g_active_dialog].root->hide();
     }
@@ -5057,6 +5199,10 @@ bool load_tsv(const char* buf, size_t len) {
             ++offset;
         }
         if (offset < len && buf[offset] == '\n') ++offset;
+        // Tolerate CRLF: a Windows checkout (core.autocrlf) or a card
+        // edited on Windows hands us "\r\n" line ends. Without this a blank
+        // line became a record of type "\r" and the whole UI failed to load.
+        if (end > line && end[-1] == '\r') --end;
         const size_t line_len = static_cast<size_t>(end - line);
         if (line_len == 0 || *line == '#') continue;
 
@@ -5073,7 +5219,9 @@ bool load_tsv(const char* buf, size_t len) {
 
         const RecordType record_type = parse_record_type(type_buf);
         if (record_type == RecordType::Unknown) {
-            set_error(line_no, "unknown record type");
+            char msg[64];
+            kernel::util::k_snprintf(msg, sizeof(msg), "unknown record type '%s'", type_buf);
+            set_error(line_no, msg);
             return false;
         }
         if (record_type == RecordType::Theme) {
@@ -5288,8 +5436,29 @@ uint32_t last_error_line() {
     return g_last_error_line;
 }
 
-void lock_state() noexcept   { g_state_lock.acquire_general(); }
+void lock_state() noexcept   { acquire_state_lock(); }
 void unlock_state() noexcept { g_state_lock.release_general(); }
+
+bool machine_view_set_override(const char* link, float value) {
+    StateGuard guard;
+    return BuilderImage::set_override(link, value);
+}
+
+void machine_view_zoom(float factor) {
+    StateGuard guard;
+    view_zoom_all(factor);
+}
+
+void machine_view_clear_overrides() {
+    StateGuard guard;
+    BuilderImage::clear_overrides();
+}
+
+void machine_view_dump(kernel::hal::UARTDriverOps* uart) {
+    if (!uart) return;
+    StateGuard guard;
+    BuilderImage::dump(uart);
+}
 
 void tick() {
     for (uint32_t i = 0; i < g_input_count; ++i) {

@@ -2,6 +2,8 @@
 
 #include "render/stl_importer.hpp"
 
+#include "util_math.hpp"
+
 #include <cstring>
 
 namespace render::stl {
@@ -107,6 +109,90 @@ ImportReport make_report(ImportStatus status, const char* msg) {
     return r;
 }
 
+inline bool finite3(const render::gles1::Vec3f& v) {
+    auto ok = [](float f) { return f == f && f < 1e30f && f > -1e30f; };
+    return ok(v.x) && ok(v.y) && ok(v.z);
+}
+
+inline uint32_t float_bits(float f) {
+    uint32_t u;
+    std::memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+// Many exporters write a zero (or unnormalised) facet normal. Use the
+// winding-derived normal then, and always hand the renderer a unit vector.
+render::gles1::Vec3f facet_normal(const render::gles1::Vec3f& n_in,
+                                  const render::gles1::Vec3f v[3]) {
+    render::gles1::Vec3f n = n_in;
+    float len_sq = n.x * n.x + n.y * n.y + n.z * n.z;
+    if (!(len_sq > 1e-12f)) {
+        const render::gles1::Vec3f a{v[1].x - v[0].x, v[1].y - v[0].y, v[1].z - v[0].z};
+        const render::gles1::Vec3f b{v[2].x - v[0].x, v[2].y - v[0].y, v[2].z - v[0].z};
+        n = {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+        len_sq = n.x * n.x + n.y * n.y + n.z * n.z;
+        if (!(len_sq > 1e-24f)) return {0.0f, 0.0f, 1.0f};  // degenerate facet
+    }
+    if (len_sq > 0.9999f && len_sq < 1.0001f) return n;
+    const float inv = 1.0f / kernel::util::math::sqrt_approx(len_sq);
+    return {n.x * inv, n.y * inv, n.z * inv};
+}
+
+// Append one facet corner, reusing an identical (position, normal) vertex
+// when the caller supplied a weld table. Returns false on capacity.
+bool emit_vertex(ImportedMesh& mesh, const ImportLimits& limits,
+                 const render::gles1::Vec3f& pos, const render::gles1::Vec3f& normal) {
+    const size_t max_verts = limits.max_vertices < 0xFFFFu ? limits.max_vertices : 0xFFFFu;
+    uint16_t* slot = nullptr;
+    if (mesh.weld_table && mesh.weld_table_size) {
+        uint32_t h = 2166136261u;  // FNV-1a over the six float bit patterns
+        const uint32_t k[6] = {float_bits(pos.x), float_bits(pos.y), float_bits(pos.z),
+                               float_bits(normal.x), float_bits(normal.y), float_bits(normal.z)};
+        for (uint32_t w : k) { h ^= w; h *= 16777619u; }
+        const size_t mask = mesh.weld_table_size - 1;
+        for (size_t probe = 0; probe < mesh.weld_table_size; ++probe) {
+            uint16_t& e = mesh.weld_table[(h + probe) & mask];
+            if (e == 0xFFFFu) { slot = &e; break; }
+            const render::gles1::Vertex& v = mesh.vertices[e];
+            if (float_bits(v.position.x) == k[0] && float_bits(v.position.y) == k[1] &&
+                float_bits(v.position.z) == k[2] && float_bits(v.normal.x) == k[3] &&
+                float_bits(v.normal.y) == k[4] && float_bits(v.normal.z) == k[5]) {
+                mesh.indices[mesh.index_count++] = e;
+                return true;
+            }
+        }
+        if (!slot) return false;  // table full
+    }
+    if (mesh.vertex_count >= max_verts) return false;
+    render::gles1::Vertex& v = mesh.vertices[mesh.vertex_count];
+    v.position = pos;
+    v.normal = normal;
+    v.uv = {0.0f, 0.0f};
+    v.color = {0xff, 0xff, 0xff, 0xff};
+    if (slot) *slot = static_cast<uint16_t>(mesh.vertex_count);
+    mesh.indices[mesh.index_count++] = static_cast<uint16_t>(mesh.vertex_count);
+    ++mesh.vertex_count;
+    return true;
+}
+
+// Emit one triangle (skipping non-finite ones). Returns false on capacity.
+bool emit_facet(ImportedMesh& mesh, const ImportLimits& limits,
+                const render::gles1::Vec3f& normal_in, const render::gles1::Vec3f v[3]) {
+    if (!finite3(v[0]) || !finite3(v[1]) || !finite3(v[2])) return true;  // drop garbage
+    if (mesh.index_count + 3 > limits.max_indices) return false;
+    const render::gles1::Vec3f n = facet_normal(finite3(normal_in) ? normal_in
+                                                                  : render::gles1::Vec3f{0, 0, 0}, v);
+    for (int i = 0; i < 3; ++i) {
+        if (!emit_vertex(mesh, limits, v[i], n)) return false;
+    }
+    return true;
+}
+
+void reset_weld_table(ImportedMesh& mesh) {
+    if (!mesh.weld_table) return;
+    for (size_t i = 0; i < mesh.weld_table_size; ++i) mesh.weld_table[i] = 0xFFFFu;
+}
+
 }  // namespace
 
 ImportReport parse_ascii(const char* text, size_t len, const ImportLimits& limits,
@@ -120,6 +206,7 @@ ImportReport parse_ascii(const char* text, size_t len, const ImportLimits& limit
     mesh.position_count = 0;
     mesh.normal_count = 0;
     mesh.uv_count = 0;
+    reset_weld_table(mesh);
 
     const char* p = text;
     const char* end = text + len;
@@ -178,22 +265,11 @@ ImportReport parse_ascii(const char* text, size_t len, const ImportLimits& limit
             return make_report(ImportStatus::ParseError, "expected `endfacet`");
         }
 
-        if (mesh.vertex_count + 3 > limits.max_vertices ||
-            mesh.index_count + 3 > limits.max_indices) {
+        // One vertex per facet corner with the facet's normal (flat
+        // shading); corners identical in position+normal are welded when
+        // the caller provides a weld table.
+        if (!emit_facet(mesh, limits, normal, verts)) {
             return make_report(ImportStatus::CapacityExceeded, "mesh too large");
-        }
-
-        // Emit 3 fresh vertices + 3 indices. STL has no vertex sharing,
-        // and the importer matches the OBJ flavour — one vertex per face
-        // corner, per-face normal applied uniformly.
-        for (int i = 0; i < 3; ++i) {
-            render::gles1::Vertex& v = mesh.vertices[mesh.vertex_count];
-            v.position = verts[i];
-            v.normal = normal;
-            v.uv = {0.0f, 0.0f};
-            v.color = {0xff, 0xff, 0xff, 0xff};
-            mesh.indices[mesh.index_count++] = static_cast<uint16_t>(mesh.vertex_count);
-            ++mesh.vertex_count;
         }
     }
 
@@ -240,6 +316,7 @@ ImportReport parse_binary(const void* data, size_t len, const ImportLimits& limi
     mesh.position_count = 0;
     mesh.normal_count = 0;
     mesh.uv_count = 0;
+    reset_weld_table(mesh);
 
     const uint8_t* bytes = static_cast<const uint8_t*>(data);
     const uint32_t tri_count = read_u32_le(bytes + kBinaryHeader);
@@ -253,23 +330,20 @@ ImportReport parse_binary(const void* data, size_t len, const ImportLimits& limi
 
     const uint8_t* p = bytes + kBinaryHeader + 4;
     for (uint32_t t = 0; t < tri_count; ++t) {
-        if (mesh.vertex_count + 3 > limits.max_vertices ||
-            mesh.index_count + 3 > limits.max_indices) {
-            return make_report(ImportStatus::CapacityExceeded, "mesh too large");
-        }
-        render::gles1::Vec3f normal{
+        const render::gles1::Vec3f normal{
             read_f32_le(p + 0), read_f32_le(p + 4), read_f32_le(p + 8)};
+        render::gles1::Vec3f verts[3];
         for (int i = 0; i < 3; ++i) {
             const uint8_t* vp = p + 12 + i * 12;
-            render::gles1::Vertex& v = mesh.vertices[mesh.vertex_count];
-            v.position = {read_f32_le(vp + 0), read_f32_le(vp + 4), read_f32_le(vp + 8)};
-            v.normal = normal;
-            v.uv = {0.0f, 0.0f};
-            v.color = {0xff, 0xff, 0xff, 0xff};
-            mesh.indices[mesh.index_count++] = static_cast<uint16_t>(mesh.vertex_count);
-            ++mesh.vertex_count;
+            verts[i] = {read_f32_le(vp + 0), read_f32_le(vp + 4), read_f32_le(vp + 8)};
+        }
+        if (!emit_facet(mesh, limits, normal, verts)) {
+            return make_report(ImportStatus::CapacityExceeded, "mesh too large");
         }
         p += kBinaryTriRecord;
+    }
+    if (mesh.index_count == 0) {
+        return make_report(ImportStatus::ParseError, "no finite triangles in binary STL");
     }
     return make_report(ImportStatus::Ok, "ok");
 }

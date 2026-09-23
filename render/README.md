@@ -1,6 +1,6 @@
-# Render Starter
+# Render
 
-This directory is the isolated starter for a kernel-side graphics pipeline. It is intentionally separate from the current UI path so the renderer can evolve without destabilizing the framebuffer boot flow.
+Kernel-side software renderer (`gles1`), mesh importers (OBJ, ASCII/binary STL), and the machine kinematic model that drives the UI's live machine view. **For how machines are modelled, posed and drawn — data flow, units, the `test kin` / `kin` tools and the open findings — see [MACHINE_MODEL.md](MACHINE_MODEL.md).**
 
 ## Target shape
 
@@ -28,7 +28,7 @@ The first milestone is a minimal OpenGL ES 1.1-style fixed-function path:
 
 ## Current limits
 
-- OBJ subset only: `v`, `vn`, `vt`, and `f`.
+- OBJ subset only: `v`, `vn`, `vt`, and `f` (plus `mtllib`/`usemtl` Kd colours). STL: ASCII and binary, welded on import.
 - Faces support triangles and quads only.
 - Material files, smoothing groups, and polygon triangulation beyond quads are not implemented.
 - Rasterizer is currently wireframe, not filled.

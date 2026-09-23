@@ -67,6 +67,8 @@
 #include <cstdint>
 #include <cstddef>
 
+namespace kernel::hal { struct UARTDriverOps; }
+
 namespace kernel::ui {
 class Widget;
 }
@@ -184,15 +186,26 @@ const char* last_error();
 uint32_t last_error_line();
 void tick();
 
-// Acquire/release the UI state lock. Held briefly during set_active_page's
-// show/hide cascade and during the renderer's tree walk so a concurrent
-// page switch can't leave two pages in inconsistent visibility state.
-// pump_ui_input and screen.render() in the UI main loop are sequential;
-// these locks therefore never nest in practice. When TSV hot-reload lands
-// (rebuilding g_widgets / g_pages), extend this protection over the
-// rebuild and any future tree-mutation entry points.
+// Acquire/release the UI state lock. Held during set_active_page's
+// show/hide cascade and across every whole-tree render (the UI loop and
+// render_ui_once from the CLI / HMI threads), so two threads never walk the
+// tree or the shared GLES preview state at once. Waiters yield rather than
+// spin. Not recursive: never call set_page / show_dialog from render().
+// When TSV hot-reload lands (rebuilding g_widgets / g_pages), extend this
+// protection over the rebuild and any future tree-mutation entry points.
 void lock_state() noexcept;
 void unlock_state() noexcept;
+
+// Machine-view pose preview. A per-link override (mm or deg, by chain link
+// name) replaces the live motion position in the GLES machine view until it
+// is cleared, so a pose can be inspected without drives. Setting returns
+// false for an unknown link. The dump prints every link's position, the
+// world origin and the tool pose.
+bool machine_view_set_override(const char* link, float value);
+void machine_view_clear_overrides();
+void machine_view_dump(kernel::hal::UARTDriverOps* uart);
+// Multiply every GLES view's zoom (1.0 = fit the machine; < 1 moves in).
+void machine_view_zoom(float factor);
 
 // A4: dialog Z-layer API. Dialogs are declared in the TSV via `dialog
 // id=foo title=...` (same shape as `page`) and behave as a modal layer

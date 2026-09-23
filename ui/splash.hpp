@@ -16,4 +16,8 @@ void render_ui_once();
 // on the boot path.
 void boot_ui_thread_entry(void* arg);
 
+// Completed UI main-loop iterations (tick + input + render + present).
+// Diagnostic for `kin`: should climb at ~10 Hz while the UI thread runs.
+unsigned ui_loop_iterations();
+
 }

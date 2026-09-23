@@ -76,27 +76,7 @@ long parse_long(const char* s, long fallback = 0) {
 }
 
 float parse_float(const char* s, float fallback = 0.0f) {
-    if (!s || !*s) return fallback;
-    bool neg = false;
-    if (*s == '-') {
-        neg = true;
-        ++s;
-    }
-    float value = 0.0f;
-    while (*s >= '0' && *s <= '9') {
-        value = value * 10.0f + static_cast<float>(*s - '0');
-        ++s;
-    }
-    if (*s == '.') {
-        ++s;
-        float place = 0.1f;
-        while (*s >= '0' && *s <= '9') {
-            value += static_cast<float>(*s - '0') * place;
-            place *= 0.1f;
-            ++s;
-        }
-    }
-    return neg ? -value : value;
+    return kernel::util::parse_float(s, fallback);
 }
 
 machine::SymbolType parse_type(const char* s) {

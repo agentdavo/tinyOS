@@ -14,11 +14,14 @@
 #include "../ui/ui_builder_tsv.hpp"
 #include "../util.hpp"
 
+#include <atomic>
 #include <new>
 
 namespace kernel::ui {
 
 namespace {
+
+std::atomic<unsigned> g_ui_loop_iterations{0};
 
 constexpr uint32_t kKeyModShift = 1u << 0;
 constexpr uint32_t kKeyModCtrl  = 1u << 1;
@@ -504,7 +507,14 @@ void show_main_page(Framebuffer& fb) {
         operator_api::step_demo_tick();
         ui_builder::tick();
         pump_ui_input(screen);
+        // Same lock render_ui_once() takes: the CLI (ui_page, ui_dump,
+        // test ui) and HMI render this tree from their own threads, and two
+        // concurrent renders race on the shared GLES preview state (the
+        // machine-view mesh import ran twice at once and corrupted meshes).
+        ui_builder::lock_state();
         screen.render();
+        ui_builder::unlock_state();
+        g_ui_loop_iterations.fetch_add(1, std::memory_order_relaxed);
 
         ++ticks_since_present;
         if (fb.is_dirty() || ticks_since_present >= HEARTBEAT_TICKS) {
@@ -575,6 +585,8 @@ void render_ui_once() {
         fb.clear_dirty();
     }
 }
+
+unsigned ui_loop_iterations() { return g_ui_loop_iterations.load(std::memory_order_relaxed); }
 
 void boot_ui_thread_entry(void* /*arg*/) {
     // Bypass ui_log_once so we can see every scheduling quantum of the UI

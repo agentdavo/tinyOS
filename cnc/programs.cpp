@@ -82,25 +82,7 @@ float rotary_to_preview(float a, float b, float c) {
 }
 
 float parse_float_token(const char* s, size_t& idx) {
-    bool neg = false;
-    if (s[idx] == '-') { neg = true; ++idx; }
-    else if (s[idx] == '+') { ++idx; }
-
-    float value = 0.0f;
-    while (s[idx] >= '0' && s[idx] <= '9') {
-        value = value * 10.0f + static_cast<float>(s[idx] - '0');
-        ++idx;
-    }
-    if (s[idx] == '.') {
-        ++idx;
-        float place = 0.1f;
-        while (s[idx] >= '0' && s[idx] <= '9') {
-            value += static_cast<float>(s[idx] - '0') * place;
-            place *= 0.1f;
-            ++idx;
-        }
-    }
-    return neg ? -value : value;
+    return kernel::util::parse_float_at(s, idx);
 }
 
 } // namespace

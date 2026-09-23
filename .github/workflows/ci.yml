@@ -25,6 +25,19 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             qemu-system-arm gdb-multiarch
 
+      - name: Machine editor TSV round-trip
+        run: node machines/roundtrip_test.js
+
+      - name: sdcard.img matches its sources
+        run: |
+          # Files on the card SHADOW the kernel's embedded defaults, so a
+          # stale image silently overrides a fresh kernel (it once carried an
+          # old embedded_ui.tsv that failed to load). Regenerate with
+          # `python3 scripts/mkimg.py` after touching machines/ or the UI TSV.
+          python3 scripts/mkimg.py /tmp/sdcard_check.img > /dev/null
+          cmp /tmp/sdcard_check.img sdcard.img || {
+            echo "::error::sdcard.img is stale - run: python3 scripts/mkimg.py"; exit 1; }
+
       - name: Build kernel
         run: make
 

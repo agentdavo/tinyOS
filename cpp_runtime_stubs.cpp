@@ -25,11 +25,11 @@ extern "C" {
 // Bump allocator backing every kernel `operator new` — never freed, sized for
 // the full boot + first-render working set. The biggest consumers:
 //   - ui_builder::load_tsv constructs ~1113 BuilderXxx widgets (~220 KB)
-//   - render/machine_model.cpp imports several OBJ meshes (~32 KB scratch
-//     + per-mesh vertex/index blocks)
-//   - each BuilderImage running gles1::Renderer lazily allocates a
-//     widget-sized depth buffer (machine_view's preview pane is the
-//     largest at ~700 KB)
+//   - render/machine_model.cpp: ~720 KB one-off import scratch plus the
+//     welded machine meshes (~1.2 MB for the MX-850 set), cached so chain
+//     reloads don't re-allocate them
+//   - (the gles1 preview widgets no longer allocate a depth buffer; the old
+//     5.2 MB-per-widget buffer was never read by the wireframe path)
 //   - misc kernel bring-up paths (a few tens of KB)
 // The previous 256 KB cap OOM-panicked mid-tsv_load (every page rendered
 // blank, screenshots committed 336-byte placeholders); 2 MB still OOM'd at
@@ -103,6 +103,13 @@ void* operator new(size_t size) noexcept {
 
 void* operator new[](size_t size) noexcept { 
     return ::operator new(size); 
+}
+
+// Bump-heap introspection for the `meminfo` CLI command. Nothing is ever
+// freed, so `used` only grows — useful for spotting per-reload leaks.
+namespace kernel::util {
+size_t kernel_heap_used() noexcept { return simple_kernel_heap_ptr; }
+size_t kernel_heap_capacity() noexcept { return KERNEL_SIMPLE_HEAP_SIZE; }
 }
 
 // Use ::std::nothrow to ensure we are referring to the global one we defined.

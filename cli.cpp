@@ -15,6 +15,8 @@
 #if MINIOS_FAKE_SLAVE
 #include "ethercat/fake_slave.hpp"
 #include "render/obj_importer.hpp"
+#include "render/kinematic_model.hpp"
+#include "util_math.hpp"
 #include "ethercat/esm.hpp"
 #endif
 #include "motion/motion.hpp"
@@ -557,10 +559,14 @@ static int cmd_save_cfg(const char*, kernel::hal::UARTDriverOps* uart) {
     return 0;
 }
 static int cmd_meminfo(const char*, kernel::hal::UARTDriverOps* uart) {
-    // Memory introspection: per-thread stack watermarks. Stack-painting is
-    // compiled in (see core.hpp STACK_PAINT) so stack_used_bytes returns
-    // meaningful numbers.
+    // Memory introspection: kernel bump heap + per-thread stack watermarks.
+    // Stack-painting is compiled in (see core.hpp STACK_PAINT) so
+    // stack_used_bytes returns meaningful numbers.
     char buf[160];
+
+    kernel::util::k_snprintf(buf, sizeof(buf), "Kernel heap: %zu / %zu bytes used (bump allocator, never freed)\n",
+                             kernel::util::kernel_heap_used(), kernel::util::kernel_heap_capacity());
+    uart->puts(buf);
 
     // Threads — dump name + state + stack watermark.
     uart->puts("Threads:\n");
@@ -1646,6 +1652,274 @@ static int cmd_trace(const char*, kernel::hal::UARTDriverOps* uart) {
 static int cmd_stats(const char*, kernel::hal::UARTDriverOps* uart) {
     kernel::get_kernel_stats(uart); return 0;
 }
+// `kin` — inspect / pose the machine-view kinematic chain.
+static int cmd_kin(const char* args, kernel::hal::UARTDriverOps* uart) {
+    while (args && *args == ' ') ++args;
+    if (!args || !*args) {
+        ui_builder::machine_view_dump(uart);
+        return 0;
+    }
+    if (kernel::util::kstrncmp(args, "zoom ", 5) == 0) {
+        ui_builder::machine_view_zoom(kernel::util::parse_float(args + 5, 1.0f));
+        return 0;
+    }
+    if (cstrcmp(args, "clear") == 0) {
+        ui_builder::machine_view_clear_overrides();
+        uart->puts("kin: overrides cleared (machine view follows motion again)\n");
+        return 0;
+    }
+    char link[16];
+    size_t n = 0;
+    while (args[n] && args[n] != ' ' && n + 1 < sizeof(link)) { link[n] = args[n]; ++n; }
+    link[n] = '\0';
+    const char* v = args + n;
+    while (*v == ' ') ++v;
+    if (!*v) {
+        uart->puts("usage: kin | kin <link> <mm|deg> | kin clear | kin zoom <factor>\n");
+        return 1;
+    }
+    if (!ui_builder::machine_view_set_override(link, kernel::util::parse_float(v))) {
+        uart->puts("kin: unknown link\n");
+        return 1;
+    }
+    ui_builder::machine_view_dump(uart);
+    return 0;
+}
+
+// ---- `test kin`: matrix sanity, chain-TSV validation, FK/IK round trips ----
+namespace kin_test {
+
+namespace gl = render::gles1;
+namespace km = render::kinematic;
+
+bool near(float a, float b, float tol) { return (a > b ? a - b : b - a) <= tol; }
+
+bool mat_near(const gl::Mat4& a, const gl::Mat4& b, float tol) {
+    for (int i = 0; i < 16; ++i) if (!near(a.m[i], b.m[i], tol)) return false;
+    return true;
+}
+
+gl::Vec4f xf(const gl::Mat4& m, float x, float y, float z) {
+    return gl::multiply(m, gl::Vec4f{x, y, z, 1.0f});
+}
+
+// Column-major conventions every caller relies on (the old multiply()
+// returned the transpose, which blanked the machine view).
+int check_matrices(kernel::hal::UARTDriverOps* uart) {
+    int fails = 0;
+    auto expect = [&](bool ok, const char* what) {
+        if (!ok) { ++fails; uart->puts("  kin matrix FAIL: "); uart->puts(what); uart->puts("\n"); }
+    };
+    constexpr float kQuarter = 1.57079632679f;
+    const gl::Mat4 T = gl::make_translation(1.0f, 2.0f, 3.0f);
+    const gl::Mat4 Rz = gl::make_rotation_z(kQuarter);
+    const gl::Vec4f p = xf(gl::multiply(T, Rz), 1.0f, 0.0f, 0.0f);
+    expect(near(p.x, 1.0f, 1e-5f) && near(p.y, 3.0f, 1e-5f) && near(p.z, 3.0f, 1e-5f),
+           "T*Rz(90) maps +X to T+(0,1,0)");
+    expect(mat_near(gl::multiply(gl::Mat4::identity(), T), T, 0.0f) &&
+           mat_near(gl::multiply(T, gl::Mat4::identity()), T, 0.0f), "identity is neutral");
+    const gl::Mat4 Rx = gl::make_rotation_x(0.3f), Ry = gl::make_rotation_y(-1.1f);
+    expect(mat_near(gl::multiply(gl::multiply(T, Rx), Ry), gl::multiply(T, gl::multiply(Rx, Ry)), 1e-5f),
+           "multiply is associative");
+    expect(mat_near(Rz, gl::make_rotation_axis_angle({0, 0, 1}, kQuarter), 1e-6f) &&
+           mat_near(Rx, gl::make_rotation_axis_angle({1, 0, 0}, 0.3f), 1e-6f) &&
+           mat_near(Ry, gl::make_rotation_axis_angle({0, 1, 0}, -1.1f), 1e-6f),
+           "rotation_x/y/z agree with axis-angle");
+    expect(mat_near(gl::make_rotation_xyz_intrinsic_deg(0.0f, 0.0f, 90.0f), Rz, 1e-6f),
+           "intrinsic xyz(0,0,90) == Rz(90)");
+    const gl::Mat4 V = gl::make_look_at({0.0f, -10.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f});
+    const gl::Vec4f c = xf(V, 0.0f, 0.0f, 0.0f), r = xf(V, 1.0f, 0.0f, 0.0f), u = xf(V, 0.0f, 0.0f, 1.0f);
+    expect(near(c.x, 0.0f, 1e-4f) && near(c.y, 0.0f, 1e-4f) && near(c.z, -10.0f, 1e-4f),
+           "look_at puts the centre on -Z");
+    expect(r.x > 0.9f && u.y > 0.9f, "look_at keeps +X right and +Z up");
+    const gl::Mat4 P = gl::make_perspective(1.05f, 1.0f, 0.1f, 100.0f);
+    const gl::Vec4f clip = gl::multiply(gl::multiply(P, V), gl::Vec4f{0.0f, 0.0f, 0.0f, 1.0f});
+    expect(clip.w > 0.0f && near(clip.x, 0.0f, 1e-4f) && clip.z / clip.w > -1.0f && clip.z / clip.w < 1.0f,
+           "P*V puts the look-at centre inside the frustum");
+    return fails;
+}
+
+// Malformed chains the loader must refuse (each prints its own
+// "[kinematic] tsv line N" warning), plus exponent parsing.
+int check_parser(kernel::hal::UARTDriverOps* uart) {
+    static km::KinematicChain c;
+    int fails = 0;
+    struct Bad { const char* why; const char* tsv; };
+    static const Bad kBad[] = {
+        {"parent after child", "a,Fixed,-1,0,0,0,0,0,0,0,0,none,0,-1\nb,Linear,c,1,0,0,0,0,0,0,1,box,0,0\nc,Fixed,a,0,0,0,0,0,0,0,0,none,0,-1\n"},
+        {"self parent",        "a,Linear,a,1,0,0,0,0,0,0,1,box,0,0\n"},
+        {"duplicate name",     "a,Fixed,-1,0,0,0,0,0,0,0,0,none,0,-1\na,Fixed,-1,0,0,0,0,0,0,0,0,none,0,-1\n"},
+        {"unknown type",       "a,Prismatic,-1,1,0,0,0,0,0,0,1,box,0,0\n"},
+        {"zero direction",     "a,Rotary,-1,0,0,0,0,0,0,0,360,box,0,0\n"},
+        {"min > max",          "a,Linear,-1,1,0,0,0,0,0,5,1,box,0,0\n"},
+        {"channel range",      "a,Linear,-1,1,0,0,0,0,0,0,1,box,7,0\n"},
+    };
+    for (const auto& b : kBad) {
+        if (km::load_chain_from_tsv(c, b.tsv, kernel::util::kstrlen(b.tsv))) {
+            ++fails;
+            uart->puts("  kin parser FAIL: accepted "); uart->puts(b.why); uart->puts("\n");
+        }
+    }
+    static char longline[400];
+    for (size_t i = 0; i < sizeof(longline) - 2; ++i) longline[i] = '#';
+    longline[sizeof(longline) - 2] = '\n';
+    if (km::load_chain_from_tsv(c, longline, sizeof(longline) - 1)) {
+        ++fails;
+        uart->puts("  kin parser FAIL: accepted a 398-char line\n");
+    }
+    static const char kGood[] = "a,Linear,-1,0,0,2,1.5e2,+3,-2.5E-1,0,1e3,box,0,0\n";
+    const bool ok = km::load_chain_from_tsv(c, kGood, sizeof(kGood) - 1) &&
+                    near(c.axes[0].origin_offset.x, 150.0f, 1e-3f) &&
+                    near(c.axes[0].origin_offset.y, 3.0f, 1e-6f) &&
+                    near(c.axes[0].origin_offset.z, -0.25f, 1e-6f) &&
+                    near(c.axes[0].travel_max, 1000.0f, 1e-3f) &&
+                    near(c.axes[0].axis_direction.z, 1.0f, 1e-5f);
+    if (!ok) {
+        ++fails;
+        uart->puts("  kin parser FAIL: exponent / '+' / direction normalisation\n");
+    }
+    return fails;
+}
+
+struct Lcg {
+    uint32_t s;
+    float next01() { s = s * 1664525u + 1013904223u; return static_cast<float>(s >> 8) * (1.0f / 16777216.0f); }
+};
+
+float home_of(const km::AxisConfig& ax) {
+    return ax.travel_min > 0.0f ? ax.travel_min : (ax.travel_max < 0.0f ? ax.travel_max : 0.0f);
+}
+
+gl::Vec3f origin_of(const km::KinematicChain& c, size_t i) {
+    const gl::Mat4& m = km::get_link_transform(c, i);
+    return {m.m[12], m.m[13], m.m[14]};
+}
+
+float dist3(const gl::Vec3f& a, const gl::Vec3f& b) {
+    const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    return kernel::util::math::sqrt_approx(dx * dx + dy * dy + dz * dz);
+}
+
+bool is_descendant(const km::KinematicChain& c, size_t k, size_t anc) {
+    for (int p = c.axes[k].parent_index; p >= 0; p = c.axes[p].parent_index) {
+        if (static_cast<size_t>(p) == anc) return true;
+    }
+    return false;
+}
+
+int check_machine(const char* path, kernel::hal::UARTDriverOps* uart) {
+    static km::KinematicChain c;
+    static gl::Mat4 before[km::MAX_AXES];
+    const char* buf = nullptr;
+    size_t len = 0;
+    char line[200];
+    if (!kernel::vfs::lookup(path, buf, len) || !buf || !km::load_chain_from_tsv(c, buf, len)) {
+        kernel::util::k_snprintf(line, sizeof(line), "  kin %s: FAILED to load\n", path);
+        uart->puts(line);
+        return 1;
+    }
+    int fails = 0;
+    auto set_home = [&]() {
+        for (size_t i = 0; i < c.axis_count; ++i) c.axes[i].position = home_of(c.axes[i]);
+    };
+
+    // FK: a linear step of d moves the link's origin by exactly d along its
+    // axis; a rotary step keeps every descendant the same distance from the
+    // joint origin, and a further step to +360 deg restores every link.
+    for (size_t i = 0; i < c.axis_count; ++i) {
+        auto& ax = c.axes[i];
+        if (ax.type == km::AxisType::Fixed) continue;
+        set_home();
+        km::compute_forward_kinematics(c);
+        const gl::Vec3f o0 = origin_of(c, i);
+        for (size_t k = 0; k < c.axis_count; ++k) before[k] = km::get_link_transform(c, k);
+        const float step = ax.type == km::AxisType::Linear ? 10.0f : 37.0f;
+        ax.position += step;
+        km::compute_forward_kinematics(c);
+        bool ok = true;
+        if (ax.type == km::AxisType::Linear) {
+            ok = near(dist3(origin_of(c, i), o0), step, 2e-3f);
+        } else {
+            for (size_t k = 0; k < c.axis_count; ++k) {
+                if (!is_descendant(c, k, i)) continue;
+                const gl::Vec3f b{before[k].m[12], before[k].m[13], before[k].m[14]};
+                if (!near(dist3(origin_of(c, k), o0), dist3(b, o0), 2e-3f)) ok = false;
+            }
+            ax.position += 360.0f - step;
+            km::compute_forward_kinematics(c);
+            for (size_t k = 0; k < c.axis_count; ++k) {
+                if (!mat_near(km::get_link_transform(c, k), before[k], 5e-3f)) ok = false;
+            }
+        }
+        if (!ok) {
+            ++fails;
+            kernel::util::k_snprintf(line, sizeof(line), "  kin %s: FK check failed on %s\n", path, ax.name);
+            uart->puts(line);
+        }
+    }
+
+    // FK -> IK -> FK round trips over random reachable poses. Several seeds,
+    // because a 5-axis pose has more than one joint solution and a clamped
+    // limit can stall one of them.
+    const km::ToolFrames frames = km::find_tool_frames(c);
+    constexpr int kSamples = 24;
+    int converged = 0, max_iters = 0;
+    float worst_pos = 0.0f, worst_axis = 0.0f;
+    Lcg rng{0x4B494E31u};
+    for (int s = 0; s < kSamples; ++s) {
+        for (size_t i = 0; i < c.axis_count; ++i) {
+            const auto& ax = c.axes[i];
+            c.axes[i].position = ax.type == km::AxisType::Fixed ? 0.0f
+                               : ax.travel_min + (ax.travel_max - ax.travel_min) * rng.next01();
+        }
+        km::compute_forward_kinematics(c);
+        const km::ToolPose target = km::compute_tool_pose(c, frames);
+        km::IkResult best{};
+        best.position_error = 1e30f;
+        for (int seed = 0; seed < 4 && !best.converged; ++seed) {
+            for (size_t i = 0; i < c.axis_count; ++i) {
+                const auto& ax = c.axes[i];
+                c.axes[i].position = seed == 0 ? home_of(ax)
+                                   : seed == 1 ? 0.5f * (ax.travel_min + ax.travel_max)
+                                   : ax.travel_min + (ax.travel_max - ax.travel_min) * rng.next01();
+            }
+            const km::IkResult r = km::solve_ik(c, frames, target);
+            if (r.converged || r.position_error < best.position_error) best = r;
+        }
+        if (best.converged) ++converged;
+        if (best.position_error > worst_pos) worst_pos = best.position_error;
+        if (best.axis_error > worst_axis) worst_axis = best.axis_error;
+        if (best.iterations > max_iters) max_iters = best.iterations;
+    }
+    if (converged != kSamples) ++fails;
+    kernel::util::k_snprintf(line, sizeof(line),
+        "  kin %s: %zu links tool=%s work=%s ik %d/%d worst pos=%.4fmm axis=%.6f iters<=%d\n",
+        path, c.axis_count,
+        frames.tool_link >= 0 ? c.axes[frames.tool_link].name : "?",
+        frames.work_link >= 0 ? c.axes[frames.work_link].name : "?",
+        converged, kSamples, static_cast<double>(worst_pos), static_cast<double>(worst_axis), max_iters);
+    uart->puts(line);
+    return fails;
+}
+
+int run(kernel::hal::UARTDriverOps* uart) {
+    int fails = check_matrices(uart);
+    fails += check_parser(uart);
+    static const char* const kMachines[] = {
+        "system/machine/kinematic_mill3.tsv",
+        "system/machine/kinematic_millturn.tsv",
+        "system/machine/kinematic_mx850.tsv",
+    };
+    for (const char* m : kMachines) fails += check_machine(m, uart);
+    char line[64];
+    kernel::util::k_snprintf(line, sizeof(line), "kin test: %d failures => %s\n",
+                             fails, fails == 0 ? "PASSED" : "FAILED");
+    uart->puts(line);
+    return fails == 0 ? 0 : 1;
+}
+
+} // namespace kin_test
+
 static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
     if (!args || !*args) {
         uart->puts("Usage: test <subtest>\n");
@@ -1662,6 +1936,7 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         uart->puts("  ui       - walk every TSV page + dialog and force a render\n");
         uart->puts("  fp       - FP registers survive 50 ms of preemption\n");
         uart->puts("  mem      - memcpy/memmove/memset vs byte reference\n");
+        uart->puts("  kin      - matrix math, chain TSV checks, FK/IK round trips\n");
         uart->puts("  all      - run every subtest and emit a summary\n");
         return 1;
     }
@@ -2014,6 +2289,9 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
         uart->puts(buf);
         return failures == 0 ? 0 : 1;
     }
+    if (kernel::util::kstrcmp(args, "kin") == 0) {
+        return kin_test::run(uart);
+    }
     if (kernel::util::kstrcmp(args, "all") == 0) {
         // CI-grep target. Runs every subtest and emits a consolidated
         // summary "Tests completed: <total>, <failed> failed".
@@ -2021,7 +2299,7 @@ static int cmd_test(const char* args, kernel::hal::UARTDriverOps* uart) {
             "status", "motion", "ec", "devices",
             "chain", "mtl", "fake_sdo",
             "tcp", "pallet", "jobs",
-            "ui", "fp", "mem",
+            "ui", "fp", "mem", "kin",
         };
         size_t failed = 0;
         for (const char* s : subtests) {
@@ -5386,6 +5664,7 @@ CLI::CLI() {
     register_command("klog", cmd_klog, "Dump the in-RAM kernel log ring (recent ~8 KB of UART output)");
     register_command("save_cfg", cmd_save_cfg, "Dump current operator-set state as replayable CLI commands");
     register_command("meminfo", cmd_meminfo, "Memory pool usage + per-thread stack watermarks");
+    register_command("kin",     cmd_kin,     "Machine-view chain: dump | <link> <mm|deg> | clear | zoom <f>");
     register_command("trace", cmd_trace, "Dump the kernel trace buffer");
     register_command("stats", cmd_stats, "Show scheduler / per-CPU state");
     register_command("test",  cmd_test,  "Run the built-in test framework");

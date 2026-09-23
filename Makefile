@@ -36,7 +36,7 @@ ui/fb.cpp ui/splash.cpp ui/display.cpp ui/operator_api.cpp \
               cnc/setup.cpp cnc/jobs.cpp \
              render/gles1.cpp render/machine_model.cpp render/kinematic_model.cpp \
              render/obj_importer.cpp render/obj_registry.cpp render/stl_importer.cpp \
-             render/benchmark.cpp fs/vfs.cpp fs/fat32.cpp fs/fs_fat32.cpp
+             fs/vfs.cpp fs/fat32.cpp fs/fs_fat32.cpp
 
 # Binary blobs embedded via .incbin — built as a separate .S file so the raw
 # TSV bytes get a predictable start/end symbol pair in .rodata.
@@ -360,8 +360,6 @@ $(OBJDIR)/obj_registry.o: render/obj_registry.cpp | $(OBJDIR)
 $(OBJDIR)/stl_importer.o: render/stl_importer.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(OBJDIR)/vfs.o: fs/vfs.cpp | $(OBJDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
-$(OBJDIR)/benchmark.o: render/benchmark.cpp | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 # .incbin resolves paths relative to the assembler's include search paths
 # (-I). The rule runs from the project root, so `devices/clearpath_ec.tsv`

@@ -1,0 +1,15 @@
+# Files the kernel .incbin's or ships on the SD card are parsed byte-for-byte
+# at boot. Keep them LF on every checkout, even with core.autocrlf=true on
+# Windows, so the embedded blobs and sdcard.img don't depend on the host.
+*.tsv   text eol=lf
+*.obj   text eol=lf
+*.S     text eol=lf
+*.gdb   text eol=lf
+*.sh    text eol=lf
+devices/demo_part.stl   text eol=lf
+
+# SolidWorks STL exports are committed exactly as exported (CRLF ASCII).
+machines/*.STL   -text
+
+*.img   binary
+*.png   binary
