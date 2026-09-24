@@ -5,9 +5,22 @@ Refresh by running the **UI screenshots** GitHub Actions workflow (or
 `bash scripts/qemu_dump_ui_pages.sh screenshots && python3 scripts/generate_ui_md.py screenshots UI.md`
 locally).
 
-Each shot below is the guest framebuffer rendered by the `arm64` kernel,
-captured via the CLI `ui_page <id>` + `ui_dump <scale>` commands and
-downscaled by the factor noted at capture time.
+Each shot below is the guest framebuffer at native 1080×1920 (1:1), rendered
+by the kernel and captured via the CLI `ui_page <id>` + `ui_dump 1` commands.
+
+Operator notes:
+- **Keyboard:** Tab / Down move focus through the controls of the visible
+  page (Up goes back); Enter or Space activates the focused control; Esc
+  drops focus and returns the arrow / WASD keys to the on-screen pointer.
+  Hold-to-confirm buttons (E-STOP, CONFIRM RESTART) must be held for their
+  hold time on the keyboard too.
+- **Fields:** typing replaces the shown value; Enter commits. An amber border
+  means an uncommitted edit is parked — tap the field to resume it.
+- **Alarms:** alarm indicators are green when clear and red when an alarm
+  (drive fault or EtherCAT deadline fault) is active, on every page.
+- **Live preview:** the editor's *Push to kernel* (WebSocket 5001) is accepted
+  from a local file, localhost, or the origin set by `hmi key=ws_origin`, and
+  refused while a cycle or homing runs (`hmi key=ui_upload_enable`).
 
 
 ## Pages
@@ -176,4 +189,4 @@ downscaled by the factor noted at capture time.
 
 ---
 
-*Generated 2026-05-30 22:05:23 UTC from `devices/embedded_ui.tsv` (20 pages).*
+*Generated 2026-09-24 11:51:14 UTC from `devices/embedded_ui.tsv` (20 pages).*

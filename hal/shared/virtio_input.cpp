@@ -74,8 +74,45 @@ bool VirtIOInputDevice::init(uint64_t slot_base) {
 
     virtio_mmio::driver_ok(base_);
     post_event_buffers();
+    query_abs_ranges();
     initialized_ = true;
     return true;
+}
+
+// virtio-input config space (virtio spec 5.8.4): select, subsel, size, then
+// a union; VIRTIO_INPUT_CFG_ABS_INFO fills it with {min, max, fuzz, flat, res}.
+void VirtIOInputDevice::query_abs_ranges() {
+    constexpr uint8_t kCfgAbsInfo = 0x12;
+    constexpr uint32_t kSelect = virtio_mmio::VMMIO_CONFIG + 0;
+    constexpr uint32_t kSubsel = virtio_mmio::VMMIO_CONFIG + 1;
+    constexpr uint32_t kSize = virtio_mmio::VMMIO_CONFIG + 2;
+    constexpr uint32_t kAbsMin = virtio_mmio::VMMIO_CONFIG + 8;
+    constexpr uint32_t kAbsMax = virtio_mmio::VMMIO_CONFIG + 12;
+    const uint8_t axes[4] = {static_cast<uint8_t>(ABS_X), static_cast<uint8_t>(ABS_Y),
+                             static_cast<uint8_t>(ABS_MT_POSITION_X),
+                             static_cast<uint8_t>(ABS_MT_POSITION_Y)};
+    for (int i = 0; i < 4; ++i) {
+        virtio_mmio::write8(base_, kSelect, kCfgAbsInfo);
+        virtio_mmio::write8(base_, kSubsel, axes[i]);
+        if (virtio_mmio::read8(base_, kSize) == 0) continue;   // axis not present
+        const int32_t lo = static_cast<int32_t>(virtio_mmio::read32(base_, kAbsMin));
+        const int32_t hi = static_cast<int32_t>(virtio_mmio::read32(base_, kAbsMax));
+        if (hi > lo) {
+            abs_min_[i] = lo;
+            abs_max_[i] = hi;
+        }
+    }
+    virtio_mmio::write8(base_, kSelect, 0);
+}
+
+int32_t VirtIOInputDevice::normalize_abs(int axis, int32_t value) const {
+    const int64_t lo = abs_min_[axis];
+    const int64_t span = static_cast<int64_t>(abs_max_[axis]) - lo;
+    if (span <= 0) return 0;
+    int64_t v = (static_cast<int64_t>(value) - lo) * kAbsRange / span;
+    if (v < 0) v = 0;
+    if (v > kAbsRange) v = kAbsRange;
+    return static_cast<int32_t>(v);
 }
 
 void VirtIOInputDevice::handle_event(const VirtioInputEvent& event, InputState& state, MouseEvent& mouse_event) {
@@ -88,7 +125,16 @@ void VirtIOInputDevice::handle_event(const VirtioInputEvent& event, InputState& 
             if (event.code < MAX_KEYBOARD_KEYS) {
                 if (!state.keyboard_connected) input_log("[input] keyboard connected\n");
                 state.keyboard_connected = true;
-                state.key_states[event.code] = event.value != 0;
+                const bool down = event.value != 0;
+                // value 2 is autorepeat: not an edge.
+                if (event.value != 2 && state.key_states[event.code] != down) {
+                    kernel::hal::InputEvent ev{};
+                    ev.kind = kernel::hal::InputEvent::Kind::Key;
+                    ev.key = static_cast<uint8_t>(event.code);
+                    ev.down = down;
+                    state.push(ev);
+                }
+                state.key_states[event.code] = down;
                 input_log_event_count("keyboard", ++keyboard_events);
             } else if (event.code >= BTN_MOUSE && event.code <= BTN_MOUSE + 7) {
                 if (!state.mouse_connected) input_log("[input] mouse connected\n");
@@ -110,6 +156,7 @@ void VirtIOInputDevice::handle_event(const VirtioInputEvent& event, InputState& 
         case EV_REL:
             if (!state.mouse_connected) input_log("[input] mouse connected\n");
             state.mouse_connected = true;
+            state.pointer_absolute = false;
             if (event.code == REL_X) {
                 state.mouse_x += static_cast<int32_t>(event.value);
                 mouse_event.dx = static_cast<int32_t>(event.value);
@@ -126,27 +173,31 @@ void VirtIOInputDevice::handle_event(const VirtioInputEvent& event, InputState& 
             if (event.code == ABS_X) {
                 if (!state.mouse_connected) input_log("[input] mouse connected\n");
                 state.mouse_connected = true;
-                state.mouse_x = static_cast<int32_t>(event.value);
-                state.last_touch.x = static_cast<int32_t>(event.value);
+                state.pointer_absolute = true;
+                state.mouse_x = normalize_abs(0, static_cast<int32_t>(event.value));
+                state.last_touch.x = state.mouse_x;
                 mouse_event.timestamp_ms = now_ms;
                 input_log_event_count("mouse", ++mouse_events);
             } else if (event.code == ABS_Y) {
                 if (!state.mouse_connected) input_log("[input] mouse connected\n");
                 state.mouse_connected = true;
-                state.mouse_y = static_cast<int32_t>(event.value);
-                state.last_touch.y = static_cast<int32_t>(event.value);
+                state.pointer_absolute = true;
+                state.mouse_y = normalize_abs(1, static_cast<int32_t>(event.value));
+                state.last_touch.y = state.mouse_y;
                 mouse_event.timestamp_ms = now_ms;
                 input_log_event_count("mouse", ++mouse_events);
             } else if (event.code == ABS_MT_POSITION_X) {
                 if (!state.touch_connected) input_log("[input] touch connected\n");
                 state.touch_connected = true;
-                state.last_touch.x = static_cast<int32_t>(event.value);
+                state.pointer_absolute = true;
+                state.last_touch.x = normalize_abs(2, static_cast<int32_t>(event.value));
                 state.last_touch.timestamp_ms = now_ms;
                 input_log_event_count("touch", ++touch_events);
             } else if (event.code == ABS_MT_POSITION_Y) {
                 if (!state.touch_connected) input_log("[input] touch connected\n");
                 state.touch_connected = true;
-                state.last_touch.y = static_cast<int32_t>(event.value);
+                state.pointer_absolute = true;
+                state.last_touch.y = normalize_abs(3, static_cast<int32_t>(event.value));
                 state.last_touch.timestamp_ms = now_ms;
                 input_log_event_count("touch", ++touch_events);
             } else if (event.code == ABS_MT_SLOT) {
@@ -166,7 +217,24 @@ void VirtIOInputDevice::handle_event(const VirtioInputEvent& event, InputState& 
                 input_log_event_count("touch", ++touch_events);
             }
             break;
-        case EV_SYN:
+        case EV_SYN: {
+            // Primary pointer: left button or touch contact. Queue its edge
+            // once per frame, with the frame's final position.
+            const bool down = (state.mouse_buttons & 1u) != 0 || state.touch_active;
+            const bool was = (state.buttons_at_syn & 1u) != 0 || state.touch_at_syn;
+            if (down != was) {
+                kernel::hal::InputEvent ev{};
+                ev.kind = kernel::hal::InputEvent::Kind::Pointer;
+                ev.down = down;
+                const bool touch = state.touch_active || state.touch_at_syn;
+                ev.x = touch ? state.last_touch.x : state.mouse_x;
+                ev.y = touch ? state.last_touch.y : state.mouse_y;
+                state.push(ev);
+            }
+            state.buttons_at_syn = state.mouse_buttons;
+            state.touch_at_syn = state.touch_active;
+            break;
+        }
         default:
             break;
     }

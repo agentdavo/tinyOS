@@ -59,6 +59,13 @@ inline uint32_t read32(uint64_t base, uint32_t off) noexcept {
 inline void write32(uint64_t base, uint32_t off, uint32_t v) noexcept {
     *reinterpret_cast<volatile uint32_t*>(base + off) = v;
 }
+// Byte-wide access for device config fields (e.g. virtio-input select).
+inline uint8_t read8(uint64_t base, uint32_t off) noexcept {
+    return *reinterpret_cast<volatile uint8_t*>(base + off);
+}
+inline void write8(uint64_t base, uint32_t off, uint8_t v) noexcept {
+    *reinterpret_cast<volatile uint8_t*>(base + off) = v;
+}
 
 inline void set_failed(uint64_t base) noexcept {
     write32(base, VMMIO_STATUS, VIRTIO_STATUS_FAILED);

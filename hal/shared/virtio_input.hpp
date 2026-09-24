@@ -5,6 +5,7 @@
 #define HAL_SHARED_VIRTIO_INPUT_HPP
 
 #include "virtio_mmio.hpp"
+#include "hal.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -19,7 +20,9 @@ constexpr size_t MAX_KEYBOARD_KEYS = 128;
 constexpr size_t MAX_TOUCH_POINTS = 4;
 constexpr uint32_t VIRTIO_DEV_ID_INPUT = 18;
 
-constexpr size_t VIRTQ_SIZE = 16;
+// QEMU's virtio-input queue size. 16 buffers filled within one 100 ms UI
+// tick of pointer motion (3 events per move), and the device then drops.
+constexpr size_t VIRTQ_SIZE = 64;
 
 constexpr uint16_t EV_SYN = 0x00;
 constexpr uint16_t EV_KEY = 0x01;
@@ -73,7 +76,29 @@ struct InputState {
     uint8_t mouse_buttons = 0;
     TouchEvent last_touch{};
     bool touch_active = false;
+    // Last pointer motion came from an absolute device (tablet / touch),
+    // whose coordinates are normalised to 0..kAbsRange.
+    bool pointer_absolute = false;
+    // Ordered key / pointer-button edges since the consumer last drained.
+    static constexpr size_t QUEUE_LEN = 64;
+    kernel::hal::InputEvent queue[QUEUE_LEN]{};
+    uint32_t q_head = 0;   // next to pop
+    uint32_t q_tail = 0;   // next to push
+    // Primary-button / touch state at the last EV_SYN. The edge is queued at
+    // EV_SYN so it carries the frame's final coordinates.
+    uint8_t buttons_at_syn = 0;
+    bool touch_at_syn = false;
+
+    void push(const kernel::hal::InputEvent& ev) {
+        if (q_tail - q_head >= QUEUE_LEN) ++q_head;   // full: drop the oldest
+        queue[q_tail % QUEUE_LEN] = ev;
+        ++q_tail;
+    }
 };
+
+// Canonical range absolute pointer coordinates are normalised to, whatever
+// the device reports in its ABS_INFO (QEMU's tablet happens to use 0..32767).
+constexpr int32_t kAbsRange = 32767;
 
 struct VirtqDesc {
     uint64_t addr;
@@ -126,8 +151,15 @@ private:
     bool setup_queue(uint32_t queue_idx);
     void post_event_buffers();
     void handle_event(const VirtioInputEvent& event, InputState& state, MouseEvent& mouse_event);
+    // Reads ABS_INFO for X/Y (and the multitouch position axes) from the
+    // device config space. Axes the device doesn't report keep 0..kAbsRange.
+    void query_abs_ranges();
+    int32_t normalize_abs(int axis, int32_t value) const;
 
     uint64_t base_ = 0;
+    // [0]=X [1]=Y [2]=MT_X [3]=MT_Y
+    int32_t abs_min_[4] = {0, 0, 0, 0};
+    int32_t abs_max_[4] = {kAbsRange, kAbsRange, kAbsRange, kAbsRange};
     bool initialized_ = false;
     alignas(4096) Queue event_queue_{};
     alignas(64) VirtioInputEvent event_bufs_[VIRTQ_SIZE]{};
@@ -149,6 +181,13 @@ public:
     
     void get_mouse_position(int32_t& x, int32_t& y, uint8_t& buttons);
     void get_touch_position(int32_t& x, int32_t& y, bool& pressed);
+    uint32_t pointer_abs_range() const { return state_.pointer_absolute ? kAbsRange : 0; }
+    bool next_event(kernel::hal::InputEvent& ev) {
+        if (state_.q_head == state_.q_tail) return false;
+        ev = state_.queue[state_.q_head % InputState::QUEUE_LEN];
+        ++state_.q_head;
+        return true;
+    }
 
 private:
     uintptr_t base_ = 0;

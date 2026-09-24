@@ -8,3 +8,11 @@ hmi	key=ping_selftest_enable	value=1
 hmi	key=ping_selftest_target	value=8.8.8.8
 hmi	key=ping_selftest_delay_ms	value=1500
 hmi	key=ping_selftest_timeout_ms	value=3000
+# Remote SymbolSet over raw 0x88B5 / UDP 5000. Off by default: any host on
+# the shop LAN could otherwise switch writable machine symbols (EtherCAT
+# outputs included). Hardware inputs (estop, limits, door) are never
+# remotely writable, even when this is on.
+hmi	key=remote_write_enable	value=0
+# Live UI replacement from the editor (WebSocket 5001 / UDP 5002). Refused
+# while a cycle or homing is running regardless.
+hmi	key=ui_upload_enable	value=1

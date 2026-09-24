@@ -22,6 +22,19 @@ struct Config {
     uint32_t ping_selftest_target = 0x08080808u; // 8.8.8.8
     uint32_t ping_selftest_delay_ms = 1500;
     uint32_t ping_selftest_timeout_ms = 3000;
+    // Remote SymbolSet (raw 0x88B5 + UDP): off unless the machine builder
+    // opts in. Anything on the shop LAN could otherwise switch EtherCAT
+    // outputs (coolant, chuck clamp, spindle brake) with no authentication.
+    bool remote_write_enable = false;
+    // Live UI replacement over the WebSocket (5001) / UDP upload (5002).
+    // On for the editor workflow; always refused while a cycle or homing
+    // runs.
+    bool ui_upload_enable = true;
+    // One extra browser Origin allowed to open the live-preview WebSocket
+    // (e.g. "http://10.0.0.5:8000" when the editor is served from a shop
+    // PC). No Origin, "null" (editor opened from disk) and localhost are
+    // always allowed.
+    char ws_origin[64] = {};
 };
 
 class Service : public kernel::net::EthListener, public kernel::net::UdpListener {
@@ -50,9 +63,13 @@ public:
                 uint32_t src_ip, uint16_t src_port,
                 uint32_t dst_ip, uint16_t dst_port,
                 const uint8_t* payload, size_t payload_len) noexcept override {
-        (void)if_idx; (void)nic; (void)eth_src;
-        (void)src_ip; (void)src_port; (void)dst_ip; (void)dst_port;
-        handle_tsv_upload(payload, payload_len);
+        (void)if_idx; (void)nic; (void)eth_src; (void)dst_port;
+        // Unicast to our configured address only: a broadcast upload used
+        // to replace the UI of every controller on the segment, even
+        // before DHCP had finished.
+        const uint32_t ours = local_ip_.load(std::memory_order_relaxed);
+        if (ours == 0 || dst_ip != ours) return;
+        handle_tsv_upload(src_ip, src_port, payload, payload_len);
     }
     enum class PingResult : uint8_t {
         Ok = 0,
@@ -73,6 +90,7 @@ public:
     uint32_t gateway() const noexcept { return gateway_.load(std::memory_order_relaxed); }
     bool dhcp_bound() const noexcept { return dhcp_bound_.load(std::memory_order_relaxed); }
     uint16_t udp_port() const noexcept { return udp_port_; }
+    const Config& config() const noexcept { return config_; }
     uint32_t last_ping_target() const noexcept { return last_ping_target_.load(std::memory_order_relaxed); }
     uint32_t last_ping_rtt_ms() const noexcept { return last_ping_rtt_ms_.load(std::memory_order_relaxed); }
     PingResult last_ping_result() const noexcept { return static_cast<PingResult>(last_ping_result_.load(std::memory_order_relaxed)); }
@@ -128,7 +146,8 @@ private:
     // the receive buffer. When the last chunk lands (offset+chunk_len
     // == total_len), ui_builder::load_tsv runs against the assembled
     // buffer. See hmi_service.cpp for the protocol definition.
-    void handle_tsv_upload(const uint8_t* payload, size_t payload_len) noexcept;
+    void handle_tsv_upload(uint32_t src_ip, uint16_t src_port,
+                           const uint8_t* payload, size_t payload_len) noexcept;
     void handle_dhcp(kernel::hal::net::NetworkDriverOps& nic,
                      uint32_t src_ip,
                      const uint8_t* payload, size_t payload_len) noexcept;
@@ -186,6 +205,8 @@ private:
 
     uint8_t nic_idx_ = 0;
     uint16_t udp_port_ = 5000;
+    // Mirror local_ip_ into the Netif so TCP can check destination addresses.
+    void publish_local_ip() noexcept;
     Config config_{};
     std::atomic<uint32_t> local_ip_{0};
     std::atomic<uint32_t> netmask_{0};

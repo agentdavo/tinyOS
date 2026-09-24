@@ -17,6 +17,7 @@
 #include "fs/fs_fat32.hpp"           // FAT32 FileSystemOps
 #include "hal/shared/virtio_gpu.hpp" // shared virtio-gpu driver
 #include "hal/shared/virtio_input.hpp"
+#include "hal/shared/input_driver.hpp"
 #include "hal/shared/e1000.hpp"       // shared e1000 driver for PCI passthrough
 #include "hal/shared/pci.hpp"
 #include "hal/shared/xhci.hpp"
@@ -122,17 +123,9 @@ private:
     uint64_t timer_freq_hz_;
 };
 
-class InputDriver : public kernel::hal::InputOps {
-public:
-    bool init() override;
-    void poll() override;
-    bool is_keyboard_connected() override;
-    bool is_mouse_connected() override;
-    bool is_touch_connected() override;
-    bool get_key_state(uint8_t key) override;
-    void get_mouse_position(int32_t& x, int32_t& y, uint8_t& buttons) override;
-    void get_touch_position(int32_t& x, int32_t& y, bool& pressed) override;
-};
+// Shared with rv64 (hal/shared/input_driver.hpp): virtio-input devices plus
+// the xHCI USB keyboard, which this arch never polled before.
+using InputDriver = ::hal::shared::input::InputDriver;
 
 class I2SDriver : public kernel::hal::I2SDriverOps {
 public:
@@ -225,6 +218,7 @@ public:
 class USBHostController : public kernel::hal::USBHostControllerOps {
 public:
     void set_pci_host(const ::hal::shared::pci::HostBridge& host) { pci_host_ = host; }
+    ::hal::shared::xhci::ControllerState& state() { return xhci_; }
     bool init() override;
     kernel::hal::usb::ControllerInfo get_info() const override;
     uint32_t get_port_count() const override;
@@ -306,8 +300,8 @@ private:
     PowerOps power_ops_;
     GPIODriver gpio_driver_;
     WatchdogDriver watchdog_driver_;
-    InputDriver input_driver_;
     USBHostController usb_controller_;
+    InputDriver input_driver_{&usb_controller_.state()};
     ::hal::shared::virtio::VirtioBlkDriver* virtio_blk_ = nullptr;
     VirtioBlkReader blk_reader_;
     fs::Fat32FileSystem fs_ops_{&blk_reader_};

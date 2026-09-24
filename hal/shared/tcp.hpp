@@ -13,6 +13,9 @@
 //     Doubles on each retry, gives up after MAX_RETRIES.
 //   * No congestion control, no window scaling, no SACK.
 //   * Receive window = fixed 4 KB. Send buffer in caller's hands.
+//   * Hardening: per-connection hashed ISN (RFC 6528), RFC 5961 checks on
+//     RST / SYN / ACK, receive checksum and destination-IP checks, an idle
+//     reaper, and listener on_close on every release after on_open.
 
 #include "netif.hpp"
 
@@ -40,6 +43,12 @@ struct TcpConnection {
     static constexpr uint64_t RTO_INITIAL_US = 500000;   // 500 ms
     static constexpr uint64_t RTO_MAX_US     = 4000000;  // 4 s ceiling
     static constexpr uint32_t MAX_RETRIES    = 5;        // ~ 8 s with backoff before giving up
+    // A connection that hears nothing from its peer for this long is reset.
+    static constexpr uint64_t IDLE_TIMEOUT_US = 600000000ULL;  // 10 min
+    // With the table full, a new SYN evicts the longest-idle connection
+    // that has been silent at least this long (sixteen silent sockets
+    // used to lock every TCP service out until reboot).
+    static constexpr uint64_t EVICT_IDLE_US   = 30000000ULL;   // 30 s
 
     TcpListener* listener = nullptr;
     Netif*       netif = nullptr;   // interface this connection sends on
@@ -53,6 +62,9 @@ struct TcpConnection {
     uint32_t     snd_una = 0;   // oldest unACKed sequence
     uint32_t     rcv_nxt = 0;   // next sequence we expect
     uint16_t     rcv_wnd = RX_BUF_BYTES;
+    uint64_t     last_rx_us = 0;   // last valid segment from the peer
+    bool         opened = false;   // listener saw on_open (owes on_close)
+    bool         fin_pending = false;  // close() waiting for in-flight data
 
     // Single-segment retransmit slot. retx_active is true between send
     // and ACK; the segment is re-emitted from retx_buf on RTO expiry.
@@ -84,15 +96,17 @@ public:
     virtual void on_data(TcpConnection& conn,
                          const uint8_t* data, size_t len) noexcept = 0;
     // Called when the peer FINs us, just before the connection
-    // transitions to CloseWait. The listener may still call
-    // conn.send() before returning; it should then call conn.close()
-    // to FIN back.
+    // transitions to CloseWait (the listener may still call conn.send()
+    // and then conn.close() to FIN back), and also whenever an opened
+    // connection is torn down any other way — RST, retransmit give-up,
+    // idle reap, eviction. After on_close the `conn` reference is dead.
     virtual void on_close(TcpConnection& conn) noexcept = 0;
 };
 
 // Tied to a Netif. MAX_TCP_LISTENERS caps the number of (netif, port)
 // bindings; MAX_TCP_CONNS caps simultaneous connections across all
-// listeners. SYNs to a full table get RST.
+// listeners. A SYN to a full table evicts the longest-idle connection
+// (idle >= EVICT_IDLE_US) or, failing that, gets RST.
 constexpr size_t MAX_TCP_LISTENERS = 4;
 constexpr size_t MAX_TCP_CONNS = 16;
 

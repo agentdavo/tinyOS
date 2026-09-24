@@ -196,6 +196,13 @@ void tick();
 void lock_state() noexcept;
 void unlock_state() noexcept;
 
+// Keyboard focus: true while a control on the visible page/dialog holds
+// focus (Tab, or a tap on a button/input). The input pump stops driving the
+// virtual pointer from the keyboard while this holds, so Enter/Space act on
+// the focused control only. Esc clears it.
+bool keyboard_focus_active();
+void clear_keyboard_focus();
+
 // Machine-view pose preview. A per-link override (mm or deg, by chain link
 // name) replaces the live motion position in the GLES machine view until it
 // is cleared, so a pose can be inspected without drives. Setting returns

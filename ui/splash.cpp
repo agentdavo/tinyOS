@@ -141,28 +141,16 @@ int32_t clamp_i32(int32_t value, int32_t min_value, int32_t max_value) {
     return value;
 }
 
-uint32_t current_input_modifiers(kernel::hal::InputOps* input) {
-    if (!input) return 0;
-    uint32_t mods = 0;
-    if (input->get_key_state(KEY_LEFTSHIFT) || input->get_key_state(KEY_RIGHTSHIFT)) mods |= kKeyModShift;
-    if (input->get_key_state(KEY_LEFTCTRL) || input->get_key_state(KEY_RIGHTCTRL)) mods |= kKeyModCtrl;
-    if (input->get_key_state(KEY_LEFTALT) || input->get_key_state(KEY_RIGHTALT)) mods |= kKeyModAlt;
-    return mods;
-}
-
-int32_t normalize_touch_axis(int32_t value, int32_t extent) {
+// `abs_range` comes from InputOps::pointer_abs_range(): the device's
+// normalised full scale for absolute pointers (tablet / touch), or 0 when the
+// value is already in pixels (relative mouse). This used to guess the range
+// from each value and treated anything below the screen size as pixels, so a
+// tablet touch at raw 5000 (~15% across) landed at x=658 instead of 164.
+int32_t normalize_touch_axis(int32_t value, int32_t extent, uint32_t abs_range) {
     if (extent <= 1) return 0;
+    if (abs_range == 0) return clamp_i32(value, 0, extent - 1);
     if (value <= 0) return 0;
-    if (value < extent) return value;
-
-    uint32_t range = 0;
-    if (value <= 4095) range = 4095;
-    else if (value <= 8191) range = 8191;
-    else if (value <= 16383) range = 16383;
-    else if (value <= 32767) range = 32767;
-    else range = 65535;
-
-    const uint64_t scaled = (static_cast<uint64_t>(value) * static_cast<uint64_t>(extent - 1)) / range;
+    const uint64_t scaled = (static_cast<uint64_t>(value) * static_cast<uint64_t>(extent - 1)) / abs_range;
     return clamp_i32(static_cast<int32_t>(scaled), 0, extent - 1);
 }
 
@@ -261,7 +249,7 @@ bool adjust_keyboard_pointer(uint8_t key, uint32_t modifiers, int32_t& x, int32_
     return true;
 }
 
-uint32_t map_input_keycode(uint8_t key) {
+uint32_t map_input_keycode(uint8_t key, uint32_t modifiers) {
     switch (key) {
         case KEY_ESC: return 27;
         case KEY_BACKSPACE: return 8;
@@ -269,28 +257,11 @@ uint32_t map_input_keycode(uint8_t key) {
         case KEY_ENTER:
         case KEY_KPENTER:
             return '\r';
-        case KEY_SPACE: return ' ';
-        case KEY_MINUS:
-        case KEY_KPMINUS:
-            return '-';
-        case KEY_EQUAL:
-        case KEY_KPPLUS:
-            return '+';
-        case KEY_LEFTBRACE: return '[';
-        case KEY_RIGHTBRACE: return ']';
-        case KEY_SEMICOLON: return ';';
-        case KEY_APOSTROPHE: return '\'';
-        case KEY_GRAVE: return '`';
-        case KEY_BACKSLASH: return '\\';
-        case KEY_COMMA: return ',';
-        case KEY_DOT:
-        case KEY_KPDOT:
-            return '.';
-        case KEY_SLASH:
-        case KEY_KPSLASH:
-            return '/';
-        case KEY_KPASTERISK:
-            return '*';
+        case KEY_KPMINUS: return '-';
+        case KEY_KPPLUS: return '+';
+        case KEY_KPDOT: return '.';
+        case KEY_KPSLASH: return '/';
+        case KEY_KPASTERISK: return '*';
         case KEY_INSERT: return 0x1005;
         case KEY_DELETE: return 0x1006;
         case KEY_HOME: return 0x1007;
@@ -311,13 +282,24 @@ uint32_t map_input_keycode(uint8_t key) {
         case KEY_KP8: return '8';
         case KEY_KP9: return '9';
         case KEY_KP0: return '0';
-        default:
-            if (key >= KEY_1 && key <= 10) return static_cast<uint32_t>('1' + (key - KEY_1));
-            if (key == KEY_0) return '0';
-            if (key >= KEY_Q && key <= KEY_P) return static_cast<uint32_t>('q' + (key - KEY_Q));
-            if (key >= KEY_A && key <= KEY_L) return static_cast<uint32_t>('a' + (key - KEY_A));
-            if (key >= KEY_Z && key <= KEY_M) return static_cast<uint32_t>('z' + (key - KEY_Z));
+        default: {
+            // US layout, evdev codes 0..57. The old arithmetic assumed each
+            // keyboard row was alphabetical (W typed 'r', G typed 'e', X
+            // typed '{') and ignored Shift, so MDI / program-name entry
+            // produced garbage.
+            static constexpr char kPlain[] =
+                "\0\0" "1234567890-=" "\0\0" "qwertyuiop[]" "\0\0" "asdfghjkl;'`" "\0" "\\"
+                "zxcvbnm,./" "\0\0\0" " ";
+            static constexpr char kShift[] =
+                "\0\0" "!@#$%^&*()_+" "\0\0" "QWERTYUIOP{}" "\0\0" "ASDFGHJKL:\"~" "\0" "|"
+                "ZXCVBNM<>?" "\0\0\0" " ";
+            static_assert(sizeof(kPlain) == 59 && sizeof(kShift) == 59, "keymap covers evdev 0..57");
+            if (key < 58) {
+                const char c = (modifiers & kKeyModShift) ? kShift[key] : kPlain[key];
+                if (c) return static_cast<uint32_t>(static_cast<unsigned char>(c));
+            }
             return key;
+        }
     }
 }
 
@@ -347,19 +329,99 @@ void pump_ui_input(ScreenManager& screen) {
         virtual_pointer_initialized = true;
     }
 
+    const uint32_t abs_range = input->pointer_abs_range();
+    const uint64_t now_ns = (kernel::g_platform && kernel::g_platform->get_timer_ops())
+                                ? kernel::g_platform->get_timer_ops()->get_system_time_ns()
+                                : 0;
+
+    // Modifiers as of the key state replayed so far, so a queued "Shift
+    // down, 5, Shift up" types '%' even though Shift is up again by now.
+    auto modifiers_now = [&]() {
+        uint32_t m = 0;
+        if (prev_keys[KEY_LEFTSHIFT] || prev_keys[KEY_RIGHTSHIFT]) m |= kKeyModShift;
+        if (prev_keys[KEY_LEFTCTRL] || prev_keys[KEY_RIGHTCTRL]) m |= kKeyModCtrl;
+        if (prev_keys[KEY_LEFTALT] || prev_keys[KEY_RIGHTALT]) m |= kKeyModAlt;
+        return m;
+    };
+
+    // One key edge, from the driver queue or from the held-state diff below.
+    auto key_edge = [&](uint8_t key, bool down) {
+        prev_keys[key] = down;
+        const uint32_t modifiers = modifiers_now();
+        // While a control holds keyboard focus the keyboard types into /
+        // activates that control only. Otherwise WASD/HJKL moved an
+        // invisible pointer while the operator typed, and Enter/Space both
+        // "clicked" at that pointer and activated the focused button.
+        const bool focus_mode = ui_builder::keyboard_focus_active();
+        if (!focus_mode && down && adjust_keyboard_pointer(key, modifiers, virtual_x, virtual_y)) {
+            dispatch_touch(screen, EventType::TouchMove, virtual_x, virtual_y, keyboard_press_active);
+            next_repeat_ns[key] = now_ns + 300000000ULL;
+        }
+        if (down && focus_mode && key == KEY_ESC) {
+            ui_builder::clear_keyboard_focus();   // back to pointer mode
+        } else if (down && !focus_mode) {
+            if (key == KEY_ENTER || key == KEY_KPENTER || key == KEY_SPACE) {
+                if (!keyboard_press_active) {
+                    keyboard_press_active = true;
+                    dispatch_touch(screen, EventType::TouchDown, virtual_x, virtual_y, true);
+                }
+            } else if (key == KEY_ESC && keyboard_press_active) {
+                keyboard_press_active = false;
+                dispatch_touch(screen, EventType::TouchUp, virtual_x, virtual_y, false);
+            }
+        } else if (!down) {
+            next_repeat_ns[key] = 0;
+            if ((key == KEY_ENTER || key == KEY_KPENTER || key == KEY_SPACE) && keyboard_press_active) {
+                keyboard_press_active = false;
+                dispatch_touch(screen, EventType::TouchUp, virtual_x, virtual_y, false);
+            }
+        }
+        UIEvent event{};
+        event.type = down ? EventType::KeyDown : EventType::KeyUp;
+        event.key = KeyEvent{map_input_keycode(key, modifiers), modifiers, down};
+        screen.handle_event(event);
+    };
+
+    // Replay every queued edge in order first. The UI samples input once
+    // per 100 ms tick (about once a second while the machine view renders),
+    // so a key tapped or a touch lifted between two samples used to vanish.
+    kernel::hal::InputEvent qev{};
+    while (input->next_event(qev)) {
+        if (qev.kind == kernel::hal::InputEvent::Kind::Key) {
+            if (qev.key < 128 && prev_keys[qev.key] != qev.down) key_edge(qev.key, qev.down);
+            continue;
+        }
+        const int32_t ex = clamp_i32(normalize_touch_axis(qev.x, static_cast<int32_t>(FB_WIDTH), abs_range),
+                                     0, static_cast<int32_t>(FB_WIDTH - 1));
+        const int32_t ey = clamp_i32(normalize_touch_axis(qev.y, static_cast<int32_t>(FB_HEIGHT), abs_range),
+                                     0, static_cast<int32_t>(FB_HEIGHT - 1));
+        if (qev.down && !prev_pressed) {
+            if (ex != prev_x || ey != prev_y) dispatch_touch(screen, EventType::TouchMove, ex, ey, false);
+            dispatch_touch(screen, EventType::TouchDown, ex, ey, true);
+        } else if (!qev.down && prev_pressed) {
+            if (ex != prev_x || ey != prev_y) dispatch_touch(screen, EventType::TouchMove, ex, ey, true);
+            dispatch_touch(screen, EventType::TouchUp, ex, ey, false);
+        } else {
+            continue;
+        }
+        prev_pressed = qev.down;
+        prev_x = virtual_x = ex;
+        prev_y = virtual_y = ey;
+    }
+
     int32_t x = 0;
     int32_t y = 0;
     bool pressed = false;
     input->get_touch_position(x, y, pressed);
-    x = normalize_touch_axis(x, static_cast<int32_t>(FB_WIDTH));
-    y = normalize_touch_axis(y, static_cast<int32_t>(FB_HEIGHT));
+    x = normalize_touch_axis(x, static_cast<int32_t>(FB_WIDTH), abs_range);
+    y = normalize_touch_axis(y, static_cast<int32_t>(FB_HEIGHT), abs_range);
 
     int32_t mouse_x = 0;
     int32_t mouse_y = 0;
     uint8_t mouse_buttons = 0;
     input->get_mouse_position(mouse_x, mouse_y, mouse_buttons);
-    mouse_x = normalize_touch_axis(mouse_x, static_cast<int32_t>(FB_WIDTH));
-    mouse_y = normalize_touch_axis(mouse_y, static_cast<int32_t>(FB_HEIGHT));
+    mouse_x = normalize_touch_axis(mouse_x, static_cast<int32_t>(FB_WIDTH), abs_range);
+    mouse_y = normalize_touch_axis(mouse_y, static_cast<int32_t>(FB_HEIGHT), abs_range);
     mouse_x = clamp_i32(mouse_x, 0, static_cast<int32_t>(FB_WIDTH - 1));
     mouse_y = clamp_i32(mouse_y, 0, static_cast<int32_t>(FB_HEIGHT - 1));
 
@@ -370,10 +432,6 @@ void pump_ui_input(ScreenManager& screen) {
         virtual_x = mouse_x;
         virtual_y = mouse_y;
     }
-
-    const uint64_t now_ns = (kernel::g_platform && kernel::g_platform->get_timer_ops())
-                                ? kernel::g_platform->get_timer_ops()->get_system_time_ns()
-                                : 0;
 
     if (!pressed && (mouse_buttons & 0x1u)) {
         x = virtual_x;
@@ -412,42 +470,18 @@ void pump_ui_input(ScreenManager& screen) {
     prev_x = pressed ? x : virtual_x;
     prev_y = pressed ? y : virtual_y;
 
+    // Held-state diff: catches edges from drivers that don't queue (the
+    // xHCI keyboard), plus pointer-key autorepeat. Queued edges already
+    // updated prev_keys, so they are not seen twice.
     for (uint8_t key = 0; key < 128; ++key) {
         const bool down = input->get_key_state(key);
-        const bool edge = down != prev_keys[key];
-        const uint32_t modifiers = current_input_modifiers(input);
-
-        if (down && (edge || (key_is_keyboard_pointer_move(key) && now_ns >= next_repeat_ns[key]))) {
-            if (adjust_keyboard_pointer(key, modifiers, virtual_x, virtual_y)) {
-                dispatch_touch(screen, EventType::TouchMove, virtual_x, virtual_y, keyboard_press_active);
-                next_repeat_ns[key] = now_ns + (edge ? 300000000ULL : 80000000ULL);
-            }
-        }
-
-        if (edge) {
-            if (down) {
-                if (key == KEY_ENTER || key == KEY_KPENTER || key == KEY_SPACE) {
-                    if (!keyboard_press_active) {
-                        keyboard_press_active = true;
-                        dispatch_touch(screen, EventType::TouchDown, virtual_x, virtual_y, true);
-                    }
-                } else if (key == KEY_ESC && keyboard_press_active) {
-                    keyboard_press_active = false;
-                    dispatch_touch(screen, EventType::TouchUp, virtual_x, virtual_y, false);
-                }
-            } else {
-                next_repeat_ns[key] = 0;
-                if ((key == KEY_ENTER || key == KEY_KPENTER || key == KEY_SPACE) && keyboard_press_active) {
-                    keyboard_press_active = false;
-                    dispatch_touch(screen, EventType::TouchUp, virtual_x, virtual_y, false);
-                }
-            }
-
-            UIEvent event{};
-            event.type = down ? EventType::KeyDown : EventType::KeyUp;
-            event.key = KeyEvent{map_input_keycode(key), modifiers, down};
-            screen.handle_event(event);
-            prev_keys[key] = down;
+        if (down != prev_keys[key]) {
+            key_edge(key, down);
+        } else if (down && !ui_builder::keyboard_focus_active() &&
+                   key_is_keyboard_pointer_move(key) && now_ns >= next_repeat_ns[key] &&
+                   adjust_keyboard_pointer(key, modifiers_now(), virtual_x, virtual_y)) {
+            dispatch_touch(screen, EventType::TouchMove, virtual_x, virtual_y, keyboard_press_active);
+            next_repeat_ns[key] = now_ns + 80000000ULL;
         } else if (!down) {
             next_repeat_ns[key] = 0;
         }
@@ -460,19 +494,37 @@ void draw_boot_notice(Framebuffer& fb) {
     fb.draw_text(72, 104, "loading TSV UI...", Color(160, 160, 160), Color::Black());
 }
 
-void show_main_page(Framebuffer& fb) {
+// Full repaint of the current tree. Caller holds ui_builder::lock_state():
+// the clear used to run outside it and could wipe the framebuffer under a
+// render in progress on another thread.
+void show_main_page_locked(Framebuffer& fb) {
     fb.clear(Color::Black());
     auto& screen = screen_manager(fb);
     auto* built = ui_builder::root_widget();
     screen.set_screen(built);
     if (built) {
-        ui_builder::lock_state();
         screen.render();
-        ui_builder::unlock_state();
         return;
     }
     fb.draw_text(72, 72, "TSV UI NOT_LOADED", Color::Red(), Color::Black());
     fb.draw_text(72, 104, "embedded_ui.tsv required at boot.", Color::White(), Color::Black());
+}
+
+// Push the damaged rectangle to the display. Caller holds lock_state():
+// the UI loop and render_ui_once (CLI / HMI threads) used to present
+// concurrently, sharing virtio-gpu's single control queue and response
+// buffer — one side zeroed the other's reply ("bad response type=0x0",
+// "RESOURCE_FLUSH failed") — and clear_dirty() could drop the other
+// thread's damage. `heartbeat` with nothing dirty flushes a single pixel
+// rather than retransferring the whole 8 MB frame every second.
+void present_locked(Framebuffer& fb, bool heartbeat) {
+    if (fb.is_dirty()) {
+        (void)present_display_backend_rect(fb.damage_x(), fb.damage_y(),
+                                           fb.damage_w(), fb.damage_h());
+        fb.clear_dirty();
+    } else if (heartbeat) {
+        (void)present_display_backend_rect(0, 0, 1, 1);
+    }
 }
 
 [[gnu::noinline]] void run_ui_main_loop(Framebuffer& fb, kernel::hal::TimerDriverOps* timer) {
@@ -481,22 +533,16 @@ void show_main_page(Framebuffer& fb) {
     if (timer) wait_until_ns(next_ns);
     else for (uint32_t i = 0; i < 1000000; ++i) kernel::util::cpu_relax();
 
-    show_main_page(fb);
+    ui_builder::lock_state();
+    show_main_page_locked(fb);
+    present_locked(fb, true);
+    ui_builder::unlock_state();
     ui_log_once("[ui] TSV main page active\n");
 
-    // Skip present_display_backend() when nothing has changed, falling
-    // back to a 1 Hz heartbeat for backends that drop the scanout if
-    // they don't see periodic flushes. Each present moves ~8 MB from
-    // RAM through virtio-gpu MMIO; gating on fb.is_dirty() makes a
-    // truly idle page (tool-change wizard waiting for the operator,
-    // alarms-acked dashboard, restart-confirm sitting on review) cost
-    // ~80 MB/s less of host emulation work.
-    //
-    // Most pages have live binds (motion position, EC stats, cycle
-    // counts) that mark the framebuffer dirty every tick anyway, so
-    // the optimisation only kicks in on static surfaces. On those,
-    // [virtio-gpu] flushes=N stops climbing every 100 ms — a useful
-    // signal that the page actually has nothing to redraw.
+    // Present only when something was drawn, plus a 1 Hz heartbeat for
+    // backends that drop the scanout without periodic flushes. The
+    // heartbeat flushes one pixel when nothing is dirty; it used to
+    // retransfer the full 8 MB frame every second on an idle page.
     constexpr uint32_t HEARTBEAT_TICKS = 10;  // 10 × 100 ms = 1 s
     uint32_t ticks_since_present = HEARTBEAT_TICKS;  // force first present
 
@@ -513,23 +559,16 @@ void show_main_page(Framebuffer& fb) {
         // machine-view mesh import ran twice at once and corrupted meshes).
         ui_builder::lock_state();
         screen.render();
-        ui_builder::unlock_state();
-        g_ui_loop_iterations.fetch_add(1, std::memory_order_relaxed);
-
         ++ticks_since_present;
-        if (fb.is_dirty() || ticks_since_present >= HEARTBEAT_TICKS) {
-            // Damage-rect present: transfer only the rectangle that
-            // changed, not the full 1080 × 1920 × 4 = ~8 MB. A typical
-            // DRO update touches one ~100 × 32 px label = 12.8 KB instead
-            // of the full frame — three orders of magnitude less host
-            // emulation work on virtio-gpu. The heartbeat path
-            // (ticks_since_present == HEARTBEAT_TICKS) calls present_rect
-            // with w=h=0 so it falls back to a full present.
-            (void)present_display_backend_rect(fb.damage_x(), fb.damage_y(),
-                                               fb.damage_w(), fb.damage_h());
-            fb.clear_dirty();
+        const bool heartbeat = ticks_since_present >= HEARTBEAT_TICKS;
+        if (fb.is_dirty() || heartbeat) {
+            // Damage-rect present: only the changed rectangle is
+            // transferred (a DRO digit is ~13 KB, not the 8 MB frame).
+            present_locked(fb, heartbeat);
             ticks_since_present = 0;
         }
+        ui_builder::unlock_state();
+        g_ui_loop_iterations.fetch_add(1, std::memory_order_relaxed);
 
         if (timer) {
             const uint64_t now = timer->get_system_time_ns();
@@ -578,12 +617,11 @@ void boot_ui_once() {
 
 void render_ui_once() {
     auto& fb = framebuffer();
-    show_main_page(fb);
+    ui_builder::lock_state();
+    show_main_page_locked(fb);
+    present_locked(fb, false);
+    ui_builder::unlock_state();
     ui_log_once("[ui] TSV main page active\n");
-    if (fb.is_dirty()) {
-        if (present_display_backend()) ui_log_once("[ui] framebuffer flushed to display\n");
-        fb.clear_dirty();
-    }
 }
 
 unsigned ui_loop_iterations() { return g_ui_loop_iterations.load(std::memory_order_relaxed); }

@@ -184,7 +184,10 @@ const char* interpreter_state_text(cnc::interp::State state) {
 }
 
 Mode current_mode_locked() {
-    if (axis_faulted_locked()) return Mode::Alarm;
+    // A latched EtherCAT deadline fault has already QuickStopped every
+    // drive on the bus; report it as an alarm like a drive fault instead
+    // of "READY" (the status strips used to say ALARMS CLEAR through it).
+    if (axis_faulted_locked() || any_master_deadline_faulted()) return Mode::Alarm;
     if (axis_homing_active_locked()) return Mode::Homing;
     const auto* ch = primary_channel();
     if (ch && ch->state == motion::ChannelState::FeedHold) return Mode::Hold;
@@ -1069,10 +1072,16 @@ static void raise_alarm_locked(uint32_t id,
                                uint64_t now_ns) {
     if (AlarmRecord* existing = find_alarm_locked(id)) {
         existing->last_seen_ns = now_ns;
-        existing->raised_count++;
+        // The journal refresh re-raises every still-true condition on each
+        // snapshot. Only a fresh assertion (inactive -> active) counts as a
+        // new occurrence and clears the acknowledgement; doing it on every
+        // refresh undid the operator's ACK ~100 ms later, so a persistent
+        // fault could never be acknowledged.
+        if (!existing->active) {
+            existing->raised_count++;
+            existing->acknowledged = false;
+        }
         existing->active = true;
-        // Re-asserting clears acknowledgement so it shows as active again.
-        if (existing->acknowledged) existing->acknowledged = false;
         copy_text(existing->message, sizeof(existing->message), msg);
         copy_text(existing->axis, sizeof(existing->axis), axis);
         existing->severity = sev;
@@ -1115,6 +1124,21 @@ static void refresh_alarm_journal_locked() {
                                      axis.last_error_code);
             raise_alarm_locked(id, msg, kAxes[i],
                                AlarmsSnapshot::Severity::Error, now_ns);
+        } else {
+            deassert_alarm_locked(id);
+        }
+    }
+    // EtherCAT master deadline fault: the master has broadcast QuickStop to
+    // every slave and latched until the operator clears it. It gates jog,
+    // homing, probing and compensation, so it must be on the alarm board.
+    const ethercat::Master* masters[2] = {&ethercat::g_master_a, &ethercat::g_master_b};
+    for (uint32_t m = 0; m < 2; ++m) {
+        const uint32_t id = 200u + m;
+        if (masters[m]->is_deadline_faulted()) {
+            char msg[64];
+            kernel::util::k_snprintf(msg, sizeof(msg),
+                                     "ETHERCAT ec%u DEADLINE FAULT - QUICKSTOP", static_cast<unsigned>(m));
+            raise_alarm_locked(id, msg, "EC", AlarmsSnapshot::Severity::Critical, now_ns);
         } else {
             deassert_alarm_locked(id);
         }

@@ -484,52 +484,6 @@ bool USBHostController::reset_port(uint32_t port_index) {
 }
 
 // --- PlatformQEMUVirtARM64 ---
-bool InputDriver::init() {
-    return ::hal::shared::input::init_virtio_input();
-}
-
-void InputDriver::poll() {
-    if (auto* driver = ::hal::shared::input::get_input_driver()) driver->poll();
-}
-
-bool InputDriver::is_keyboard_connected() {
-    auto* driver = ::hal::shared::input::get_input_driver();
-    return driver ? driver->is_keyboard_connected() : false;
-}
-
-bool InputDriver::is_mouse_connected() {
-    auto* driver = ::hal::shared::input::get_input_driver();
-    return driver ? driver->is_mouse_connected() : false;
-}
-
-bool InputDriver::is_touch_connected() {
-    auto* driver = ::hal::shared::input::get_input_driver();
-    return driver ? driver->is_touch_connected() : false;
-}
-
-bool InputDriver::get_key_state(uint8_t key) {
-    auto* driver = ::hal::shared::input::get_input_driver();
-    return driver ? driver->get_key(key) : false;
-}
-
-void InputDriver::get_mouse_position(int32_t& x, int32_t& y, uint8_t& buttons) {
-    auto* driver = ::hal::shared::input::get_input_driver();
-    if (!driver) {
-        x = 0; y = 0; buttons = 0;
-        return;
-    }
-    driver->get_mouse_position(x, y, buttons);
-}
-
-void InputDriver::get_touch_position(int32_t& x, int32_t& y, bool& pressed) {
-    auto* driver = ::hal::shared::input::get_input_driver();
-    if (!driver) {
-        x = 0; y = 0; pressed = false;
-        return;
-    }
-    driver->get_touch_position(x, y, pressed);
-}
-
 PlatformQEMUVirtARM64::PlatformQEMUVirtARM64() :
     uart_driver_(),
     irq_controller_(),

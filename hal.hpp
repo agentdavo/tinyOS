@@ -292,22 +292,16 @@ struct WatchdogOps {
     virtual bool stop_watchdog() = 0;
 };
 
+// One ordered input edge. Held-state getters (get_key_state, ...) only show
+// where things stand at poll time, so a key tapped and released between two
+// UI ticks used to vanish; drivers that can, queue every edge here.
 struct InputEvent {
-    enum class Type : uint8_t {
-        KeyPress,
-        KeyRelease,
-        MouseMove,
-        MouseButton,
-        TouchPress,
-        TouchRelease,
-        TouchMove
-    };
-    Type type;
-    int32_t x;
-    int32_t y;
-    uint8_t key;
-    uint8_t button;
-    uint32_t timestamp_ms;
+    enum class Kind : uint8_t { Key, Pointer };
+    Kind kind = Kind::Key;
+    bool down = false;      // key pressed / pointer button (or touch) down
+    uint8_t key = 0;        // Kind::Key: evdev key code (< 128)
+    int32_t x = 0;          // Kind::Pointer: position when the edge happened,
+    int32_t y = 0;          //   in get_mouse_position()'s units
 };
 
 struct InputOps {
@@ -320,6 +314,14 @@ struct InputOps {
     virtual bool get_key_state(uint8_t key) = 0;
     virtual void get_mouse_position(int32_t& x, int32_t& y, uint8_t& buttons) = 0;
     virtual void get_touch_position(int32_t& x, int32_t& y, bool& pressed) = 0;
+    // Non-zero when the pointer/touch positions above are absolute device
+    // coordinates normalised to 0..range (a tablet or touch panel); zero
+    // when they are already framebuffer pixels. The UI scales by this
+    // instead of guessing the range from each value.
+    virtual uint32_t pointer_abs_range() { return 0; }
+    // Pops the oldest queued edge (call after poll()). False when empty or
+    // the driver doesn't queue — callers then fall back to held state.
+    virtual bool next_event(InputEvent& ev) { (void)ev; return false; }
 };
 
 struct StorageOps {

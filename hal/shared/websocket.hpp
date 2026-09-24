@@ -58,6 +58,16 @@ public:
     WebSocketServer(uint16_t port, WebSocketHandler* handler,
                     uint8_t* payload_buf, size_t payload_cap) noexcept;
 
+    // Browser Origin gate. Any web page a browser visits may open a
+    // WebSocket to this server, so the handshake refuses origins the
+    // policy rejects. `origin` is null when the request carries no Origin
+    // header (non-browser clients). Unset = the built-in default:
+    // no Origin, "null" (editor opened as a local file) and loopback
+    // http(s) origins.
+    using OriginPolicy = bool (*)(const char* origin, size_t len);
+    void set_origin_policy(OriginPolicy p) noexcept { origin_policy_ = p; }
+    static bool default_origin_ok(const char* origin, size_t len) noexcept;
+
     uint16_t local_port() const noexcept override { return port_; }
     void on_open(TcpConnection& conn) noexcept override;
     void on_data(TcpConnection& conn,
@@ -81,6 +91,7 @@ private:
 
     uint16_t port_;
     WebSocketHandler* handler_;
+    OriginPolicy origin_policy_ = nullptr;
     State state_ = State::Handshake;
     WebSocketConnection ws_conn_;
 

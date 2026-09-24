@@ -13,6 +13,7 @@
 #include "hal.hpp"
 #include "hal/shared/virtio_gpu.hpp"
 #include "hal/shared/virtio_input.hpp"
+#include "hal/shared/input_driver.hpp"
 #include "hal/shared/virtio_net.hpp"
 #include "hal/shared/virtio_blk.hpp"
 #include "hal/shared/e1000.hpp"
@@ -138,20 +139,9 @@ public:
     bool set_cpu_frequency(uint32_t core_id, uint32_t freq_hz) override;
 };
 
-class InputDriver : public kernel::hal::InputOps {
-public:
-    explicit InputDriver(USBHostController* usb) : usb_(usb) {}
-    bool init() override;
-    void poll() override;
-    bool is_keyboard_connected() override;
-    bool is_mouse_connected() override;
-    bool is_touch_connected() override;
-    bool get_key_state(uint8_t key) override;
-    void get_mouse_position(int32_t& x, int32_t& y, uint8_t& buttons) override;
-    void get_touch_position(int32_t& x, int32_t& y, bool& pressed) override;
-private:
-    USBHostController* usb_ = nullptr;
-};
+// Shared with rv64 (hal/shared/input_driver.hpp): virtio-input devices plus
+// the xHCI USB keyboard, shared with arm64.
+using InputDriver = ::hal::shared::input::InputDriver;
 
 class USBHostController : public kernel::hal::USBHostControllerOps {
 public:
@@ -230,7 +220,7 @@ private:
     MemoryOps memory_ops_;
     PowerOps power_ops_;
     USBHostController usb_;
-    InputDriver input_{&usb_};
+    InputDriver input_{&usb_.state()};
     ::hal::shared::virtio_gpu::VirtioGpuDriver gpu_;
     ::hal::shared::virtio::VirtioNetDriver virtio_nics_[3]{};
     uint32_t virtio_nic_irq_ids_[3]{};

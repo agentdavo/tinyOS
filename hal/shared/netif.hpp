@@ -89,6 +89,11 @@ public:
     // each to matching listeners. Returns frame count.
     size_t poll(size_t budget) noexcept;
     int if_idx() const noexcept { return if_idx_; }
+    // The interface's configured IPv4 address (host order), 0 until the
+    // owner (HMI: static config or DHCP) sets it. TCP only accepts
+    // segments addressed to it.
+    void set_local_ip(uint32_t ip) noexcept { local_ip_.store(ip, std::memory_order_relaxed); }
+    uint32_t local_ip() const noexcept { return local_ip_.load(std::memory_order_relaxed); }
     kernel::hal::net::NetworkDriverOps* nic() const noexcept { return nic_; }
     // True if any UdpListener owns this local port — used by the legacy
     // L2-catch-all path in HMI to skip frames that are about to be
@@ -116,6 +121,7 @@ private:
     UdpListener* udp_listeners_[MAX_UDP_LISTENERS]{};
     size_t udp_listener_count_ = 0;
     std::atomic<bool> rx_irq_pending_{false};
+    std::atomic<uint32_t> local_ip_{0};
 
     // --- IPv4 fragment reassembly --------------------------------------
     //

@@ -128,6 +128,9 @@ struct PageSpec {
     // declared after pages so they render last). set_active_page skips
     // dialogs so they never appear via goto: navigation.
     bool is_dialog = false;
+    // Set when another page `include`s this one: it is a fragment (the
+    // bottom nav bar) and must never be the page the operator lands on.
+    bool is_template = false;
 };
 
 struct ChildSpec {
@@ -169,6 +172,10 @@ static Widget* g_root_widget = nullptr;
 static int g_active_page = 0;
 static Widget* g_focusables[MAX_WIDGETS];
 static int32_t g_focus_orders[MAX_WIDGETS];
+// Page each focusable lives on (-1 = global). Only widgets on the active
+// page (or the open dialog) take keyboard focus; Tab used to walk every
+// button on all ~20 pages, most of them hidden.
+static int16_t g_focus_pages[MAX_WIDGETS];
 static uint32_t g_focusable_count = 0;
 static int g_focus_index = -1;
 class BuilderInput;
@@ -201,7 +208,88 @@ struct StateGuard {
     StateGuard& operator=(const StateGuard&) = delete;
 };
 
+
+// ---- Per-tick operator snapshot cache ---------------------------------------
+// Every bound label used to take ~3 locked operator_api snapshots per poll
+// (compute_text fetched machine_snapshot() whatever it was bound to, and
+// format_bind_value always fetched offsets_snapshot() before the bind's own),
+// and render repeated it: ~150 locked copies per 100 ms on the dashboard.
+// Render/bind code now reads one copy per snapshot kind per tick. tick()
+// starts a new generation; actions and input commits invalidate so their
+// effect shows on the next repaint; entries also expire after 100 ms for
+// renders outside the UI loop (CLI ui_page / ui_dump, HMI reload).
+// Action code (run_action_target, "using namespace operator_api") still
+// calls the live functions.
+namespace snapcache {
+kernel::core::Spinlock g_lock;
+uint32_t g_gen = 1;
+constexpr uint64_t kMaxAgeNs = 100000000ULL;
+
+inline uint64_t now_ns() {
+    auto* timer = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
+    return timer ? timer->get_system_time_ns() : 0;
+}
+
+template <typename T, T (*Fn)()>
+T get() {
+    static T value{};
+    static uint32_t gen = 0;
+    static uint64_t at_ns = 0;
+    const uint64_t now = now_ns();
+    kernel::core::ScopedLock lock(g_lock);
+    if (gen != g_gen || now - at_ns > kMaxAgeNs || now == 0) {
+        value = Fn();
+        gen = g_gen;
+        at_ns = now;
+    }
+    return value;
+}
+
+void invalidate() {
+    kernel::core::ScopedLock lock(g_lock);
+    ++g_gen;
+}
+} // namespace snapcache
+
+inline kernel::ui::operator_api::MachineSnapshot cached_machine_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::MachineSnapshot, &kernel::ui::operator_api::machine_snapshot>();
+}
+inline kernel::ui::operator_api::EthercatSnapshot cached_ethercat_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::EthercatSnapshot, &kernel::ui::operator_api::ethercat_snapshot>();
+}
+inline kernel::ui::operator_api::OffsetsSnapshot cached_offsets_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::OffsetsSnapshot, &kernel::ui::operator_api::offsets_snapshot>();
+}
+inline kernel::ui::operator_api::MacroSnapshot cached_macro_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::MacroSnapshot, &kernel::ui::operator_api::macro_snapshot>();
+}
+inline kernel::ui::operator_api::AlarmsSnapshot cached_alarms_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::AlarmsSnapshot, &kernel::ui::operator_api::alarms_snapshot>();
+}
+inline kernel::ui::operator_api::HomingSnapshot cached_homing_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::HomingSnapshot, &kernel::ui::operator_api::homing_snapshot>();
+}
+inline kernel::ui::operator_api::ProbeWizardSnapshot cached_probe_wizard_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::ProbeWizardSnapshot, &kernel::ui::operator_api::probe_wizard_snapshot>();
+}
+inline kernel::ui::operator_api::CalibrationSnapshot cached_calibration_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::CalibrationSnapshot, &kernel::ui::operator_api::calibration_snapshot>();
+}
+inline kernel::ui::operator_api::RestartReviewSnapshot cached_restart_review_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::RestartReviewSnapshot, &kernel::ui::operator_api::restart_review_snapshot>();
+}
+inline kernel::ui::operator_api::NetworkSnapshot cached_network_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::NetworkSnapshot, &kernel::ui::operator_api::network_snapshot>();
+}
+inline kernel::ui::operator_api::AxisStatusSnapshot cached_axis_status_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::AxisStatusSnapshot, &kernel::ui::operator_api::axis_status_snapshot>();
+}
+inline kernel::ui::operator_api::ToolChangeSnapshot cached_tool_change_snapshot() {
+    return snapcache::get<kernel::ui::operator_api::ToolChangeSnapshot, &kernel::ui::operator_api::tool_change_snapshot>();
+}
+
 void advance_focus(int step);
+bool focus_reachable(uint32_t i);
 
 // Bridges for view:* actions so run_action_target (defined before the
 // BuilderImage class) can reach BuilderImage's static camera helpers.
@@ -221,18 +309,22 @@ void trace_click_delivery(const char* fmt, const char* a = nullptr, const char* 
     ++g_click_trace_count;
 }
 
-void register_focusable(Widget* widget, int32_t focus_order) {
+void register_focusable(Widget* widget, int32_t focus_order, int page) {
     if (!widget || g_focusable_count >= MAX_WIDGETS) return;
     uint32_t insert_at = g_focusable_count;
     while (insert_at > 0 && focus_order < g_focus_orders[insert_at - 1]) {
         g_focusables[insert_at] = g_focusables[insert_at - 1];
         g_focus_orders[insert_at] = g_focus_orders[insert_at - 1];
+        g_focus_pages[insert_at] = g_focus_pages[insert_at - 1];
         --insert_at;
     }
     g_focusables[insert_at] = widget;
     g_focus_orders[insert_at] = focus_order;
+    g_focus_pages[insert_at] = static_cast<int16_t>(page);
     ++g_focusable_count;
-    if (g_focus_index < 0) g_focus_index = 0;
+    // No automatic focus: nothing is keyboard-focused until the operator
+    // presses Tab or taps a control (focus used to start on whichever
+    // widget sorted first, usually on a hidden page).
 }
 
 Color to_color(uint32_t argb, Color fallback = Color::Black()) {
@@ -978,39 +1070,39 @@ const char* alarm_severity_text(kernel::ui::operator_api::AlarmsSnapshot::Severi
 int32_t bound_numeric_value(BindKind bind) {
     switch (bind) {
         case BindKind::CycleProgress: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return static_cast<int32_t>(snap.cycle_progress);
         }
         case BindKind::Torque: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return static_cast<int32_t>(snap.torque);
         }
         case BindKind::Feed: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.feed;
         }
         case BindKind::SpindleOverride: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return static_cast<int32_t>(snap.spindle_override);
         }
         case BindKind::Spindle: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.spindle;
         }
         case BindKind::AxisX: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.axis_pos[0];
         }
         case BindKind::AxisY: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.axis_pos[1];
         }
         case BindKind::AxisZ: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.axis_pos[2];
         }
         case BindKind::AxisA: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.axis_pos[3];
         }
         case BindKind::PageIndex: return g_active_page;
@@ -1031,42 +1123,42 @@ int32_t bound_numeric_value(BindKind bind) {
             return static_cast<int32_t>(program.preview_points);
         }
         case BindKind::WorkOffsetX: {
-            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const auto offsets = cached_offsets_snapshot();
             return offsets.rows[0].work_offset;
         }
         case BindKind::WorkOffsetY: {
-            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const auto offsets = cached_offsets_snapshot();
             return offsets.rows[1].work_offset;
         }
         case BindKind::WorkOffsetZ: {
-            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const auto offsets = cached_offsets_snapshot();
             return offsets.rows[2].work_offset;
         }
         case BindKind::WorkOffsetA: {
-            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const auto offsets = cached_offsets_snapshot();
             return offsets.rows[3].work_offset;
         }
         case BindKind::ToolLength: {
-            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const auto offsets = cached_offsets_snapshot();
             return offsets.active_tool < offsets.tools.size()
                 ? static_cast<int32_t>(offsets.tools[offsets.active_tool].length * 1000.0f) : 0;
         }
         case BindKind::ToolRadius: {
-            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const auto offsets = cached_offsets_snapshot();
             return offsets.active_tool < offsets.tools.size()
                 ? static_cast<int32_t>(offsets.tools[offsets.active_tool].radius * 1000.0f) : 0;
         }
         case BindKind::ToolWear: {
-            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const auto offsets = cached_offsets_snapshot();
             return offsets.active_tool < offsets.tools.size()
                 ? static_cast<int32_t>(offsets.tools[offsets.active_tool].wear * 1000.0f) : 0;
         }
         case BindKind::MacroStep: {
-            const auto macro = kernel::ui::operator_api::macro_snapshot();
+            const auto macro = cached_macro_snapshot();
             return static_cast<int32_t>(macro.active_step);
         }
         case BindKind::MacroCount: {
-            const auto macro = kernel::ui::operator_api::macro_snapshot();
+            const auto macro = cached_macro_snapshot();
             return static_cast<int32_t>(macro.count);
         }
         case BindKind::ProbeX: {
@@ -1134,58 +1226,58 @@ int32_t bound_numeric_value(BindKind bind) {
         }
         case BindKind::AxisXCmd: case BindKind::AxisYCmd:
         case BindKind::AxisZCmd: case BindKind::AxisACmd: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             const int idx = static_cast<int>(bind) - static_cast<int>(BindKind::AxisXCmd);
             return snap.cmd_pos[idx];
         }
         case BindKind::AxisXAct: case BindKind::AxisYAct:
         case BindKind::AxisZAct: case BindKind::AxisAAct: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             const int idx = static_cast<int>(bind) - static_cast<int>(BindKind::AxisXAct);
             return snap.axis_pos[idx];
         }
         case BindKind::AxisXDtg: case BindKind::AxisYDtg:
         case BindKind::AxisZDtg: case BindKind::AxisADtg: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             const int idx = static_cast<int>(bind) - static_cast<int>(BindKind::AxisXDtg);
             return snap.dtg[idx];
         }
         case BindKind::AxisXHomed: case BindKind::AxisYHomed:
         case BindKind::AxisZHomed: case BindKind::AxisAHomed: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             const int idx = static_cast<int>(bind) - static_cast<int>(BindKind::AxisXHomed);
             return snap.axis_homed[idx] ? 1 : 0;
         }
         case BindKind::Wcs: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return static_cast<int32_t>(snap.wcs_index);
         }
         case BindKind::Units: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.inch_mode ? 1 : 0;
         }
         case BindKind::SpindleRpm: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.spindle_rpm;
         }
         case BindKind::SpindleLoad: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.spindle_load;
         }
         case BindKind::BlockCurrent: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return static_cast<int32_t>(snap.block_current);
         }
         case BindKind::BlockNext: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return static_cast<int32_t>(snap.block_next);
         }
         case BindKind::Runtime: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return static_cast<int32_t>(snap.runtime_ms);
         }
         case BindKind::Parts: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return static_cast<int32_t>(snap.parts);
         }
         case BindKind::MdiDepth: {
@@ -1193,43 +1285,43 @@ int32_t bound_numeric_value(BindKind bind) {
             return static_cast<int32_t>(s.depth);
         }
         case BindKind::SelectedAxis: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return static_cast<int32_t>(snap.selected_axis);
         }
         case BindKind::JogIncrement: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.jog_increment;
         }
         case BindKind::ActiveTool: {
-            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const auto offsets = cached_offsets_snapshot();
             return static_cast<int32_t>(offsets.active_tool);
         }
         case BindKind::ViewToolpath: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.view_toolpath ? 1 : 0;
         }
         case BindKind::ViewToolpods: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return snap.view_toolpods ? 1 : 0;
         }
         case BindKind::AlarmActiveCount: {
-            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const auto snap = cached_alarms_snapshot();
             return static_cast<int32_t>(snap.active_count);
         }
         case BindKind::AlarmHistoryCount: {
-            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const auto snap = cached_alarms_snapshot();
             return static_cast<int32_t>(snap.history_count);
         }
         case BindKind::Alarm0Id: case BindKind::Alarm1Id:
         case BindKind::Alarm2Id: case BindKind::Alarm3Id: {
-            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const auto snap = cached_alarms_snapshot();
             const int row = alarm_row_index(bind);
             if (row < 0 || static_cast<size_t>(row) >= snap.active_count) return 0;
             return static_cast<int32_t>(snap.active[row].id);
         }
         case BindKind::Alarm0Time: case BindKind::Alarm1Time:
         case BindKind::Alarm2Time: case BindKind::Alarm3Time: {
-            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const auto snap = cached_alarms_snapshot();
             const int row = alarm_row_index(bind);
             if (row < 0 || static_cast<size_t>(row) >= snap.active_count) return 0;
             return static_cast<int32_t>(snap.active[row].timestamp_ns / 1000000000ULL);
@@ -1246,7 +1338,7 @@ int32_t bound_numeric_value(BindKind bind) {
         case BindKind::WorkOffset4Z: case BindKind::WorkOffset4A:
         case BindKind::WorkOffset5X: case BindKind::WorkOffset5Y:
         case BindKind::WorkOffset5Z: case BindKind::WorkOffset5A: {
-            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const auto offsets = cached_offsets_snapshot();
             const int delta = static_cast<int>(bind) - static_cast<int>(BindKind::WorkOffset0X);
             const size_t slot = static_cast<size_t>(delta / 4);
             const size_t axis = static_cast<size_t>(delta % 4);
@@ -1261,7 +1353,7 @@ int32_t bound_numeric_value(BindKind bind) {
         case BindKind::Tool5Length: case BindKind::Tool5Radius: case BindKind::Tool5Wear:
         case BindKind::Tool6Length: case BindKind::Tool6Radius: case BindKind::Tool6Wear:
         case BindKind::Tool7Length: case BindKind::Tool7Radius: case BindKind::Tool7Wear: {
-            const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+            const auto offsets = cached_offsets_snapshot();
             const int delta = static_cast<int>(bind) - static_cast<int>(BindKind::Tool0Length);
             const size_t slot = static_cast<size_t>(delta / 3);
             const int field = delta % 3;
@@ -1273,12 +1365,12 @@ int32_t bound_numeric_value(BindKind bind) {
         }
         case BindKind::AxisXNearLimit: case BindKind::AxisYNearLimit:
         case BindKind::AxisZNearLimit: case BindKind::AxisANearLimit: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             const int idx = static_cast<int>(bind) - static_cast<int>(BindKind::AxisXNearLimit);
             return snap.axis_near_limit[idx] ? 1 : 0;
         }
         case BindKind::OperatorMode: {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             return static_cast<int32_t>(snap.operator_mode);
         }
         case BindKind::Program0Name: case BindKind::Program0Size: case BindKind::Program0Selected: case BindKind::Program0Loaded:
@@ -1303,78 +1395,78 @@ int32_t bound_numeric_value(BindKind bind) {
             return 0;
         }
         case BindKind::HomingAxis: {
-            const auto h = kernel::ui::operator_api::homing_snapshot();
+            const auto h = cached_homing_snapshot();
             return h.selected_axis;
         }
         case BindKind::HomingMethod: {
-            const auto h = kernel::ui::operator_api::homing_snapshot();
+            const auto h = cached_homing_snapshot();
             return h.method_id;
         }
         case BindKind::HomingState: {
-            const auto h = kernel::ui::operator_api::homing_snapshot();
+            const auto h = cached_homing_snapshot();
             return static_cast<int32_t>(h.state);
         }
         case BindKind::HomingFastCps: {
-            const auto h = kernel::ui::operator_api::homing_snapshot();
+            const auto h = cached_homing_snapshot();
             return h.fast_cps;
         }
         case BindKind::HomingSlowCps: {
-            const auto h = kernel::ui::operator_api::homing_snapshot();
+            const auto h = cached_homing_snapshot();
             return h.slow_cps;
         }
         case BindKind::ProbeWizardState: {
-            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            const auto w = cached_probe_wizard_snapshot();
             return static_cast<int32_t>(w.state);
         }
         case BindKind::ProbeWizardCycle: {
-            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            const auto w = cached_probe_wizard_snapshot();
             return static_cast<int32_t>(w.cycle);
         }
         case BindKind::ProbeWizardStep: {
-            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            const auto w = cached_probe_wizard_snapshot();
             return w.step;
         }
         case BindKind::ProbeWizardTotal: {
-            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            const auto w = cached_probe_wizard_snapshot();
             return w.total_steps;
         }
         case BindKind::ProbeWizardResultX: {
-            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            const auto w = cached_probe_wizard_snapshot();
             return w.result_x;
         }
         case BindKind::ProbeWizardResultY: {
-            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            const auto w = cached_probe_wizard_snapshot();
             return w.result_y;
         }
         case BindKind::ProbeWizardResultZ: {
-            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            const auto w = cached_probe_wizard_snapshot();
             return w.result_z;
         }
         case BindKind::ProbeWizardResultValid: {
-            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            const auto w = cached_probe_wizard_snapshot();
             return w.result_valid ? 1 : 0;
         }
         case BindKind::CalPecAxis: {
-            return kernel::ui::operator_api::calibration_snapshot().pec_axis;
+            return cached_calibration_snapshot().pec_axis;
         }
         case BindKind::CalPecEnabled: {
-            return kernel::ui::operator_api::calibration_snapshot().pec_enabled ? 1 : 0;
+            return cached_calibration_snapshot().pec_enabled ? 1 : 0;
         }
         case BindKind::CalPecCount: {
             return static_cast<int32_t>(
-                kernel::ui::operator_api::calibration_snapshot().pec_point_count);
+                cached_calibration_snapshot().pec_point_count);
         }
         case BindKind::CalPecPendingPos:
             return kernel::ui::operator_api::cal_pec_pending_pos();
         case BindKind::CalPecPendingErr:
             return kernel::ui::operator_api::cal_pec_pending_err();
         case BindKind::CalRotaryOffset:
-            return kernel::ui::operator_api::calibration_snapshot().rotary_offset_a;
+            return cached_calibration_snapshot().rotary_offset_a;
         case BindKind::CalPec0Pos: case BindKind::CalPec1Pos:
         case BindKind::CalPec2Pos: case BindKind::CalPec3Pos:
         case BindKind::CalPec4Pos: case BindKind::CalPec5Pos:
         case BindKind::CalPec6Pos: case BindKind::CalPec7Pos: {
-            const auto snap = kernel::ui::operator_api::calibration_snapshot();
+            const auto snap = cached_calibration_snapshot();
             const size_t row = static_cast<size_t>(
                 static_cast<int>(bind) - static_cast<int>(BindKind::CalPec0Pos)) / 2;
             return row < snap.kMaxPecRows ? snap.pec_pos[row] : 0;
@@ -1383,118 +1475,118 @@ int32_t bound_numeric_value(BindKind bind) {
         case BindKind::CalPec2Err: case BindKind::CalPec3Err:
         case BindKind::CalPec4Err: case BindKind::CalPec5Err:
         case BindKind::CalPec6Err: case BindKind::CalPec7Err: {
-            const auto snap = kernel::ui::operator_api::calibration_snapshot();
+            const auto snap = cached_calibration_snapshot();
             const size_t row = static_cast<size_t>(
                 static_cast<int>(bind) - static_cast<int>(BindKind::CalPec0Err)) / 2;
             return row < snap.kMaxPecRows ? snap.pec_err[row] : 0;
         }
         case BindKind::CalGeomXy:
-            return kernel::ui::operator_api::calibration_snapshot().geom_xy_urad;
+            return cached_calibration_snapshot().geom_xy_urad;
         case BindKind::CalGeomXz:
-            return kernel::ui::operator_api::calibration_snapshot().geom_xz_urad;
+            return cached_calibration_snapshot().geom_xz_urad;
         case BindKind::CalGeomYz:
-            return kernel::ui::operator_api::calibration_snapshot().geom_yz_urad;
+            return cached_calibration_snapshot().geom_yz_urad;
         case BindKind::CalGeomEnabled:
-            return kernel::ui::operator_api::calibration_snapshot().geom_enabled ? 1 : 0;
+            return cached_calibration_snapshot().geom_enabled ? 1 : 0;
         case BindKind::CalSphereEnabled:
-            return kernel::ui::operator_api::calibration_snapshot().sphere_enabled ? 1 : 0;
+            return cached_calibration_snapshot().sphere_enabled ? 1 : 0;
         case BindKind::CalSphereDiameter:
             // 1000-scaled mm so format_bind_value's /1000.0f path renders it.
             return static_cast<int32_t>(
-                kernel::ui::operator_api::calibration_snapshot().sphere_diameter_mm * 1000.0f);
+                cached_calibration_snapshot().sphere_diameter_mm * 1000.0f);
         case BindKind::CalSphereProbeUm:
-            return kernel::ui::operator_api::calibration_snapshot().sphere_probe_radius_um;
+            return cached_calibration_snapshot().sphere_probe_radius_um;
         case BindKind::CalSpherePoints:
             return static_cast<int32_t>(
-                kernel::ui::operator_api::calibration_snapshot().sphere_point_count);
+                cached_calibration_snapshot().sphere_point_count);
         case BindKind::CalSphereComputed:
-            return kernel::ui::operator_api::calibration_snapshot().sphere_errors_computed ? 1 : 0;
+            return cached_calibration_snapshot().sphere_errors_computed ? 1 : 0;
         case BindKind::CalSphereErrPosX:
-            return kernel::ui::operator_api::calibration_snapshot().sphere_err_pos_x_urad;
+            return cached_calibration_snapshot().sphere_err_pos_x_urad;
         case BindKind::CalSphereErrPosY:
-            return kernel::ui::operator_api::calibration_snapshot().sphere_err_pos_y_urad;
+            return cached_calibration_snapshot().sphere_err_pos_y_urad;
         case BindKind::CalSphereErrPosZ:
-            return kernel::ui::operator_api::calibration_snapshot().sphere_err_pos_z_urad;
+            return cached_calibration_snapshot().sphere_err_pos_z_urad;
         case BindKind::CalSphereErrSqXy:
-            return kernel::ui::operator_api::calibration_snapshot().sphere_err_sq_xy_urad;
+            return cached_calibration_snapshot().sphere_err_sq_xy_urad;
         case BindKind::CalSphereErrSqXz:
-            return kernel::ui::operator_api::calibration_snapshot().sphere_err_sq_xz_urad;
+            return cached_calibration_snapshot().sphere_err_sq_xz_urad;
         case BindKind::CalSphereErrSqYz:
-            return kernel::ui::operator_api::calibration_snapshot().sphere_err_sq_yz_urad;
+            return cached_calibration_snapshot().sphere_err_sq_yz_urad;
         case BindKind::NetIp:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().local_ip);
+            return static_cast<int32_t>(cached_network_snapshot().local_ip);
         case BindKind::NetGateway:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().gateway);
+            return static_cast<int32_t>(cached_network_snapshot().gateway);
         case BindKind::NetPendingIp:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().pending_ip);
+            return static_cast<int32_t>(cached_network_snapshot().pending_ip);
         case BindKind::NetPendingGateway:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().pending_gateway);
+            return static_cast<int32_t>(cached_network_snapshot().pending_gateway);
         case BindKind::NetPendingPingTarget:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().pending_ping_target);
+            return static_cast<int32_t>(cached_network_snapshot().pending_ping_target);
         case BindKind::NetLastPingTarget:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().last_ping_target);
+            return static_cast<int32_t>(cached_network_snapshot().last_ping_target);
         case BindKind::NetLastPingRtt:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().last_ping_rtt_ms);
+            return static_cast<int32_t>(cached_network_snapshot().last_ping_rtt_ms);
         case BindKind::NetDhcpState:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().dhcp_state);
+            return static_cast<int32_t>(cached_network_snapshot().dhcp_state);
         case BindKind::NetLinkState:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().link_state);
+            return static_cast<int32_t>(cached_network_snapshot().link_state);
         case BindKind::NetLastPingResult:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().last_ping_result);
+            return static_cast<int32_t>(cached_network_snapshot().last_ping_result);
         case BindKind::NetUptime:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().uptime_s);
+            return static_cast<int32_t>(cached_network_snapshot().uptime_s);
         case BindKind::NetRxRequests:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().rx_requests);
+            return static_cast<int32_t>(cached_network_snapshot().rx_requests);
         case BindKind::NetTxResponses:
-            return static_cast<int32_t>(kernel::ui::operator_api::network_snapshot().tx_responses);
+            return static_cast<int32_t>(cached_network_snapshot().tx_responses);
         // Per-axis status sub-page — selected_axis is the implicit input.
         case BindKind::AxisDetailDrive:
-            return kernel::ui::operator_api::axis_status_snapshot().drive_state;
+            return cached_axis_status_snapshot().drive_state;
         case BindKind::AxisDetailTrajState:
-            return kernel::ui::operator_api::axis_status_snapshot().traj_state;
+            return cached_axis_status_snapshot().traj_state;
         case BindKind::AxisDetailMode:
-            return kernel::ui::operator_api::axis_status_snapshot().mode;
+            return cached_axis_status_snapshot().mode;
         case BindKind::AxisDetailEnabled:
-            return kernel::ui::operator_api::axis_status_snapshot().enabled ? 1 : 0;
+            return cached_axis_status_snapshot().enabled ? 1 : 0;
         case BindKind::AxisDetailFault:
-            return kernel::ui::operator_api::axis_status_snapshot().fault_latched ? 1 : 0;
+            return cached_axis_status_snapshot().fault_latched ? 1 : 0;
         case BindKind::AxisDetailHomed:
-            return kernel::ui::operator_api::axis_status_snapshot().homed ? 1 : 0;
+            return cached_axis_status_snapshot().homed ? 1 : 0;
         case BindKind::AxisDetailErrorCode:
-            return kernel::ui::operator_api::axis_status_snapshot().last_error_code;
+            return cached_axis_status_snapshot().last_error_code;
         case BindKind::AxisDetailFollowingErr:
-            return kernel::ui::operator_api::axis_status_snapshot().following_error;
+            return cached_axis_status_snapshot().following_error;
         case BindKind::AxisDetailMaxFollowingErr:
-            return kernel::ui::operator_api::axis_status_snapshot().max_following_error;
+            return cached_axis_status_snapshot().max_following_error;
         case BindKind::AxisDetailVmax:
-            return kernel::ui::operator_api::axis_status_snapshot().vmax_cps;
+            return cached_axis_status_snapshot().vmax_cps;
         case BindKind::AxisDetailAccel:
-            return kernel::ui::operator_api::axis_status_snapshot().accel_cps2;
+            return cached_axis_status_snapshot().accel_cps2;
         case BindKind::AxisDetailJerk:
-            return kernel::ui::operator_api::axis_status_snapshot().jerk_cps3;
+            return cached_axis_status_snapshot().jerk_cps3;
         case BindKind::AxisDetailCmd:
-            return kernel::ui::operator_api::axis_status_snapshot().cmd_pos;
+            return cached_axis_status_snapshot().cmd_pos;
         case BindKind::AxisDetailAct:
-            return kernel::ui::operator_api::axis_status_snapshot().actual_pos;
+            return cached_axis_status_snapshot().actual_pos;
         case BindKind::AxisDetailStatusWord:
-            return kernel::ui::operator_api::axis_status_snapshot().status_word;
+            return cached_axis_status_snapshot().status_word;
         case BindKind::AxisDetailControlWord:
-            return kernel::ui::operator_api::axis_status_snapshot().control_word;
+            return cached_axis_status_snapshot().control_word;
         // Tool change wizard.
         case BindKind::ToolChangeCurrent:
-            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().current_tool);
+            return static_cast<int32_t>(cached_tool_change_snapshot().current_tool);
         case BindKind::ToolChangeTarget:
-            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().target_tool);
+            return static_cast<int32_t>(cached_tool_change_snapshot().target_tool);
         case BindKind::ToolChangeState:
-            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().state);
+            return static_cast<int32_t>(cached_tool_change_snapshot().state);
         case BindKind::ToolChangeCurrentStation:
-            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().current_station);
+            return static_cast<int32_t>(cached_tool_change_snapshot().current_station);
         case BindKind::ToolChangeTargetStation:
-            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().target_station);
+            return static_cast<int32_t>(cached_tool_change_snapshot().target_station);
         case BindKind::ToolChangeStep:
-            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().step);
+            return static_cast<int32_t>(cached_tool_change_snapshot().step);
         case BindKind::ToolChangeTotalSteps:
-            return static_cast<int32_t>(kernel::ui::operator_api::tool_change_snapshot().total_steps);
+            return static_cast<int32_t>(cached_tool_change_snapshot().total_steps);
         case BindKind::LookaheadDepthCh0:
         case BindKind::LookaheadDepthCh1: {
             // Channel-level look-ahead depth = MIN over the channel's owned
@@ -1546,7 +1638,7 @@ int32_t bound_numeric_value(BindKind bind) {
 
 void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* prefix) {
     if (!buf || buf_size == 0) return;
-    const auto offsets = kernel::ui::operator_api::offsets_snapshot();
+    const auto offsets = cached_offsets_snapshot();
     switch (bind) {
         case BindKind::ProgramName:
             copy_field(buf, buf_size, kernel::ui::operator_api::selected_program_name(),
@@ -1559,22 +1651,22 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             copy_field(buf, buf_size, offsets.tool_name, strlen(offsets.tool_name));
             return;
         case BindKind::MacroName: {
-            const auto macro = kernel::ui::operator_api::macro_snapshot();
+            const auto macro = cached_macro_snapshot();
             copy_field(buf, buf_size, macro.selected_name, strlen(macro.selected_name));
             return;
         }
         case BindKind::MacroActive: {
-            const auto macro = kernel::ui::operator_api::macro_snapshot();
+            const auto macro = cached_macro_snapshot();
             copy_field(buf, buf_size, macro.active_name, strlen(macro.active_name));
             return;
         }
         case BindKind::MacroStatus: {
-            const auto macro = kernel::ui::operator_api::macro_snapshot();
+            const auto macro = cached_macro_snapshot();
             copy_field(buf, buf_size, macro.status, strlen(macro.status));
             return;
         }
         case BindKind::MacroMessage: {
-            const auto macro = kernel::ui::operator_api::macro_snapshot();
+            const auto macro = cached_macro_snapshot();
             copy_field(buf, buf_size, macro.message, strlen(macro.message));
             return;
         }
@@ -1715,7 +1807,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::EcState: {
-            const auto snap = kernel::ui::operator_api::ethercat_snapshot();
+            const auto snap = cached_ethercat_snapshot();
             const char* text =
                 !snap.available                              ? "OFFLINE" :
                 snap.master_state == 1                       ? "INIT"    :
@@ -1727,13 +1819,13 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::EcFault: {
-            const auto snap = kernel::ui::operator_api::ethercat_snapshot();
+            const auto snap = cached_ethercat_snapshot();
             const char* text = snap.deadline_fault ? "LATCHED" : "ok";
             copy_field(buf, buf_size, text, strlen(text));
             return;
         }
         case BindKind::EcDcFault: {
-            const auto snap = kernel::ui::operator_api::ethercat_snapshot();
+            const auto snap = cached_ethercat_snapshot();
             const char* text = snap.dc_sync_faulted ? "DC FAULT" : "ok";
             copy_field(buf, buf_size, text, strlen(text));
             return;
@@ -1745,39 +1837,39 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::RestartLine: {
-            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            const auto r = cached_restart_review_snapshot();
             kernel::util::k_snprintf(buf, buf_size, "%s%lu", prefix ? prefix : "",
                                      static_cast<unsigned long>(r.target_line));
             return;
         }
         case BindKind::RestartTool: {
-            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            const auto r = cached_restart_review_snapshot();
             kernel::util::k_snprintf(buf, buf_size, "%sT%lu%s", prefix ? prefix : "",
                                      static_cast<unsigned long>(r.active_tool + 1),
                                      r.tool_length_active ? " (H)" : "");
             return;
         }
         case BindKind::RestartWcs: {
-            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            const auto r = cached_restart_review_snapshot();
             const char* names[] = {"G54", "G55", "G56", "G57", "G58", "G59"};
             const char* text = r.active_work < 6 ? names[r.active_work] : "G54";
             copy_field(buf, buf_size, text, strlen(text));
             return;
         }
         case BindKind::RestartFeed: {
-            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            const auto r = cached_restart_review_snapshot();
             kernel::util::k_snprintf(buf, buf_size, "%sF%lu", prefix ? prefix : "",
                                      static_cast<unsigned long>(r.feed));
             return;
         }
         case BindKind::RestartSpindle: {
-            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            const auto r = cached_restart_review_snapshot();
             kernel::util::k_snprintf(buf, buf_size, "%sS%ld", prefix ? prefix : "",
                                      static_cast<long>(r.spindle));
             return;
         }
         case BindKind::RestartCoolant: {
-            const auto r = kernel::ui::operator_api::restart_review_snapshot();
+            const auto r = cached_restart_review_snapshot();
             const char* text = r.coolant_flood ? (r.coolant_mist ? "FLOOD+MIST" : "FLOOD")
                               : (r.coolant_mist ? "MIST" : "OFF");
             copy_field(buf, buf_size, text, strlen(text));
@@ -1786,7 +1878,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         case BindKind::Channel0BarrierMs:
         case BindKind::Channel1BarrierMs: {
             const auto& prog = kernel::ui::operator_api::program_snapshot();
-            const auto ec = kernel::ui::operator_api::ethercat_snapshot();
+            const auto ec = cached_ethercat_snapshot();
             const size_t ch = (bind == BindKind::Channel0BarrierMs) ? 0u : 1u;
             const uint32_t cycles = (ch < prog.channels.size())
                 ? prog.channels[ch].barrier_cycles_remaining : 0u;
@@ -1803,7 +1895,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         }
         case BindKind::Alarm0Severity: case BindKind::Alarm1Severity:
         case BindKind::Alarm2Severity: case BindKind::Alarm3Severity: {
-            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const auto snap = cached_alarms_snapshot();
             const int row = alarm_row_index(bind);
             const char* text = "---";
             if (row >= 0 && static_cast<size_t>(row) < snap.active_count) {
@@ -1814,7 +1906,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         }
         case BindKind::Alarm0Axis: case BindKind::Alarm1Axis:
         case BindKind::Alarm2Axis: case BindKind::Alarm3Axis: {
-            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const auto snap = cached_alarms_snapshot();
             const int row = alarm_row_index(bind);
             const char* text = "-";
             if (row >= 0 && static_cast<size_t>(row) < snap.active_count && snap.active[row].axis) {
@@ -1825,7 +1917,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         }
         case BindKind::Alarm0Message: case BindKind::Alarm1Message:
         case BindKind::Alarm2Message: case BindKind::Alarm3Message: {
-            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const auto snap = cached_alarms_snapshot();
             const int row = alarm_row_index(bind);
             const char* text = "";
             if (row >= 0 && static_cast<size_t>(row) < snap.active_count && snap.active[row].message) {
@@ -1836,7 +1928,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         }
         case BindKind::Alarm0Id: case BindKind::Alarm1Id:
         case BindKind::Alarm2Id: case BindKind::Alarm3Id: {
-            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const auto snap = cached_alarms_snapshot();
             const int row = alarm_row_index(bind);
             if (row < 0 || static_cast<size_t>(row) >= snap.active_count) {
                 copy_field(buf, buf_size, "-", 1);
@@ -1848,7 +1940,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         }
         case BindKind::Alarm0Time: case BindKind::Alarm1Time:
         case BindKind::Alarm2Time: case BindKind::Alarm3Time: {
-            const auto snap = kernel::ui::operator_api::alarms_snapshot();
+            const auto snap = cached_alarms_snapshot();
             const int row = alarm_row_index(bind);
             if (row < 0 || static_cast<size_t>(row) >= snap.active_count) {
                 copy_field(buf, buf_size, "-", 1);
@@ -1873,7 +1965,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         case BindKind::EcDcDriftLastNs:
         case BindKind::EcDcSamples:
         case BindKind::EcDcTrips: {
-            const auto snap = kernel::ui::operator_api::ethercat_snapshot();
+            const auto snap = cached_ethercat_snapshot();
             unsigned long long v = 0;
             switch (bind) {
                 case BindKind::EcSlaves:    v = (unsigned long long)snap.slave_count;    break;
@@ -1942,7 +2034,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::HomingMessage: {
-            const auto h = kernel::ui::operator_api::homing_snapshot();
+            const auto h = cached_homing_snapshot();
             copy_field(buf, buf_size, h.status_message ? h.status_message : "",
                        h.status_message ? strlen(h.status_message) : 0);
             return;
@@ -1962,7 +2054,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::HomingMethod: {
-            const auto h = kernel::ui::operator_api::homing_snapshot();
+            const auto h = cached_homing_snapshot();
             copy_field(buf, buf_size, h.method_name ? h.method_name : "(none)",
                        h.method_name ? strlen(h.method_name) : 6);
             return;
@@ -1981,13 +2073,13 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::ProbeWizardCycle: {
-            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            const auto w = cached_probe_wizard_snapshot();
             copy_field(buf, buf_size, w.cycle_name ? w.cycle_name : "(none)",
                        w.cycle_name ? strlen(w.cycle_name) : 6);
             return;
         }
         case BindKind::ProbeWizardMessage: {
-            const auto w = kernel::ui::operator_api::probe_wizard_snapshot();
+            const auto w = cached_probe_wizard_snapshot();
             copy_field(buf, buf_size, w.status_message ? w.status_message : "",
                        w.status_message ? strlen(w.status_message) : 0);
             return;
@@ -2061,7 +2153,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         case BindKind::CalPecCount: {
             // Hide rows that haven't been populated by surfacing "---" so
             // the table doesn't render eight zero rows on a clear axis.
-            const auto snap = kernel::ui::operator_api::calibration_snapshot();
+            const auto snap = cached_calibration_snapshot();
             const bool is_row =
                 bind >= BindKind::CalPec0Pos && bind <= BindKind::CalPec7Err;
             if (is_row) {
@@ -2099,7 +2191,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::NetMac: {
-            const auto snap = kernel::ui::operator_api::network_snapshot();
+            const auto snap = cached_network_snapshot();
             kernel::util::k_snprintf(buf, buf_size, "%s%02X:%02X:%02X:%02X:%02X:%02X",
                                      prefix ? prefix : "",
                                      snap.mac[0], snap.mac[1], snap.mac[2],
@@ -2108,7 +2200,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         }
         case BindKind::NetDhcpState: {
             using DS = kernel::ui::operator_api::NetworkSnapshot::DhcpState;
-            const auto snap = kernel::ui::operator_api::network_snapshot();
+            const auto snap = cached_network_snapshot();
             const char* text = "?";
             switch (snap.dhcp_state) {
                 case DS::Idle: text = "IDLE"; break;
@@ -2122,7 +2214,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         }
         case BindKind::NetLinkState: {
             using LS = kernel::ui::operator_api::NetworkSnapshot::LinkState;
-            const auto snap = kernel::ui::operator_api::network_snapshot();
+            const auto snap = cached_network_snapshot();
             const char* text = snap.link_state == LS::Up ? "UP" :
                                snap.link_state == LS::Probing ? "PROBING" : "DOWN";
             copy_field(buf, buf_size, text, strlen(text));
@@ -2130,7 +2222,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
         }
         case BindKind::NetLastPingResult: {
             using PR = kernel::ui::operator_api::NetworkSnapshot::PingResultKind;
-            const auto snap = kernel::ui::operator_api::network_snapshot();
+            const auto snap = cached_network_snapshot();
             const char* text = "---";
             switch (snap.last_ping_result) {
                 case PR::None: text = "---"; break;
@@ -2156,7 +2248,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::NetNicName: {
-            const auto snap = kernel::ui::operator_api::network_snapshot();
+            const auto snap = cached_network_snapshot();
             copy_field(buf, buf_size, snap.nic_name, strlen(snap.nic_name));
             return;
         }
@@ -2248,7 +2340,7 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::ToolChangeMessage: {
-            const auto snap = kernel::ui::operator_api::tool_change_snapshot();
+            const auto snap = cached_tool_change_snapshot();
             copy_field(buf, buf_size, snap.status_message, strlen(snap.status_message));
             return;
         }
@@ -2261,25 +2353,25 @@ void format_bind_value(BindKind bind, char* buf, size_t buf_size, const char* pr
             return;
         }
         case BindKind::ToolChangeCurrentPod: {
-            const auto snap = kernel::ui::operator_api::tool_change_snapshot();
+            const auto snap = cached_tool_change_snapshot();
             const char* text = snap.current_pod[0] ? snap.current_pod : "---";
             copy_field(buf, buf_size, text, strlen(text));
             return;
         }
         case BindKind::ToolChangeCurrentLabel: {
-            const auto snap = kernel::ui::operator_api::tool_change_snapshot();
+            const auto snap = cached_tool_change_snapshot();
             const char* text = snap.current_label[0] ? snap.current_label : "";
             copy_field(buf, buf_size, text, strlen(text));
             return;
         }
         case BindKind::ToolChangeTargetPod: {
-            const auto snap = kernel::ui::operator_api::tool_change_snapshot();
+            const auto snap = cached_tool_change_snapshot();
             const char* text = snap.target_pod[0] ? snap.target_pod : "---";
             copy_field(buf, buf_size, text, strlen(text));
             return;
         }
         case BindKind::ToolChangeTargetLabel: {
-            const auto snap = kernel::ui::operator_api::tool_change_snapshot();
+            const auto snap = cached_tool_change_snapshot();
             const char* text = snap.target_label[0] ? snap.target_label : "";
             copy_field(buf, buf_size, text, strlen(text));
             return;
@@ -2572,6 +2664,7 @@ bool include_page_into_current(const char* source_id, int current_page, uint32_t
         set_error(line_no, "include references unknown page");
         return false;
     }
+    g_pages[source_page].is_template = true;
     const char* current_page_id = g_pages[current_page].id;
     const uint32_t start = g_pages[source_page].first_widget;
     const uint32_t end = start + g_pages[source_page].widget_count;
@@ -2665,14 +2758,14 @@ bool validate_actions(uint32_t line_no) {
     return true;
 }
 
-void set_active_page(int idx) {
+// Caller holds g_state_lock (load_tsv does, for its whole rebuild).
+void set_active_page_locked(int idx) {
     if (idx < 0 || static_cast<uint32_t>(idx) >= g_page_count) return;
     // Dialogs are toggled through show_dialog/hide_dialog only — never via
     // page navigation. Rejecting here prevents an accidental
     // `goto:<dialog_id>` from teleporting the operator into a modal with
     // no way out.
     if (g_pages[idx].is_dialog) return;
-    StateGuard guard;
     g_active_page = idx;
     for (uint32_t i = 0; i < g_page_count; ++i) {
         if (!g_pages[i].root) continue;
@@ -2683,13 +2776,18 @@ void set_active_page(int idx) {
         if (static_cast<int>(i) == g_active_page) g_pages[i].root->show();
         else g_pages[i].root->hide();
     }
-    if (g_focus_index >= 0 &&
-        static_cast<uint32_t>(g_focus_index) < g_focusable_count &&
-        !g_focusables[g_focus_index]->visible()) {
+    // Focus left behind on the page we just hid is dropped (its own
+    // visible() flag stays true, so the old check never fired and Enter
+    // could activate a control on a hidden page).
+    if (g_focus_index >= 0 && !focus_reachable(static_cast<uint32_t>(g_focus_index))) {
         g_focus_index = -1;
-        advance_focus(1);
     }
     if (g_root_widget) g_root_widget->mark_subtree_dirty();
+}
+
+void set_active_page(int idx) {
+    StateGuard guard;
+    set_active_page_locked(idx);
 }
 
 // A4: dialog Z-layer state. Only one dialog is active at a time; calling
@@ -2715,15 +2813,37 @@ uint32_t effective_text_scale(uint32_t spec_scale) {
     return base + g_text_scale_boost;
 }
 
+// Focus rings are drawn inside the widget rect, so repainting the old and
+// new holder is enough (this used to dirty every focusable on every tap).
+void move_focus_to(int next) {
+    if (next == g_focus_index) return;
+    if (g_focus_index >= 0 && static_cast<uint32_t>(g_focus_index) < g_focusable_count &&
+        g_focusables[g_focus_index]) {
+        g_focusables[g_focus_index]->mark_dirty();
+    }
+    g_focus_index = next;
+    if (next >= 0 && static_cast<uint32_t>(next) < g_focusable_count && g_focusables[next]) {
+        g_focusables[next]->mark_dirty();
+    }
+}
+
 void set_focus_widget(Widget* widget) {
     if (!widget) return;
     for (uint32_t i = 0; i < g_focusable_count; ++i) {
         if (g_focusables[i] == widget) {
-            g_focus_index = static_cast<int>(i);
-            for (uint32_t j = 0; j < g_focusable_count; ++j) g_focusables[j]->mark_dirty();
+            move_focus_to(static_cast<int>(i));
             return;
         }
     }
+}
+
+// On screen right now: its own flag, and on the active page — or, while a
+// dialog is open, only the dialog's widgets.
+bool focus_reachable(uint32_t i) {
+    if (i >= g_focusable_count || !g_focusables[i] || !g_focusables[i]->visible()) return false;
+    const int page = g_focus_pages[i];
+    if (g_active_dialog >= 0) return page == g_active_dialog;
+    return page < 0 || page == g_active_page;
 }
 
 bool is_focused(const Widget* widget) {
@@ -2734,24 +2854,23 @@ bool is_focused(const Widget* widget) {
 
 void advance_focus(int step) {
     if (g_focusable_count == 0) return;
-    int next = g_focus_index;
-    if (next < 0 || static_cast<uint32_t>(next) >= g_focusable_count) next = 0;
-    for (uint32_t i = 0; i < g_focusable_count; ++i) {
-        if (g_focus_index < 0 && i == 0) {
-            next = 0;
-        } else {
-            next = (next + step + static_cast<int>(g_focusable_count)) %
-                   static_cast<int>(g_focusable_count);
-        }
-        if (g_focusables[next] && g_focusables[next]->visible()) {
-            g_focus_index = next;
-            break;
+    const int n = static_cast<int>(g_focusable_count);
+    // From "no focus", Tab lands on the first reachable control and Up on
+    // the last.
+    int next = (g_focus_index < 0 || g_focus_index >= n) ? (step > 0 ? -1 : 0) : g_focus_index;
+    for (int i = 0; i < n; ++i) {
+        next = ((next + step) % n + n) % n;
+        if (focus_reachable(static_cast<uint32_t>(next))) {
+            move_focus_to(next);
+            return;
         }
     }
-    for (uint32_t i = 0; i < g_focusable_count; ++i) g_focusables[i]->mark_dirty();
+    move_focus_to(-1);   // nothing focusable on this page
 }
 
 void run_action_target(const char* target) {
+    // Whatever this changed must show on the next repaint, not a tick later.
+    struct SnapInvalidate { ~SnapInvalidate() { snapcache::invalidate(); } } snap_invalidate;
     using namespace kernel::ui::operator_api;
     if (!target || *target == '\0') return;
     trace_click_delivery("[ui-click] action target=%s\n", target);
@@ -3022,6 +3141,8 @@ void run_action_target(const char* target) {
 }
 
 bool commit_input_target(const char* target, const char* value_text, BindKind bind_hint) {
+    // Whatever this changed must show on the next repaint, not a tick later.
+    struct SnapInvalidate { ~SnapInvalidate() { snapcache::invalidate(); } } snap_invalidate;
     using namespace kernel::ui::operator_api;
     if (!value_text) return false;
     if (target && *target) {
@@ -3292,7 +3413,7 @@ public:
     // two paths apart.
     const char* compute_text(char* out, size_t out_size) const {
         if (bind_ == BindKind::None) return spec_.text;
-        const auto snap = kernel::ui::operator_api::machine_snapshot();
+        const auto snap = cached_machine_snapshot();
         switch (bind_) {
             case BindKind::Mode: return mode_text(snap.mode);
             case BindKind::Alarm:
@@ -3301,8 +3422,8 @@ public:
                 return snap.mode == kernel::ui::operator_api::Mode::Running ? "CYCLE RUN IN PROGRESS" : "READY FOR COMMAND";
             case BindKind::PageName:        return active_page_title();
             case BindKind::ProgramName:     return kernel::ui::operator_api::selected_program_name();
-            case BindKind::WorkName:        return kernel::ui::operator_api::offsets_snapshot().workset_name;
-            case BindKind::ToolName:        return kernel::ui::operator_api::offsets_snapshot().tool_name;
+            case BindKind::WorkName:        return cached_offsets_snapshot().workset_name;
+            case BindKind::ToolName:        return cached_offsets_snapshot().tool_name;
             default:
                 format_bind_value(bind_, out, out_size, "");
                 return out;
@@ -3314,11 +3435,33 @@ public:
         char buf[MAX_FIELD_LEN] = {};
         const char* text = compute_text(buf, sizeof(buf));
         Color fg = fg_;
+        Color bg = bg_;
         if (active_bind_ != BindKind::None &&
             bound_numeric_value(active_bind_) == active_value_) {
             fg = Color(0xEF, 0x44, 0x44);
         }
-        fb.fill_rect(x_, y_, width_, height_, bg_);
+        // Alarm indicators take their colour from the state, not the TSV:
+        // pages hard-coded green (dashboard) or red (service) whatever the
+        // text said, so SERVICE showed "ALARMS CLEAR" on a red bar.
+        bool tone_alarm = false;
+        bool tone_ok = false;
+        if (bind_ == BindKind::Alarm) {
+            tone_alarm = strcmp(text, "ALARM ACTIVE") == 0;
+            tone_ok = !tone_alarm;
+        } else if (bind_ == BindKind::AlarmActiveCount) {
+            tone_alarm = !(text[0] == '0' && text[1] == '\0');
+            tone_ok = !tone_alarm;
+        }
+        if (tone_alarm) { bg = Color(0x7F, 0x1D, 0x1D); fg = Color(0xFE, 0xE2, 0xE2); }
+        if (tone_ok && spec_.bg_color != kTransparent) { bg = Color(0x05, 0x2E, 0x16); fg = Color(0x86, 0xEF, 0xAC); }
+        if (tone_ok && spec_.bg_color == kTransparent) fg = Color(0x86, 0xEF, 0xAC);
+        fb.fill_rect(x_, y_, width_, height_, bg);
+        if (spec_.border_color != kTransparent) {
+            const Color border = tone_alarm ? Color(0xEF, 0x44, 0x44)
+                               : tone_ok ? Color(0x22, 0xC5, 0x5E)
+                               : to_color(spec_.border_color, Color::LightGray());
+            fb.draw_rect(x_, y_, width_, height_, border, 1);
+        }
         const uint32_t scale = effective_text_scale(spec_.text_scale);
         int32_t draw_x = x_;
         if (spec_.align != Align::Left) {
@@ -3326,10 +3469,19 @@ public:
             if (spec_.align == Align::Center) draw_x = x_ + static_cast<int32_t>(width_ / 2) - text_w / 2;
             else draw_x = x_ + static_cast<int32_t>(width_) - text_w - 8;
         }
+        // Badge-sized labels (up to 3 text lines tall) centre their line
+        // vertically; text used to hug the top edge and read as clipped.
+        // Taller labels keep top alignment (free-form text areas).
+        const int32_t glyph_h = static_cast<int32_t>(16U * scale);
+        int32_t draw_y = y_;
+        if (static_cast<int32_t>(height_) > glyph_h &&
+            static_cast<int32_t>(height_) <= glyph_h * 3) {
+            draw_y = y_ + (static_cast<int32_t>(height_) - glyph_h) / 2;
+        }
         if (scale > 1) {
-            fb.draw_text_scaled(draw_x, y_, text, fg, bg_, scale);
+            fb.draw_text_scaled(draw_x, draw_y, text, fg, bg, scale);
         } else {
-            fb.draw_text(draw_x, y_, text, fg, bg_);
+            fb.draw_text(draw_x, draw_y, text, fg, bg);
         }
     }
 
@@ -3520,11 +3672,14 @@ public:
             kernel::ui::Button::render(fb);
         }
 
+        // Both rings sit inside the widget rect: drawn outside it they were
+        // never erased when only this widget repainted, leaving ghost
+        // "selected" outlines on buttons that had lost focus / highlight.
         if (highlight_border) {
-            fb.draw_rect(x_ - 2, y_ - 2, width_ + 4, height_ + 4, Color(255, 255, 255), 3);
+            fb.draw_rect(x_, y_, width_, height_, Color(255, 255, 255), 3);
         }
-        if (is_focused(this)) {
-            fb.draw_rect(x_ - 3, y_ - 3, width_ + 6, height_ + 6, Color(255, 255, 255), 2);
+        if (is_focused(this) && width_ > 12 && height_ > 12) {
+            fb.draw_rect(x_ + 5, y_ + 5, width_ - 10, height_ - 10, Color(250, 204, 21), 2);
         }
     }
 
@@ -3591,11 +3746,37 @@ public:
             if (hold_start_ns_ != 0) { hold_start_ns_ = 0; mark_dirty(); }
         } else if (event.type == kernel::ui::EventType::KeyDown && is_focused(this) &&
                    (event.key.keycode == '\r' || event.key.keycode == ' ')) {
-            // Keyboard "click" — bypass the hold-to-confirm gate. Operators
-            // using physical keys/joypad shouldn't need to hold; the
-            // touch-screen friction was the concern. Documented behaviour.
+            // Keyboard "click". A hold_ms button (CONFIRM RESTART, E-STOP)
+            // needs Enter/Space held for hold_ms, as a touch does; the
+            // keyboard used to bypass the gate, so one stray Enter on a
+            // focused CONFIRM RESTART restarted the program.
+            if (spec_.hold_ms > 0) {
+                auto* timer = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
+                if (timer && key_hold_ == 0) {
+                    hold_start_ns_ = timer->get_system_time_ns();
+                    key_hold_ = event.key.keycode;
+                    mark_dirty();
+                }
+                return true;
+            }
             if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
                 run_action_target(target);
+            }
+            return true;
+        } else if (event.type == kernel::ui::EventType::KeyUp && key_hold_ != 0 &&
+                   event.key.keycode == key_hold_) {
+            auto* timer = kernel::g_platform ? kernel::g_platform->get_timer_ops() : nullptr;
+            const bool held = hold_start_ns_ != 0 && timer && is_focused(this) &&
+                timer->get_system_time_ns() - hold_start_ns_ >=
+                    static_cast<uint64_t>(spec_.hold_ms) * 1'000'000ULL;
+            hold_start_ns_ = 0;
+            key_hold_ = 0;
+            mark_dirty();
+            if (held) {
+                if (timer) flash_deadline_ns_ = timer->get_system_time_ns() + 200'000'000ULL;
+                if (const char* target = action_target_for_widget(spec_.id, BuilderEvent::Click, spec_.action)) {
+                    run_action_target(target);
+                }
             }
             return true;
         }
@@ -3619,6 +3800,8 @@ private:
     // TouchDown inside the button, cleared on TouchUp / TouchMove-off /
     // boot. Compared against spec_.hold_ms at release.
     uint64_t hold_start_ns_ = 0;
+    // Keycode ('\r' / ' ') holding a keyboard hold-to-confirm; 0 = none.
+    uint32_t key_hold_ = 0;
     // C12: post-click flash deadline (ns since boot). When non-zero the
     // button renders with bright_bg_; poll_bind_dirty clears the field
     // and marks dirty once the deadline passes.
@@ -3711,7 +3894,7 @@ public:
     void render(Framebuffer& fb) override {
         if (bind_ == BindKind::None || bind_ == BindKind::AxisX || bind_ == BindKind::AxisY ||
             bind_ == BindKind::AxisZ || bind_ == BindKind::AxisA) {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             set_value(0, snap.axis_pos[0] < 0 ? -snap.axis_pos[0] : snap.axis_pos[0]);
             set_value(1, snap.axis_pos[1] < 0 ? -snap.axis_pos[1] : snap.axis_pos[1]);
             set_value(2, snap.axis_pos[2] < 0 ? -snap.axis_pos[2] : snap.axis_pos[2]);
@@ -3732,7 +3915,7 @@ public:
         // for any single-bind graph we track the numeric value.
         if (bind_ == BindKind::AxisX || bind_ == BindKind::AxisY ||
             bind_ == BindKind::AxisZ || bind_ == BindKind::AxisA) {
-            const auto snap = kernel::ui::operator_api::machine_snapshot();
+            const auto snap = cached_machine_snapshot();
             int32_t v[4] = {snap.axis_pos[0], snap.axis_pos[1], snap.axis_pos[2], snap.axis_pos[3]};
             for (int i = 0; i < 4; ++i) {
                 if (v[i] != last_values_[i]) {
@@ -3793,7 +3976,7 @@ public:
         kernel::util::k_snprintf(value_buf, sizeof(value_buf), "%ld", static_cast<long>(value_));
         fb.draw_text(x_ + static_cast<int32_t>(width_) - 48, y_ - 18, value_buf, ink, Color::Black());
         if (is_focused(this)) {
-            fb.draw_rect(x_ - 3, y_ - 3, width_ + 6, height_ + 6, Color(255, 255, 255), 2);
+            fb.draw_rect(x_ + 4, y_ + 4, width_ - 8, height_ - 8, Color(250, 204, 21), 2);
         }
     }
 
@@ -3911,6 +4094,38 @@ public:
         edit_dirty_ = false;
     }
 
+    // Editing starts on a tap OR on the first key after keyboard (Tab)
+    // focus; before, Tab focus never set focused_, so render() overwrote
+    // every typed character with the bound value. A resumed stash keeps
+    // appending; otherwise the first character typed replaces the shown
+    // value (typing 5 into "0.000" used to give "0.0005").
+    void begin_edit() {
+        if (focused_) return;
+        focused_ = true;
+        if (edit_dirty_) {
+            restore_edit();
+            typed_ = true;
+            fresh_ = false;
+        } else {
+            typed_ = false;
+            fresh_ = true;
+        }
+    }
+    // Only a buffer the operator actually typed into is stashed (amber
+    // "pending edit" border); tapping in and out used to flag one anyway.
+    void end_edit() {
+        if (!focused_) return;
+        if (typed_) stash_edit();
+        focused_ = false;
+        typed_ = false;
+        fresh_ = false;
+    }
+    void take_fresh() {
+        if (fresh_) buffer_[0] = '\0';
+        fresh_ = false;
+        typed_ = true;
+    }
+
     void tick_feedback() {
         if (feedback_ticks_ > 0) {
             --feedback_ticks_;
@@ -3925,6 +4140,11 @@ public:
         // back in via the render() refresh. Detect changes here so the
         // mark_dirty happens before render and we don't repaint when
         // nothing changed.
+        if (focused_ && !is_focused(this)) {
+            // Keyboard focus moved on (Tab / arrow) mid-edit.
+            end_edit();
+            mark_dirty();
+        }
         if (focused_ || bind_ == BindKind::None) return;
         char fresh[MAX_FIELD_LEN] = {};
         format_bind_value(bind_, fresh, sizeof(fresh), "");
@@ -3969,28 +4189,27 @@ public:
             }
         }
         if (is_focused(this)) {
-            fb.draw_rect(x_ - 3, y_ - 3, width_ + 6, height_ + 6, Color(255, 255, 255), 2);
+            fb.draw_rect(x_ + 4, y_ + 4, width_ - 8, height_ - 8, Color(250, 204, 21), 2);
         }
     }
 
     bool on_event(const UIEvent& event) override {
         if (event.type == kernel::ui::EventType::TouchDown) {
-            const bool was_focused = focused_;
-            focused_ = contains(event.touch.x, event.touch.y);
-            hovered_ = focused_;
-            if (focused_) {
+            const bool inside = contains(event.touch.x, event.touch.y);
+            hovered_ = inside;
+            if (inside) {
                 set_focus_widget(this);
                 // C13: re-focus restores any pending edit so the operator
                 // can resume the entry they were partway through.
-                restore_edit();
-            } else if (was_focused) {
+                begin_edit();
+            } else {
                 // C13: losing focus without a commit (Enter) stashes the
-                // currently-typed buffer into edit_buffer_ so the next
-                // render's bind-refresh doesn't wipe it.
-                stash_edit();
+                // typed buffer so the next render's bind-refresh doesn't
+                // wipe it.
+                end_edit();
             }
             mark_dirty();
-            return focused_;
+            return inside;
         }
         if (event.type == kernel::ui::EventType::TouchMove) {
             const bool next_hovered = contains(event.touch.x, event.touch.y);
@@ -4001,8 +4220,11 @@ public:
         }
         if (event.type == kernel::ui::EventType::KeyDown && is_focused(this)) {
             const uint32_t key = event.key.keycode;
+            begin_edit();
             size_t len = strlen(buffer_);
             if ((key == 8 || key == 127) && len > 0) {
+                fresh_ = false;
+                typed_ = true;
                 buffer_[len - 1] = '\0';
                 if (bind_ == BindKind::MdiInput) cnc::mdi::g_service.set_input(buffer_);
                 mark_dirty();
@@ -4026,6 +4248,8 @@ public:
                 // (rejected) edit and the operator can fix it.
                 if (ok) clear_edit();
                 focused_ = false;
+                typed_ = false;
+                fresh_ = false;
                 mark_dirty();
                 return true;
             }
@@ -4034,6 +4258,10 @@ public:
                  strncmp(spec_.action, "commit:cal:", 11) == 0);
             if (is_numeric_bind(bind_) || numeric_by_action) {
                 const char ch = static_cast<char>(key);
+                if ((key >= '0' && key <= '9') || ch == '.' || ch == '-' || ch == '+') {
+                    take_fresh();
+                    len = strlen(buffer_);
+                }
                 const bool has_dot = contains_char(buffer_, '.');
                 const bool has_sign = buffer_[0] == '-' || buffer_[0] == '+';
                 if (key >= '0' && key <= '9' && len + 1 < sizeof(buffer_)) {
@@ -4061,7 +4289,13 @@ public:
             }
             if ((bind_ == BindKind::ProgramName || bind_ == BindKind::MdiInput) &&
                 key >= 32 && key <= 126 && len + 1 < sizeof(buffer_)) {
-                buffer_[len] = static_cast<char>(key);
+                take_fresh();
+                len = strlen(buffer_);
+                char c = static_cast<char>(key);
+                // G-code words are upper case; the interpreter only matches
+                // 'G', 'X', ... so a lower-case MDI line silently did nothing.
+                if (bind_ == BindKind::MdiInput && c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+                buffer_[len] = c;
                 buffer_[len + 1] = '\0';
                 if (bind_ == BindKind::MdiInput) cnc::mdi::g_service.set_input(buffer_);
                 mark_dirty();
@@ -4079,6 +4313,8 @@ private:
     char edit_buffer_[MAX_FIELD_LEN]{};
     bool edit_dirty_ = false;
     bool focused_;
+    bool typed_ = false;   // operator changed buffer_ during this edit
+    bool fresh_ = false;   // next printable key replaces the shown value
     bool hovered_ = false;
     bool feedback_ok_ = false;
     uint32_t feedback_ticks_ = 0;
@@ -4129,6 +4365,24 @@ public:
         g_gles1_widget_count = 0;
     }
 
+    // load_tsv snapshots the registry with the other UI tables so a failed
+    // reload can put the previous (still-live) widgets back.
+    struct RegistrySave {
+        BuilderImage* widgets[8];   // == kMaxGles1Widgets (declared below)
+        uint32_t count;
+    };
+    static RegistrySave save_registry() {
+        static_assert(kMaxGles1Widgets == 8, "RegistrySave::widgets size");
+        RegistrySave s{};
+        for (uint32_t i = 0; i < kMaxGles1Widgets; ++i) s.widgets[i] = g_gles1_widgets[i];
+        s.count = g_gles1_widget_count;
+        return s;
+    }
+    static void restore_registry(const RegistrySave& s) {
+        for (uint32_t i = 0; i < kMaxGles1Widgets; ++i) g_gles1_widgets[i] = s.widgets[i];
+        g_gles1_widget_count = s.count;
+    }
+
     void reset_camera() {
         camera_ = Camera{};
         mark_dirty();
@@ -4150,7 +4404,7 @@ public:
             mix(static_cast<uint32_t>(motion::g_motion.axis(i).actual_pos.load(std::memory_order_relaxed)));
         }
         mix(g_scene_generation);
-        const auto snap = kernel::ui::operator_api::machine_snapshot();
+        const auto snap = cached_machine_snapshot();
         mix((snap.view_toolpath ? 1u : 0u) | (snap.view_toolpods ? 2u : 0u));
         for (size_t ch = 0; ch < cnc::programs::MAX_CHANNELS; ++ch) {
             const gles1::Vec3f* pts = nullptr;
@@ -4710,7 +4964,7 @@ private:
         // compile-time hint for the source tag (`gles1:program` always, else
         // consults the live toggle); the toolpods toggle hides the station
         // markers when the operator wants a clean chain view.
-        const auto view_snap = kernel::ui::operator_api::machine_snapshot();
+        const auto view_snap = cached_machine_snapshot();
         const bool draw_path = overlay_program || view_snap.view_toolpath;
         if (view_snap.view_toolpods) render_toolpods(fb, renderer);
         render_probe_calibration_overlay(fb, renderer);
@@ -4846,11 +5100,13 @@ public:
             Widget* dialog_root = g_pages[g_active_dialog].root;
             if (dialog_root && dialog_root->visible()) {
                 (void)dialog_root->on_event(event);
-                // Swallow touch events that fell outside the dialog body
-                // so they can't bubble to a page button underneath.
-                if (event.type == kernel::ui::EventType::TouchDown ||
-                    event.type == kernel::ui::EventType::TouchUp ||
-                    event.type == kernel::ui::EventType::TouchMove) {
+                // Modal: nothing — touches outside the dialog body or keys
+                // the dialog didn't use — reaches the page underneath.
+                // Keys used to fall through, so Enter could fire a
+                // focused page button behind an open confirm dialog.
+                if (event.type != kernel::ui::EventType::KeyDown ||
+                    (event.key.keycode != '\t' && event.key.keycode != 0x1004U &&
+                     event.key.keycode != 0x1001U)) {
                     return true;
                 }
             }
@@ -4860,10 +5116,18 @@ public:
                 advance_focus(1);
                 return true;
             }
-            if (event.key.keycode == 'Q' || event.key.keycode == 0x1001U) {
+            // Up arrow = previous focus. ('Q' used to do this too, which
+            // would have eaten every Q typed into MDI once letters mapped
+            // correctly.)
+            if (event.key.keycode == 0x1001U) {
                 advance_focus(-1);
                 return true;
             }
+            // The focused widget sees the key before the global viewport
+            // shortcuts below: '0' and '-' used to reset / zoom the 3D view
+            // instead of reaching a focused offset field, so zero and
+            // negative values could not be typed.
+            if (Container::on_event(event)) return true;
             // Global GLES1 viewport zoom — applies to all image widgets so
             // the active view frames appropriately whether the operator is
             // on machine_view, program, or probe.
@@ -4879,6 +5143,7 @@ public:
                 view_reset_all_cameras();
                 return true;
             }
+            return false;   // already offered to the widgets above
         }
         return Container::on_event(event);
     }
@@ -4891,22 +5156,56 @@ private:
     int last_rendered_dialog_ = -1;
 };
 
-Widget* create_widget(const WidgetSpec& spec) {
+// ---- Widget arena -----------------------------------------------------------
+// Widgets live in their own arena, reset at the start of every tree build.
+// They used to come from the never-freeing kernel bump heap, so each UI
+// reload leaked the whole previous tree (~1.1 MB) and about four reloads
+// hit heap_panic_oom — which safe-stops and halts the machine. Sized for
+// the worst case (every slot holding the largest widget class), so a build
+// can never run out.
+template <typename... Ts> constexpr size_t max_sizeof() {
+    size_t m = 0;
+    ((m = sizeof(Ts) > m ? sizeof(Ts) : m), ...);
+    return m;
+}
+constexpr size_t kWidgetSlotBytes =
+    (max_sizeof<BuilderLabel, BuilderButton, BuilderContainer, BuilderPanel, BuilderSlider,
+                BuilderInput, BuilderProgress, BuilderImage, BuilderGraph>() + 15u) & ~size_t{15};
+constexpr size_t kUiArenaBytes = kWidgetSlotBytes * MAX_WIDGETS;
+alignas(64) static unsigned char g_ui_arena[kUiArenaBytes];
+static size_t g_ui_arena_used = 0;
+
+// Only called by load_tsv with the state lock held, after the root has
+// dropped every old child: nothing references the previous tree any more.
+void reset_widget_arena() { g_ui_arena_used = 0; }
+size_t widget_arena_used() { return g_ui_arena_used; }
+
+template <typename T>
+Widget* arena_new(const WidgetSpec& spec) {
+    static_assert(alignof(T) <= 16, "arena hands out 16-byte aligned slots");
+    const size_t sz = (sizeof(T) + 15u) & ~size_t{15};
+    if (g_ui_arena_used + sz > kUiArenaBytes) return nullptr;   // unreachable by sizing
+    void* p = g_ui_arena + g_ui_arena_used;
+    g_ui_arena_used += sz;
+    return new (p) T(spec);
+}
+
+Widget* create_widget(const WidgetSpec& spec, int page) {
     Widget* widget = nullptr;
     switch (spec.type) {
-        case WidgetType::Label: widget = new BuilderLabel(spec); break;
-        case WidgetType::Button: widget = new BuilderButton(spec); break;
-        case WidgetType::Container: widget = new BuilderContainer(spec); break;
-        case WidgetType::Panel: widget = new BuilderPanel(spec); break;
-        case WidgetType::Slider: widget = new BuilderSlider(spec); break;
-        case WidgetType::Input: widget = new BuilderInput(spec); break;
-        case WidgetType::Progress: widget = new BuilderProgress(spec); break;
-        case WidgetType::Image: widget = new BuilderImage(spec); break;
-        case WidgetType::Graph: widget = new BuilderGraph(spec); break;
+        case WidgetType::Label: widget = arena_new<BuilderLabel>(spec); break;
+        case WidgetType::Button: widget = arena_new<BuilderButton>(spec); break;
+        case WidgetType::Container: widget = arena_new<BuilderContainer>(spec); break;
+        case WidgetType::Panel: widget = arena_new<BuilderPanel>(spec); break;
+        case WidgetType::Slider: widget = arena_new<BuilderSlider>(spec); break;
+        case WidgetType::Input: widget = arena_new<BuilderInput>(spec); break;
+        case WidgetType::Progress: widget = arena_new<BuilderProgress>(spec); break;
+        case WidgetType::Image: widget = arena_new<BuilderImage>(spec); break;
+        case WidgetType::Graph: widget = arena_new<BuilderGraph>(spec); break;
         default: break;
     }
     if (widget && (spec.type == WidgetType::Button || spec.type == WidgetType::Slider || spec.type == WidgetType::Input)) {
-        register_focusable(widget, spec.focus_order);
+        register_focusable(widget, spec.focus_order, page);
     }
     if (widget && spec.type == WidgetType::Input && g_input_count < MAX_WIDGETS) {
         g_inputs[g_input_count++] = static_cast<BuilderInput*>(widget);
@@ -4990,6 +5289,45 @@ void apply_layout(int parent_idx) {
         }
     }
 }
+
+// ---- Reload safety ----------------------------------------------------------
+// load_tsv parses straight into the live tables below. A reload from the HMI
+// WebSocket / UDP upload or `ui_reload` that fails validation must leave the
+// running UI untouched, so the tables are snapshotted first and put back on
+// failure. Every validation failure happens before create_widget(), so the
+// previous widget objects (never freed: bump heap) are still intact and the
+// restored tables point at them again. Raw byte storage keeps the ~1.2 MB
+// snapshot in .bss; a typed WidgetNode array would land in .data (+1 MB ELF).
+template <typename T>
+void snapshot_field(unsigned char*& p, T& value, bool save) {
+    if (save) memcpy(p, static_cast<const void*>(&value), sizeof(T));
+    else memcpy(static_cast<void*>(&value), p, sizeof(T));
+    p += sizeof(T);
+}
+
+#define UI_TABLE_STATE(X)                                                      \
+    X(g_widgets) X(g_widget_count) X(g_pages) X(g_page_count) X(g_actions)   \
+    X(g_action_count) X(g_action_index) X(g_action_index_count)              \
+    X(g_child_links) X(g_child_link_count) X(g_root_widget) X(g_active_page) \
+    X(g_focusables) X(g_focus_orders) X(g_focus_pages) X(g_focusable_count)  \
+    X(g_focus_index)                                                          \
+    X(g_inputs) X(g_input_count) X(g_theme_tokens) X(g_theme_token_count)    \
+    X(g_active_dialog)
+#define UI_TABLE_SIZE(v) + sizeof(v)
+constexpr size_t kTableSnapshotBytes = 0 UI_TABLE_STATE(UI_TABLE_SIZE);
+#undef UI_TABLE_SIZE
+alignas(16) static unsigned char g_table_snapshot[kTableSnapshotBytes];
+static BuilderImage::RegistrySave g_registry_snapshot{};
+
+void transfer_tables(bool save) {
+    unsigned char* p = g_table_snapshot;
+#define UI_TABLE_COPY(v) snapshot_field(p, v, save);
+    UI_TABLE_STATE(UI_TABLE_COPY)
+#undef UI_TABLE_COPY
+    if (save) g_registry_snapshot = BuilderImage::save_registry();
+    else BuilderImage::restore_registry(g_registry_snapshot);
+}
+#undef UI_TABLE_STATE
 
 void reset_state() {
     g_widget_count = 0;
@@ -5168,9 +5506,10 @@ bool build_ui(const WidgetSpec* specs, uint32_t count) {
     if (!validate_actions(0)) return false;
     build_action_index();
     for (uint32_t i = 0; i < g_widget_count; ++i) apply_layout(static_cast<int>(i));
-    for (uint32_t i = 0; i < g_widget_count; ++i) g_widgets[i].widget = create_widget(g_widgets[i].spec);
     static BuilderRoot root;
     root.clear_children();
+    reset_widget_arena();
+    for (uint32_t i = 0; i < g_widget_count; ++i) g_widgets[i].widget = create_widget(g_widgets[i].spec, g_widgets[i].page);
     g_root_widget = &root;
     for (uint32_t i = 0; i < g_widget_count; ++i) {
         if (!g_widgets[i].widget) continue;
@@ -5184,9 +5523,15 @@ bool build_ui(const WidgetSpec* specs, uint32_t count) {
     return true;
 }
 
-bool load_tsv(const char* buf, size_t len) {
+// Parses `buf` into the live tables and builds the widget tree. Caller holds
+// g_state_lock and has snapshotted the tables (see load_tsv). `keep_page` is
+// the page to stay on if the new UI still has it.
+static bool load_tsv_unguarded(const char* buf, size_t len, const char* keep_page) {
     reset_state();
-    if (!buf || len == 0) return false;
+    if (!buf || len == 0) {
+        set_error(0, "empty tsv");
+        return false;
+    }
 
     int current_page = -1;
     uint32_t line_no = 0;
@@ -5328,8 +5673,13 @@ bool load_tsv(const char* buf, size_t len) {
 
     for (uint32_t i = 0; i < g_widget_count; ++i) apply_layout(static_cast<int>(i));
 
+    // Point of no return: nothing below can fail. Detach the previous tree
+    // from the (static) root first, then recycle its arena for the new one.
+    static BuilderRoot root;
+    root.clear_children();
+    reset_widget_arena();
     for (uint32_t i = 0; i < g_widget_count; ++i) {
-        g_widgets[i].widget = create_widget(g_widgets[i].spec);
+        g_widgets[i].widget = create_widget(g_widgets[i].spec, g_widgets[i].page);
         if (g_widgets[i].page >= 0 && g_widgets[i].parent < 0 &&
             (g_widgets[i].spec.type == WidgetType::Panel || g_widgets[i].spec.type == WidgetType::Container) &&
             g_pages[g_widgets[i].page].root == nullptr) {
@@ -5354,8 +5704,6 @@ bool load_tsv(const char* buf, size_t len) {
         }
     }
 
-    static BuilderRoot root;
-    root.clear_children();
     g_root_widget = &root;
 
     for (uint32_t i = 0; i < g_widget_count; ++i) {
@@ -5388,17 +5736,43 @@ bool load_tsv(const char* buf, size_t len) {
     }
     g_active_dialog = -1;
 
-    // First regular (non-dialog) page becomes the active page. If the TSV
-    // starts with a dialog definition the loop falls through to find the
-    // first page.
-    if (g_page_count > 0) {
-        int first_page = -1;
-        for (uint32_t i = 0; i < g_page_count; ++i) {
-            if (!g_pages[i].is_dialog) { first_page = static_cast<int>(i); break; }
-        }
-        if (first_page >= 0) set_active_page(first_page);
+    // Stay on the operator's page if the new UI still has it (live-preview
+    // edits shouldn't bounce the view); otherwise the first regular
+    // (non-dialog) page. A TSV that starts with a dialog falls through to
+    // the first page.
+    int start_page = -1;
+    if (keep_page && *keep_page) {
+        const int idx = find_page_index_by_id(keep_page);
+        if (idx >= 0 && !g_pages[idx].is_dialog && !g_pages[idx].is_template) start_page = idx;
     }
+    // Include-only template pages (bottom_nav) are skipped: booting onto one
+    // showed the operator a blank screen with just the nav bar.
+    for (uint32_t i = 0; start_page < 0 && i < g_page_count; ++i) {
+        if (!g_pages[i].is_dialog && !g_pages[i].is_template) start_page = static_cast<int>(i);
+    }
+    for (uint32_t i = 0; start_page < 0 && i < g_page_count; ++i) {
+        if (!g_pages[i].is_dialog) start_page = static_cast<int>(i);
+    }
+    if (start_page >= 0) set_active_page_locked(start_page);
     return g_root_widget != nullptr;
+}
+
+bool load_tsv(const char* buf, size_t len) {
+    // Held for the whole rebuild: the UI thread (and CLI / HMI renders)
+    // must never walk half-built tables.
+    StateGuard guard;
+    char keep_page[MAX_FIELD_LEN] = {};
+    if (g_active_page >= 0 && static_cast<uint32_t>(g_active_page) < g_page_count) {
+        copy_field(keep_page, sizeof(keep_page), g_pages[g_active_page].id,
+                   strlen(g_pages[g_active_page].id));
+    }
+    transfer_tables(true);
+    if (load_tsv_unguarded(buf, len, keep_page)) return true;
+    // Rejected: put the previous UI back (g_last_error / line survive — they
+    // are not part of the snapshot) and repaint it in full.
+    transfer_tables(false);
+    if (g_root_widget) g_root_widget->mark_subtree_dirty();
+    return false;
 }
 
 Widget* root_widget() {
@@ -5444,6 +5818,15 @@ bool machine_view_set_override(const char* link, float value) {
     return BuilderImage::set_override(link, value);
 }
 
+bool keyboard_focus_active() {
+    return g_focus_index >= 0 && focus_reachable(static_cast<uint32_t>(g_focus_index));
+}
+
+void clear_keyboard_focus() {
+    StateGuard guard;
+    move_focus_to(-1);
+}
+
 void machine_view_zoom(float factor) {
     StateGuard guard;
     view_zoom_all(factor);
@@ -5461,10 +5844,15 @@ void machine_view_dump(kernel::hal::UARTDriverOps* uart) {
 }
 
 void tick() {
+    cnc::mdi::g_service.tick();
+    // Same lock as render: tick walks the widget tree, which a CLI / HMI
+    // render_ui_once on another thread may be walking too. (Nothing below
+    // runs actions, so the non-recursive lock can't self-deadlock.)
+    StateGuard guard;
+    snapcache::invalidate();   // one fresh snapshot of each kind per tick
     for (uint32_t i = 0; i < g_input_count; ++i) {
         if (g_inputs[i]) g_inputs[i]->tick_feedback();
     }
-    cnc::mdi::g_service.tick();
     // Bind-driven dirty: each bound widget compares its current value
     // against an internal cache and calls mark_dirty() only when the
     // value changed. Container::poll_bind_dirty() descends into visible

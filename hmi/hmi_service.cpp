@@ -2,6 +2,9 @@
 
 #include "hmi_service.hpp"
 
+#include <cstddef>
+#include <cstring>
+
 #include "config/tsv.hpp"
 #include "ethercat/master.hpp"
 #include "fs/vfs.hpp"
@@ -11,6 +14,7 @@
 #include "kernel/main.hpp"
 #include "machine/machine_registry.hpp"
 #include "miniOS.hpp"
+#include "ui/operator_api.hpp"
 #include "ui/splash.hpp"
 #include "ui/ui_builder_tsv.hpp"
 #include "util.hpp"
@@ -80,12 +84,27 @@ bool     g_tsv_rx_session_valid = false;
 uint32_t g_tsv_rx_total_len = 0;
 uint32_t g_tsv_rx_max_offset = 0;   // highest (offset+chunk_len) seen
 uint64_t g_tsv_rx_last_packet_us = 0;
+// Session owner: chunks from any other sender are ignored until the
+// session has been idle for TSV_RX_IDLE_US. Sessions used to be keyed on
+// the 16-bit id alone, so any host could inject chunks into another's.
+uint32_t g_tsv_rx_src_ip = 0;
+uint16_t g_tsv_rx_src_port = 0;
+// One bit per byte of the upload. The old completeness test only compared
+// the highest offset seen against total_len, so sending just the final
+// chunk "completed" an upload made of stale buffer contents.
+uint32_t g_tsv_rx_have[TSV_RX_BUF_BYTES / 32];
+uint32_t g_tsv_rx_received = 0;      // distinct bytes received
+uint64_t g_tsv_last_load_us = 0;
+constexpr uint64_t TSV_RX_IDLE_US = 5000000ULL;       // abandon a stalled session
+constexpr uint64_t TSV_MIN_RELOAD_US = 2000000ULL;    // at most one reload per 2 s
 
 void reset_tsv_rx(uint16_t new_session, uint32_t total_len) {
     g_tsv_rx_session = new_session;
     g_tsv_rx_session_valid = true;
     g_tsv_rx_total_len = total_len;
     g_tsv_rx_max_offset = 0;
+    g_tsv_rx_received = 0;
+    std::memset(g_tsv_rx_have, 0, (total_len + 31u) / 32u * sizeof(uint32_t));
     // We don't zero the whole buffer — chunks just overwrite their
     // ranges. The buffer's content past the new total_len is stale
     // from a prior session but never read by load_tsv (which honours
@@ -242,6 +261,80 @@ void fill_symbol_payload(SymbolPayload& out, const machine::Registry::Entry& ent
     kernel::util::k_snprintf(out.name, sizeof(out.name), "%s", entry.name);
 }
 
+// Hardware inputs are what the machine reports (DI, AI, EtherCAT TxPDO,
+// drive status/actuals). A remote client must never be able to spoof one —
+// estop, door_interlock and limit_* are declared writable=1 so the ladder /
+// simulation can drive them, but over the network that would let any host
+// fake a closed door or a released e-stop until the next input sync.
+bool is_hardware_input(machine::Registry::SignalSource src) {
+    using S = machine::Registry::SignalSource;
+    switch (src) {
+        case S::EcDi: case S::EcAiUni: case S::EcAiBip:
+        case S::EcTxBit: case S::EcTxS16: case S::EcTxU16: case S::EcTxS32: case S::EcTxU32:
+        case S::EcTxPin: case S::EcStatusWord: case S::EcPositionActual:
+        case S::EcVelocityActual: case S::EcErrorCode: case S::EcDriveMode:
+        case S::EcDigitalInputs:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool bound_to_hardware_input(const char* name) {
+    const auto& reg = machine::g_registry;
+    for (size_t i = 0; i < reg.signal_binding_count(); ++i) {
+        const auto* b = reg.signal_binding(i);
+        if (b && b->used && kernel::util::kstrcmp(b->name, name) == 0) {
+            return is_hardware_input(b->source);
+        }
+    }
+    return false;
+}
+
+// Shared by the raw-ethertype and UDP transports (they used to carry two
+// copies of this logic).
+StatusCode remote_symbol_set(const SymbolPayload& req, SymbolPayload& out, bool enabled) {
+    if (!enabled) return StatusCode::NotWritable;
+    char name[sizeof(req.name) + 1] = {};
+    for (size_t i = 0; i < sizeof(req.name) && req.name[i]; ++i) name[i] = req.name[i];
+    size_t idx = 0;
+    if (!machine::g_registry.find(name, idx)) return StatusCode::NotFound;
+    const auto* entry = machine::g_registry.entry(idx);
+    if (!entry || !entry->writable || bound_to_hardware_input(name)) return StatusCode::NotWritable;
+    const int32_t value = static_cast<int32_t>(le32_to_host(static_cast<uint32_t>(req.value_le)));
+    bool ok = false;
+    switch (entry->type) {
+        case machine::SymbolType::Bool: ok = machine::g_registry.set_bool(name, value != 0); break;
+        case machine::SymbolType::Int: ok = machine::g_registry.set_int(name, value); break;
+        case machine::SymbolType::Float: ok = machine::g_registry.set_float(name, static_cast<float>(value)); break;
+    }
+    if (!ok) return StatusCode::NotWritable;
+    if (const auto* updated = machine::g_registry.entry(idx)) fill_symbol_payload(out, *updated);
+    return StatusCode::Ok;
+}
+
+// Replacing the operator UI mid-cycle would swap the controls under the
+// operator's hands (and the reload holds the UI lock for the parse).
+bool ui_upload_allowed(const Config& cfg, const char*& why) {
+    if (!cfg.ui_upload_enable) { why = "ui upload disabled (hmi ui_upload_enable=0)"; return false; }
+    const auto mode = kernel::ui::operator_api::machine_snapshot().mode;
+    if (mode == kernel::ui::operator_api::Mode::Running || mode == kernel::ui::operator_api::Mode::Homing) {
+        why = "machine busy (cycle or homing running)";
+        return false;
+    }
+    return true;
+}
+
+
+// Live-preview WebSocket Origin gate: the transport's defaults plus the
+// one origin configured with `hmi key=ws_origin`.
+bool hmi_origin_ok(const char* origin, size_t len) noexcept {
+    if (kernel::net::WebSocketServer::default_origin_ok(origin, len)) return true;
+    const char* extra = g_service.config().ws_origin;
+    const size_t n = kernel::util::kstrlen(extra);
+    return origin && n != 0 && n == len && std::memcmp(origin, extra, n) == 0;
+}
+
 struct HmiLoadCtx {
     Config cfg{};
     bool ok = true;
@@ -278,6 +371,14 @@ void record_cb(const config::Record& rec, void* raw_ctx) noexcept {
         ctx->ok = rec.get_u32("value", ctx->cfg.ping_selftest_delay_ms);
     } else if (key == "ping_selftest_timeout_ms") {
         ctx->ok = rec.get_u32("value", ctx->cfg.ping_selftest_timeout_ms);
+    } else if (key == "remote_write_enable") {
+        ctx->cfg.remote_write_enable = value != "0";
+    } else if (key == "ui_upload_enable") {
+        ctx->cfg.ui_upload_enable = value != "0";
+    } else if (key == "ws_origin") {
+        const size_t n = value.size() < sizeof(ctx->cfg.ws_origin) - 1 ? value.size() : sizeof(ctx->cfg.ws_origin) - 1;
+        std::memcpy(ctx->cfg.ws_origin, value.data(), n);
+        ctx->cfg.ws_origin[n] = '\0';
     }
 }
 
@@ -394,8 +495,12 @@ Service::PingResult Service::ping_ipv4_str(const char* dst_ip, uint32_t timeout_
     return ping_ipv4(ip, timeout_ms, rtt_ms);
 }
 
+void Service::publish_local_ip() noexcept {
+    if (auto* nif = kernel::net::netif_get(nic_idx_)) nif->set_local_ip(local_ip_.load(std::memory_order_relaxed));
+}
+
 void Service::apply_static_config() noexcept {
-    local_ip_.store(config_.static_ip, std::memory_order_relaxed);
+    local_ip_.store(config_.static_ip, std::memory_order_relaxed); publish_local_ip();
     netmask_.store(config_.netmask, std::memory_order_relaxed);
     gateway_.store(config_.gateway, std::memory_order_relaxed);
     dhcp_bound_.store(false, std::memory_order_relaxed);
@@ -618,7 +723,7 @@ void Service::maybe_drive_dhcp(kernel::hal::net::NetworkDriverOps& nic) noexcept
                 if (uart) uart->puts("[hmi] dhcp lease expired\n");
                 dhcp_state_ = DhcpState::Init;
                 dhcp_bound_.store(false, std::memory_order_relaxed);
-                local_ip_.store(0, std::memory_order_relaxed);
+                local_ip_.store(0, std::memory_order_relaxed); publish_local_ip();
                 return;
             }
             if (dhcp_t2_us_ != 0 && now >= dhcp_t2_us_) {
@@ -659,7 +764,7 @@ void Service::maybe_drive_dhcp(kernel::hal::net::NetworkDriverOps& nic) noexcept
                 if (uart) uart->puts("[hmi] dhcp lease expired during rebind\n");
                 dhcp_state_ = DhcpState::Init;
                 dhcp_bound_.store(false, std::memory_order_relaxed);
-                local_ip_.store(0, std::memory_order_relaxed);
+                local_ip_.store(0, std::memory_order_relaxed); publish_local_ip();
                 return;
             }
             if (now >= dhcp_retry_us_) {
@@ -911,8 +1016,24 @@ void Service::process_ping(kernel::hal::net::NetworkDriverOps& nic) noexcept {
 void Service::handle_dhcp(kernel::hal::net::NetworkDriverOps& nic,
                           uint32_t,
                           const uint8_t* payload, size_t payload_len) noexcept {
-    if (!payload || payload_len < sizeof(DhcpHeader)) return;
-    const auto* dhcp = reinterpret_cast<const DhcpHeader*>(payload);
+    // Fixed BOOTP part + cookie. Options run to the end of the datagram:
+    // demanding a full sizeof(DhcpHeader) (368 bytes) rejected servers that
+    // pad replies only to the 300-byte BOOTP minimum.
+    constexpr size_t kFixed = offsetof(DhcpHeader, options);
+    if (!payload || payload_len < kFixed) return;
+    // Only while DHCP is running and waiting for an answer, and only a
+    // BOOTREPLY for our own MAC and transaction. Before, a broadcast ACK
+    // with xid 0 rewrote IP/netmask/gateway even with DHCP disabled, in
+    // any state, for any chaddr.
+    if (!config_.dhcp_enable || dhcp_xid_ == 0) return;
+    if (dhcp_state_ != DhcpState::Selecting && dhcp_state_ != DhcpState::Requesting &&
+        dhcp_state_ != DhcpState::Renewing && dhcp_state_ != DhcpState::Rebinding) return;
+    DhcpHeader msg{};
+    std::memcpy(&msg, payload, payload_len < sizeof(msg) ? payload_len : sizeof(msg));
+    const auto* dhcp = &msg;
+    const size_t opt_len = (payload_len < sizeof(msg) ? payload_len : sizeof(msg)) - kFixed;
+    if (dhcp->op != 2 || dhcp->htype != 1 || dhcp->hlen != 6) return;
+    if (std::memcmp(dhcp->chaddr, mac_, 6) != 0) return;
     if (be32_to_host(dhcp->xid_be) != dhcp_xid_ || be32_to_host(dhcp->cookie_be) != DHCP_MAGIC_COOKIE) return;
     uint8_t msg_type = 0;
     uint32_t subnet = config_.netmask;
@@ -928,12 +1049,12 @@ void Service::handle_dhcp(kernel::hal::net::NetworkDriverOps& nic,
                 static_cast<uint32_t>(dhcp->options[at + 3]);
     };
     size_t o = 0;
-    while (o < sizeof(dhcp->options)) {
+    while (o < opt_len) {
         const uint8_t code = dhcp->options[o++];
         if (code == DHCP_OPT_END) break;
-        if (code == 0 || o >= sizeof(dhcp->options)) continue;
+        if (code == 0 || o >= opt_len) continue;
         const uint8_t len = dhcp->options[o++];
-        if (o + len > sizeof(dhcp->options)) break;
+        if (o + len > opt_len) break;
         switch (code) {
             case DHCP_OPT_MSG_TYPE:   if (len >= 1) msg_type   = dhcp->options[o]; break;
             case DHCP_OPT_SUBNET:     if (len == 4) subnet     = read_be32(o); break;
@@ -947,14 +1068,18 @@ void Service::handle_dhcp(kernel::hal::net::NetworkDriverOps& nic,
         o += len;
     }
     const uint32_t yiaddr = be32_to_host(dhcp->yiaddr_be);
-    if (msg_type == DHCP_OFFER && yiaddr != 0) {
+    // Not a usable host address: 0, broadcast, multicast, loopback.
+    if (yiaddr == 0 || yiaddr == 0xFFFFFFFFu || (yiaddr >> 28) == 0xE || (yiaddr >> 24) == 127) return;
+    // Once a server was chosen, only that server may answer.
+    if (msg_type == DHCP_ACK && dhcp_server_id_ != 0 && server_id != 0 && server_id != dhcp_server_id_) return;
+    if (msg_type == DHCP_OFFER && dhcp_state_ == DhcpState::Selecting) {
         dhcp_offer_ip_ = yiaddr;
         dhcp_server_id_ = server_id;
         log_ip_line("[hmi] dhcp offer ip=", yiaddr);
         dhcp_state_ = DhcpState::Requesting;
         send_dhcp_request(nic, yiaddr, server_id, DhcpRequestKind::Selecting);
-    } else if (msg_type == DHCP_ACK && yiaddr != 0) {
-        local_ip_.store(yiaddr, std::memory_order_relaxed);
+    } else if (msg_type == DHCP_ACK && dhcp_state_ != DhcpState::Selecting) {
+        local_ip_.store(yiaddr, std::memory_order_relaxed); publish_local_ip();
         netmask_.store(subnet, std::memory_order_relaxed);
         gateway_.store(router, std::memory_order_relaxed);
         dhcp_offer_ip_ = yiaddr;
@@ -1065,40 +1190,20 @@ void Service::handle_raw_hmi(kernel::hal::net::NetworkDriverOps& nic,
                 send_raw_response(nic, src_mac, hdr->opcode, static_cast<uint8_t>(StatusCode::BadFrame), nullptr, 0);
                 return;
             }
-            const auto* req = reinterpret_cast<const SymbolPayload*>(payload);
-            size_t idx = 0;
-            if (!machine::g_registry.find(req->name, idx)) {
-                send_raw_response(nic, src_mac, hdr->opcode, static_cast<uint8_t>(StatusCode::NotFound), nullptr, 0);
-                return;
-            }
-            const auto* entry = machine::g_registry.entry(idx);
-            if (!entry || !entry->writable) {
-                send_raw_response(nic, src_mac, hdr->opcode, static_cast<uint8_t>(StatusCode::NotWritable), nullptr, 0);
-                return;
-            }
-            const int32_t value = req->value_le;
-            bool ok = false;
-            switch (entry->type) {
-                case machine::SymbolType::Bool: ok = machine::g_registry.set_bool(req->name, value != 0); break;
-                case machine::SymbolType::Int: ok = machine::g_registry.set_int(req->name, value); break;
-                case machine::SymbolType::Float: ok = machine::g_registry.set_float(req->name, static_cast<float>(value)); break;
-            }
-            if (!ok) {
-                send_raw_response(nic, src_mac, hdr->opcode, static_cast<uint8_t>(StatusCode::NotWritable), nullptr, 0);
-                return;
-            }
-            const auto* updated = machine::g_registry.entry(idx);
             SymbolPayload out{};
-            if (updated) fill_symbol_payload(out, *updated);
-            send_raw_response(nic, src_mac, hdr->opcode, static_cast<uint8_t>(StatusCode::Ok),
-                              reinterpret_cast<const uint8_t*>(&out), sizeof(out));
+            const StatusCode st = remote_symbol_set(*reinterpret_cast<const SymbolPayload*>(payload), out,
+                                                    config_.remote_write_enable);
+            send_raw_response(nic, src_mac, hdr->opcode, static_cast<uint8_t>(st),
+                              st == StatusCode::Ok ? reinterpret_cast<const uint8_t*>(&out) : nullptr,
+                              st == StatusCode::Ok ? sizeof(out) : 0);
             return;
         }
     }
     send_raw_response(nic, src_mac, hdr->opcode, static_cast<uint8_t>(StatusCode::Unsupported), nullptr, 0);
 }
 
-void Service::handle_tsv_upload(const uint8_t* payload, size_t payload_len) noexcept {
+void Service::handle_tsv_upload(uint32_t src_ip, uint16_t src_port,
+                                const uint8_t* payload, size_t payload_len) noexcept {
     if (!payload || payload_len < sizeof(TsvUploadHeader)) return;
     const auto* hdr = reinterpret_cast<const TsvUploadHeader*>(payload);
     if (le32_to_host(hdr->magic_le) != TSV_UPLOAD_MAGIC) return;
@@ -1116,10 +1221,18 @@ void Service::handle_tsv_upload(const uint8_t* payload, size_t payload_len) noex
 
     auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr;
 
+    const uint64_t now = now_us();
+    const bool stale = now > g_tsv_rx_last_packet_us + TSV_RX_IDLE_US;
+    const bool same_sender = src_ip == g_tsv_rx_src_ip && src_port == g_tsv_rx_src_port;
+    // Another sender can't disturb a live session.
+    if (g_tsv_rx_session_valid && !stale && !same_sender) return;
+
     // New session id (or first packet ever) — reset state.
-    if (!g_tsv_rx_session_valid || session != g_tsv_rx_session ||
+    if (!g_tsv_rx_session_valid || stale || session != g_tsv_rx_session ||
         total_len != g_tsv_rx_total_len) {
         reset_tsv_rx(session, total_len);
+        g_tsv_rx_src_ip = src_ip;
+        g_tsv_rx_src_port = src_port;
         if (uart) {
             char buf[160];
             kernel::util::k_snprintf(buf, sizeof(buf),
@@ -1133,17 +1246,40 @@ void Service::handle_tsv_upload(const uint8_t* payload, size_t payload_len) noex
     // Copy the chunk into the reassembly buffer.
     const uint8_t* chunk_data = payload + sizeof(TsvUploadHeader);
     for (uint16_t i = 0; i < chunk_len; ++i) {
-        g_tsv_rx_buf[offset + i] = chunk_data[i];
+        const uint32_t at = offset + i;
+        g_tsv_rx_buf[at] = chunk_data[i];
+        const uint32_t bit = 1u << (at & 31u);
+        if (!(g_tsv_rx_have[at >> 5] & bit)) {
+            g_tsv_rx_have[at >> 5] |= bit;
+            ++g_tsv_rx_received;
+        }
     }
     const uint32_t reached = offset + chunk_len;
     if (reached > g_tsv_rx_max_offset) g_tsv_rx_max_offset = reached;
 
-    g_tsv_rx_last_packet_us = now_us();
+    g_tsv_rx_last_packet_us = now;
 
-    // Last chunk: kick off load_tsv. We require the highest contiguous
-    // offset to match total_len — otherwise there's a hole, and we
-    // refuse to commit a partial buffer.
-    const bool is_last = (offset + chunk_len == total_len);
+    // Commit only when every byte of [0, total_len) has arrived, whatever
+    // order the chunks came in.
+    const bool is_last = g_tsv_rx_received == total_len;
+    if (is_last && now < g_tsv_last_load_us + TSV_MIN_RELOAD_US) {
+        // Each reload re-parses up to 256 KB and repaints the whole UI on
+        // this thread; a flood of tiny uploads used to keep core 0 busy.
+        g_tsv_rx_session_valid = false;
+        return;
+    }
+    if (is_last) g_tsv_last_load_us = now;
+    const char* refuse_why = nullptr;
+    if (is_last && g_tsv_rx_max_offset == total_len && !ui_upload_allowed(config_, refuse_why)) {
+        if (uart) {
+            char buf[160];
+            kernel::util::k_snprintf(buf, sizeof(buf), "[hmi] tsv-upload session=%u refused: %s\n",
+                                     static_cast<unsigned>(session), refuse_why);
+            uart->puts(buf);
+        }
+        g_tsv_rx_session_valid = false;
+        return;
+    }
     if (is_last && g_tsv_rx_max_offset == total_len) {
         if (uart) {
             char buf[160];
@@ -1250,23 +1386,11 @@ void Service::handle_udp(kernel::hal::net::NetworkDriverOps& nic,
         }
         case Opcode::SymbolSet: {
             if (inner_len < sizeof(SymbolPayload)) { respond(StatusCode::BadFrame, nullptr, 0); return; }
-            const auto* req = reinterpret_cast<const SymbolPayload*>(inner);
-            size_t idx = 0;
-            if (!machine::g_registry.find(req->name, idx)) { respond(StatusCode::NotFound, nullptr, 0); return; }
-            const auto* entry = machine::g_registry.entry(idx);
-            if (!entry || !entry->writable) { respond(StatusCode::NotWritable, nullptr, 0); return; }
-            const int32_t value = req->value_le;
-            bool ok = false;
-            switch (entry->type) {
-                case machine::SymbolType::Bool: ok = machine::g_registry.set_bool(req->name, value != 0); break;
-                case machine::SymbolType::Int: ok = machine::g_registry.set_int(req->name, value); break;
-                case machine::SymbolType::Float: ok = machine::g_registry.set_float(req->name, static_cast<float>(value)); break;
-            }
-            if (!ok) { respond(StatusCode::NotWritable, nullptr, 0); return; }
-            const auto* updated = machine::g_registry.entry(idx);
             SymbolPayload out{};
-            if (updated) fill_symbol_payload(out, *updated);
-            respond(StatusCode::Ok, reinterpret_cast<const uint8_t*>(&out), sizeof(out));
+            const StatusCode st = remote_symbol_set(*reinterpret_cast<const SymbolPayload*>(inner), out,
+                                                    config_.remote_write_enable);
+            if (st == StatusCode::Ok) respond(st, reinterpret_cast<const uint8_t*>(&out), sizeof(out));
+            else respond(st, nullptr, 0);
             return;
         }
     }
@@ -1286,6 +1410,9 @@ void Service::handle_ipv4(kernel::hal::net::NetworkDriverOps& nic,
     const uint32_t src_ip = be32_to_host(ip->src_ip_be);
     const uint32_t our_ip = local_ip_.load(std::memory_order_relaxed);
     if (dst_ip != our_ip && dst_ip != 0xFFFFFFFFu && dst_ip != 0u) return;
+    // Fragments: Netif reassembles UDP before its listeners see it. A
+    // non-first fragment has no UDP header, and used to be parsed as one.
+    if (be16_to_host(ip->flags_frag_be) & 0x3FFFu) return;
     if (ip->proto == IPPROTO_UDP) {
         if (total_len < ihl + sizeof(UdpHeader)) return;
         const auto* udp = reinterpret_cast<const UdpHeader*>(data + ihl);
@@ -1359,7 +1486,7 @@ void Service::thread_entry(void* arg) {
         self->mac_[0] = 0x02; self->mac_[1] = 0; self->mac_[2] = 0; self->mac_[3] = 0; self->mac_[4] = 0; self->mac_[5] = self->nic_idx_;
     }
     self->udp_port_ = self->config_.udp_port;
-    self->local_ip_.store(0, std::memory_order_relaxed);
+    self->local_ip_.store(0, std::memory_order_relaxed); self->publish_local_ip();
     self->netmask_.store(0, std::memory_order_relaxed);
     self->gateway_.store(0, std::memory_order_relaxed);
     self->apply_static_config();
@@ -1395,6 +1522,7 @@ void Service::thread_entry(void* arg) {
     }
     netif->register_listener(self);
     netif->register_udp_listener(self);
+    self->publish_local_ip();
 
     // TCP echo on port 5003 (smoke test for the TCP layer).
     struct TcpEcho : public kernel::net::TcpListener {
@@ -1437,20 +1565,45 @@ void Service::thread_entry(void* arg) {
             if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
                 uart->puts(log);
             }
+            const char* refuse_why = nullptr;
+            if (!ui_upload_allowed(g_service.config(), refuse_why)) {
+                char ack[128];
+                kernel::util::k_snprintf(ack, sizeof(ack), "FAIL bytes=%lu refused: %s\n",
+                                         static_cast<unsigned long>(len), refuse_why);
+                if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
+                    uart->puts("[ws] ");
+                    uart->puts(ack);
+                }
+                wsc.send_text(ack, kernel::util::kstrlen(ack));
+                return;
+            }
+            // A rejected TSV leaves the running UI untouched (load_tsv
+            // restores its tables), so FAIL only reports why.
             const bool ok = ui_builder::load_tsv(reinterpret_cast<const char*>(payload), len);
             if (auto* uart = kernel::g_platform ? kernel::g_platform->get_uart_ops() : nullptr) {
-                char line[96];
-                kernel::util::k_snprintf(line, sizeof(line),
-                    "[ws] load_tsv %s active=%s\n",
-                    ok ? "OK" : "FAIL",
-                    ui_builder::active_page_id() ? ui_builder::active_page_id() : "none");
+                char line[224];
+                if (ok) {
+                    kernel::util::k_snprintf(line, sizeof(line), "[ws] load_tsv OK active=%s pages=%u\n",
+                        ui_builder::active_page_id(),
+                        static_cast<unsigned>(ui_builder::page_count()));
+                } else {
+                    kernel::util::k_snprintf(line, sizeof(line),
+                        "[ws] load_tsv FAIL line=%u err=%s; kept active=%s\n",
+                        static_cast<unsigned>(ui_builder::last_error_line()),
+                        ui_builder::last_error(), ui_builder::active_page_id());
+                }
                 uart->puts(line);
             }
-            char ack[64];
-            kernel::util::k_snprintf(ack, sizeof(ack),
-                "%s bytes=%lu\n",
-                ok ? "OK" : "FAIL",
-                static_cast<unsigned long>(len));
+            char ack[200];
+            if (ok) {
+                kernel::util::k_snprintf(ack, sizeof(ack), "OK bytes=%lu\n",
+                                         static_cast<unsigned long>(len));
+            } else {
+                kernel::util::k_snprintf(ack, sizeof(ack), "FAIL bytes=%lu line=%u err=%s\n",
+                                         static_cast<unsigned long>(len),
+                                         static_cast<unsigned>(ui_builder::last_error_line()),
+                                         ui_builder::last_error());
+            }
             wsc.send_text(ack, kernel::util::kstrlen(ack));
             if (ok) {
                 persist_uploaded_tsv(payload, len);
@@ -1466,6 +1619,7 @@ void Service::thread_entry(void* arg) {
     static WsTsvHandler ws_handler;
     static kernel::net::WebSocketServer ws_server(
         5001, &ws_handler, g_ws_rx_buf, sizeof(g_ws_rx_buf));
+    ws_server.set_origin_policy(&hmi_origin_ok);
     kernel::net::tcp_bind(*netif, &ws_server);
 
     constexpr size_t POLL_BUDGET = 8;

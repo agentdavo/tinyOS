@@ -247,61 +247,6 @@ bool USBHostController::init() {
     return ::hal::shared::xhci::init_from_pci(pci_host_, xhci_, info_);
 }
 
-bool InputDriver::init() {
-    return ::hal::shared::input::init_virtio_input();
-}
-
-void InputDriver::poll() {
-    if (auto* driver = ::hal::shared::input::get_input_driver()) driver->poll();
-    if (usb_) ::hal::shared::xhci::poll(usb_->state());
-}
-
-bool InputDriver::is_keyboard_connected() {
-    if (auto* driver = ::hal::shared::input::get_input_driver()) {
-        if (driver->is_keyboard_connected()) return true;
-    }
-    return usb_ ? ::hal::shared::xhci::keyboard_connected(usb_->state()) : false;
-}
-
-bool InputDriver::is_mouse_connected() {
-    auto* driver = ::hal::shared::input::get_input_driver();
-    return driver ? driver->is_mouse_connected() : false;
-}
-
-bool InputDriver::is_touch_connected() {
-    auto* driver = ::hal::shared::input::get_input_driver();
-    return driver ? driver->is_touch_connected() : false;
-}
-
-bool InputDriver::get_key_state(uint8_t key) {
-    if (auto* driver = ::hal::shared::input::get_input_driver()) {
-        if (driver->get_key(key)) return true;
-    }
-    return usb_ ? ::hal::shared::xhci::key_pressed(usb_->state(), key) : false;
-}
-
-void InputDriver::get_mouse_position(int32_t& x, int32_t& y, uint8_t& buttons) {
-    auto* driver = ::hal::shared::input::get_input_driver();
-    if (!driver) {
-        x = 0;
-        y = 0;
-        buttons = 0;
-        return;
-    }
-    driver->get_mouse_position(x, y, buttons);
-}
-
-void InputDriver::get_touch_position(int32_t& x, int32_t& y, bool& pressed) {
-    auto* driver = ::hal::shared::input::get_input_driver();
-    if (!driver) {
-        x = 0;
-        y = 0;
-        pressed = false;
-        return;
-    }
-    driver->get_touch_position(x, y, pressed);
-}
-
 kernel::hal::usb::ControllerInfo USBHostController::get_info() const {
     ::hal::shared::xhci::refresh_info(xhci_, info_);
     return info_;

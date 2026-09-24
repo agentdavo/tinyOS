@@ -26,7 +26,42 @@ using inet::bswap32;
 using inet::ETHERTYPE_IPV4;
 using inet::IPPROTO_TCP;
 using inet::IPPROTO_UDP;
-constexpr uint32_t INITIAL_SEQ = 0x12345678u;  // simple ISN; not against spoofing
+// --- ISN generation (RFC 6528) --------------------------------------------
+// ISN = H(4-tuple, secret) + (microseconds / 4). The old fixed 0x12345678
+// let any host on the LAN forge in-window segments into someone else's
+// connection (e.g. push a whole UI over a spoofed WebSocket). QEMU virt has
+// no RNG device we rely on, so the secret is a pool stirred with the arrival
+// time of every received segment — timing jitter the attacker can't see.
+uint64_t g_entropy = 0x9E3779B97F4A7C15ULL;
+
+inline uint64_t mix64(uint64_t z) noexcept {   // splitmix64 finaliser
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+inline uint64_t now_ns_raw() noexcept {
+    if (kernel::g_platform && kernel::g_platform->get_timer_ops()) {
+        return kernel::g_platform->get_timer_ops()->get_system_time_ns();
+    }
+    return 0;
+}
+
+inline void stir(uint64_t v) noexcept {
+    g_entropy = mix64(g_entropy ^ v ^ (now_ns_raw() << 17));
+}
+
+uint32_t make_isn(uint32_t lip, uint16_t lport, uint32_t rip, uint16_t rport) noexcept {
+    stir(reinterpret_cast<uintptr_t>(&lip));
+    const uint64_t h = mix64(g_entropy ^ ((static_cast<uint64_t>(lip) << 32) | rip) ^
+                             (static_cast<uint64_t>(lport) << 48) ^
+                             (static_cast<uint64_t>(rport) << 32));
+    return static_cast<uint32_t>(h) + static_cast<uint32_t>(now_ns_raw() / 4000u);
+}
+
+// Wrap-safe sequence comparisons.
+inline bool seq_lt(uint32_t a, uint32_t b) noexcept { return static_cast<int32_t>(a - b) < 0; }
+inline bool seq_le(uint32_t a, uint32_t b) noexcept { return static_cast<int32_t>(a - b) <= 0; }
 
 // TCP flags (control bits in the data offset / flags word).
 constexpr uint16_t TCP_FLAG_FIN = 0x0001;
@@ -192,22 +227,56 @@ void release_conn(ConnSlot& slot) noexcept {
     slot.conn = TcpConnection{};
 }
 
+// Tear down a connection the listener already knows about. Every exit
+// path (RST, retransmit give-up, idle reap, eviction, final ACK) goes
+// through here so the listener always hears on_close — the WebSocket
+// server used to keep a pointer to a released slot after a RST and then
+// refuse every later client.
+void drop_conn(ConnSlot& slot, bool send_rst) noexcept {
+    auto& c = slot.conn;
+    if (send_rst) send_segment(c, TCP_FLAG_RST | TCP_FLAG_ACK, nullptr, 0);
+    if (c.opened && slot.binding && slot.binding->listener) {
+        c.opened = false;   // on_close may call close(); don't recurse
+        slot.binding->listener->on_close(c);
+    }
+    release_conn(slot);
+}
+
+ConnSlot* slot_of(TcpConnection& conn) noexcept {
+    for (auto& s : g_conns) {
+        if (&s.conn == &conn) return &s;
+    }
+    return nullptr;
+}
+
+void arm_retx(TcpConnection& c, uint32_t seq, uint16_t len, uint16_t flags) noexcept {
+    c.retx_active  = true;
+    c.retx_seq     = seq;
+    c.retx_len     = len;
+    c.retx_flags   = flags;
+    c.retx_sent_us = now_us_or_zero();
+    c.retx_rto_us  = TcpConnection::RTO_INITIAL_US;
+    c.retx_retries = 0;
+}
+
+void send_fin(TcpConnection& c) noexcept {
+    send_segment(c, TCP_FLAG_ACK | TCP_FLAG_FIN, nullptr, 0);
+    // FIN consumes one sequence number — track it so a lost FIN is resent.
+    arm_retx(c, c.snd_nxt, 1, TCP_FLAG_ACK | TCP_FLAG_FIN);
+    c.snd_nxt += 1;
+    c.fin_pending = false;
+}
+
 } // namespace
 
 bool TcpConnection::send(const uint8_t* data, size_t len) noexcept {
-    if (state != TcpState::Established) return false;
+    if (state != TcpState::Established || fin_pending) return false;
     if (len == 0) return true;
     if (retx_active) return false;  // single-segment in-flight cap
     if (len > RETX_BUF_BYTES) return false;
     const uint16_t flags = TCP_FLAG_ACK | TCP_FLAG_PSH;
     if (!send_segment(*this, flags, data, len)) return false;
-    retx_active   = true;
-    retx_seq      = snd_nxt;
-    retx_len      = static_cast<uint16_t>(len);
-    retx_flags    = flags;
-    retx_sent_us  = now_us_or_zero();
-    retx_rto_us   = RTO_INITIAL_US;
-    retx_retries  = 0;
+    arm_retx(*this, snd_nxt, static_cast<uint16_t>(len), flags);
     if (data) std::memcpy(retx_buf, data, len);
     snd_nxt += static_cast<uint32_t>(len);
     return true;
@@ -215,20 +284,18 @@ bool TcpConnection::send(const uint8_t* data, size_t len) noexcept {
 
 void TcpConnection::close() noexcept {
     if (state == TcpState::Established || state == TcpState::CloseWait) {
-        send_segment(*this, TCP_FLAG_ACK | TCP_FLAG_FIN, nullptr, 0);
-        // FIN consumes one sequence number — track it as an unACKed
-        // virtual byte so retransmit covers the FIN if dropped.
-        if (!retx_active) {
-            retx_active   = true;
-            retx_seq      = snd_nxt;
-            retx_len      = 1;
-            retx_flags    = TCP_FLAG_ACK | TCP_FLAG_FIN;
-            retx_sent_us  = now_us_or_zero();
-            retx_rto_us   = RTO_INITIAL_US;
-            retx_retries  = 0;
-        }
-        snd_nxt += 1;
         state = TcpState::LastAck;
+        // One segment in flight: with data still unACKed the FIN waits
+        // for that ACK (tcp_dispatch sends it). Sending it now left the
+        // FIN untracked, and a lost FIN parked the slot in LastAck forever.
+        if (retx_active) {
+            fin_pending = true;
+        } else {
+            send_fin(*this);
+        }
+    } else if (state == TcpState::SynReceived) {
+        // Refused before the handshake finished: just reset.
+        if (ConnSlot* s = slot_of(*this)) drop_conn(*s, true);
     }
 }
 
@@ -248,7 +315,7 @@ void tcp_unbind(Netif& netif, TcpListener* l) noexcept {
     for (auto& s : g_conns) {
         if (s.in_use && s.binding && s.binding->netif == &netif &&
             s.binding->listener == l) {
-            release_conn(s);
+            drop_conn(s, true);
         }
     }
     if (auto* b = find_binding_for_listener(netif, l); b) {
@@ -262,14 +329,20 @@ bool tcp_port_claimed(Netif& netif, uint16_t local_port) noexcept {
 
 void tcp_tick(uint64_t now_us) noexcept {
     for (auto& s : g_conns) {
-        if (!s.in_use || !s.conn.retx_active) continue;
+        if (!s.in_use) continue;
         auto& c = s.conn;
+        if (!c.retx_active) {
+            // Idle reaper: a peer that went silent (unplugged laptop,
+            // half-open socket) no longer holds its slot forever.
+            if (c.last_rx_us != 0 && now_us > c.last_rx_us + TcpConnection::IDLE_TIMEOUT_US) {
+                drop_conn(s, true);
+            }
+            continue;
+        }
         if (now_us < c.retx_sent_us + c.retx_rto_us) continue;
         if (c.retx_retries >= TcpConnection::MAX_RETRIES) {
-            // Give up — peer is gone. Send RST and release the slot
-            // (the listener already saw on_open; no clean shutdown).
-            send_segment(c, TCP_FLAG_RST, nullptr, 0);
-            release_conn(s);
+            // Give up — peer is gone.
+            drop_conn(s, true);
             continue;
         }
         // Re-send the same segment at the ORIGINAL seq (snd_nxt has
@@ -294,6 +367,12 @@ bool tcp_dispatch(Netif& netif,
                   uint32_t src_ip, uint32_t dst_ip,
                   const uint8_t* tcp_segment, size_t tcp_len) noexcept {
     if (tcp_len < sizeof(TcpHeader)) return false;
+    // Only segments addressed to this interface, with a valid checksum.
+    // Before, any destination IP (broadcast included) and any checksum
+    // was accepted, which made blind spoofing much easier.
+    const uint32_t our_ip = netif.local_ip();
+    if (our_ip == 0 || dst_ip != our_ip) return true;
+    if (tcp_checksum(src_ip, dst_ip, tcp_segment, tcp_len) != 0) return true;
     const auto* tcp = reinterpret_cast<const TcpHeader*>(tcp_segment);
     const uint16_t off_flags = bswap16(tcp->off_flags_be);
     const uint8_t data_off = (off_flags >> 12) * 4u;
@@ -305,6 +384,9 @@ bool tcp_dispatch(Netif& netif,
     const uint32_t ack = bswap32(tcp->ack_be);
     const uint8_t* payload = tcp_segment + data_off;
     const size_t payload_len = tcp_len - data_off;
+
+    const uint64_t now_us = now_us_or_zero();
+    stir((static_cast<uint64_t>(seq) << 32) ^ ack ^ src_port);
 
     // Existing connection? Match by 4-tuple.
     ConnSlot* slot = find_conn(netif, src_ip, src_port, dst_port);
@@ -330,9 +412,35 @@ bool tcp_dispatch(Netif& netif,
             }
             return true;
         }
+        if (flags & (TCP_FLAG_RST | TCP_FLAG_ACK)) return true;  // not a plain SYN
         // SYN → new connection.
         ConnSlot* ns = alloc_conn();
-        if (!ns) return true;  // table full; drop
+        if (!ns) {
+            // Table full: evict the longest-idle established connection
+            // if it has been silent long enough, else refuse with RST
+            // (the old code dropped silently, so the client hung until
+            // its own SYN timeout).
+            ConnSlot* victim = nullptr;
+            for (auto& s : g_conns) {
+                if (!s.in_use || s.conn.state != TcpState::Established || s.conn.retx_active) continue;
+                if (now_us < s.conn.last_rx_us + TcpConnection::EVICT_IDLE_US) continue;
+                if (!victim || s.conn.last_rx_us < victim->conn.last_rx_us) victim = &s;
+            }
+            if (victim) {
+                drop_conn(*victim, true);
+                ns = alloc_conn();
+            }
+            if (!ns) {
+                TcpConnection tmp;
+                tmp.netif = &netif;
+                tmp.local_ip = dst_ip; tmp.peer_ip = src_ip;
+                tmp.local_port = dst_port; tmp.peer_port = src_port;
+                for (size_t i = 0; i < 6; ++i) tmp.peer_mac[i] = src_mac[i];
+                tmp.rcv_nxt = seq + 1u;
+                send_segment(tmp, TCP_FLAG_RST | TCP_FLAG_ACK, nullptr, 0);
+                return true;
+            }
+        }
         ns->in_use  = true;
         ns->binding = b;
         ns->conn = TcpConnection{};
@@ -343,50 +451,70 @@ bool tcp_dispatch(Netif& netif,
         ns->conn.peer_ip    = src_ip;
         ns->conn.peer_port  = src_port;
         for (size_t i = 0; i < 6; ++i) ns->conn.peer_mac[i] = src_mac[i];
+        const uint32_t isn = make_isn(dst_ip, dst_port, src_ip, src_port);
         ns->conn.rcv_nxt = seq + 1u;
-        ns->conn.snd_nxt = INITIAL_SEQ;
-        ns->conn.snd_una = INITIAL_SEQ;
+        ns->conn.snd_nxt = isn;
+        ns->conn.snd_una = isn;
         ns->conn.state   = TcpState::SynReceived;
+        ns->conn.last_rx_us = now_us;
         // Retransmit-track our SYN+ACK in case the third-party ACK is lost.
         send_segment(ns->conn, TCP_FLAG_SYN | TCP_FLAG_ACK, nullptr, 0);
-        ns->conn.retx_active  = true;
-        ns->conn.retx_seq     = ns->conn.snd_nxt;
-        ns->conn.retx_len     = 1;  // SYN consumes 1 seq
-        ns->conn.retx_flags   = TCP_FLAG_SYN | TCP_FLAG_ACK;
-        ns->conn.retx_sent_us = now_us_or_zero();
-        ns->conn.retx_rto_us  = TcpConnection::RTO_INITIAL_US;
-        ns->conn.snd_nxt     += 1u;
+        arm_retx(ns->conn, ns->conn.snd_nxt, 1, TCP_FLAG_SYN | TCP_FLAG_ACK);  // SYN = 1 seq
+        ns->conn.snd_nxt += 1u;
         return true;
     }
     TcpConnection& conn = slot->conn;
 
+    // RFC 5961 §3: a RST resets only if its sequence number is exactly
+    // rcv_nxt; one merely inside the window draws a challenge ACK. Before,
+    // any RST with a matching 4-tuple killed the connection.
     if (flags & TCP_FLAG_RST) {
-        release_conn(*slot);
+        if (seq == conn.rcv_nxt) {
+            drop_conn(*slot, false);
+        } else if (seq_lt(conn.rcv_nxt, seq) && seq_lt(seq, conn.rcv_nxt + conn.rcv_wnd)) {
+            send_segment(conn, TCP_FLAG_ACK, nullptr, 0);
+        }
         return true;
     }
+    // RFC 5961 §4: a SYN on an existing connection never resets it; answer
+    // with a challenge ACK (a retransmitted SYN in SynReceived re-sends our
+    // SYN+ACK through the retransmit timer).
+    if (flags & TCP_FLAG_SYN) {
+        if (conn.state != TcpState::SynReceived) send_segment(conn, TCP_FLAG_ACK, nullptr, 0);
+        return true;
+    }
+    // RFC 5961 §5: the ACK must cover only data we actually sent.
+    if (!(flags & TCP_FLAG_ACK)) return true;
+    if (seq_lt(conn.snd_nxt, ack) || seq_lt(ack, conn.snd_una)) {
+        send_segment(conn, TCP_FLAG_ACK, nullptr, 0);
+        return true;
+    }
+    // Segment must start inside the receive window.
+    if (seq_lt(seq, conn.rcv_nxt - (payload_len ? 0u : 1u)) ||
+        !seq_lt(seq, conn.rcv_nxt + conn.rcv_wnd)) {
+        send_segment(conn, TCP_FLAG_ACK, nullptr, 0);
+        return true;
+    }
+    conn.last_rx_us = now_us;
 
     // ACK-driven retx clearing — applies to any state.
-    if ((flags & TCP_FLAG_ACK) && conn.retx_active) {
-        // ack is the next expected seq from peer. If it's past
-        // retx_seq + retx_len, our segment is acknowledged.
-        const uint32_t covered_end = conn.retx_seq + conn.retx_len;
-        // Wrap-safe comparison (treat as 32-bit modulo).
-        if (static_cast<int32_t>(ack - covered_end) >= 0) {
-            conn.retx_active = false;
-            conn.snd_una = ack;
-        }
+    if (conn.retx_active && seq_le(conn.retx_seq + conn.retx_len, ack)) {
+        conn.retx_active = false;
+        conn.snd_una = ack;
+        if (conn.fin_pending) send_fin(conn);
     }
 
     switch (conn.state) {
         case TcpState::SynReceived: {
             if (!(flags & TCP_FLAG_ACK)) return true;
             if (ack != conn.snd_nxt) {
-                send_segment(conn, TCP_FLAG_RST, nullptr, 0);
-                release_conn(*slot);
+                drop_conn(*slot, true);
                 return true;
             }
             conn.state = TcpState::Established;
+            conn.opened = true;
             slot->binding->listener->on_open(conn);
+            if (!slot->in_use) return true;   // listener refused (reset)
             if (payload_len > 0 && seq == conn.rcv_nxt) {
                 slot->binding->listener->on_data(conn, payload, payload_len);
                 conn.rcv_nxt += static_cast<uint32_t>(payload_len);
@@ -404,13 +532,17 @@ bool tcp_dispatch(Netif& netif,
                 conn.rcv_nxt += static_cast<uint32_t>(payload_len);
                 send_segment(conn, TCP_FLAG_ACK, nullptr, 0);
             }
-            if (flags & TCP_FLAG_FIN) {
+            // A FIN counts only when it is next in sequence (after this
+            // segment's data); an out-of-order FIN used to close the
+            // connection regardless of its sequence number.
+            if ((flags & TCP_FLAG_FIN) && (payload_len > 0 || seq == conn.rcv_nxt)) {
                 conn.rcv_nxt += 1u;
                 send_segment(conn, TCP_FLAG_ACK, nullptr, 0);
+                conn.opened = false;
                 slot->binding->listener->on_close(conn);
                 if (conn.state == TcpState::Established) {
                     conn.state = TcpState::CloseWait;
-                    conn.close();  // → LastAck (sends FIN, sets retx)
+                    conn.close();  // → LastAck (sends FIN, or queues it)
                 }
             }
             return true;
@@ -418,8 +550,8 @@ bool tcp_dispatch(Netif& netif,
         case TcpState::CloseWait:
             return true;
         case TcpState::LastAck: {
-            if ((flags & TCP_FLAG_ACK) && ack == conn.snd_nxt) {
-                release_conn(*slot);
+            if (!conn.fin_pending && !conn.retx_active && ack == conn.snd_nxt) {
+                drop_conn(*slot, false);
             }
             return true;
         }

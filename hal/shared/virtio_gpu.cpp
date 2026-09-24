@@ -276,14 +276,9 @@ bool VirtioGpuDriver::flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
     response_ = {};
     const bool ok = submit_command(&flush_cmd, sizeof(flush_cmd), &response_, sizeof(response_));
     ++flush_count_;
+    // No periodic "[virtio-gpu] flushes=N" line any more: at 10 Hz it
+    // interleaved with the operator's CLI prompt every 1.6 s.
     if (!ok) gpu_log("[virtio-gpu] RESOURCE_FLUSH failed\n");
-    if ((flush_count_ & 0xF) == 0) {
-        char buf[64];
-        kernel::util::k_snprintf(buf, sizeof(buf),
-                                 "[virtio-gpu] flushes=%u\n",
-                                 static_cast<unsigned>(flush_count_));
-        gpu_log(buf);
-    }
     return ok;
 }
 

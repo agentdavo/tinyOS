@@ -24,7 +24,8 @@ extern "C" {
 // --- Minimal new/delete ---
 // Bump allocator backing every kernel `operator new` — never freed, sized for
 // the full boot + first-render working set. The biggest consumers:
-//   - ui_builder::load_tsv constructs ~1113 BuilderXxx widgets (~220 KB)
+//   - (UI widgets no longer live here: ui_builder_tsv.cpp builds them in its
+//     own arena, reused on every reload instead of leaking ~1.1 MB each time)
 //   - render/machine_model.cpp: ~720 KB one-off import scratch plus the
 //     welded machine meshes (~1.2 MB for the MX-850 set), cached so chain
 //     reloads don't re-allocate them

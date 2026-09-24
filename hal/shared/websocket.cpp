@@ -7,6 +7,7 @@
 // frames to the handler.
 
 #include "websocket.hpp"
+#include "../../miniOS.hpp"
 
 #include <cstring>
 
@@ -171,13 +172,44 @@ WebSocketServer::WebSocketServer(uint16_t port, WebSocketHandler* handler,
     : port_(port), handler_(handler),
       payload_buf_(payload_buf), payload_cap_(payload_cap) {}
 
+bool WebSocketServer::default_origin_ok(const char* origin, size_t len) noexcept {
+    if (!origin) return true;                       // not a browser
+    auto is = [&](const char* s) {
+        const size_t n = std::strlen(s);
+        return len == n && std::memcmp(origin, s, n) == 0;
+    };
+    // "scheme://host" optionally followed by ":port" and nothing else.
+    auto host_is = [&](const char* prefix) {
+        const size_t n = std::strlen(prefix);
+        if (len < n || std::memcmp(origin, prefix, n) != 0) return false;
+        if (len == n) return true;
+        if (origin[n] != ':') return false;
+        for (size_t i = n + 1; i < len; ++i) {
+            if (origin[i] < '0' || origin[i] > '9') return false;
+        }
+        return len > n + 1;
+    };
+    return is("null") ||
+           host_is("http://localhost") || host_is("https://localhost") ||
+           host_is("http://127.0.0.1") || host_is("https://127.0.0.1");
+}
+
 void WebSocketServer::on_open(TcpConnection& conn) noexcept {
     // The server keeps one set of handshake/frame-parser state, but TCP
-    // accepts several connections per listener. Refuse a second client
-    // instead of letting it clobber the active session.
+    // accepts several connections per listener. A second client is refused
+    // while the first is live; a first client that has gone silent for
+    // EVICT_IDLE_US is dropped instead, so one idle browser tab can no
+    // longer hold the only session forever.
     if (ws_conn_.tcp && ws_conn_.tcp != &conn) {
-        conn.close();
-        return;
+        TcpConnection* old = ws_conn_.tcp;
+        const uint64_t now = (kernel::g_platform && kernel::g_platform->get_timer_ops())
+            ? kernel::g_platform->get_timer_ops()->get_system_time_us() : 0;
+        if (now < old->last_rx_us + TcpConnection::EVICT_IDLE_US) {
+            conn.close();
+            return;
+        }
+        on_close(*old);      // release our session state first
+        old->close();        // then FIN the stale client
     }
     state_ = State::Handshake;
     http_len_ = 0;
@@ -243,6 +275,38 @@ void WebSocketServer::on_data(TcpConnection& conn,
 }
 
 bool WebSocketServer::process_handshake(TcpConnection& conn) noexcept {
+    const char* const buf_end = reinterpret_cast<const char*>(http_buf_ + http_len_);
+    auto value_len = [&](const char* v) {
+        const char* e = v;
+        while (e < buf_end && *e != '\r' && *e != '\n') ++e;
+        return static_cast<size_t>(e - v);
+    };
+    auto contains_token = [&](const char* v, const char* tok) {
+        const size_t n = value_len(v), k = std::strlen(tok);
+        for (size_t i = 0; i + k <= n; ++i) {
+            bool m = true;
+            for (size_t j = 0; j < k && m; ++j) {
+                char c = v[i + j];
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                m = c == tok[j];
+            }
+            if (m) return true;
+        }
+        return false;
+    };
+    // RFC 6455 4.2.1: a GET with Upgrade: websocket, Connection: Upgrade and
+    // version 13. The old parser only looked for Sec-WebSocket-Key.
+    if (http_len_ < 4 || std::memcmp(http_buf_, "GET ", 4) != 0) return false;
+    const char* up = find_header(http_buf_, http_len_, "upgrade");
+    const char* cn = find_header(http_buf_, http_len_, "connection");
+    const char* ver = find_header(http_buf_, http_len_, "sec-websocket-version");
+    if (!up || !contains_token(up, "websocket")) return false;
+    if (!cn || !contains_token(cn, "upgrade")) return false;
+    if (!ver || value_len(ver) != 2 || ver[0] != '1' || ver[1] != '3') return false;
+    // Cross-site WebSocket hijacking guard.
+    const char* origin = find_header(http_buf_, http_len_, "origin");
+    const OriginPolicy policy = origin_policy_ ? origin_policy_ : &default_origin_ok;
+    if (!policy(origin, origin ? value_len(origin) : 0)) return false;
     const char* key_v = find_header(http_buf_, http_len_, "sec-websocket-key");
     if (!key_v) return false;
     // Key is up to end-of-line.
@@ -305,6 +369,18 @@ void WebSocketServer::process_frames(TcpConnection& conn,
                 frame_fin_     = (hdr_buf_[0] & 0x80) != 0;
                 frame_opcode_  = hdr_buf_[0] & 0x0F;
                 frame_masked_  = (hdr_buf_[1] & 0x80) != 0;
+                // RFC 6455 5.5: control frames are unfragmented and carry
+                // at most 125 bytes. Fragmented data messages aren't
+                // supported (the editor sends one frame), so say so with
+                // 1003 instead of dropping the pieces silently.
+                if ((frame_opcode_ & 0x8) && (!frame_fin_ || (hdr_buf_[1] & 0x7F) > 125)) {
+                    close_with_status(conn, 1002);
+                    return;
+                }
+                if (frame_opcode_ == 0x0 || (frame_opcode_ == 0x1 && !frame_fin_)) {
+                    close_with_status(conn, 1003);
+                    return;
+                }
                 if (!frame_masked_) {
                     // RFC 6455 5.1: a server MUST close on an unmasked
                     // client frame.
@@ -375,8 +451,11 @@ void WebSocketServer::process_frames(TcpConnection& conn,
                     }
                 } else if (frame_opcode_ == 0x8) {
                     // Close frame — peer wants to close. Reply with our
-                    // close, then TCP-close.
+                    // close, then TCP-close, and ignore anything that
+                    // follows it in the same segment (it used to be
+                    // parsed and dispatched as further frames).
                     close_with_status(conn, 1000);
+                    return;
                 }
                 // Else: binary / ping / pong — silently drop.
                 hdr_len_ = 0;

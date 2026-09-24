@@ -52,7 +52,8 @@ endif
 # Arch-neutral MMIO drivers under hal/shared/ — both arches link all of them.
 HAL_SHARED_CPP = hal/shared/virtio_net.cpp hal/shared/virtio_gpu.cpp hal/shared/virtio_blk.cpp \
                  hal/shared/virtio_input.cpp hal/shared/e1000.cpp hal/shared/pci.cpp hal/shared/xhci.cpp \
-                 hal/shared/netif.cpp hal/shared/tcp.cpp hal/shared/websocket.cpp hal/shared/soft_dma.cpp
+                 hal/shared/netif.cpp hal/shared/tcp.cpp hal/shared/websocket.cpp hal/shared/soft_dma.cpp \
+                 hal/shared/input_driver.cpp
 
 # ----- arm64 -----
 ifeq ($(TARGET),arm64)
