@@ -277,7 +277,7 @@ void VirtIOInput::configure_bus(uint64_t base, size_t stride, size_t slot_count)
 bool VirtIOInput::init(uintptr_t base, uint32_t irq) {
     base_ = base;
     irq_ = irq;
-    state_ = {};
+    state_ = InputState{};   // named type: GCC 13 rejects `= {}` for this aggregate
     last_mouse_ = {};
     device_count_ = 0;
 
