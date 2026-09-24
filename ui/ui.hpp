@@ -258,6 +258,7 @@ public:
     
     void set_label(const char* label) { label_ = label; mark_dirty(); }
     void set_callback(ClickCallback cb) { callback_ = cb; }
+    bool is_pressed() const { return pressed_; }
     void set_colors(Color normal_bg, Color hover_bg, Color pressed_bg, Color fg) {
         normal_bg_ = normal_bg;
         hover_bg_ = hover_bg;

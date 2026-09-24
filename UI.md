@@ -189,4 +189,4 @@ Operator notes:
 
 ---
 
-*Generated 2026-09-24 11:51:14 UTC from `devices/embedded_ui.tsv` (20 pages).*
+*Generated 2026-09-24 13:25:55 UTC from `devices/embedded_ui.tsv` (20 pages).*

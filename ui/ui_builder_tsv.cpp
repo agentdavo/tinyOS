@@ -168,6 +168,11 @@ static uint16_t g_action_index[MAX_ACTIONS];
 static uint32_t g_action_index_count = 0;
 static ChildSpec g_child_links[MAX_CHILD_LINKS];
 static uint32_t g_child_link_count = 0;
+// Every widget outline (panel, label well, button, input, slider, image) is
+// this wide; only the keyboard-focus and active-selection rings differ.
+// Labels used 1 px, panels/inputs 2 px and scaled buttons 3 px.
+constexpr uint32_t kUiLineWidth = 2;
+
 static Widget* g_root_widget = nullptr;
 static int g_active_page = 0;
 static Widget* g_focusables[MAX_WIDGETS];
@@ -3460,7 +3465,7 @@ public:
             const Color border = tone_alarm ? Color(0xEF, 0x44, 0x44)
                                : tone_ok ? Color(0x22, 0xC5, 0x5E)
                                : to_color(spec_.border_color, Color::LightGray());
-            fb.draw_rect(x_, y_, width_, height_, border, 1);
+            fb.draw_rect(x_, y_, width_, height_, border, kUiLineWidth);
         }
         const uint32_t scale = effective_text_scale(spec_.text_scale);
         int32_t draw_x = x_;
@@ -3638,39 +3643,31 @@ public:
             format_bind_value(bind_, label_buf, sizeof(label_buf), "");
             if (label_buf[0] != '\0') label = label_buf;
         }
-        // If the spec asked for scaled label text, bypass the base Button
-        // renderer's draw_text call by painting the box ourselves and then
-        // drawing label with draw_text_scaled.
+        // One paint path for every button, whatever its text scale or bind.
+        // There used to be three: scaled labels got a 3 px outline in the
+        // TEXT colour (the heavy white boxes) and ignored the TSV border,
+        // unscaled bound labels got 2 px, and plain ones fell through to the
+        // base Button (3 px, left-aligned, align= ignored). Now: 2 px outline
+        // in the TSV border colour, or a lighter shade of the fill when none
+        // is given; 16 px label inset; label centred vertically.
         const uint32_t scale = effective_text_scale(spec_.text_scale);
-        if (scale > 1) {
-            fb.fill_rect(x_, y_, width_, height_, bg);
-            fb.draw_rect(x_, y_, width_, height_, fg_, 3);
-            fb.fill_rect(x_ + 8, y_ + 8, width_ - 16, height_ - 16, bg);
-            const int32_t text_w = static_cast<int32_t>(strlen(label) * 8U * scale);
-            const int32_t text_h = static_cast<int32_t>(16U * scale);
-            const int32_t lx = spec_.align == Align::Left
-                ? x_ + 16
-                : (spec_.align == Align::Right
-                    ? x_ + static_cast<int32_t>(width_) - text_w - 16
-                    : x_ + static_cast<int32_t>(width_) / 2 - text_w / 2);
-            const int32_t ly = y_ + static_cast<int32_t>(height_) / 2 - text_h / 2;
-            fb.draw_text_scaled(lx, ly, label, fg_, bg, scale);
-        } else if (bind_ != BindKind::None) {
-            // Honour the resolved label even at scale 1; the base Button
-            // renderer would re-draw the static spec_.text otherwise.
-            fb.fill_rect(x_, y_, width_, height_, bg);
-            fb.draw_rect(x_, y_, width_, height_, fg_, 2);
-            const int32_t text_w = static_cast<int32_t>(strlen(label) * 8U);
-            const int32_t lx = spec_.align == Align::Left
-                ? x_ + 8
-                : (spec_.align == Align::Right
-                    ? x_ + static_cast<int32_t>(width_) - text_w - 8
-                    : x_ + static_cast<int32_t>(width_) / 2 - text_w / 2);
-            const int32_t ly = y_ + static_cast<int32_t>(height_) / 2 - 8;
-            fb.draw_text(lx, ly, label, fg_, bg);
-        } else {
-            kernel::ui::Button::render(fb);
-        }
+        if (is_pressed()) bg = Color(bg.r / 2, bg.g / 2, bg.b / 2);
+        const Color outline = spec_.border_color != kTransparent
+            ? to_color(spec_.border_color, bright_bg_)
+            : Color(static_cast<uint8_t>(bg.r + (255 - bg.r) / 4),
+                    static_cast<uint8_t>(bg.g + (255 - bg.g) / 4),
+                    static_cast<uint8_t>(bg.b + (255 - bg.b) / 4));
+        fb.fill_rect(x_, y_, width_, height_, bg);
+        fb.draw_rect(x_, y_, width_, height_, outline, kUiLineWidth);
+        const int32_t text_w = static_cast<int32_t>(strlen(label) * 8U * scale);
+        const int32_t text_h = static_cast<int32_t>(16U * scale);
+        const int32_t lx = spec_.align == Align::Left
+            ? x_ + 16
+            : (spec_.align == Align::Right
+                ? x_ + static_cast<int32_t>(width_) - text_w - 16
+                : x_ + static_cast<int32_t>(width_) / 2 - text_w / 2);
+        const int32_t ly = y_ + static_cast<int32_t>(height_) / 2 - text_h / 2;
+        fb.draw_text_scaled(lx, ly, label, fg_, bg, scale);
 
         // Both rings sit inside the widget rect: drawn outside it they were
         // never erased when only this widget repainted, leaving ghost
@@ -3834,7 +3831,7 @@ public:
     void render(Framebuffer& fb) override {
         if (!visible_) return;
         if (has_bg_) fb.fill_rect(x_, y_, width_, height_, bg_);
-        if (has_border_) fb.draw_rect(x_, y_, width_, height_, border_, 2);
+        if (has_border_) fb.draw_rect(x_, y_, width_, height_, border_, kUiLineWidth);
         Container::render(fb);
     }
 
@@ -3976,7 +3973,7 @@ public:
         kernel::util::k_snprintf(value_buf, sizeof(value_buf), "%ld", static_cast<long>(value_));
         fb.draw_text(x_ + static_cast<int32_t>(width_) - 48, y_ - 18, value_buf, ink, Color::Black());
         if (is_focused(this)) {
-            fb.draw_rect(x_ + 4, y_ + 4, width_ - 8, height_ - 8, Color(250, 204, 21), 2);
+            fb.draw_rect(x_ + 5, y_ + 5, width_ - 10, height_ - 10, Color(250, 204, 21), 2);
         }
     }
 
@@ -4176,12 +4173,14 @@ public:
         }
         const Color fg = to_color(spec_.color, Color::Black());
         fb.fill_rect(x_, y_, width_, height_, bg);
-        fb.draw_rect(x_, y_, width_, height_, border, 2);
+        fb.draw_rect(x_, y_, width_, height_, border, kUiLineWidth);
         // While unfocused but with a pending edit, show the LIVE bind so
         // the operator can compare typed-vs-current. The amber border is
         // the cue that the typed text is stashed; tapping back restores it.
         const char* shown = buffer_[0] ? buffer_ : spec_.text;
-        fb.draw_text(x_ + 8, y_ + 12, shown, fg, bg);
+        // Text centred vertically (a fixed y+12 overflowed 24 px inputs).
+        const int32_t ty = height_ > 16 ? y_ + static_cast<int32_t>(height_ - 16) / 2 : y_;
+        fb.draw_text(x_ + 12, ty, shown, fg, bg);
         if (focused_) {
             const char* helper = helper_text_for_bind(bind_);
             if (helper && *helper) {
@@ -4189,7 +4188,7 @@ public:
             }
         }
         if (is_focused(this)) {
-            fb.draw_rect(x_ + 4, y_ + 4, width_ - 8, height_ - 8, Color(250, 204, 21), 2);
+            fb.draw_rect(x_ + 5, y_ + 5, width_ - 10, height_ - 10, Color(250, 204, 21), 2);
         }
     }
 
@@ -4428,7 +4427,7 @@ public:
         const Color fg = to_color(spec_.color, Color::White());
         const Color border = hovered_ ? Color(255, 255, 255) : to_color(spec_.border_color, Color::LightGray());
         fb.fill_rect(x_, y_, width_, height_, bg);
-        fb.draw_rect(x_, y_, width_, height_, border, 2);
+        fb.draw_rect(x_, y_, width_, height_, border, kUiLineWidth);
         fb.draw_line(x_, y_, x_ + static_cast<int32_t>(width_), y_ + static_cast<int32_t>(height_), border);
         fb.draw_line(x_ + static_cast<int32_t>(width_), y_, x_, y_ + static_cast<int32_t>(height_), border);
         fb.draw_text(x_ + 8, y_ + static_cast<int32_t>(height_ / 2) - 8,
@@ -5001,7 +5000,7 @@ private:
         const Color bg = to_color(spec_.bg_color, Color(17, 24, 39));
         const Color border = hovered_ ? Color(226, 232, 240) : to_color(spec_.border_color, Color(148, 163, 184));
         fb.fill_rect(x_, y_, width_, height_, bg);
-        fb.draw_rect(x_, y_, width_, height_, border, 2);
+        fb.draw_rect(x_, y_, width_, height_, border, kUiLineWidth);
 
         auto& renderer = preview_renderer();
         renderer.bind_framebuffer(bind_view(fb));
