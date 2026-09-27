@@ -1603,6 +1603,15 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
     // Lock-held duration is ~PL011-TXFF-bound across 170 KB, which on
     // QEMU virt is a few hundred ms. That delays unrelated puts callers
     // by the same amount, which is fine for an interactive dump command.
+    // Freeze the frame for the whole dump: every render + present runs
+    // under this lock, and the UI thread repainting live values mid-dump
+    // tore raw captures and broke RLE framing (the run count sent up front
+    // no longer matched the runs sent). Taken before the UART lock; no
+    // UART writer takes the state lock, so the order can't invert.
+    struct FrameFreeze {
+        FrameFreeze() { ui_builder::lock_state(); }
+        ~FrameFreeze() { ui_builder::unlock_state(); }
+    } freeze;
     io::RawWriter raw;
     if (!raw.valid()) {
         io::put("UI_DUMP_ERROR no-uart\n");

@@ -60,7 +60,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates git gh build-essential \
+            ca-certificates git gawk gh build-essential \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             qemu-system-arm \
             ffmpeg \

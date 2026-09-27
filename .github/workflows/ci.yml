@@ -31,7 +31,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates git build-essential python3 nodejs \
+            ca-certificates git gawk build-essential python3 nodejs \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             qemu-system-arm gdb-multiarch
           aarch64-linux-gnu-g++ --version | head -1
