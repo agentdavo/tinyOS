@@ -153,10 +153,12 @@ jobs:
           THRESHOLD_US=5000
 
           bash scripts/qemu_run.sh arm64 90 "ec_hist" > qemu_p99.log 2>&1 || true
+          # Steps run as bash -e -o pipefail: a grep with no match (ec1 has no
+          # slaves) must not abort the step before the checks below.
           tail -n 200 qemu_p99.log
 
-          p99_a=$(grep -oP 'ec0:cycle.*p99=\K[0-9]+' qemu_p99.log | tail -1)
-          p99_b=$(grep -oP 'ec1:cycle.*p99=\K[0-9]+' qemu_p99.log | tail -1)
+          p99_a=$(grep -oP 'ec0:cycle.*p99=\K[0-9]+' qemu_p99.log | tail -1 || true)
+          p99_b=$(grep -oP 'ec1:cycle.*p99=\K[0-9]+' qemu_p99.log | tail -1 || true)
 
           if [ -z "$p99_a" ]; then
               echo "ERROR: did not find ec0 p99 reading — ec_hist may not have run"
