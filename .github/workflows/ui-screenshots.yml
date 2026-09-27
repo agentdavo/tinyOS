@@ -44,20 +44,32 @@ permissions:
 jobs:
   capture:
     runs-on: ubuntu-24.04
+    # Build with the same toolchain as local development: Ubuntu 26.04's
+    # GCC 15 cross compilers (24.04 only ships GCC 13, which rejected code
+    # GCC 15 accepts and let CI and local builds drift apart).
+    container: ubuntu:26.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-
       - name: Install toolchain, QEMU, ffmpeg
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git gh build-essential \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             qemu-system-arm \
             ffmpeg \
             python3 \
             python3-pil
+          aarch64-linux-gnu-g++ --version | head -1
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the PR diff step reads origin/main's screenshots
+
+      - name: Trust the workspace for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Build arm64 kernel
         run: make TARGET=arm64

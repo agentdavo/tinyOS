@@ -54,7 +54,11 @@ divergence is intentional and documented as the "arch-parity contract" in
 
 ## Build & run
 
-Toolchain (Debian/Ubuntu names):
+Toolchain: **GCC 15** cross compilers (Ubuntu 26.04 names below). CI builds
+inside an `ubuntu:26.04` container with exactly these packages, so that is the
+reference toolchain; older GCC releases are not tested (GCC 13 already rejects
+code that GCC 15 accepts).
+
 
 ```bash
 sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \

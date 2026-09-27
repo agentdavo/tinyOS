@@ -59,6 +59,8 @@ Historical bugs fixed here (so they don't regress):
 
 Cross-compiled bare-metal kernel — do not try to build with the host compiler.
 
+**Reference toolchain: GCC 15** (Ubuntu 26.04 `gcc-aarch64-linux-gnu` / `gcc-riscv64-linux-gnu`). CI (`ci.yml`, `ui-screenshots.yml`) runs its jobs in an `ubuntu:26.04` container so it builds with the same compiler as local WSL development. It used to run on the stock `ubuntu-24.04` runner with GCC 13, which rejected code GCC 15 accepts (e.g. `state_ = {};` on an aggregate with a nested event queue) and let CI drift from local builds. Older GCC is not supported. On Windows without WSL, MSYS2's `riscv64-unknown-elf` toolchain now links the rv64 kernel too (it only pulls `__bswapsi2` from libgcc); set `TMP`/`TEMP` to a writable directory, or gcc fails with "Cannot create temporary file in C:\windows\\".
+
 ```bash
 make                       # build build/arm64/miniOS_kernel_arm64.elf
 make clean
