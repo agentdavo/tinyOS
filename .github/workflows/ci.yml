@@ -18,6 +18,10 @@ jobs:
     # GCC 15 cross compilers (24.04 only ships GCC 13, which rejected code
     # GCC 15 accepts and let CI and local builds drift apart).
     container: ubuntu:26.04
+    # Container steps default to plain sh; the scripts use bash ([[ ]], arrays).
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Install toolchain and QEMU
         # Container steps run as root; git first so checkout makes a real

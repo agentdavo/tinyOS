@@ -1521,6 +1521,15 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
         if (parsed >= 1) scale = static_cast<uint32_t>(parsed);
     }
     if (scale == 0) scale = 1;
+    // `ui_dump <scale> rle`: run-length encoded payload. A native 1:1 frame
+    // is 6.2 MB raw — over three minutes per page at the ~32 KB/s the
+    // emulated UART manages in CI — but UI frames are mostly flat colour,
+    // so runs of (count, r, g, b) shrink it by one to two orders of
+    // magnitude. Raw stays the default for existing callers.
+    bool rle = false;
+    for (const char* q = args; q && *q; ++q) {
+        if (q[0] == 'r' && q[1] == 'l' && q[2] == 'e') { rle = true; break; }
+    }
 
     auto& fb = kernel::ui::framebuffer();
     const uint32_t out_w = kernel::ui::FB_WIDTH / scale;
@@ -1598,6 +1607,49 @@ static int cmd_ui_dump(const char* args, kernel::hal::UARTDriverOps* uart) {
     if (!raw.valid()) {
         io::put("UI_DUMP_ERROR no-uart\n");
         return 1;
+    }
+    if (rle) {
+        const uint32_t* px = fb.data();
+        auto pixel = [&](uint32_t i) {
+            const uint32_t x = i % out_w, y = i / out_w;
+            return px[(y * scale) * kernel::ui::FB_WIDTH + x * scale] & 0x00FFFFFFu;
+        };
+        const uint32_t total = out_w * out_h;
+        // Pass 1 sizes the payload so the host knows how much to read.
+        size_t runs = 0;
+        for (uint32_t i = 0; i < total;) {
+            const uint32_t c = pixel(i);
+            uint32_t n = 1;
+            while (i + n < total && n < 255 && pixel(i + n) == c) ++n;
+            i += n;
+            ++runs;
+        }
+        char rmeta[128];
+        const int rmeta_len = kernel::util::k_snprintf(rmeta, sizeof(rmeta),
+                                 "UI_DUMP_RLE %lu %lu %lu\n",
+                                 static_cast<unsigned long>(out_w),
+                                 static_cast<unsigned long>(out_h),
+                                 static_cast<unsigned long>(runs * 4));
+        raw.write(rmeta, static_cast<size_t>(rmeta_len));
+        char buf[256 * 4];
+        size_t pos = 0;
+        for (uint32_t i = 0; i < total;) {
+            const uint32_t c = pixel(i);
+            uint32_t n = 1;
+            while (i + n < total && n < 255 && pixel(i + n) == c) ++n;
+            i += n;
+            buf[pos++] = static_cast<char>(n);
+            buf[pos++] = static_cast<char>((c >> 16) & 0xFF);
+            buf[pos++] = static_cast<char>((c >> 8) & 0xFF);
+            buf[pos++] = static_cast<char>(c & 0xFF);
+            if (pos == sizeof(buf)) {
+                raw.write(buf, pos);
+                pos = 0;
+            }
+        }
+        if (pos > 0) raw.write(buf, pos);
+        raw.puts("\nUI_DUMP_END\n");
+        return 0;
     }
     raw.write(meta, static_cast<size_t>(meta_len));
     raw.write(header, static_cast<size_t>(header_len));

@@ -48,6 +48,10 @@ jobs:
     # GCC 15 cross compilers (24.04 only ships GCC 13, which rejected code
     # GCC 15 accepts and let CI and local builds drift apart).
     container: ubuntu:26.04
+    # Container steps default to plain sh; the scripts use bash ([[ ]], arrays).
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
     steps:
       - name: Install toolchain, QEMU, ffmpeg
@@ -76,11 +80,10 @@ jobs:
 
       - name: Capture every TSV UI page
         # Native 1080x1920 captures (UI_DUMP_SCALE=1) so UI.md shows the
-        # screen exactly as the operator sees it; downsampled shots made
-        # small labels unreadable. Each page is a 6.2 MB raw RGB dump over
-        # the emulated UART, ~31 s/page under TCG (~10 min for 20 pages),
-        # inside the script's 60 s per-page timeout; the job is capped at
-        # 30 min.
+        # screen exactly as the operator sees it. The script asks for
+        # `ui_dump 1 rle`: a raw frame is 6.2 MB (over 3 min/page at the
+        # ~32 KB/s the emulated UART manages here), the run-length encoded
+        # one ~225 KB (a few seconds). Job capped at 30 min.
         env:
           UI_DUMP_SCALE: "1"
         run: |

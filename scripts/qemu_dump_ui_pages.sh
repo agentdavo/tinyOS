@@ -83,7 +83,17 @@ with open(os.path.join(OUT_DIR, "pages.tsv"), "w", encoding="utf-8") as f:
 
 SCALE = int(os.environ.get("UI_DUMP_SCALE", "1"))
 PROMPT = b"miniOS> "
-BEGIN_RE = re.compile(rb"UI_DUMP_BEGIN\s+(\d+)\s+(\d+)\s+(\d+)\n")
+BEGIN_RE = re.compile(rb"UI_DUMP_(BEGIN|RLE)\s+(\d+)\s+(\d+)\s+(\d+)\n")
+
+
+def rle_to_ppm(width: int, height: int, data: bytes) -> bytes:
+    # cli.cpp `ui_dump <scale> rle`: runs of (count, r, g, b).
+    out = bytearray()
+    for i in range(0, len(data) - 3, 4):
+        out += data[i + 1:i + 4] * data[i]
+    if len(out) != width * height * 3:
+        raise RuntimeError(f"RLE dump decodes to {len(out)} bytes, want {width * height * 3}")
+    return f"P6\n{width} {height}\n255\n".encode("ascii") + bytes(out)
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -171,7 +181,7 @@ def read_dump(fd, timeout: float):
         match = BEGIN_RE.search(wire)
         if not match:
             continue
-        payload_size = int(match.group(3))
+        payload_size = int(match.group(4))
         payload_start = match.end()
         needed = payload_start + payload_size
         while len(wire) < needed and time.monotonic() < deadline:
@@ -191,6 +201,8 @@ def read_dump(fd, timeout: float):
             )
         payload = bytes(wire[payload_start:needed])
         tail = bytes(wire[needed:])
+        if match.group(1) == b"RLE":
+            payload = rle_to_ppm(int(match.group(2)), int(match.group(3)), payload)
         return payload, tail
     decoded = bytes(wire).replace(b"\r\n", b"\n")
     raise RuntimeError(
@@ -284,7 +296,8 @@ try:
         # is slower than steady-state, and we'd rather wait than flake.
         read_until(fd, PROMPT, 30.0)
 
-        proc.stdin.write(f"ui_dump {SCALE}\r".encode("ascii"))
+        # RLE keeps a native 1:1 frame to a few hundred KB on the wire.
+        proc.stdin.write(f"ui_dump {SCALE} rle\r".encode("ascii"))
         proc.stdin.flush()
         # SCALE=1 (native FB capture) writes 1080*1920*3 = 6.2 MB per page
         # via direct uart->putc; measured ~25 s per page on QEMU TCG.
