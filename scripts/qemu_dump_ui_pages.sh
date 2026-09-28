@@ -394,8 +394,25 @@ try:
             check=True,
         )
 
-        if PROMPT not in tail:
-            read_until(fd, PROMPT, 10.0)
+        # The prompt can straddle the end of the payload read: `tail`
+        # ends in "miniOS" and the "> " arrives in the next read. Looking
+        # for a whole prompt in fresh bytes alone then never matched (a
+        # page timed out after its dump had already succeeded), so keep
+        # the leftover bytes and search across both.
+        seen = bytearray(tail)
+        deadline = time.monotonic() + 10.0
+        while PROMPT not in seen:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"timeout waiting for prompt after dump (page={page!r})")
+            r, _, _ = select.select([fd], [], [], remaining)
+            if not r:
+                continue
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            _record(chunk)
+            seen.extend(chunk)
 
     print(f"UI page dumps written to {OUT_DIR}")
 finally:
