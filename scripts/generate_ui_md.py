@@ -155,6 +155,27 @@ HTML_TEMPLATE = """<!doctype html>
   figcaption b {{ display:block; }}
   figcaption code {{ color:var(--muted); font-size:12px; }}
   footer {{ color:var(--muted); font-size:13px; padding:32px 16px; }}
+  /* Lightbox: full-size page view without leaving the gallery. */
+  dialog.lb {{ padding:0; border:0; background:transparent; max-width:100vw;
+              max-height:100vh; width:100vw; height:100vh; margin:0; }}
+  dialog.lb::backdrop {{ background:rgba(3,7,18,.92); }}
+  .lb-frame {{ position:fixed; inset:0; display:flex; flex-direction:column;
+              align-items:center; justify-content:center; gap:10px; padding:16px 64px; }}
+  .lb-frame img {{ max-width:100%; max-height:calc(100vh - 80px); width:auto; height:auto;
+                  border:1px solid var(--line); border-radius:6px; background:#000;
+                  box-shadow:0 10px 40px rgba(0,0,0,.6); }}
+  .lb-cap {{ color:var(--ink); font-size:14px; text-align:center; }}
+  .lb-cap code {{ color:var(--muted); margin-left:8px; }}
+  .lb-btn {{ position:fixed; background:rgba(17,24,39,.85); color:var(--ink);
+            border:1px solid var(--line); border-radius:999px; width:44px; height:44px;
+            font-size:22px; line-height:1; cursor:pointer; }}
+  .lb-btn:hover, .lb-btn:focus-visible {{ border-color:var(--accent); outline:none; }}
+  .lb-close {{ top:14px; right:14px; }}
+  .lb-prev {{ left:12px; top:50%; transform:translateY(-50%); }}
+  .lb-next {{ right:12px; top:50%; transform:translateY(-50%); }}
+  .lb-full {{ color:var(--accent); font-size:13px; }}
+  @media (max-width:600px) {{ .lb-frame {{ padding:56px 8px 12px; }}
+    .lb-prev, .lb-next {{ top:auto; bottom:14px; transform:none; }} }}
 </style>
 </head>
 <body>
@@ -162,7 +183,7 @@ HTML_TEMPLATE = """<!doctype html>
   <h1>miniOS Operator UI</h1>
   <p class="sub">Every page defined in <code>devices/embedded_ui.tsv</code>, rendered by the
   arm64 kernel under QEMU and captured 1:1 (1080&times;1920) with <code>ui_page</code> +
-  <code>ui_dump 1 rle</code>. Click a page for the full-size image.
+  <code>ui_dump 1 rle</code>. Click a page to view it full size.
   &middot; <a href="../editor/">UI editor</a>
   &middot; <a href="https://github.com/agentdavo/tinyOS">source</a></p>
   <details>
@@ -188,6 +209,58 @@ HTML_TEMPLATE = """<!doctype html>
 </div>
 {missing}
 </main>
+<dialog class="lb" id="lb" aria-label="Page viewer">
+  <div class="lb-frame" id="lb-frame">
+    <img id="lb-img" alt="">
+    <div class="lb-cap"><b id="lb-title"></b><code id="lb-id"></code>
+      &middot; <a class="lb-full" id="lb-full" target="_blank" rel="noopener">open image</a>
+      &middot; <span style="color:var(--muted)">&larr; &rarr; to browse, Esc to close</span></div>
+  </div>
+  <button class="lb-btn lb-close" id="lb-close" aria-label="Close">&times;</button>
+  <button class="lb-btn lb-prev" id="lb-prev" aria-label="Previous page">&lsaquo;</button>
+  <button class="lb-btn lb-next" id="lb-next" aria-label="Next page">&rsaquo;</button>
+</dialog>
+<script>
+(() => {{
+  const figs = [...document.querySelectorAll('.grid figure')];
+  const lb = document.getElementById('lb');
+  if (!lb || typeof lb.showModal !== 'function') return;  // old browser: plain links
+  const img = document.getElementById('lb-img');
+  let cur = 0;
+  function show(i) {{
+    cur = (i + figs.length) % figs.length;
+    const f = figs[cur], a = f.querySelector('a');
+    img.src = a.getAttribute('href');
+    img.alt = f.querySelector('b').textContent;
+    document.getElementById('lb-title').textContent = img.alt;
+    document.getElementById('lb-id').textContent = f.querySelector('code').textContent;
+    document.getElementById('lb-full').href = a.getAttribute('href');
+    history.replaceState(null, '', '#' + f.id);
+  }}
+  function close() {{
+    if (lb.open) lb.close();
+  }}
+  figs.forEach((f, i) => f.querySelector('a').addEventListener('click', e => {{
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey) return;  // new-tab still works
+    e.preventDefault(); show(i); lb.showModal();
+  }}));
+  lb.addEventListener('close', () => history.replaceState(null, '', location.pathname));
+  document.getElementById('lb-close').onclick = close;
+  document.getElementById('lb-prev').onclick = () => show(cur - 1);
+  document.getElementById('lb-next').onclick = () => show(cur + 1);
+  // Click on the dimmed area (not the image or controls) closes.
+  document.getElementById('lb-frame').addEventListener('click', e => {{
+    if (e.target.id === 'lb-frame') close();
+  }});
+  lb.addEventListener('keydown', e => {{
+    if (e.key === 'ArrowLeft') {{ e.preventDefault(); show(cur - 1); }}
+    else if (e.key === 'ArrowRight') {{ e.preventDefault(); show(cur + 1); }}
+  }});
+  // Deep link: /ui/#service opens that page.
+  const start = figs.findIndex(f => '#' + f.id === location.hash);
+  if (start >= 0) {{ show(start); lb.showModal(); }}
+}})();
+</script>
 <footer>Generated {timestamp} from <code>devices/embedded_ui.tsv</code> ({page_count} pages)
 by <code>.github/workflows/pages.yml</code>.</footer>
 </body>
