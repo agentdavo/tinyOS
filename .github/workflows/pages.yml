@@ -73,7 +73,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates git gawk build-essential python3 \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            qemu-system-arm
+            qemu-system-arm ffmpeg   # the capture script converts PPM -> PNG with ffmpeg
 
       - uses: actions/checkout@v4
 
