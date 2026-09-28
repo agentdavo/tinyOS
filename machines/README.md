@@ -22,6 +22,10 @@ Three paths get the meshes into the kernel, in priority order:
 
 ## Run the editor
 
+Hosted: **https://agentdavo.github.io/tinyOS/machines/** — published from `main`
+by `.github/workflows/pages.yml` with the meshes and chains in this folder, so
+the MX850 chain opens already rendered. To run it locally:
+
 ```bash
 bash machines/serve.sh          # http://localhost:8765/
 # or: MACHINE_EDITOR_PORT=9000 bash machines/serve.sh

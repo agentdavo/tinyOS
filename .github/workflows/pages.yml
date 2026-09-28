@@ -16,6 +16,9 @@
 #   /editor/devices/embedded_ui.tsv
 #                         -> sibling copy so a relative `./devices/...` deep
 #                            link works too.
+#   /machines/            -> machine editor (machines/index.html) with its
+#                            vendored Three.js, kinematic TSVs and STL/OBJ
+#                            meshes; it fetches the meshes from its own folder.
 #   /ui/                  -> operator UI gallery: every TSV page captured 1:1
 #                            (1080x1920) from the arm64 kernel under QEMU by the
 #                            `capture` job below. Replaces the UI.md +
@@ -31,6 +34,7 @@ on:
     branches: [ main ]
     paths:
       - 'tools/ui_editor/**'
+      - 'machines/**'
       - 'devices/embedded_ui.tsv'
       - 'ui/**'
       - 'cli.cpp'
@@ -121,6 +125,12 @@ jobs:
           # future browser tools (e.g. machine-builder) without rewriting URLs.
           cp -a tools/ui_editor/. _site/editor/
 
+          # Machine editor + the files it loads (meshes, chains, vendor JS).
+          # Dev-only helpers stay out of the site.
+          mkdir -p _site/machines
+          cp -a machines/. _site/machines/
+          rm -f _site/machines/roundtrip_test.js _site/machines/serve.sh _site/machines/sync_defaults.sh
+
           # Two TSV mount points so the editor's `?tsv=` deep link works
           # whether the path is server-absolute (/devices/...) or sibling
           # (./devices/...).
@@ -166,6 +176,15 @@ jobs:
                 kernel renders it, captured 1:1 (1080&times;1920) from the
                 arm64 build under QEMU on each change to <code>main</code>.</p>
               <p><a class="button" href="./ui/">Open the gallery</a></p>
+            </div>
+
+            <div class="card">
+              <h2>Machine editor</h2>
+              <p>Kinematic chain and mesh editor for the machine model:
+                <code>machines/kinematic_*.tsv</code>, STL/OBJ meshes (the
+                MX-850 set opens already rendered), tool pods, pallets and jobs.
+                Round-trips the TSVs the kernel parses.</p>
+              <p><a class="button" href="./machines/">Open the machine editor</a></p>
             </div>
 
             <div class="card">

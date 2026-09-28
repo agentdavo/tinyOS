@@ -12,7 +12,8 @@ For a rendered gallery of every operator page see the
 **[operator UI gallery](https://agentdavo.github.io/tinyOS/ui/)** on GitHub Pages —
 each page captured 1:1 (1080×1920) from the arm64 kernel and republished by the
 [Pages](./.github/workflows/pages.yml) workflow whenever the UI changes on `main`.
-The [UI editor](https://agentdavo.github.io/tinyOS/editor/) is published alongside it.
+The [UI editor](https://agentdavo.github.io/tinyOS/editor/) and the
+[machine editor](https://agentdavo.github.io/tinyOS/machines/) are published alongside it.
 
 ## What's in the tree
 
