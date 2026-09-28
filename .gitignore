@@ -45,3 +45,7 @@
 qemu.pid
 serial_core0.log
 compile_commands.json
+
+# Local UI captures (the gallery is published to GitHub Pages by pages.yml)
+/screenshots/
+/UI.md

@@ -16,6 +16,10 @@
 #   /editor/devices/embedded_ui.tsv
 #                         -> sibling copy so a relative `./devices/...` deep
 #                            link works too.
+#   /ui/                  -> operator UI gallery: every TSV page captured 1:1
+#                            (1080x1920) from the arm64 kernel under QEMU by the
+#                            `capture` job below. Replaces the UI.md +
+#                            screenshots/ that used to be committed to the repo.
 #
 # HTTPS from Pages also unlocks the File System Access API in Chrome / Edge,
 # which silently fails on raw file:// URLs.
@@ -28,6 +32,10 @@ on:
     paths:
       - 'tools/ui_editor/**'
       - 'devices/embedded_ui.tsv'
+      - 'ui/**'
+      - 'cli.cpp'
+      - 'scripts/qemu_dump_ui_pages.sh'
+      - 'scripts/generate_ui_md.py'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -44,15 +52,70 @@ permissions:
   id-token: write
 
 jobs:
+  capture:
+    # Same toolchain as miniOS CI: Ubuntu 26.04's GCC 15 cross compilers.
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 30
+    steps:
+      - name: Install toolchain and QEMU
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git gawk build-essential python3 \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            qemu-system-arm
+
+      - uses: actions/checkout@v4
+
+      - name: Build arm64 kernel
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          make TARGET=arm64
+
+      - name: Capture every TSV UI page (1:1)
+        # `ui_dump 1 rle`: ~225 KB per 1080x1920 frame on the wire instead
+        # of 6.2 MB raw, so all pages take a few minutes under TCG.
+        env:
+          UI_DUMP_SCALE: "1"
+        run: |
+          mkdir -p gallery/screenshots
+          bash scripts/qemu_dump_ui_pages.sh "$PWD/gallery/screenshots"
+          find gallery/screenshots -maxdepth 1 -type f -name '*.ppm' -delete
+          python3 scripts/generate_ui_md.py gallery/screenshots gallery/index.html
+          ls -la gallery gallery/screenshots
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-gallery
+          path: |
+            gallery/index.html
+            gallery/screenshots/*.png
+            gallery/screenshots/pages.tsv
+            gallery/screenshots/kernel.log
+          if-no-files-found: error
+
   build:
+    needs: capture
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-gallery
+          path: _site/ui
 
       - name: Assemble Pages artifact
         run: |
           set -euo pipefail
           mkdir -p _site/editor _site/devices _site/editor/devices
+          test -f _site/ui/index.html   # gallery from the capture job
 
           # Editor ships under /editor/ to keep room next to it for any
           # future browser tools (e.g. machine-builder) without rewriting URLs.
@@ -96,6 +159,14 @@ jobs:
               <a href="https://github.com/agentdavo/tinyos">agentdavo/tinyos</a>.
               Everything below runs entirely in your browser — no data leaves
               your machine.</p>
+
+            <div class="card">
+              <h2>Operator UI gallery</h2>
+              <p>Every page of <code>devices/embedded_ui.tsv</code> as the
+                kernel renders it, captured 1:1 (1080&times;1920) from the
+                arm64 build under QEMU on each change to <code>main</code>.</p>
+              <p><a class="button" href="./ui/">Open the gallery</a></p>
+            </div>
 
             <div class="card">
               <h2>UI editor</h2>

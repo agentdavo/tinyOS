@@ -87,7 +87,7 @@ For UI capture, prefer the guest-driven path instead of gdb framebuffer pokes:
 bash scripts/qemu_dump_ui_pages.sh /tmp/ui_captures
 ```
 
-That script talks to the CLI over serial, issues `ui_page <id>` and `ui_dump <scale>`, and writes page `.ppm` / `.png` files. The relevant CLI commands live in `cli.cpp`; `ui_page` and `ui_dump` both force `kernel::ui::render_ui_once()` so the framebuffer reflects the requested page immediately. `kin <link> <mm|deg>` / `kin zoom <f>` pose and frame the machine view without drives, so a capture can show a specific machine pose.
+The published gallery lives on GitHub Pages (https://agentdavo.github.io/tinyOS/ui/), rebuilt by `.github/workflows/pages.yml` on every UI change to `main`; screenshots are no longer committed. That script talks to the CLI over serial, issues `ui_page <id>` and `ui_dump <scale>`, and writes page `.ppm` / `.png` files. The relevant CLI commands live in `cli.cpp`; `ui_page` and `ui_dump` both force `kernel::ui::render_ui_once()` so the framebuffer reflects the requested page immediately. `kin <link> <mm|deg>` / `kin zoom <f>` pose and frame the machine view without drives, so a capture can show a specific machine pose.
 
 ### sdcard.img shadows the embedded defaults
 

@@ -8,9 +8,11 @@ interpreter.
 > The repo directory is `tinyOS`; the project, ELFs, and branding are all
 > `miniOS`.
 
-For a rendered gallery of every operator page see **[UI.md](./UI.md)** —
-refreshed automatically by the
-[UI screenshots](./.github/workflows/ui-screenshots.yml) workflow.
+For a rendered gallery of every operator page see the
+**[operator UI gallery](https://agentdavo.github.io/tinyOS/ui/)** on GitHub Pages —
+each page captured 1:1 (1080×1920) from the arm64 kernel and republished by the
+[Pages](./.github/workflows/pages.yml) workflow whenever the UI changes on `main`.
+The [UI editor](https://agentdavo.github.io/tinyOS/editor/) is published alongside it.
 
 ## What's in the tree
 
@@ -95,8 +97,11 @@ bash scripts/qemu_dump_ui_pages.sh /tmp/ui_captures
 
 Drives the CLI over serial, issues `ui_page <id>` + `ui_dump <scale>`, and
 writes one `.ppm` and one `.png` per page. The page list is read from
-`devices/embedded_ui.tsv`. `scripts/generate_ui_md.py` regenerates `UI.md`
-from the captures; the GitHub Actions workflow does both on push to `main`.
+`devices/embedded_ui.tsv`. `scripts/generate_ui_md.py <dir> <out>` renders
+the captures as an HTML gallery (`out` ending `.html`) or Markdown. On push to
+`main` the Pages workflow does both and publishes the gallery; on pull requests
+the UI screenshots workflow captures a preview and diffs it against the
+published gallery.
 
 ## Architecture
 

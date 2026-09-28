@@ -114,6 +114,27 @@ jobs:
           # CLI echoes lines with CRLF; match the token loosely.
           grep -q "ci-ok" boot.log
 
+      - name: Run the kernel self-test suite (test all)
+        run: |
+          # cli.cpp::cmd_test: status, motion, ec, devices, chain, mtl,
+          # fake_sdo, tcp, pallet, jobs, ui, fp, mem, kin. The summary line is
+          # "Tests completed: <total>, <failed> failed". qemu_run.sh runs for a
+          # fixed time; 150 s covers the ui subtest's machine-view renders
+          # under TCG with margin.
+          bash scripts/qemu_run.sh arm64 150 "test all" > test_all.log 2>&1 || true
+          grep -a -E "=> (PASSED|FAILED)|: PASSED|: FAILED|Tests completed" test_all.log || true
+          summary=$(grep -a -oE "Tests completed: [0-9]+, [0-9]+ failed" test_all.log | tail -1 || true)
+          if [ -z "$summary" ]; then
+              echo "::error::test all produced no summary (hang or crash?)"
+              tail -n 80 test_all.log
+              exit 1
+          fi
+          echo "$summary"
+          case "$summary" in
+              *", 0 failed") ;;
+              *) echo "::error::$summary"; exit 1 ;;
+          esac
+
       - name: Enforce ClearPath-EC master cycle (>=250 µs, multiple of 250)
         run: |
           # Banner from ethercat/master.cpp:run_loop — "[ecN] cycle=<us>us (...)".
@@ -195,3 +216,4 @@ jobs:
             boot.log
             qemu_p99.log
             elf_headers.txt
+            test_all.log

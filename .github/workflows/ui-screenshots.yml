@@ -1,26 +1,13 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Build the arm64 miniOS kernel, boot it under QEMU, drive the CLI to switch
-# through every TSV-defined operator page, capture each as a PNG, and
-# regenerate UI.md from the captures.
-#
-# Two run modes:
-#   - workflow_dispatch / push to main: commit the refreshed screenshots and
-#     UI.md back to the branch (only if anything changed).
-#   - pull_request: build + capture + upload as a workflow artifact, but never
-#     push commits. Use this to preview UI changes before they merge.
+# PR preview of the operator UI: build the arm64 kernel, boot it under QEMU,
+# capture every TSV page 1:1, diff each against the published gallery on
+# GitHub Pages (https://agentdavo.github.io/tinyOS/ui/), upload the PNGs as
+# an artifact and comment on the PR. Never commits: the gallery itself is
+# built and published from main by .github/workflows/pages.yml.
 
 name: UI screenshots
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'devices/embedded_ui.tsv'
-      - 'ui/**'
-      - 'cli.cpp'
-      - 'scripts/qemu_dump_ui_pages.sh'
-      - 'scripts/generate_ui_md.py'
-      - '.github/workflows/ui-screenshots.yml'
   pull_request:
     branches: [ main ]
     paths:
@@ -33,7 +20,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   # E20: post a comment on the triggering PR with the artifact link.
   # Needs issues:write because the comment API lives under /issues/N/comments
   # (PRs are issues at the REST level). pull-requests:write is required for
@@ -60,7 +47,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates git gawk gh build-essential \
+            ca-certificates curl git gawk gh build-essential \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             qemu-system-arm \
             ffmpeg \
@@ -79,7 +66,7 @@ jobs:
         run: make TARGET=arm64
 
       - name: Capture every TSV UI page
-        # Native 1080x1920 captures (UI_DUMP_SCALE=1) so UI.md shows the
+        # Native 1080x1920 captures (UI_DUMP_SCALE=1) so the preview shows the
         # screen exactly as the operator sees it. The script asks for
         # `ui_dump 1 rle`: a raw frame is 6.2 MB (over 3 min/page at the
         # ~32 KB/s the emulated UART manages here), the run-length encoded
@@ -95,29 +82,23 @@ jobs:
           find screenshots -maxdepth 1 -type f -name '*.ppm' -delete
           ls -la screenshots/
 
-      - name: Regenerate UI.md
-        run: |
-          python3 scripts/generate_ui_md.py screenshots UI.md
-          head -40 UI.md
-
-      - name: Diff screenshots vs main baseline (E19)
-        # On PRs, compare each captured PNG against the committed
-        # baseline on main. Per-page pixel diff + bbox surface in the
+      - name: Diff screenshots vs the published gallery (E19)
+        # Compare each captured PNG against the gallery published from
+        # main. Per-page pixel diff + bbox surface in the
         # PR comment below. Skipped on push to main (the new commit IS
         # the baseline). Tolerant: a missing baseline directory or PIL
         # import error still lets the workflow continue.
         if: github.event_name == 'pull_request'
         run: |
-          # Pull main's committed screenshots/ into a temp dir without
-          # touching the working tree (the PR head already has its
-          # own screenshots/ from the capture step above).
+          # Baseline = the gallery published from main on GitHub Pages
+          # (screenshots are no longer committed to the repo).
           mkdir -p /tmp/baseline_screenshots
-          if git show "origin/main:screenshots/" >/dev/null 2>&1; then
-              for f in $(git ls-tree -r --name-only origin/main -- screenshots/ | grep '\.png$'); do
-                  out="/tmp/baseline_screenshots/$(basename "$f")"
-                  git show "origin/main:$f" > "$out" 2>/dev/null || rm -f "$out"
-              done
-          fi
+          base="https://agentdavo.github.io/tinyOS/ui/screenshots"
+          while IFS=$'\t' read -r page _; do
+              [ -z "$page" ] && continue
+              curl -fsSL "$base/$page.png" -o "/tmp/baseline_screenshots/$page.png" \
+                  || rm -f "/tmp/baseline_screenshots/$page.png"
+          done < screenshots/pages.tsv
           # Emit Markdown that the PR-comment step below picks up.
           python3 scripts/screenshot_diff.py screenshots /tmp/baseline_screenshots \
               > /tmp/screenshot_diff.md || true
@@ -137,7 +118,6 @@ jobs:
             screenshots/*.png
             screenshots/pages.tsv
             screenshots/kernel.log
-            UI.md
           if-no-files-found: warn
 
       - name: Post artifact link on PR (E20)
@@ -206,59 +186,3 @@ jobs:
                   -f body="${body}"
               echo "Posted new comment"
           fi
-
-      - name: Commit refreshed screenshots and UI.md
-        # Push back on every event the workflow triggers on:
-        #   - push to main / workflow_dispatch: commits go to the
-        #     triggering ref directly.
-        #   - pull_request from a same-repo branch: commits go to
-        #     the PR's head ref so reviewers can see the rendered
-        #     screenshots without pulling the artifact zip.
-        # Skipped on cross-repo PRs (forks) because GITHUB_TOKEN
-        # only has write to the repo it lives in. Detected via
-        # github.event.pull_request.head.repo.full_name matching
-        # the destination repo.
-        if: |
-          github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add screenshots UI.md
-          if git diff --cached --quiet; then
-            echo "No screenshot changes to commit."
-            exit 0
-          fi
-          git commit -m "ui: refresh operator UI screenshots" \
-                     -m "Generated by .github/workflows/ui-screenshots.yml from devices/embedded_ui.tsv."
-          # Resolve target branch:
-          #   - push / workflow_dispatch: $GITHUB_REF is refs/heads/<branch>
-          #   - pull_request: actions/checkout@v4 leaves us in detached
-          #     HEAD on refs/remotes/pull/N/merge; the real target is
-          #     github.event.pull_request.head.ref.
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-              TARGET_BRANCH="${{ github.event.pull_request.head.ref }}"
-          else
-              TARGET_BRANCH="${GITHUB_REF#refs/heads/}"
-          fi
-          # Race-tolerant push. If the target branch advanced while CI
-          # was running (typical when a developer pushes more commits
-          # to the PR head while the screenshot job is in flight), the
-          # plain push fails non-fast-forward and the whole job is
-          # marked failed even though the captures are fine. Fetch and
-          # bail-out cleanly when behind so the operator can re-run the
-          # workflow against the fresh tip.
-          git fetch origin "${TARGET_BRANCH}"
-          REMOTE_TIP=$(git rev-parse "origin/${TARGET_BRANCH}")
-          PARENT=$(git rev-parse HEAD~1)
-          if [ "${REMOTE_TIP}" != "${PARENT}" ]; then
-              echo "Target branch ${TARGET_BRANCH} advanced since CI checkout"
-              echo "  expected parent: ${PARENT}"
-              echo "  remote tip:      ${REMOTE_TIP}"
-              echo "Skipping screenshot auto-commit; artifacts uploaded for manual review."
-              exit 0
-          fi
-          echo "Pushing screenshot commit to ${TARGET_BRANCH}"
-          git push origin "HEAD:${TARGET_BRANCH}"
